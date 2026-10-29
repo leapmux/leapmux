@@ -49,8 +49,12 @@ export function buildToolCall<K extends ToolKind>(envelope: ToolCallEnvelope, sp
     name: name ?? envelope.name,
     images: images ?? [],
     status: deriveToolCallStatus(lifecycle, spec.result !== undefined, statusOverride),
-    ...(extraContent !== undefined ? { extraContent } : {}),
-    ...(truncated !== undefined ? { truncated } : {}),
+    ...(extraContent !== undefined
+      ? { extraContent }
+      : {}),
+    ...(truncated !== undefined
+      ? { truncated }
+      : {}),
   }
   const fault = toolCallFault(draft)
   if (fault !== null)
@@ -90,7 +94,9 @@ function statesAFile(request: ToolRequestByKind[ToolKind]): boolean {
 
 export function createToolCall<K extends ToolKind>(envelope: ToolCallEnvelope, spec: ToolCallSpecVariant<K>): ToolCall<K> | ToolCall<'other'> {
   const built = buildToolCall(envelope, spec)
-  return built.ok ? built.call : degradedToolCall(built)
+  return built.ok
+    ? built.call
+    : degradedToolCall(built)
 }
 
 const reportedFaults = new Set<ToolCallFault>()
@@ -117,29 +123,58 @@ function degradedToolCall<K extends ToolKind>(built: { fault: ToolCallFault, dra
   const { draft } = built
   const status = draft.status
   const finished = isFinishedToolCallStatus(status)
-  const kept = isGenericToolResult(draft.result) ? draft.result : undefined
+  const kept = isGenericToolResult(draft.result)
+    ? draft.result
+    : undefined
   const text = faultText(draft, built.fault)
   const common = {
     id: draft.id,
     name: draft.name,
     status,
     kind: 'other' as const,
-    request: { args: requestArgs(draft.request) },
-    ...(draft.title !== undefined ? { title: draft.title } : {}),
-    ...(draft.label !== undefined ? { label: draft.label } : {}),
-    ...(draft.icon !== undefined ? { icon: draft.icon } : {}),
-    ...(draft.metadata !== undefined ? { metadata: draft.metadata } : {}),
+    request: {
+      args: requestArgs(draft.request),
+    },
+    ...(draft.title !== undefined
+      ? { title: draft.title }
+      : {}),
+    ...(draft.label !== undefined
+      ? { label: draft.label }
+      : {}),
+    ...(draft.icon !== undefined
+      ? { icon: draft.icon }
+      : {}),
+    ...(draft.metadata !== undefined
+      ? { metadata: draft.metadata }
+      : {}),
     degradation: { fault: built.fault, originalKind: draft.kind },
   }
   if (!finished)
     return { ...common, status: status as 'unstated' | 'pending' | 'in_progress', images: [] }
-  if (status === 'completed')
-    return { ...common, status, result: kept ?? unparsedResult(text), images: [] }
+  if (status === 'completed') {
+    return {
+      ...common,
+      status,
+      result: kept ?? unparsedResult(text),
+      images: [],
+    }
+  }
   if (status === 'incomplete')
     return { ...common, status, images: [] }
-  if (status === 'declined')
-    return { ...common, status, result: failedResult(text), images: [] }
-  return { ...common, status, result: kept ?? failedResult(text), images: [] }
+  if (status === 'declined') {
+    return {
+      ...common,
+      status,
+      result: failedResult(text),
+      images: [],
+    }
+  }
+  return {
+    ...common,
+    status,
+    result: kept ?? failedResult(text),
+    images: [],
+  }
 }
 
 function faultText(draft: { result?: unknown }, fault: ToolCallFault): string {

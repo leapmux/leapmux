@@ -71,7 +71,10 @@ describe('channelRpc', () => {
       payload: new Uint8Array([42]),
     })
     mux.deliverResponse(ch, 1, resp)
-    await expect(p).resolves.toMatchObject({ isError: false, payload: new Uint8Array([42]) })
+    await expect(p).resolves.toMatchObject({
+      isError: false,
+      payload: new Uint8Array([42]),
+    })
     expect(ch.pendingRequests.has(1)).toBe(false)
   })
 
@@ -129,14 +132,21 @@ describe('channelRpc', () => {
     const ch = makeChannel()
     const { mux } = makeMux()
     // Must not throw.
-    mux.deliverResponse(ch, 99, create(InnerRpcResponseSchema, { isError: false, payload: new Uint8Array() }))
+    mux.deliverResponse(ch, 99, create(InnerRpcResponseSchema, {
+      isError: false,
+      payload: new Uint8Array(),
+    }))
   })
 
   it('deliverResponse ignores a non-error unary reply on a stream id', () => {
     const ch = makeChannel()
     const onMessage = vi.fn()
     const onError = vi.fn()
-    ch.streamListeners.set(5, { onMessage, onEnd: () => {}, onError })
+    ch.streamListeners.set(5, {
+      onMessage,
+      onEnd: () => {},
+      onError,
+    })
     const { mux } = makeMux()
     mux.deliverResponse(ch, 5, create(InnerRpcResponseSchema, {
       isError: false,
@@ -150,7 +160,11 @@ describe('channelRpc', () => {
   it('deliverResponse routes unary rpc error onto a stream listener', () => {
     const ch = makeChannel()
     const onError = vi.fn()
-    ch.streamListeners.set(5, { onMessage: () => {}, onEnd: () => {}, onError })
+    ch.streamListeners.set(5, {
+      onMessage: () => {},
+      onEnd: () => {},
+      onError,
+    })
     const { mux } = makeMux()
     mux.deliverResponse(ch, 5, create(InnerRpcResponseSchema, {
       isError: true,
@@ -191,7 +205,11 @@ describe('channelRpc', () => {
     const ch = makeChannel()
     const onError = vi.fn()
     const notifyError = vi.fn()
-    ch.streamListeners.set(3, { onMessage: () => {}, onEnd: () => {}, onError })
+    ch.streamListeners.set(3, {
+      onMessage: () => {},
+      onEnd: () => {},
+      onError,
+    })
     const { mux } = makeMux({ notifyError })
     mux.deliverStream(ch, 3, create(InnerStreamMessageSchema, {
       isError: true,
@@ -208,8 +226,15 @@ describe('channelRpc', () => {
     const reject = vi.fn()
     const onEnd = vi.fn()
     const onError = vi.fn()
-    ch.pendingRequests.set(1, { resolve: () => {}, reject })
-    ch.streamListeners.set(2, { onMessage: () => {}, onEnd, onError })
+    ch.pendingRequests.set(1, {
+      resolve: () => {},
+      reject,
+    })
+    ch.streamListeners.set(2, {
+      onMessage: () => {},
+      onEnd,
+      onError,
+    })
     ch.reassembly.start(1)
     const { mux } = makeMux()
     mux.drainChannel(ch, new ChannelError('client', 'channel closed'), 'end')
@@ -224,7 +249,11 @@ describe('channelRpc', () => {
   it('drainChannel with error termination calls onError', () => {
     const ch = makeChannel()
     const onError = vi.fn()
-    ch.streamListeners.set(1, { onMessage: () => {}, onEnd: () => {}, onError })
+    ch.streamListeners.set(1, {
+      onMessage: () => {},
+      onEnd: () => {},
+      onError,
+    })
     const { mux } = makeMux()
     mux.drainChannel(ch, new ChannelError('transport', 'disconnected'), 'error')
     expect(onError).toHaveBeenCalledOnce()
@@ -234,7 +263,10 @@ describe('channelRpc', () => {
     const ch = makeChannel()
     const reject = vi.fn()
     const onEndSecond = vi.fn()
-    ch.pendingRequests.set(1, { resolve: () => {}, reject })
+    ch.pendingRequests.set(1, {
+      resolve: () => {},
+      reject,
+    })
     ch.streamListeners.set(2, {
       onMessage: () => {},
       onEnd: () => {
@@ -242,7 +274,11 @@ describe('channelRpc', () => {
       },
       onError: () => {},
     })
-    ch.streamListeners.set(3, { onMessage: () => {}, onEnd: onEndSecond, onError: () => {} })
+    ch.streamListeners.set(3, {
+      onMessage: () => {},
+      onEnd: onEndSecond,
+      onError: () => {},
+    })
     const { mux } = makeMux()
     mux.drainChannel(ch, new ChannelError('client', 'channel closed'), 'end')
     expect(reject).toHaveBeenCalledOnce()
@@ -253,8 +289,15 @@ describe('channelRpc', () => {
 
   it('unregisterRequest drops pending, stream, and reassembly together', () => {
     const ch = makeChannel()
-    ch.pendingRequests.set(1, { resolve: () => {}, reject: () => {} })
-    ch.streamListeners.set(2, { onMessage: () => {}, onEnd: () => {}, onError: () => {} })
+    ch.pendingRequests.set(1, {
+      resolve: () => {},
+      reject: () => {},
+    })
+    ch.streamListeners.set(2, {
+      onMessage: () => {},
+      onEnd: () => {},
+      onError: () => {},
+    })
     ch.reassembly.start(1)
     ch.reassembly.start(2)
     const { mux } = makeMux()
@@ -268,7 +311,10 @@ describe('channelRpc', () => {
 
   it('trySend wraps a non-ChannelError and unregisters', () => {
     const ch = makeChannel()
-    ch.pendingRequests.set(1, { resolve: () => {}, reject: () => {} })
+    ch.pendingRequests.set(1, {
+      resolve: () => {},
+      reject: () => {},
+    })
     const onSendFailure = vi.fn()
     const { mux } = makeMux({
       send: () => {
@@ -287,7 +333,10 @@ describe('channelRpc', () => {
   it('failReassembly rejects and poisons the id', () => {
     const ch = makeChannel()
     const reject = vi.fn()
-    ch.pendingRequests.set(1, { resolve: () => {}, reject })
+    ch.pendingRequests.set(1, {
+      resolve: () => {},
+      reject,
+    })
     ch.reassembly.start(1)
     const { mux } = makeMux()
     mux.failReassembly(ch, 1, 'too large')
@@ -298,7 +347,11 @@ describe('channelRpc', () => {
   it('rejectPendingRequest errors a stream listener', () => {
     const ch = makeChannel()
     const onError = vi.fn()
-    ch.streamListeners.set(4, { onMessage: () => {}, onEnd: () => {}, onError })
+    ch.streamListeners.set(4, {
+      onMessage: () => {},
+      onEnd: () => {},
+      onError,
+    })
     const { mux } = makeMux()
     mux.rejectPendingRequest(ch, 4, 'client', 'cap')
     expect(onError).toHaveBeenCalledOnce()
@@ -307,8 +360,15 @@ describe('channelRpc', () => {
 
   it('hasHandler covers pending, stream, and rekey ids', () => {
     const ch = makeChannel()
-    ch.pendingRequests.set(1, { resolve: () => {}, reject: () => {} })
-    ch.streamListeners.set(2, { onMessage: () => {}, onEnd: () => {}, onError: () => {} })
+    ch.pendingRequests.set(1, {
+      resolve: () => {},
+      reject: () => {},
+    })
+    ch.streamListeners.set(2, {
+      onMessage: () => {},
+      onEnd: () => {},
+      onError: () => {},
+    })
     const { mux } = makeMux()
     expect(mux.hasHandler(ch, 1, null)).toBe(true)
     expect(mux.hasHandler(ch, 2, null)).toBe(true)
@@ -335,7 +395,11 @@ describe('channelRpc', () => {
 
   it('sendOnStream reuses the stream correlation id and does not advance nextRequestId', () => {
     const ch = makeChannel({ nextRequestId: 5 })
-    ch.streamListeners.set(3, { onMessage: () => {}, onEnd: () => {}, onError: () => {} })
+    ch.streamListeners.set(3, {
+      onMessage: () => {},
+      onEnd: () => {},
+      onError: () => {},
+    })
     const { mux, sent } = makeMux()
     const err = mux.sendOnStream(ch, 3, new Uint8Array([7]), false)
     expect(err).toBeNull()
@@ -346,7 +410,11 @@ describe('channelRpc', () => {
 
   it('sendOnStream cancel unregisters locally', () => {
     const ch = makeChannel()
-    ch.streamListeners.set(2, { onMessage: () => {}, onEnd: () => {}, onError: () => {} })
+    ch.streamListeners.set(2, {
+      onMessage: () => {},
+      onEnd: () => {},
+      onError: () => {},
+    })
     const { mux } = makeMux()
     mux.sendOnStream(ch, 2, new Uint8Array(), true)
     expect(ch.streamListeners.has(2)).toBe(false)

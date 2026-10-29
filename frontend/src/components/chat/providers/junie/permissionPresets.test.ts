@@ -22,10 +22,51 @@ describe('juniePermissionPresets', () => {
   it.each([
     ['absent', undefined],
     ['empty', []],
-    ['without values', [create(AvailableOptionGroupSchema, { id: 'brave_mode', mutable: true })]],
-    ['immutable', [create(AvailableOptionGroupSchema, { id: 'brave_mode', mutable: false, options: [{ id: 'brave-auto' }, { id: 'on' }] })]],
-    ['unrelated', [create(AvailableOptionGroupSchema, { id: 'permissionMode', mutable: true, options: [{ id: 'brave-auto' }, { id: 'on' }] })]],
-    ['unknown values', [create(AvailableOptionGroupSchema, { id: 'brave_mode', mutable: true, options: [{ id: '' }, { id: 'unknown' }] })]],
+    [
+      'without values',
+      [
+        create(AvailableOptionGroupSchema, { id: 'brave_mode', mutable: true }),
+      ],
+    ],
+    [
+      'immutable',
+      [
+        create(AvailableOptionGroupSchema, {
+          id: 'brave_mode',
+          mutable: false,
+          options: [
+            { id: 'brave-auto' },
+            { id: 'on' },
+          ],
+        }),
+      ],
+    ],
+    [
+      'unrelated',
+      [
+        create(AvailableOptionGroupSchema, {
+          id: 'permissionMode',
+          mutable: true,
+          options: [
+            { id: 'brave-auto' },
+            { id: 'on' },
+          ],
+        }),
+      ],
+    ],
+    [
+      'unknown values',
+      [
+        create(AvailableOptionGroupSchema, {
+          id: 'brave_mode',
+          mutable: true,
+          options: [
+            { id: '' },
+            { id: 'unknown' },
+          ],
+        }),
+      ],
+    ],
   ])('offers no shortcuts when the catalog is %s', (_, groups) => {
     expect(usablePresets(juniePermissionPresets, groups)).toEqual({})
   })
@@ -34,7 +75,15 @@ describe('juniePermissionPresets', () => {
     ['brave-auto', 'smart'],
     ['on', 'bypass'],
   ])('offers only the preset whose value is %s', (value, kind) => {
-    const groups = [create(AvailableOptionGroupSchema, { id: 'brave_mode', mutable: true, options: [{ id: value }] })]
+    const groups = [
+      create(AvailableOptionGroupSchema, {
+        id: 'brave_mode',
+        mutable: true,
+        options: [
+          { id: value },
+        ],
+      }),
+    ]
 
     expect(Object.keys(usablePresets(juniePermissionPresets, groups))).toEqual([kind])
   })

@@ -4,7 +4,10 @@ import { grepMatches } from './grepOutput'
 describe('grepMatches', () => {
   it('keeps every line that states a path and a line number', () => {
     const matches = grepMatches(['src/a.ts:1:first', 'src/b.ts:12:second'])
-    expect(matches).toStrictEqual({ lines: ['src/a.ts:1:first', 'src/b.ts:12:second'], numFiles: 2 })
+    expect(matches).toStrictEqual({
+      lines: ['src/a.ts:1:first', 'src/b.ts:12:second'],
+      numFiles: 2,
+    })
   })
 
   it('counts one file for several matches inside it', () => {
@@ -14,7 +17,12 @@ describe('grepMatches', () => {
   })
 
   it('reads no match out of a heading, a notice or a blank line', () => {
-    expect(grepMatches(['Found 2 matches', '', 'src/a.ts:1:first', '... (truncated)'])).toStrictEqual({
+    expect(grepMatches([
+      'Found 2 matches',
+      '',
+      'src/a.ts:1:first',
+      '... (truncated)',
+    ])).toStrictEqual({
       lines: ['src/a.ts:1:first'],
       numFiles: 1,
     })

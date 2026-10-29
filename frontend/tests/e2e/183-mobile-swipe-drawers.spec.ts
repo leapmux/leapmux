@@ -186,15 +186,22 @@ const SWIPE_TRAVEL_RATIO = 0.4
 async function swipeBand(page: Page, direction: 'left' | 'right') {
   const width = page.viewportSize()!.width
   const y = await transcriptY(page)
-  const travel = width * SWIPE_TRAVEL_RATIO * (direction === 'right' ? 1 : -1)
-  const fromX = direction === 'right' ? width * 0.25 : width * 0.75
+  const travel = width * SWIPE_TRAVEL_RATIO * (direction === 'right'
+    ? 1
+    : -1)
+  const fromX = direction === 'right'
+    ? width * 0.25
+    : width * 0.75
   // The finger must start on the transcript or on the drawer over it. Any other
   // landing is a mis-aimed swipe, and it must fail as that rather than as "the
   // drawer never opened".
   const landing = await regionUnder(page, fromX, y)
   const where = `the swipe start at (${Math.round(fromX)}, ${Math.round(y)})`
   expect(landing, where).toMatch(/^(?:transcript|mobile-drawer-left|mobile-drawer-right)$/)
-  await touchSwipe(page, { from: { x: fromX, y }, to: { x: fromX + travel, y } })
+  await touchSwipe(page, {
+    from: { x: fromX, y },
+    to: { x: fromX + travel, y },
+  })
 }
 
 const swipeRight = (page: Page) => swipeBand(page, 'right')

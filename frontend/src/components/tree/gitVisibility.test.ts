@@ -80,20 +80,31 @@ describe('computeGitVisibility', () => {
   })
 
   it('selects a changed file and the directories on the way down to it', () => {
-    const { paths, subtrees } = computeGitVisibility([entry('src/app/main.ts')], '/repo', unix)
-    expect(paths).toEqual(new Set(['/repo', '/repo/src', '/repo/src/app', '/repo/src/app/main.ts']))
+    const { paths, subtrees } = computeGitVisibility([
+      entry('src/app/main.ts'),
+    ], '/repo', unix)
+    expect(paths).toEqual(new Set([
+      '/repo',
+      '/repo/src',
+      '/repo/src/app',
+      '/repo/src/app/main.ts',
+    ]))
     expect(subtrees.size).toBe(0)
   })
 
   it('marks a trailing-slash entry as a whole subtree', () => {
     // Git collapses an untracked directory into one "build/" entry.
-    const { paths, subtrees } = computeGitVisibility([entry('build/')], '/repo', unix)
+    const { paths, subtrees } = computeGitVisibility([
+      entry('build/'),
+    ], '/repo', unix)
     expect(subtrees).toEqual(new Set(['/repo/build']))
     expect(paths.has('/repo/build')).toBe(true)
   })
 
   it('does not mark a plain file as a subtree even under a matching name', () => {
-    const { subtrees } = computeGitVisibility([entry('build')], '/repo', unix)
+    const { subtrees } = computeGitVisibility([
+      entry('build'),
+    ], '/repo', unix)
     expect(subtrees.size).toBe(0)
   })
 
@@ -101,7 +112,10 @@ describe('computeGitVisibility', () => {
     // The ancestor walk breaks early once it meets a path another entry already
     // seeded. That early exit must not skip recording the subtree itself.
     const { paths, subtrees } = computeGitVisibility(
-      [entry('src/app/main.ts'), entry('src/app/dist/')],
+      [
+        entry('src/app/main.ts'),
+        entry('src/app/dist/'),
+      ],
       '/repo',
       unix,
     )
@@ -110,13 +124,18 @@ describe('computeGitVisibility', () => {
   })
 
   it('skips an entry that is nothing but a separator', () => {
-    const { paths } = computeGitVisibility([entry('/')], '/repo', unix)
+    const { paths } = computeGitVisibility([
+      entry('/'),
+    ], '/repo', unix)
     expect(paths).toEqual(new Set(['/repo']))
   })
 
   it('feeds isPathVisible so a sibling of a change stays hidden end to end', () => {
     const { paths, subtrees } = computeGitVisibility(
-      [entry('src/changed.ts'), entry('build/')],
+      [
+        entry('src/changed.ts'),
+        entry('build/'),
+      ],
       '/repo',
       unix,
     )
@@ -127,7 +146,9 @@ describe('computeGitVisibility', () => {
   })
 
   it('joins with the worker\'s separator', () => {
-    const { paths } = computeGitVisibility([entry('src/main.ts')], 'C:\\repo', 'win32')
+    const { paths } = computeGitVisibility([
+      entry('src/main.ts'),
+    ], 'C:\\repo', 'win32')
     expect(paths.has('C:\\repo\\src\\main.ts')).toBe(true)
   })
 
@@ -138,7 +159,9 @@ describe('computeGitVisibility', () => {
    * whole repository behind a git filter.
    */
   it('builds absolute paths when the root is the filesystem root', () => {
-    const { paths } = computeGitVisibility([entry('src/main.ts')], '/', unix)
+    const { paths } = computeGitVisibility([
+      entry('src/main.ts'),
+    ], '/', unix)
     expect(paths).toEqual(new Set(['/', '/src', '/src/main.ts']))
   })
 })

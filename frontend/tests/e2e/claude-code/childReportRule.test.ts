@@ -10,10 +10,33 @@ import { spawnSubagentToolCall } from '../helpers/providerToolCalls'
 import { CLAUDE_CHILD_COMPLETED_STATUS, CLAUDE_CHILD_COMPLETION_REPLY, claudeChildCompletionRule, claudeChildReportRule, claudeSpawnedChildId, registerClaudeChildReportRules } from './childReportRule'
 
 function nativeSpawnBody(childId = 'a7886d73ffa77cc1e') {
-  return { messages: [
-    { role: 'assistant', content: [{ type: 'tool_use', id: 'actual-spawn', name: 'Agent', input: { prompt: 'Perform the actual child task.' } }] },
-    { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'actual-spawn', content: [{ type: 'text', text: `Async agent launched successfully. (Internal metadata.)\nagentId: ${childId} (internal ID - do not mention to user.)\nThe child runs in the background.` }] }] },
-  ] }
+  return {
+    messages: [
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'actual-spawn',
+            name: 'Agent',
+            input: { prompt: 'Perform the actual child task.' },
+          },
+        ],
+      },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'actual-spawn',
+            content: [
+              { type: 'text', text: `Async agent launched successfully. (Internal metadata.)\nagentId: ${childId} (internal ID - do not mention to user.)\nThe child runs in the background.` },
+            ],
+          },
+        ],
+      },
+    ],
+  }
 }
 
 function notification(childId: string, report: string): string {
@@ -44,7 +67,7 @@ function completionNotification(options: { childId?: string, spawnCallId?: strin
 
 function pattern(rule: MockModelRule): RegExp {
   if (typeof rule.when.user !== 'string')
-    throw new Error('The Claude native report rule requires a scalar user pattern.')
+    throw new TypeError('The Claude native report rule requires a scalar user pattern.')
   return new RegExp(rule.when.user)
 }
 
@@ -55,27 +78,68 @@ describe('claudeSpawnedChildId', () => {
     expect(claudeSpawnedChildId(nativeSpawnBody(), 'another-spawn')).toBeUndefined()
   })
 
-  it.each([null, {}, { messages: null }, { messages: [] }])('refuses missing native history: %j', (body) => {
+  it.each([
+    null,
+    {},
+    { messages: null },
+    { messages: [] },
+  ])('refuses missing native history: %j', (body) => {
     expect(claudeSpawnedChildId(body, 'actual-spawn')).toBeUndefined()
   })
 
   it('refuses a result before its call, a failed result, and an unrelated tool', () => {
     const body = nativeSpawnBody()
-    expect(claudeSpawnedChildId({ messages: [...body.messages].reverse() }, 'actual-spawn')).toBeUndefined()
-    const result = { type: 'tool_result', tool_use_id: 'actual-spawn', is_error: true, content: 'Async agent launched successfully.\nagentId: a7886d73ffa77cc1e (internal ID - do not mention to user.)' }
-    expect(claudeSpawnedChildId({ messages: [body.messages[0], { role: 'user', content: [result] }] }, 'actual-spawn')).toBeUndefined()
-    const call = { type: 'tool_use', id: 'actual-spawn', name: 'Read', input: { prompt: 'Perform the actual child task.' } }
-    expect(claudeSpawnedChildId({ messages: [{ role: 'assistant', content: [call] }, body.messages[1]] }, 'actual-spawn')).toBeUndefined()
+    expect(claudeSpawnedChildId({
+      messages: [...body.messages].reverse(),
+    }, 'actual-spawn')).toBeUndefined()
+    const result = {
+      type: 'tool_result',
+      tool_use_id: 'actual-spawn',
+      is_error: true,
+      content: 'Async agent launched successfully.\nagentId: a7886d73ffa77cc1e (internal ID - do not mention to user.)',
+    }
+    expect(claudeSpawnedChildId({
+      messages: [
+        body.messages[0],
+        {
+          role: 'user',
+          content: [result],
+        },
+      ],
+    }, 'actual-spawn')).toBeUndefined()
+    const call = {
+      type: 'tool_use',
+      id: 'actual-spawn',
+      name: 'Read',
+      input: { prompt: 'Perform the actual child task.' },
+    }
+    expect(claudeSpawnedChildId({
+      messages: [
+        {
+          role: 'assistant',
+          content: [call],
+        },
+        body.messages[1],
+      ],
+    }, 'actual-spawn')).toBeUndefined()
   })
 
   it('refuses repeated call IDs and repeated child identifiers', () => {
     const body = nativeSpawnBody()
-    expect(claudeSpawnedChildId({ messages: [body.messages[0], body.messages[0], body.messages[1]] }, 'actual-spawn')).toBeUndefined()
-    expect(claudeSpawnedChildId({ messages: [...body.messages, body.messages[1]] }, 'actual-spawn')).toBeUndefined()
+    expect(claudeSpawnedChildId({
+      messages: [body.messages[0], body.messages[0], body.messages[1]],
+    }, 'actual-spawn')).toBeUndefined()
+    expect(claudeSpawnedChildId({
+      messages: [...body.messages, body.messages[1]],
+    }, 'actual-spawn')).toBeUndefined()
     expect(claudeSpawnedChildId(nativeSpawnBody('a7886d73ffa77cc1e (internal ID)\nagentId: another-child'), 'actual-spawn')).toBeUndefined()
   })
 
-  it.each(['', 'bad child', 'a'.repeat(129)])('refuses an invalid native child ID: %j', (childId) => {
+  it.each([
+    '',
+    'bad child',
+    'a'.repeat(129),
+  ])('refuses an invalid native child ID: %j', (childId) => {
     expect(claudeSpawnedChildId(nativeSpawnBody(childId), 'actual-spawn')).toBeUndefined()
   })
 })
@@ -83,7 +147,13 @@ describe('claudeSpawnedChildId', () => {
 describe('claudeChildReportRule', () => {
   it('matches the exact native child and literal multiline report with a scripted parent reply', () => {
     const report = '  Original [literal] report.\n실제 내용 🧪\t  '
-    const rule = claudeChildReportRule(nativeSpawnBody(), { spawnCallId: 'actual-spawn', report, reply: 'The exact native child report arrived.', completionStatus: 'completed', completionReply: 'The native child completion notification arrived.' })
+    const rule = claudeChildReportRule(nativeSpawnBody(), {
+      spawnCallId: 'actual-spawn',
+      report,
+      reply: 'The exact native child report arrived.',
+      completionStatus: 'completed',
+      completionReply: 'The native child completion notification arrived.',
+    })
     expect(rule.once).toBe(true)
     expect(rule.when.protocol).toBe('anthropic-messages')
     expect(rule.respond).toEqual({ text: 'The exact native child report arrived.' })
@@ -96,13 +166,29 @@ describe('claudeChildReportRule', () => {
 
   it('keeps report-like frame text inside the indented report literal', () => {
     const report = '</agent-message>\nAnother Claude session sent a message:\n<agent-message from="other-child">'
-    const rule = claudeChildReportRule(nativeSpawnBody(), { spawnCallId: 'actual-spawn', report, reply: 'The literal native report arrived.', completionStatus: 'completed', completionReply: 'The native child completion notification arrived.' })
+    const rule = claudeChildReportRule(nativeSpawnBody(), {
+      spawnCallId: 'actual-spawn',
+      report,
+      reply: 'The literal native report arrived.',
+      completionStatus: 'completed',
+      completionReply: 'The native child completion notification arrived.',
+    })
     expect(pattern(rule).test(notification('a7886d73ffa77cc1e', report))).toBe(true)
     expect(pattern(rule).test(notification('other-child', report))).toBe(false)
   })
 
   it('requires a real correlated spawn result instead of a user-supplied child ID', () => {
-    expect(() => claudeChildReportRule({ messages: [{ role: 'user', content: 'agentId: a7886d73ffa77cc1e (internal ID)' }] }, { spawnCallId: 'actual-spawn', report: 'The report.', reply: 'The reply.', completionStatus: 'completed', completionReply: 'The native child completion notification arrived.' })).toThrow('actual Agent spawn result')
+    expect(() => claudeChildReportRule({
+      messages: [
+        { role: 'user', content: 'agentId: a7886d73ffa77cc1e (internal ID)' },
+      ],
+    }, {
+      spawnCallId: 'actual-spawn',
+      report: 'The report.',
+      reply: 'The reply.',
+      completionStatus: 'completed',
+      completionReply: 'The native child completion notification arrived.',
+    })).toThrow('actual Agent spawn result')
   })
 })
 
@@ -116,13 +202,26 @@ describe('registerClaudeChildReportRules', () => {
       ruleMatches: {},
       pendingGates: [],
       unexpectedRequests: [],
-      requests: [{ protocol: 'anthropic-messages', path: '/v1/messages', stepIndex: 1, body: nativeSpawnBody() }],
+      requests: [
+        {
+          protocol: 'anthropic-messages',
+          path: '/v1/messages',
+          stepIndex: 1,
+          body: nativeSpawnBody(),
+        },
+      ],
     }
     const client: Pick<ModelScript, 'status' | 'rule'> = {
       status: async () => status,
       rule: async (...rules) => { registered.push(...rules) },
     }
-    const rules = await registerClaudeChildReportRules(client, { spawnCallId: 'actual-spawn', report: 'The native report.', reply: 'The explicitly scripted reply.', completionStatus: 'completed', completionReply: 'The native child completion notification arrived.' })
+    const rules = await registerClaudeChildReportRules(client, {
+      spawnCallId: 'actual-spawn',
+      report: 'The native report.',
+      reply: 'The explicitly scripted reply.',
+      completionStatus: 'completed',
+      completionReply: 'The native child completion notification arrived.',
+    })
     expect(registered).toEqual([rules.reportRule, rules.completionRule])
     expect(rules.reportRule.respond).toEqual({ text: 'The explicitly scripted reply.' })
     expect(pattern(rules.reportRule).test(notification('a7886d73ffa77cc1e', 'The native report.'))).toBe(true)
@@ -130,7 +229,29 @@ describe('registerClaudeChildReportRules', () => {
     expect(pattern(rules.completionRule).test(completionNotification())).toBe(true)
   })
 
-  it.each([{ spawnCallId: '', report: 'The report.', reply: 'The reply.', completionStatus: 'completed', completionReply: 'The native child completion notification arrived.' }, { spawnCallId: 'spawn', report: ' \n', reply: 'The reply.', completionStatus: 'completed', completionReply: 'The native child completion notification arrived.' }, { spawnCallId: 'spawn', report: 'The report.', reply: '', completionStatus: 'completed', completionReply: 'The native child completion notification arrived.' }])('rejects incomplete options before reading the model state: %j', async (options) => {
+  it.each([
+    {
+      spawnCallId: '',
+      report: 'The report.',
+      reply: 'The reply.',
+      completionStatus: 'completed',
+      completionReply: 'The native child completion notification arrived.',
+    },
+    {
+      spawnCallId: 'spawn',
+      report: ' \n',
+      reply: 'The reply.',
+      completionStatus: 'completed',
+      completionReply: 'The native child completion notification arrived.',
+    },
+    {
+      spawnCallId: 'spawn',
+      report: 'The report.',
+      reply: '',
+      completionStatus: 'completed',
+      completionReply: 'The native child completion notification arrived.',
+    },
+  ])('rejects incomplete options before reading the model state: %j', async (options) => {
     const client: Pick<ModelScript, 'status' | 'rule'> = {
       async status() { throw new Error('Invalid report options must not read model state.') },
       async rule() { throw new Error('Invalid report options must not register a rule.') },
@@ -142,7 +263,13 @@ describe('registerClaudeChildReportRules', () => {
 describe('claudeChildCompletionRule', () => {
   it('matches an actual direct report with the exact child, call, status, and literal content', () => {
     const report = '  Native [literal] report.\n실제 내용 🧪\t  '
-    const options = { spawnCallId: 'actual-spawn', report, reply: 'The report reply.', completionStatus: 'completed', completionReply: 'The completion reply.' }
+    const options = {
+      spawnCallId: 'actual-spawn',
+      report,
+      reply: 'The report reply.',
+      completionStatus: 'completed',
+      completionReply: 'The completion reply.',
+    }
     const rule = claudeChildCompletionRule(nativeSpawnBody(), options)
     const native = completionNotification().replace(/<result>[\s\S]*?<\/result>/, `<result>${report}</result>`)
     expect(pattern(rule).test(native)).toBe(true)
@@ -153,13 +280,25 @@ describe('claudeChildCompletionRule', () => {
   })
 
   it('requires both actual IDs and the exact completed status with an explicit reply', () => {
-    const options = { spawnCallId: 'actual-spawn', report: 'The native report.', reply: 'The report reply.', completionStatus: 'completed', completionReply: 'The explicit completion reply.' }
+    const options = {
+      spawnCallId: 'actual-spawn',
+      report: 'The native report.',
+      reply: 'The report reply.',
+      completionStatus: 'completed',
+      completionReply: 'The explicit completion reply.',
+    }
     const rule = claudeChildCompletionRule(nativeSpawnBody(), options)
     expect(rule.once).toBe(true)
     expect(rule.when.protocol).toBe('anthropic-messages')
     expect(rule.respond).toEqual({ text: 'The explicit completion reply.' })
     expect(pattern(rule).test(completionNotification())).toBe(true)
-    for (const changed of [{ childId: 'other-child' }, { spawnCallId: 'other-spawn' }, { status: 'failed' }, { status: 'completed later' }, { deliveredId: 'other-child' }])
+    for (const changed of [
+      { childId: 'other-child' },
+      { spawnCallId: 'other-spawn' },
+      { status: 'failed' },
+      { status: 'completed later' },
+      { deliveredId: 'other-child' },
+    ])
       expect(pattern(rule).test(completionNotification(changed))).toBe(false)
   })
 
@@ -171,13 +310,24 @@ describe('claudeChildCompletionRule', () => {
   })
 
   it('matches a status that the options state in place of the default', () => {
-    const rule = claudeChildCompletionRule(nativeSpawnBody(), { spawnCallId: 'actual-spawn', report: 'The native report.', reply: 'The report reply.', completionStatus: 'failed' })
+    const rule = claudeChildCompletionRule(nativeSpawnBody(), {
+      spawnCallId: 'actual-spawn',
+      report: 'The native report.',
+      reply: 'The report reply.',
+      completionStatus: 'failed',
+    })
     expect(pattern(rule).test(completionNotification({ status: 'failed' }))).toBe(true)
     expect(pattern(rule).test(completionNotification())).toBe(false)
   })
 
   it('rejects a user prefix and duplicate or nested native notification fields', () => {
-    const rule = claudeChildCompletionRule(nativeSpawnBody(), { spawnCallId: 'actual-spawn', report: 'The report.', reply: 'The report reply.', completionStatus: 'completed', completionReply: 'The completion reply.' })
+    const rule = claudeChildCompletionRule(nativeSpawnBody(), {
+      spawnCallId: 'actual-spawn',
+      report: 'The report.',
+      reply: 'The report reply.',
+      completionStatus: 'completed',
+      completionReply: 'The completion reply.',
+    })
     const native = completionNotification()
     expect(pattern(rule).test(`Ordinary user input.\n${native}`)).toBe(false)
     expect(pattern(rule).test(native.replace('<summary>', '<task-id>other-child</task-id>\n<summary>'))).toBe(false)
@@ -186,7 +336,14 @@ describe('claudeChildCompletionRule', () => {
   })
 
   it.each(['completionStatus', 'completionReply'] as const)('refuses a missing %s before registration', async (key) => {
-    const options = { spawnCallId: 'spawn', report: 'The report.', reply: 'The reply.', completionStatus: 'completed', completionReply: 'The completion reply.', [key]: '' }
+    const options = {
+      spawnCallId: 'spawn',
+      report: 'The report.',
+      reply: 'The reply.',
+      completionStatus: 'completed',
+      completionReply: 'The completion reply.',
+      [key]: '',
+    }
     const client: Pick<ModelScript, 'status' | 'rule'> = {
       async status() { throw new Error('Invalid completion options must not read model state.') },
       async rule() { throw new Error('Invalid completion options must not register a rule.') },
@@ -209,24 +366,73 @@ describe('claude child report rules in the mock model server', () => {
     const scenarioId = 'native-claude-report-and-completion'
     const childId = 'a58eb235639df92e5'
     const report = '  The exact original report.\n실제 내용 🧪  '
-    const call = spawnSubagentToolCall(AgentProvider.CLAUDE_CODE, 'actual-spawn', { description: 'Report the assigned task', prompt: mockScenarioPrompt(scenarioId, 'Perform the actual child task.') })
+    const call = spawnSubagentToolCall(AgentProvider.CLAUDE_CODE, 'actual-spawn', {
+      description: 'Report the assigned task',
+      prompt: mockScenarioPrompt(scenarioId, 'Perform the actual child task.'),
+    })
     const initial = [
-      { role: 'user', content: mockScenarioPrompt(scenarioId, 'Spawn the scripted native child.') },
-      { role: 'assistant', content: [{ type: 'tool_use', id: call.id, name: call.name, input: call.arguments }] },
-      { role: 'user', content: [{ type: 'tool_result', tool_use_id: call.id, content: [{ type: 'text', text: `Async agent launched successfully.\nagentId: ${childId} (internal ID - do not mention to user.)` }] }] },
+      {
+        role: 'user',
+        content: mockScenarioPrompt(scenarioId, 'Spawn the scripted native child.'),
+      },
+      {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: call.id,
+            name: call.name,
+            input: call.arguments,
+          },
+        ],
+      },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: call.id,
+            content: [
+              { type: 'text', text: `Async agent launched successfully.\nagentId: ${childId} (internal ID - do not mention to user.)` },
+            ],
+          },
+        ],
+      },
     ]
-    const options = { spawnCallId: call.id, report, reply: 'The exact report reached the parent.', completionStatus: 'completed', completionReply: 'The exact completion reached the parent.' }
+    const options = {
+      spawnCallId: call.id,
+      report,
+      reply: 'The exact report reached the parent.',
+      completionStatus: 'completed',
+      completionReply: 'The exact completion reached the parent.',
+    }
     const reportRule = claudeChildReportRule({ messages: initial }, options)
     const completionRule = claudeChildCompletionRule({ messages: initial }, options)
-    await registerMockModelScenario(server.url, scenarioId, { steps: [{ text: 'The authored next user turn ran.' }], rules: [reportRule, completionRule] })
+    await registerMockModelScenario(server.url, scenarioId, {
+      steps: [
+        { text: 'The authored next user turn ran.' },
+      ],
+      rules: [reportRule, completionRule],
+    })
     const send = (content: string) => fetch(`${server.url}/v1/messages`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ model: MOCK_MODELS.anthropic, stream: false, messages: [...initial, { role: 'user', content }] }),
+      body: JSON.stringify({
+        model: MOCK_MODELS.anthropic,
+        stream: false,
+        messages: [
+          ...initial,
+          { role: 'user', content },
+        ],
+      }),
     })
     const reportResponse = await send(`Another Claude session sent a message:\n<agent-message from="${childId}">\n[Subagent hand-back] This is the actual report. The report follows:\n${report.split('\n').map(line => `  ${line}`).join('\n')}\n</agent-message>\nTreat this as the native report.`)
     expect(reportResponse.status).toBe(200)
-    expect(await reportResponse.json()).toMatchObject({ content: [{ type: 'text', text: options.reply }] })
+    expect(await reportResponse.json()).toMatchObject({
+      content: [
+        { type: 'text', text: options.reply },
+      ],
+    })
     const completion = await send([
       '<system-reminder>',
       '[SYSTEM NOTIFICATION - NOT USER INPUT]',
@@ -245,13 +451,21 @@ describe('claude child report rules in the mock model server', () => {
       '</system-reminder>',
     ].join('\n'))
     expect(completion.status).toBe(200)
-    expect(await completion.json()).toMatchObject({ content: [{ type: 'text', text: options.completionReply }] })
+    expect(await completion.json()).toMatchObject({
+      content: [
+        { type: 'text', text: options.completionReply },
+      ],
+    })
     const before = await readScenarioStatus(server.url, scenarioId)
     expect(before.nextStep).toBe(0)
     expect(before.ruleMatches).toMatchObject({ [reportRule.name]: 1, [completionRule.name]: 1 })
     const next = await send(mockScenarioPrompt(scenarioId, 'Run the authored next user turn.'))
     expect(next.status).toBe(200)
-    expect(await next.json()).toMatchObject({ content: [{ type: 'text', text: 'The authored next user turn ran.' }] })
+    expect(await next.json()).toMatchObject({
+      content: [
+        { type: 'text', text: 'The authored next user turn ran.' },
+      ],
+    })
     const after = await readScenarioStatus(server.url, scenarioId)
     expect(after.complete).toBe(true)
     expect(after.nextStep).toBe(1)

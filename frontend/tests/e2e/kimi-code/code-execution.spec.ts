@@ -15,7 +15,12 @@ kimiTest('confirms the native code executor is absent from the actual model cata
   const capture = createKimiCatalogCapture(createTestDirectory('kimi-native-catalog-'), launch, leapmuxServer.agentEnv)
   const environment = nativeStartupShellEnvironment(createTestDirectory('kimi-native-catalog-shell-'), capture.directory, hubSpawnEnv(leapmuxServer.agentEnv))
   await withNativeWorker(leapmuxServer, { dataDirPrefix: 'kimi-native-catalog-worker', workerName: 'Kimi native catalog test', env: environment }, async ({ server, dataDir }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer: server, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer: server,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
     await openNativeCatalogTurn(context)
     // The owned native route returns every registry entry, including inactive tools that the model cannot see.
     const catalog = await readKimiCompleteCatalog(context, capture, dataDir)

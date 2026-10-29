@@ -56,7 +56,7 @@ export function mcpReceiptRequestId(value: unknown, label: string): McpRequestId
 
 function receiptArray<T>(value: unknown, label: string, parse: (item: unknown, label: string) => T): T[] {
   if (!Array.isArray(value))
-    throw new Error(`The MCP receipt ${label} must be an array.`)
+    throw new TypeError(`The MCP receipt ${label} must be an array.`)
   return value.map((item, index) => parse(item, `${label}[${index}]`))
 }
 
@@ -74,7 +74,10 @@ export function parseMcpServerReceipt(value: unknown): McpServerReceipt {
         const tool = record(value, toolLabel)
         if (typeof tool.name !== 'string' || tool.name.length === 0)
           throw new Error(`The MCP receipt ${toolLabel}.name must identify a tool.`)
-        return { name: tool.name, inputSchema: record(tool.inputSchema, `${toolLabel}.inputSchema`) }
+        return {
+          name: tool.name,
+          inputSchema: record(tool.inputSchema, `${toolLabel}.inputSchema`),
+        }
       }),
     }
   })
@@ -91,30 +94,42 @@ export function parseMcpServerReceipt(value: unknown): McpServerReceipt {
   const elicitationReplies = receiptArray(receipt.elicitationReplies, 'elicitationReplies', (item, label): McpElicitationReplyReceipt => {
     const reply = record(item, label)
     const id = mcpReceiptRequestId(reply.id, `${label}.id`)
-    if (reply.kind === 'result')
-      return { id, kind: 'result', result: record(reply.result, `${label}.result`) }
+    if (reply.kind === 'result') {
+      return {
+        id,
+        kind: 'result',
+        result: record(reply.result, `${label}.result`),
+      }
+    }
     if (reply.kind !== 'error')
       throw new Error(`The MCP receipt ${label}.kind must identify a result or an error.`)
     const error = record(reply.error, `${label}.error`)
     if (typeof error.code !== 'number' || !Number.isSafeInteger(error.code))
-      throw new Error(`The MCP receipt ${label}.error.code must be a safe integer.`)
+      throw new TypeError(`The MCP receipt ${label}.error.code must be a safe integer.`)
     if (typeof error.message !== 'string')
-      throw new Error(`The MCP receipt ${label}.error.message must be a string.`)
+      throw new TypeError(`The MCP receipt ${label}.error.message must be a string.`)
     return {
       id,
       kind: 'error',
       error: {
         code: error.code,
         message: error.message,
-        ...('data' in error ? { data: error.data } : {}),
+        ...('data' in error
+          ? { data: error.data }
+          : {}),
       },
     }
   })
   const toolResults = receiptArray(receipt.toolResults, 'toolResults', (item, label) => {
     const result = record(item, label)
     if (typeof result.tool !== 'string' || typeof result.text !== 'string' || typeof result.isError !== 'boolean')
-      throw new Error(`The MCP receipt ${label} must contain the tool, text, and error flag.`)
-    return { id: mcpReceiptRequestId(result.id, `${label}.id`), tool: result.tool, text: result.text, isError: result.isError }
+      throw new TypeError(`The MCP receipt ${label} must contain the tool, text, and error flag.`)
+    return {
+      id: mcpReceiptRequestId(result.id, `${label}.id`),
+      tool: result.tool,
+      text: result.text,
+      isError: result.isError,
+    }
   })
   const exchange = receiptArray(receipt.exchange, 'exchange', (item, label): McpExchangeEntry => {
     const entry = record(item, label)
@@ -122,10 +137,21 @@ export function parseMcpServerReceipt(value: unknown): McpServerReceipt {
     if (keys.length !== 1 || (keys[0] !== 'received' && keys[0] !== 'sent'))
       throw new Error(`The MCP receipt ${label} must hold one received or one sent message.`)
     return 'received' in entry
-      ? { received: record(entry.received, `${label}.received`) }
-      : { sent: record(entry.sent, `${label}.sent`) }
+      ? {
+          received: record(entry.received, `${label}.received`),
+        }
+      : {
+          sent: record(entry.sent, `${label}.sent`),
+        }
   })
-  return { initializeCapabilities, toolCatalogs, elicitationRequests, elicitationReplies, toolResults, exchange }
+  return {
+    initializeCapabilities,
+    toolCatalogs,
+    elicitationRequests,
+    elicitationReplies,
+    toolResults,
+    exchange,
+  }
 }
 
 export function readMcpServerReceipt(path: string): McpServerReceipt {
@@ -161,12 +187,16 @@ export async function waitForMcpToolListed(receiptLog: string, toolName: string)
 
 /** The messages that the server received, in order. */
 function receivedMessages(receipt: Pick<McpServerReceipt, 'exchange'>): Record<string, unknown>[] {
-  return receipt.exchange.flatMap(entry => 'received' in entry ? [entry.received] : [])
+  return receipt.exchange.flatMap(entry => 'received' in entry
+    ? [entry.received]
+    : [])
 }
 
 /** The replies that the server sent: each sent message that is not a request of its own, in order. */
 function sentReplies(receipt: Pick<McpServerReceipt, 'exchange'>): Record<string, unknown>[] {
-  return receipt.exchange.flatMap(entry => 'sent' in entry && !Object.hasOwn(entry.sent, 'method') ? [entry.sent] : [])
+  return receipt.exchange.flatMap(entry => 'sent' in entry && !Object.hasOwn(entry.sent, 'method')
+    ? [entry.sent]
+    : [])
 }
 
 /** One tool call that the server received: the tool name and its exact arguments. */
@@ -216,7 +246,14 @@ export function mcpCallExchange(receipt: Pick<McpServerReceipt, 'exchange'>): Mc
     throw new Error('The native MCP tool call returned a protocol error.')
   if (!Object.hasOwn(reply, 'result') || reply.result === undefined)
     throw new Error('The native MCP tool reply contains no result.')
-  return { id, name: params.name, arguments: params.arguments, result: reply.result, request, reply }
+  return {
+    id,
+    name: params.name,
+    arguments: params.arguments,
+    result: reply.result,
+    request,
+    reply,
+  }
 }
 
 /** Pair the one tool call that the server of `path` received with its one exact reply. */

@@ -24,7 +24,9 @@ museTest('shows native to-do changes and keeps their transcript after clearing a
   expect(firstItemId).not.toBe('')
   expect(secondItemId).not.toBe(firstItemId)
   await runNativeToolTurn(native, {
-    toolCalls: [updateTodosToolCall(native.provider, 'todos-clear', [])],
+    toolCalls: [
+      updateTodosToolCall(native.provider, 'todos-clear', []),
+    ],
     prompt: 'Clear the complete native to-do list.',
     answer: 'The native list is empty.',
     permissions: 'none',

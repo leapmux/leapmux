@@ -34,7 +34,9 @@ export function extractZCodeSearch(row: ZCodeRow): SearchResult | null {
     empty: text.trim() === '',
   }
   if (row.toolName === ZCODE_TOOL.Glob) {
-    const lines = text ? text.split('\n').filter(line => line !== '') : []
+    const lines = text
+      ? text.split('\n').filter(line => line !== '')
+      : []
     if (lines.at(-1) === GLOB_TRUNCATION) {
       lines.pop()
       source.truncated = true
@@ -42,7 +44,9 @@ export function extractZCodeSearch(row: ZCodeRow): SearchResult | null {
     // The wording ZCode prints for a glob that matched no file, which this branch
     // already reads to empty the list. The flag states the same fact for the row.
     const statedNothing = text === 'No files found'
-    source.filenames = statedNothing ? [] : lines
+    source.filenames = statedNothing
+      ? []
+      : lines
     source.numFiles = source.filenames.length
     source.empty ||= statedNothing
     return source
@@ -51,7 +55,9 @@ export function extractZCodeSearch(row: ZCodeRow): SearchResult | null {
   // raw word; both still fall through to the content branch below, exactly as an
   // absent mode always did.
   const declared = pickString(input, 'output_mode')
-  const mode = declared ? searchOutputMode(declared) : 'files_with_matches'
+  const mode = declared
+    ? searchOutputMode(declared)
+    : 'files_with_matches'
   // An unrecognized word leaves the mode unstated rather than explicitly undefined.
   if (mode !== undefined)
     source.mode = mode
@@ -86,7 +92,9 @@ export function extractZCodeSearch(row: ZCodeRow): SearchResult | null {
   }
   // Context and multiline searches do not expose enough data for a reliable match count.
   const pagination = CONTENT_FOOTER.exec(text)
-  source.content = pagination ? text.slice(0, pagination.index) : original
+  source.content = pagination
+    ? text.slice(0, pagination.index)
+    : original
   if (pagination?.[1] !== undefined)
     source.notice = pagination[1]
   return source

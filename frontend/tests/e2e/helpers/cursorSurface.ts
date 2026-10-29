@@ -134,7 +134,10 @@ const CURSOR_DEFAULT_MODEL_PATH = '/aiserver.v1.AiService/GetDefaultModelForCli'
 function parameterizedMockModel(name: string, displayName: string, definitions: readonly CursorModelParameter[]): CursorModel {
   let selections: { id: string, value: string }[][] = [[]]
   for (const definition of definitions) {
-    selections = selections.flatMap(selection => definition.values.map(value => [...selection, { id: definition.id, value: value.value }]))
+    selections = selections.flatMap(selection => definition.values.map(value => [
+      ...selection,
+      { id: definition.id, value: value.value },
+    ]))
   }
   return {
     name,
@@ -158,17 +161,72 @@ export const CURSOR_MOCK_MODELS: readonly CursorModel[] = [
     name: 'default',
     displayName: 'Auto',
     aliases: ['auto'],
-    variants: [{ id: 'default[]', displayName: 'Auto', isDefault: true, parameters: [] }],
+    variants: [
+      {
+        id: 'default[]',
+        displayName: 'Auto',
+        isDefault: true,
+        parameters: [],
+      },
+    ],
   },
   parameterizedMockModel('mock-sonnet', 'Mock Sonnet', [
-    { id: 'context', name: 'Context', kind: 'enum', values: [{ value: '200k', name: '200K' }, { value: '1m', name: '1M' }] },
-    { id: 'effort', name: 'Effort', kind: 'enum', values: [{ value: 'low', name: 'Low' }, { value: 'high', name: 'High' }] },
-    { id: 'thinking', name: 'Thinking', kind: 'boolean', values: [{ value: 'false', name: 'Off' }, { value: 'true', name: 'On' }] },
-    { id: 'fast', name: 'Fast', kind: 'boolean', values: [{ value: 'false', name: 'Off' }, { value: 'true', name: 'On' }] },
+    {
+      id: 'context',
+      name: 'Context',
+      kind: 'enum',
+      values: [
+        { value: '200k', name: '200K' },
+        { value: '1m', name: '1M' },
+      ],
+    },
+    {
+      id: 'effort',
+      name: 'Effort',
+      kind: 'enum',
+      values: [
+        { value: 'low', name: 'Low' },
+        { value: 'high', name: 'High' },
+      ],
+    },
+    {
+      id: 'thinking',
+      name: 'Thinking',
+      kind: 'boolean',
+      values: [
+        { value: 'false', name: 'Off' },
+        { value: 'true', name: 'On' },
+      ],
+    },
+    {
+      id: 'fast',
+      name: 'Fast',
+      kind: 'boolean',
+      values: [
+        { value: 'false', name: 'Off' },
+        { value: 'true', name: 'On' },
+      ],
+    },
   ]),
   parameterizedMockModel('mock-grok', 'Mock Grok', [
-    { id: 'context', name: 'Context', kind: 'enum', values: [{ value: '256k', name: '256K' }, { value: '1m', name: '1M' }] },
-    { id: 'reasoning_effort', name: 'Reasoning Effort', kind: 'enum', values: [{ value: 'low', name: 'Low' }, { value: 'xhigh', name: 'Extra High' }] },
+    {
+      id: 'context',
+      name: 'Context',
+      kind: 'enum',
+      values: [
+        { value: '256k', name: '256K' },
+        { value: '1m', name: '1M' },
+      ],
+    },
+    {
+      id: 'reasoning_effort',
+      name: 'Reasoning Effort',
+      kind: 'enum',
+      values: [
+        { value: 'low', name: 'Low' },
+        { value: 'xhigh', name: 'Extra High' },
+      ],
+    },
   ]),
 ]
 
@@ -255,13 +313,24 @@ export function createCursorSurface(host: MockModelScriptHost, instructionFiles:
             // The matcher category is OpenAI Responses. The native request remains protobuf.
             protocol: 'openai-responses',
             path: url.pathname,
-            body: { prompt, attachments: cursorAttachmentPayloads(requestFrame), conversationId: conversationID },
+            body: {
+              prompt,
+              attachments: cursorAttachmentPayloads(requestFrame),
+              conversationId: conversationID,
+            },
             systemText: '',
             userText: prompt,
             scenarioID,
             mockCredential: mockCredentialReceipt(request.headers),
             nativeRequest: witness,
-            ...(conversationID && conversation ? { serverContext: { conversationId: conversationID, messages: conversation.messages.map(message => ({ ...message })) } } : {}),
+            ...(conversationID && conversation
+              ? {
+                  serverContext: {
+                    conversationId: conversationID,
+                    messages: conversation.messages.map(message => ({ ...message })),
+                  },
+                }
+              : {}),
           }
           turnContext = context
           const answer = host.select(context, { allowServiceToolMetadata: true })
@@ -291,12 +360,18 @@ export function createCursorSurface(host: MockModelScriptHost, instructionFiles:
             toolCalls,
             usage: step.usage,
             requestContextRules: receiveContextRules,
-            ...(step.stream ? { stream: answer.stream(response, request) } : {}),
+            ...(step.stream
+              ? {
+                  stream: answer.stream(response, request),
+                }
+              : {}),
           }
         },
         completed: (_prompt, _frame, text) => completedTurn?.(text),
         errorResponse: error => (nativeError = error),
-        holdToolCompletion: (_callID, name) => activeAnswer ? activeAnswer.holdGate(name, { request, response }) : Promise.resolve(false),
+        holdToolCompletion: (_callID, name) => activeAnswer
+          ? activeAnswer.holdGate(name, { request, response })
+          : Promise.resolve(false),
       })
       return true
     },
@@ -342,7 +417,9 @@ function modelAnswerFor(pathname: string): Uint8Array | undefined {
     case CURSOR_DEFAULT_MODEL_PATH: {
       const marked = CURSOR_MOCK_MODELS.find(model => model.variants.some(variant => variant.isDefault === true))
       const chosen = marked ?? CURSOR_MOCK_MODELS[0]
-      return chosen === undefined ? undefined : cursorDefaultModel(chosen)
+      return chosen === undefined
+        ? undefined
+        : cursorDefaultModel(chosen)
     }
     default:
       return undefined
@@ -366,26 +443,35 @@ function taskTranscriptRecords(task: CursorScriptedTask): string[] {
     role: 'assistant',
     id: `${task.callID}-call`,
     providerOptions: {},
-    content: [{
-      type: 'tool-call',
-      toolCallId: task.callID,
-      toolName: CURSOR_TASK_TOOL,
-      args: { description: task.description, prompt: task.prompt },
-    }],
+    content: [
+      {
+        type: 'tool-call',
+        toolCallId: task.callID,
+        toolName: CURSOR_TASK_TOOL,
+        args: { description: task.description, prompt: task.prompt },
+      },
+    ],
   }
   const toolResult = {
     role: 'tool',
     id: `${task.callID}-result`,
     providerOptions: {},
-    content: [{
-      type: 'tool-result',
-      toolCallId: task.callID,
-      toolName: CURSOR_TASK_TOOL,
-      result: task.report,
-      experimental_content: [{ type: 'text', text: task.report }],
-    }],
+    content: [
+      {
+        type: 'tool-result',
+        toolCallId: task.callID,
+        toolName: CURSOR_TASK_TOOL,
+        result: task.report,
+        experimental_content: [
+          { type: 'text', text: task.report },
+        ],
+      },
+    ],
   }
-  return [JSON.stringify(toolCall), JSON.stringify(toolResult)]
+  return [
+    JSON.stringify(toolCall),
+    JSON.stringify(toolResult),
+  ]
 }
 
 /**
@@ -411,7 +497,9 @@ function textTranscriptRecord(role: 'user' | 'assistant', text: string): string 
     role,
     id: randomUUID(),
     providerOptions: {},
-    content: [{ type: 'text', text }],
+    content: [
+      { type: 'text', text },
+    ],
   })
 }
 
@@ -472,27 +560,52 @@ export function cursorToolCallsFrom(toolCalls: readonly MockModelToolCall[] | un
     if (call.name === CURSOR_TASK_TOOL) {
       if (call.nativeExecution && call.taskProgress !== undefined)
         throw new Error('Actual native child execution cannot use scripted child progress.')
-      return [{
-        kind: 'task',
-        call: { callID: call.id, description: String(args.description ?? ''), prompt: String(args.prompt ?? '') },
-        report: String(args.report ?? ''),
-        ...(call.completionGate !== undefined ? { completionGate: call.completionGate } : {}),
-        ...(call.taskProgress !== undefined ? { taskProgress: call.taskProgress } : {}),
-        ...(call.nativeExecution !== undefined ? { nativeExecution: call.nativeExecution } : {}),
-      }]
+      return [
+        {
+          kind: 'task',
+          call: {
+            callID: call.id,
+            description: String(args.description ?? ''),
+            prompt: String(args.prompt ?? ''),
+          },
+          report: String(args.report ?? ''),
+          ...(call.completionGate !== undefined
+            ? { completionGate: call.completionGate }
+            : {}),
+          ...(call.taskProgress !== undefined
+            ? { taskProgress: call.taskProgress }
+            : {}),
+          ...(call.nativeExecution !== undefined
+            ? { nativeExecution: call.nativeExecution }
+            : {}),
+        },
+      ]
     }
     if (call.completionGate !== undefined || call.taskProgress !== undefined || call.nativeExecution !== undefined)
       throw new Error('Only a native Cursor task supports provider-service tool metadata')
     const executionKind = cursorExecutionKind(call.name)
-    if (executionKind)
-      return [{ kind: 'execution', call: cursorExecutionCallFrom(call, executionKind) }]
+    if (executionKind) {
+      return [
+        {
+          kind: 'execution',
+          call: cursorExecutionCallFrom(call, executionKind),
+        },
+      ]
+    }
     if (call.name === CURSOR_GENERATE_IMAGE_TOOL) {
       if (typeof args.description !== 'string' || typeof args.filePath !== 'string' || typeof args.imageData !== 'string')
-        throw new Error('Cursor GenerateImage needs a description, file path, and image data')
-      return [{
-        kind: 'generateImage',
-        call: { callID: call.id, description: args.description, filePath: args.filePath, imageData: args.imageData },
-      }]
+        throw new TypeError('Cursor GenerateImage needs a description, file path, and image data')
+      return [
+        {
+          kind: 'generateImage',
+          call: {
+            callID: call.id,
+            description: args.description,
+            filePath: args.filePath,
+            imageData: args.imageData,
+          },
+        },
+      ]
     }
     if (call.name === CURSOR_QUESTION_TOOL) {
       if (typeof args.title !== 'string' || !Array.isArray(args.questions) || args.questions.length === 0)
@@ -505,41 +618,83 @@ export function cursorToolCallsFrom(toolCalls: readonly MockModelToolCall[] | un
             throw new Error(`Cursor question option ${optionIndex + 1} needs an id and label`)
           return { id: option.id, label: option.label }
         })
-        return { id: value.id, prompt: value.prompt, options, allowMultiple: value.allowMultiple === true }
+        return {
+          id: value.id,
+          prompt: value.prompt,
+          options,
+          allowMultiple: value.allowMultiple === true,
+        }
       })
-      return [{ kind: 'question', callID: call.id, title: args.title, questions }]
+      return [
+        {
+          kind: 'question',
+          callID: call.id,
+          title: args.title,
+          questions,
+        },
+      ]
     }
     if (call.name === CURSOR_CREATE_PLAN_TOOL) {
       if (typeof args.name !== 'string' || typeof args.overview !== 'string' || typeof args.plan !== 'string')
-        throw new Error('Cursor CreatePlan needs a name, overview, and plan')
-      return [{ kind: 'plan', callID: call.id, name: args.name, overview: args.overview, plan: args.plan }]
+        throw new TypeError('Cursor CreatePlan needs a name, overview, and plan')
+      return [
+        {
+          kind: 'plan',
+          callID: call.id,
+          name: args.name,
+          overview: args.overview,
+          plan: args.plan,
+        },
+      ]
     }
     if (call.name === CURSOR_WEB_FETCH_TOOL) {
       if (typeof args.url !== 'string' || !/^https?:\/\//.test(args.url))
         throw new Error('Cursor WebFetch needs an HTTP URL')
-      return [{ kind: 'webFetch', callID: call.id, url: args.url }]
+      return [
+        { kind: 'webFetch', callID: call.id, url: args.url },
+      ]
     }
-    if (call.name === CURSOR_REQUEST_CONTEXT_TOOL)
-      return [{ kind: 'requestContext', callID: call.id }]
+    if (call.name === CURSOR_REQUEST_CONTEXT_TOOL) {
+      return [
+        { kind: 'requestContext', callID: call.id },
+      ]
+    }
     if (call.name === CURSOR_MCP_TOOL) {
       if (typeof args.server !== 'string' || !args.server || typeof args.tool !== 'string' || !args.tool || !isObject(args.input))
         throw new Error('Cursor MCP needs a server, tool, and object input')
-      return [{ kind: 'mcp', call: { callID: call.id, server: args.server, tool: args.tool, input: args.input } }]
+      return [
+        {
+          kind: 'mcp',
+          call: {
+            callID: call.id,
+            server: args.server,
+            tool: args.tool,
+            input: args.input,
+          },
+        },
+      ]
     }
     if (call.name !== CURSOR_UPDATE_TODOS_TOOL)
       throw new Error(`Cursor mock has no native encoder for ${call.name}`)
     if (!Array.isArray(args.todos))
-      throw new Error('Cursor UpdateTodos needs a todos list')
+      throw new TypeError('Cursor UpdateTodos needs a todos list')
     const todos = args.todos.map((value, index) => {
       if (!isObject(value) || typeof value.content !== 'string')
         throw new Error(`Cursor Todo row ${index + 1} needs content`)
       return {
-        id: typeof value.id === 'string' && value.id ? value.id : String(index + 1),
+        id: typeof value.id === 'string' && value.id
+          ? value.id
+          : String(index + 1),
         content: value.content,
         status: cursorTodoStatus(value.status),
       }
     })
-    return [{ kind: 'todo', call: { callID: call.id, todos, merge: args.merge === true } }]
+    return [
+      {
+        kind: 'todo',
+        call: { callID: call.id, todos, merge: args.merge === true },
+      },
+    ]
   })
 }
 
@@ -578,8 +733,12 @@ function cursorQuestionSummary(reply: Extract<CursorInteractionReply, { kind: 'q
   if (reply.rejectedReason)
     return `Cursor question rejected: ${reply.rejectedReason}`
   const selected = `Cursor question selected: ${reply.answers.flatMap(answer => answer.selectedOptionIDs).join(', ') || '(none)'}`
-  const typed = reply.answers.flatMap(answer => answer.freeformText === undefined ? [] : [`${answer.questionID}: ${JSON.stringify(answer.freeformText)}`])
-  return typed.length === 0 ? selected : `${selected}; typed: ${typed.join(', ')}`
+  const typed = reply.answers.flatMap(answer => answer.freeformText === undefined
+    ? []
+    : [`${answer.questionID}: ${JSON.stringify(answer.freeformText)}`])
+  return typed.length === 0
+    ? selected
+    : `${selected}; typed: ${typed.join(', ')}`
 }
 
 function cursorInteractionSummary(call: CursorInteractionCall, reply: CursorInteractionReply): string {
@@ -589,9 +748,13 @@ function cursorInteractionSummary(call: CursorInteractionCall, reply: CursorInte
     case 'question':
       return cursorQuestionSummary(reply)
     case 'plan':
-      return reply.accepted ? 'Cursor plan accepted' : `Cursor plan rejected: ${reply.error ?? 'no reason'}`
+      return reply.accepted
+        ? 'Cursor plan accepted'
+        : `Cursor plan rejected: ${reply.error ?? 'no reason'}`
     case 'webFetch':
-      return reply.approved ? 'Cursor web fetch approved' : `Cursor web fetch rejected: ${reply.reason ?? 'no reason'}`
+      return reply.approved
+        ? 'Cursor web fetch approved'
+        : `Cursor web fetch rejected: ${reply.reason ?? 'no reason'}`
   }
 }
 
@@ -599,8 +762,11 @@ async function finishCursorTurn(response: ServerResponse, answer: CursorTurnAnsw
   if (response.destroyed || response.writableEnded)
     return undefined
   const text = [answer?.text, nativeReply].filter((part): part is string => part !== undefined && part !== '').join('\n')
-  if (text && !answer?.stream)
-    writeTranscriptRecords(response, [textTranscriptRecord('assistant', text)], blobMessageID)
+  if (text && !answer?.stream) {
+    writeTranscriptRecords(response, [
+      textTranscriptRecord('assistant', text),
+    ], blobMessageID)
+  }
   const stream = answer?.stream ?? createModelStream(response)
   for await (const chunk of stream.chunks(answer?.reasoning))
     response.write(Buffer.from(connectFrame(cursorThinkingDelta(chunk))))
@@ -608,8 +774,11 @@ async function finishCursorTurn(response: ServerResponse, answer: CursorTurnAnsw
     response.write(Buffer.from(connectFrame(cursorTextDelta(chunk))))
   if (!stream.active)
     return undefined
-  if (text && answer?.stream)
-    writeTranscriptRecords(response, [textTranscriptRecord('assistant', text)], blobMessageID)
+  if (text && answer?.stream) {
+    writeTranscriptRecords(response, [
+      textTranscriptRecord('assistant', text),
+    ], blobMessageID)
+  }
   response.write(Buffer.from(connectFrame(cursorTurnEnded(answer?.usage))))
   response.end(Buffer.from(connectEndOfStream()))
   return text
@@ -627,7 +796,9 @@ export async function serveCursorRun(
   response: ServerResponse,
   handlers: CursorRunHandlers,
 ): Promise<void> {
-  writeResponseHeaders(response, 200, { 'content-type': String(request.headers['content-type'] ?? 'application/connect+proto') })
+  writeResponseHeaders(response, 200, {
+    'content-type': String(request.headers['content-type'] ?? 'application/connect+proto'),
+  })
   let pending = Buffer.alloc(0)
   let opening: { prompt: string, frame: Uint8Array } | undefined
   let answer: CursorTurnAnswer | undefined
@@ -656,7 +827,13 @@ export async function serveCursorRun(
             if (!parentConversationID)
               throw new Error('Actual native Cursor child execution requires its parent conversation ID.')
             const execution = new CursorSubagentExecution({ ...tool.call, modelID: tool.nativeExecution.modelId, parentConversationID }, ++nextExecutionId)
-            pendingSubagent = { execution, callID: tool.call.callID, ...(tool.completionGate === undefined ? {} : { completionGate: tool.completionGate }) }
+            pendingSubagent = {
+              execution,
+              callID: tool.call.callID,
+              ...(tool.completionGate === undefined
+                ? {}
+                : { completionGate: tool.completionGate }),
+            }
             response.write(Buffer.from(connectFrame(execution.started)))
             response.write(Buffer.from(connectFrame(execution.request())))
             return 'waiting'
@@ -711,14 +888,19 @@ export async function serveCursorRun(
           return 'waiting'
       }
     }
-    const text = await finishCursorTurn(response, answer, blobMessageID, replies.length > 0 ? replies.join('\n') : undefined)
+    const text = await finishCursorTurn(response, answer, blobMessageID, replies.length > 0
+      ? replies.join('\n')
+      : undefined)
     if (answer && opening && text !== undefined)
       handlers.completed?.(opening.prompt, opening.frame, text)
     return 'finished'
   }
 
   for await (const chunk of request) {
-    pending = Buffer.concat([pending, Buffer.from(chunk)])
+    pending = Buffer.concat([
+      pending,
+      Buffer.from(chunk),
+    ])
     const { frames, rest } = takeConnectFrames(new Uint8Array(pending))
     pending = Buffer.from(rest)
     for (const encoded of frames) {
@@ -730,7 +912,9 @@ export async function serveCursorRun(
       const encoding = request.headers['connect-content-encoding']
       if (compressed && (typeof encoding !== 'string' || encoding.trim().toLowerCase() !== 'gzip'))
         throw new Error('The native Cursor compressed request requires gzip encoding.')
-      const frame = compressed ? new Uint8Array(gunzipSync(encoded.payload, { maxOutputLength: MAX_MOCK_REQUEST_BYTES })) : encoded.payload
+      const frame = compressed
+        ? new Uint8Array(gunzipSync(encoded.payload, { maxOutputLength: MAX_MOCK_REQUEST_BYTES }))
+        : encoded.payload
       if (pendingSubagent) {
         const result = pendingSubagent.execution.acceptReply(frame)
         if (!result)
@@ -742,7 +926,9 @@ export async function serveCursorRun(
             return
         }
         response.write(Buffer.from(connectFrame(result.update)))
-        replies.push(result.reply.success ? result.reply.finalMessage ?? '' : result.reply.error)
+        replies.push(result.reply.success
+          ? result.reply.finalMessage ?? ''
+          : result.reply.error)
         pendingSubagent = undefined
         if (await advance() === 'finished')
           return
@@ -781,7 +967,9 @@ export async function serveCursorRun(
           continue
         if (reply.id !== pendingMcp.id)
           throw new Error(`Cursor replied to MCP execution ${pendingMcp.id} with id ${reply.id}`)
-        replies.push(reply.success ? reply.text : `Cursor MCP failed: ${reply.text}`)
+        replies.push(reply.success
+          ? reply.text
+          : `Cursor MCP failed: ${reply.text}`)
         pendingMcp = undefined
         if (await advance() === 'finished')
           return
@@ -816,7 +1004,9 @@ export async function serveCursorRun(
         return
       }
       // The native store needs the user blob before any tool or text update.
-      blobMessageID = writeTranscriptRecords(response, [textTranscriptRecord('user', prompt)], 1)
+      blobMessageID = writeTranscriptRecords(response, [
+        textTranscriptRecord('user', prompt),
+      ], 1)
       if (handlers.contextRules) {
         // The turn goes on when the CLI answers. The answer reaches the handler through the same path as a scripted query.
         const id = ++nextExecutionId

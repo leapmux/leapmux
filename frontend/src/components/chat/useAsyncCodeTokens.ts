@@ -90,7 +90,9 @@ export function useAsyncCodeTokens(opts: AsyncCodeTokensOptions): Accessor<Cache
     // in reuses the whole supersede-and-redispatch path rather than adding a
     // second one that would race it.
     const generation = syntaxThemeGeneration()
-    return lang && code.length > 0 && opts.eligible() ? `${generation}\0${makeKey(lang, code)}` : undefined
+    return lang && code.length > 0 && opts.eligible()
+      ? `${generation}\0${makeKey(lang, code)}`
+      : undefined
   }
 
   // Resolve tokens for `code` WITHOUT dispatching the worker: the optional main-thread

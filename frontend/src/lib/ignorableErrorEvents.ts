@@ -4,10 +4,11 @@ import { monotonicNow } from './monotonicNow'
  * Classify and swallow the window `error` events that carry nothing anyone can
  * act on, so they cannot pop the @solidjs/start dev overlay or toast the user.
  *
- * @solidjs/start's dev overlay (dev-overlay/index.jsx) listens for ANY window
- * `error` event and shows a full-screen 500 dialog; both classes below arrive
- * with no `error` object, so the overlay renders the raw event and tells the
- * developer nothing. `installGlobalErrorSink` reports the same two classes as a
+ * @solidjs/start's dev overlay (shared/dev-toolbar/index.jsx) listens for
+ * window `error` events and opens its error panel for each one, except the
+ * ResizeObserver warning, which it skips itself. A muted error arrives with no
+ * `error` object, so the panel shows the raw event and tells the developer
+ * nothing. `installGlobalErrorSink` reports the same two classes as a
  * "Something went wrong" toast, which tells the user even less. Both consumers
  * ask this module the same question, so the answer lives in one place.
  *
@@ -115,7 +116,9 @@ export interface ErrorEventTarget {
 }
 
 function defaultTarget(): ErrorEventTarget | undefined {
-  return typeof window === 'undefined' ? undefined : window
+  return typeof window === 'undefined'
+    ? undefined
+    : window
 }
 
 /**

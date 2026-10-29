@@ -2,7 +2,7 @@ import { expect } from '@playwright/test'
 import { test } from './fixtures'
 import { sendScriptedTurn } from './helpers/scriptedTurn'
 import { COARSE_POINTER_METRICS, touchDown } from './helpers/touch'
-import { assistantBubbles, bandRows, chatScrollContainer, firstAssistantBubble, measureAgainstChatList, measureBubbleEdges, messageContents, readAttached, userBubbles } from './helpers/ui'
+import { assistantBubbles, bandRows, chatScrollContainer, firstAssistantBubble, measureAgainstChatList, measureBubbleEdges, messageContents, readAttached, sendMessage, userBubbles, waitForAgentIdle } from './helpers/ui'
 
 /**
  * Smoke test for end-to-end chat rendering: user input → real LLM response →
@@ -32,6 +32,34 @@ test.describe('Chat Message Rendering', () => {
     const assistantContent = assistantBubble.locator('[data-testid="message-content"]')
     const paragraphs = await assistantContent.locator('p').count()
     expect(paragraphs).toBeGreaterThan(0)
+  })
+
+  /**
+   * Oat underlines a link only inside `p`, `blockquote` and `figcaption`, and
+   * markdown renders a tight list item and a table cell with no `<p>`. Only a
+   * real browser applies that stylesheet, so only here can the computed
+   * decoration show whether a link outside a paragraph still looks like one.
+   */
+  test('underlines a link in a list item and in a table cell, as in a paragraph', async ({ page, authenticatedWorkspace, modelScript }) => {
+    const answer = [
+      'See [the paragraph link](https://example.com/paragraph) here.',
+      '',
+      '- [the list link](https://example.com/list)',
+      '',
+      '| Source |',
+      '| --- |',
+      '| [the table link](https://example.com/table) |',
+    ].join('\n')
+    const step = await modelScript.queue({ text: answer })
+    await sendMessage(page, modelScript.prompt('Reply with three links.'))
+    await modelScript.waitForSteps(step + 1)
+    await waitForAgentIdle(page)
+
+    for (const name of ['the paragraph link', 'the list link', 'the table link']) {
+      const link = assistantBubbles(page).getByRole('link', { name })
+      await expect(link).toHaveCount(1)
+      await expect(link).toHaveCSS('text-decoration-line', 'underline')
+    }
   })
 
   /**
@@ -73,7 +101,10 @@ test.describe('Chat Message Rendering', () => {
     expect(bands.length).toBeGreaterThan(0)
     for (const band of bands) {
       expect(band.listWidth).toBeGreaterThan(0)
-      expect({ rails: band.rails, offBy: Math.round(Math.abs(band.width - band.listWidth)) })
+      expect({
+        rails: band.rails,
+        offBy: Math.round(Math.abs(band.width - band.listWidth)),
+      })
         .toEqual({ rails: band.rails, offBy: 0 })
     }
 
@@ -268,7 +299,12 @@ test.describe('Chat Message Rendering', () => {
     // a fresh flip state.
     const placement = await menu.evaluate((el) => {
       const rect = el.getBoundingClientRect()
-      return { left: rect.left, top: rect.top, bottom: rect.bottom, flipped: el.hasAttribute('data-flipped') }
+      return {
+        left: rect.left,
+        top: rect.top,
+        bottom: rect.bottom,
+        flipped: el.hasAttribute('data-flipped'),
+      }
     })
     const anchoredEdge = placement.flipped ? placement.bottom : placement.top
     // SIX pixels, not four. The menu sits a hair off the press point -- the

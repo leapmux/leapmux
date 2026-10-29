@@ -21,7 +21,11 @@ const QWEN_CLASSIFIER_SYSTEM = '^You are a security classifier'
 export function qwenClassifierWithoutVerdict(name: string): MockModelRule {
   if (!name.trim())
     throw new Error('The Qwen classifier rule requires a name.')
-  return { name, when: { system: QWEN_CLASSIFIER_SYSTEM }, respond: { text: 'The classifier states no verdict.' } }
+  return {
+    name,
+    when: { system: QWEN_CLASSIFIER_SYSTEM },
+    respond: { text: 'The classifier states no verdict.' },
+  }
 }
 
 /** Require the refusal that Qwen stores for `toolCall` after the reader rejects it in a Worker snapshot of the agent. */
@@ -31,5 +35,10 @@ export function expectQwenCanceledTool(snapshot: NativeMessageSnapshot, toolCall
     spanId: toolCall.id,
     accepts: frame => acpClosedToolCall(frame, toolCall.id, ['failed']),
   })
-  expect(refusal.frame.content).toEqual([{ type: 'content', content: { type: 'text', text: `Tool "${toolCall.name}" was canceled by the user.` } }])
+  expect(refusal.frame.content).toEqual([
+    {
+      type: 'content',
+      content: { type: 'text', text: `Tool "${toolCall.name}" was canceled by the user.` },
+    },
+  ])
 }

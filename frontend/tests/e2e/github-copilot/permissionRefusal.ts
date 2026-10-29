@@ -25,17 +25,23 @@ export function copilotToolCompletion(snapshot: NativeMessageSnapshot, callId: s
     if (message.agentSessionId !== snapshot.agentSessionId || message.spanId !== callId)
       continue
     const frame = nativeMessageBody(message)
-    const params = isObject(frame) && frame.method === COPILOT_METHOD.SessionEvent && isObject(frame.params) ? frame.params : undefined
-    const event = isObject(params?.event) ? params.event : undefined
+    const params = isObject(frame) && frame.method === COPILOT_METHOD.SessionEvent && isObject(frame.params)
+      ? frame.params
+      : undefined
+    const event = isObject(params?.event)
+      ? params.event
+      : undefined
     if (event?.type !== COPILOT_EVENT.ToolCompleted)
       continue
-    const data = isObject(event.data) ? event.data : undefined
+    const data = isObject(event.data)
+      ? event.data
+      : undefined
     if (params?.sessionId !== snapshot.agentSessionId || data?.toolCallId !== callId)
       throw new Error('The paired native Copilot completion identifies another session or call.')
     if (event.agentId !== undefined && event.agentId !== '')
       throw new Error('The paired native Copilot completion belongs to a subagent.')
     if (typeof data.success !== 'boolean')
-      throw new Error('The native Copilot completion states no success value.')
+      throw new TypeError('The native Copilot completion states no success value.')
     const error = data.error
     if (error === undefined) {
       completions.push({ success: data.success })
@@ -45,7 +51,12 @@ export function copilotToolCompletion(snapshot: NativeMessageSnapshot, callId: s
       throw new Error('The native Copilot completion holds a malformed error.')
     completions.push({
       success: data.success,
-      error: { message: error.message, ...(typeof error.code === 'string' ? { code: error.code } : {}) },
+      error: {
+        message: error.message,
+        ...(typeof error.code === 'string'
+          ? { code: error.code }
+          : {}),
+      },
     })
   }
   const completion = completions[0]

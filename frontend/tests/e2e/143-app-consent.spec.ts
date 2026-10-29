@@ -86,7 +86,9 @@ test.describe('app consent needs an elevated session', () => {
     // The marker is what the hub itself appends to the return address. A
     // request that carries it and is STILL not elevated must get an
     // explanation, not another redirect -- and must not be admitted.
-    await page.goto(authorizeURL(leapmuxServer.hubUrl, { extra: { elevated: '1' } }))
+    await page.goto(authorizeURL(leapmuxServer.hubUrl, {
+      extra: { elevated: '1' },
+    }))
 
     await expect(page).toHaveURL(/\/oauth\/authorize\?/)
     await expect(page.getByRole('heading', { name: 'Verify your identity' })).toBeVisible()
@@ -118,7 +120,9 @@ test.describe('app consent needs an elevated session', () => {
     )
     await elevateSessionViaAPI(leapmuxServer.hubUrl, cookie, password)
 
-    const res = await page.request.get(authorizeURL(leapmuxServer.hubUrl, { extra: { scope: 'admin:read' } }), {
+    const res = await page.request.get(authorizeURL(leapmuxServer.hubUrl, {
+      extra: { scope: 'admin:read' },
+    }), {
       headers: { Cookie: cookie },
       maxRedirects: 0,
     })
@@ -141,7 +145,9 @@ test.describe('app consent needs an elevated session', () => {
     const cookie = await elevatedAdminSessionViaAPI(leapmuxServer.hubUrl)
     await loginViaToken(page, cookie)
 
-    await page.goto(authorizeURL(leapmuxServer.hubUrl, { extra: { scope: 'admin:read admin:users' } }))
+    await page.goto(authorizeURL(leapmuxServer.hubUrl, {
+      extra: { scope: 'admin:read admin:users' },
+    }))
 
     // The browser is where the consent happens, so the page -- not only the
     // app that asked -- says what the credential will be able to do, in

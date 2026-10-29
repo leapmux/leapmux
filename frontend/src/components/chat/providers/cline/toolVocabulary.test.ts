@@ -14,7 +14,10 @@ import { CLINE_TOOL_NAME } from './toolNames'
 const GENERIC: Record<string, string> = {}
 
 const CHECK: ToolVocabularyCheck = {
-  names: [...Object.values(CLINE_TOOL_NAME), ...Object.values(CLINE_TOOL)],
+  names: [
+    ...Object.values(CLINE_TOOL_NAME),
+    ...Object.values(CLINE_TOOL),
+  ],
   kindOf: clineToolKind,
   generic: GENERIC,
   // The table answers `unspecified` for a name it does not hold: "the provider states

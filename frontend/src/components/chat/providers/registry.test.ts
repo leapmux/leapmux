@@ -30,7 +30,14 @@ describe('pluginFor', () => {
 
 /** One parse with the shape the parser hands the resolver. */
 function rawParse(parent: Record<string, unknown> = {}): ParsedMessageContent {
-  return { wrapper: null, topLevel: parent, parentObject: parent, rawText: '', supplementalContent: undefined, messageMetadata: undefined }
+  return {
+    wrapper: null,
+    topLevel: parent,
+    parentObject: parent,
+    rawText: '',
+    supplementalContent: undefined,
+    messageMetadata: undefined,
+  }
 }
 
 describe('resolveMessageForRendering', () => {
@@ -54,10 +61,33 @@ describe('resolveMessageForRendering', () => {
   function scheduledParse(): ParsedMessageContent {
     return {
       wrapper: null,
-      topLevel: { type: 'tool.updated', payload: { kind: 'scheduled', toolCallId: 'c1', toolName: 'Bash', inputOmitted: true } },
-      parentObject: { type: 'tool.updated', payload: { kind: 'scheduled', toolCallId: 'c1', toolName: 'Bash', inputOmitted: true } },
+      topLevel: {
+        type: 'tool.updated',
+        payload: {
+          kind: 'scheduled',
+          toolCallId: 'c1',
+          toolName: 'Bash',
+          inputOmitted: true,
+        },
+      },
+      parentObject: {
+        type: 'tool.updated',
+        payload: {
+          kind: 'scheduled',
+          toolCallId: 'c1',
+          toolName: 'Bash',
+          inputOmitted: true,
+        },
+      },
       rawText: '',
-      supplementalContent: { type: 'tool.updated', payload: { kind: 'scheduled', toolCallId: 'c1', input: { command: 'ls' } } },
+      supplementalContent: {
+        type: 'tool.updated',
+        payload: {
+          kind: 'scheduled',
+          toolCallId: 'c1',
+          input: { command: 'ls' },
+        },
+      },
       messageMetadata: undefined,
     }
   }
@@ -190,7 +220,13 @@ describe('retainedOutcome', () => {
 
   // Both helpers read the same completion column.
   it('derives finality for known outcomes and absent metadata', () => {
-    for (const completion of [undefined, MessageCompletion.UNSPECIFIED, MessageCompletion.COMPLETE, MessageCompletion.INTERRUPTED, MessageCompletion.ERROR]) {
+    for (const completion of [
+      undefined,
+      MessageCompletion.UNSPECIFIED,
+      MessageCompletion.COMPLETE,
+      MessageCompletion.INTERRUPTED,
+      MessageCompletion.ERROR,
+    ]) {
       expect(retainedRowIsFinal(completion)).toBe(retainedOutcome(completion) !== null)
     }
   })

@@ -32,7 +32,9 @@ export function renderAgentTitle(description: string, subagentType?: string): JS
     }
   }
 
-  const title = `${titleDesc}${showSuffix && subagentType ? ` (${subagentType})` : ''}`
+  const title = `${titleDesc}${showSuffix && subagentType
+    ? ` (${subagentType})`
+    : ''}`
   // `toolInputText`, because `ToolUseLayout` wraps a STRING title in it and leaves a
   // JSX title alone. An unclassed span lost the monospace face and the one-line clip,
   // so a long description wrapped the header onto extra rows.
@@ -50,7 +52,16 @@ function AgentPromptBody(props: { request: AgentRequest, view: ToolRowView, hasR
       <Show when={!props.hasResult || expanded()}><ToolMetadata items={props.request.metadata} /></Show>
       <Show when={hasPrompt() && (!props.hasResult || expanded())}>
         <div class={toolResultPrompt}>{promptLabel()}</div>
-        <CollapsibleContent kind={props.request.promptFormat === 'pre' ? 'pre' : 'markdown-tool-result'} text={props.request.prompt} isCollapsed={!expanded() && longPrompt()} {...(props.view.context !== undefined ? { context: props.view.context } : {})} />
+        <CollapsibleContent
+          kind={props.request.promptFormat === 'pre'
+            ? 'pre'
+            : 'markdown-tool-result'}
+          text={props.request.prompt}
+          isCollapsed={!expanded() && longPrompt()}
+          {...(props.view.context !== undefined
+            ? { context: props.view.context }
+            : {})}
+        />
       </Show>
     </>
   )
@@ -102,9 +113,20 @@ export const agentRenderer: ToolKindRenderer<'agent'> = {
     return (
       <Show
         when={call.result.agents.length > 0}
-        fallback={isEmptyCompletedAgentResult(call) ? <ToolStatusHeader icon={ENDED_OUTCOME_ICON.completed} title="Completed" /> : null}
+        fallback={isEmptyCompletedAgentResult(call)
+          ? <ToolStatusHeader icon={ENDED_OUTCOME_ICON.completed} title="Completed" />
+          : null}
       >
-        <For each={call.result.agents}>{agent => <AgentResultBody source={agent} {...(view.context !== undefined ? { context: view.context } : {})} />}</For>
+        <For each={call.result.agents}>
+          {agent => (
+            <AgentResultBody
+              source={agent}
+              {...(view.context !== undefined
+                ? { context: view.context }
+                : {})}
+            />
+          )}
+        </For>
       </Show>
     )
   },
@@ -117,9 +139,13 @@ export const agentRenderer: ToolKindRenderer<'agent'> = {
       collapsible: hasPromptOrMeta && (hasResult || longPrompt),
       // A launch with no prompt still offers its metadata, and "details" is the
       // word for that: "Show prompt" would promise words it does not carry.
-      expandLabel: hasPrompt ? `Show ${promptLabel}` : 'Show details',
+      expandLabel: hasPrompt
+        ? `Show ${promptLabel}`
+        : 'Show details',
       copyableContent: () => call.request.prompt || null,
-      ...(hasPrompt ? { copyLabel: `Copy ${promptLabel}` } : {}),
+      ...(hasPrompt
+        ? { copyLabel: `Copy ${promptLabel}` }
+        : {}),
     }
   },
   resultMeta(call: ResolvedCall<'agent'>): ToolKindMeta {

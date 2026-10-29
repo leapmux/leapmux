@@ -15,7 +15,9 @@ export function qwenOutputNoticePath(text: string): string | undefined {
   if (end < 0)
     return undefined
   const path = text.slice(QWEN_OUTPUT_NOTICE_PREFIX.length, end)
-  return isFilesystemPath(path) ? path : undefined
+  return isFilesystemPath(path)
+    ? path
+    : undefined
 }
 
 function backgroundPaths(content: unknown): readonly string[] {
@@ -31,7 +33,9 @@ function backgroundPaths(content: unknown): readonly string[] {
     if (path !== undefined)
       paths.push(path)
   }
-  return paths.length === 1 ? paths : []
+  return paths.length === 1
+    ? paths
+    : []
 }
 
 /** Read native paths for this result. Keep the provider's inline preview intact. */
@@ -46,7 +50,9 @@ export function qwenOutputFilePaths(input: RowExtractionInput, call: ToolCall): 
   }
   const opener = input.span.request?.parentObject
   const name = qwenToolName(result)
-    || (opener?.toolCallId === call.id ? qwenToolName(opener) : '')
+    || (opener?.toolCallId === call.id
+      ? qwenToolName(opener)
+      : '')
   if (name !== QWEN_TOOL.RunShellCommand)
     return []
   if (!Object.hasOwn(result, 'rawOutput'))
@@ -57,5 +63,7 @@ export function qwenOutputFilePaths(input: RowExtractionInput, call: ToolCall): 
     || !paths.every((path): path is string => isFilesystemPath(path))) {
     return []
   }
-  return [...new Set(paths)]
+  return [
+    ...new Set(paths),
+  ]
 }

@@ -10,7 +10,12 @@ import { nativeContext } from './scenarios'
 
 codebuddyTest.describe('CodeBuddy Code control requests', () => {
   codebuddyTest('raises a banner for a tool call and runs it once allowed', async ({ askingCodebuddyWorkspace, page, modelScript, leapmuxServer }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingCodebuddyWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: askingCodebuddyWorkspace.workspaceId,
+    })
     const output = join(askingCodebuddyWorkspace.workingDir, 'codebuddy-permission-allowed.txt')
     const command = 'printf CODEBUDDY_ALLOWED > ./codebuddy-permission-allowed.txt'
     await exerciseNativePermissionDecision(context, {
@@ -34,7 +39,11 @@ codebuddyTest.describe('CodeBuddy Code control requests', () => {
   codebuddyTest('does not run a denied write command', async ({ askingCodebuddyWorkspace, page, modelScript }) => {
     const output = join(askingCodebuddyWorkspace.workingDir, 'codebuddy-permission-denied.txt')
     const command = 'printf CODEBUDDY_DENIED > ./codebuddy-permission-denied.txt'
-    const start = await modelScript.queue({ toolCalls: [bashToolCall(AgentProvider.CODEBUDDY, 'denied-call', command)] })
+    const start = await modelScript.queue({
+      toolCalls: [
+        bashToolCall(AgentProvider.CODEBUDDY, 'denied-call', command),
+      ],
+    })
     // The fallback answers any request after the denial. This test proves only that the denied command never runs,
     // so it does not state whether the runtime asks the model again.
     await modelScript.fallback({ text: 'The denied call ended.' })
@@ -57,7 +66,12 @@ codebuddyTest.describe('CodeBuddy Code control requests', () => {
 codebuddyTest.describe('CodeBuddy Code control answers', () => {
   // The reason rides in the `reason` of CodeBuddy's own answer, and CodeBuddy hands it to the model.
   codebuddyTest('a denied command does not run, and the reason reaches the model', async ({ askingCodebuddyWorkspace, page, modelScript, leapmuxServer }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingCodebuddyWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: askingCodebuddyWorkspace.workspaceId,
+    })
     const marker = join(askingCodebuddyWorkspace.workingDir, 'codebuddy-denied-marker')
     await exerciseNativePermissionReason(context, {
       toolCall: bashToolCall(context.provider, 'deny-call', 'touch codebuddy-denied-marker'),

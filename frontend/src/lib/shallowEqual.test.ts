@@ -65,7 +65,11 @@ describe('shallow array equality', () => {
   it('compares object elements by reference (does not recurse)', () => {
     const obj = { a: 1 }
     expect(shallowEqualArrays([obj], [obj])).toBe(true)
-    expect(shallowEqualArrays([{ a: 1 }], [{ a: 1 }])).toBe(false)
+    expect(shallowEqualArrays([
+      { a: 1 },
+    ], [
+      { a: 1 },
+    ])).toBe(false)
   })
 })
 
@@ -85,13 +89,31 @@ describe('map key equality (sameValueZero)', () => {
 
 describe('deep shallow-array equality', () => {
   it('compares object elements by shallowEqual (recurses one level)', () => {
-    expect(shallowEqualArraysDeep([{ a: 1 }], [{ a: 1 }])).toBe(true)
-    expect(shallowEqualArraysDeep([{ a: 1, b: 2 }], [{ a: 1, b: 2 }])).toBe(true)
+    expect(shallowEqualArraysDeep([
+      { a: 1 },
+    ], [
+      { a: 1 },
+    ])).toBe(true)
+    expect(shallowEqualArraysDeep([
+      { a: 1, b: 2 },
+    ], [
+      { a: 1, b: 2 },
+    ])).toBe(true)
   })
 
   it('returns false when an element key differs', () => {
-    expect(shallowEqualArraysDeep([{ a: 1 }], [{ a: 2 }])).toBe(false)
-    expect(shallowEqualArraysDeep([{ a: 1 }, { a: 2 }], [{ a: 1 }, { a: 3 }])).toBe(false)
+    expect(shallowEqualArraysDeep([
+      { a: 1 },
+    ], [
+      { a: 2 },
+    ])).toBe(false)
+    expect(shallowEqualArraysDeep([
+      { a: 1 },
+      { a: 2 },
+    ], [
+      { a: 1 },
+      { a: 3 },
+    ])).toBe(false)
   })
 })
 

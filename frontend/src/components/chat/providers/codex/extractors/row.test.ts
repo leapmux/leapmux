@@ -12,10 +12,23 @@ import { CODEX_STATUS } from '../itemVocabulary'
 import { CODEX_TOOL_READERS, codexExtractRow, codexItemKind, codexReasoningHasText, codexReasoningText, codexSpecFor, codexToolFacts } from './row'
 import '~/components/chat/providers'
 
-const NO_SIDES: ToolSpanContext = { request: undefined, result: undefined, role: 'other', visibleRows: { request: false, result: false } }
+const NO_SIDES: ToolSpanContext = {
+  request: undefined,
+  result: undefined,
+  role: 'other',
+  visibleRows: { request: false, result: false },
+}
 
 function parsedItem(item: Record<string, unknown>, completion?: MessageCompletion) {
-  return { wrapper: null, topLevel: { item }, parentObject: { item }, rawText: '', supplementalContent: undefined, messageMetadata: undefined, completion }
+  return {
+    wrapper: null,
+    topLevel: { item },
+    parentObject: { item },
+    rawText: '',
+    supplementalContent: undefined,
+    messageMetadata: undefined,
+    completion,
+  }
 }
 
 // The completion rides BOTH carriers, the way the pipeline delivers it: the parser
@@ -30,16 +43,34 @@ function toolRow(item: Record<string, unknown>, completion?: MessageCompletion):
     span: NO_SIDES,
     completion,
   } as never)
-  return row && row.kind === 'tool' ? row : null
+  return row && row.kind === 'tool'
+    ? row
+    : null
 }
 
 describe('atomic Codex result items', () => {
   it.each([
-    [CODEX_ITEM.Sleep, { durationMs: 1200 }],
-    [CODEX_ITEM.EnteredReviewMode, { review: 'Inspect the change.' }],
+    [
+      CODEX_ITEM.Sleep,
+      { durationMs: 1200 },
+    ],
+    [
+      CODEX_ITEM.EnteredReviewMode,
+      { review: 'Inspect the change.' },
+    ],
     [CODEX_ITEM.ExitedReviewMode, {}],
-    [CODEX_ITEM.HookPrompt, { fragments: [{ hookRunId: 'hook-1', text: 'Run the check.' }] }],
-    [CODEX_ITEM.FunctionCallOutput, { callId: 'call-1', namespace: 'tools', output: 'done' }],
+    [
+      CODEX_ITEM.HookPrompt,
+      {
+        fragments: [
+          { hookRunId: 'hook-1', text: 'Run the check.' },
+        ],
+      },
+    ],
+    [
+      CODEX_ITEM.FunctionCallOutput,
+      { callId: 'call-1', namespace: 'tools', output: 'done' },
+    ],
   ] as const)('extracts a status-free %s item as one completed result row', (type, fields) => {
     const row = toolRow({ type, id: `atomic-${type}`, ...fields })
     expect(row?.role).toBe('result')
@@ -50,13 +81,19 @@ describe('atomic Codex result items', () => {
 
 describe('reasoning text from Codex', () => {
   it('detects visible reasoning without building its Markdown body', () => {
-    expect(codexReasoningHasText({ summary: [' ', 'visible'] })).toBe(true)
-    expect(codexReasoningHasText({ content: ['', '  '] })).toBe(false)
+    expect(codexReasoningHasText({
+      summary: [' ', 'visible'],
+    })).toBe(true)
+    expect(codexReasoningHasText({
+      content: ['', '  '],
+    })).toBe(false)
     expect(codexReasoningHasText({ text: '\t' })).toBe(false)
   })
 
   it('filters blank content entries before it joins them', () => {
-    expect(codexReasoningText({ content: ['first', '  ', '', 'second'] })).toBe('first\nsecond')
+    expect(codexReasoningText({
+      content: ['first', '  ', '', 'second'],
+    })).toBe('first\nsecond')
   })
 })
 
@@ -68,10 +105,17 @@ describe('codex file change kinds', () => {
     const row = toolRow({
       type: CODEX_ITEM.FileChange,
       status: 'completed',
-      changes: [{ path: 'old/name.ts', kind: { type: 'move', movePath: 'new/name.ts' } }],
+      changes: [
+        {
+          path: 'old/name.ts',
+          kind: { type: 'move', movePath: 'new/name.ts' },
+        },
+      ],
     })
     expect(row?.call.kind).toBe('move')
-    const changes = row?.call.kind === 'move' ? row.call.request.changes : []
+    const changes = row?.call.kind === 'move'
+      ? row.call.request.changes
+      : []
     expect(changes[0]?.previousPath).toBe('old/name.ts')
     expect(changes[0]?.filePath).toBe('new/name.ts')
   })
@@ -109,32 +153,68 @@ describe('codex fileChange results', () => {
   const change = { path: 'src/a.ts', kind: 'update', diff: '@@ -1,1 +1,1 @@\n-old\n+new' }
 
   function pairedRequestRow(resultFields: Record<string, unknown>): ToolCallRow | null {
-    const request = parsedItem({ type: CODEX_ITEM.FileChange, id: 'change-1', status: CODEX_STATUS.IN_PROGRESS, changes: [change] })
-    const result = parsedItem({ type: CODEX_ITEM.FileChange, id: 'change-1', status: CODEX_STATUS.COMPLETED, changes: [change], ...resultFields })
+    const request = parsedItem({
+      type: CODEX_ITEM.FileChange,
+      id: 'change-1',
+      status: CODEX_STATUS.IN_PROGRESS,
+      changes: [change],
+    })
+    const result = parsedItem({
+      type: CODEX_ITEM.FileChange,
+      id: 'change-1',
+      status: CODEX_STATUS.COMPLETED,
+      changes: [change],
+      ...resultFields,
+    })
     const row = codexExtractRow({
       resolved: request,
       category: { kind: 'tool_use' },
-      span: { request, result, role: 'request', visibleRows: { request: true, result: true } },
+      span: {
+        request,
+        result,
+        role: 'request',
+        visibleRows: { request: true, result: true },
+      },
     } as never)
-    return row?.kind === 'tool' ? row : null
+    return row?.kind === 'tool'
+      ? row
+      : null
   }
 
   it('uses a matching completed sibling as the merged call result', () => {
     const row = pairedRequestRow({})
     expect(row?.call.status).toBe('completed')
-    expect(row?.call.result).toMatchObject({ changes: [{ filePath: 'src/a.ts' }] })
+    expect(row?.call.result).toMatchObject({
+      changes: [
+        { filePath: 'src/a.ts' },
+      ],
+    })
   })
 
   it.each([
-    ['another item id', { id: 'change-2' }],
-    ['another item type', { type: CODEX_ITEM.CommandExecution }],
+    [
+      'another item id',
+      { id: 'change-2' },
+    ],
+    [
+      'another item type',
+      { type: CODEX_ITEM.CommandExecution },
+    ],
   ])('does not merge a completed sibling for %s', (_name, fields) => {
     expect(pairedRequestRow(fields)?.call.result).toBeUndefined()
   })
 
   it('draws the diff of a change that landed', () => {
-    const row = toolRow({ type: CODEX_ITEM.FileChange, status: 'completed', changes: [change] })
-    expect(row?.call.result).toMatchObject({ changes: [{ filePath: 'src/a.ts' }] })
+    const row = toolRow({
+      type: CODEX_ITEM.FileChange,
+      status: 'completed',
+      changes: [change],
+    })
+    expect(row?.call.result).toMatchObject({
+      changes: [
+        { filePath: 'src/a.ts' },
+      ],
+    })
   })
 
   it.each(['failed', 'declined'])('states the apply-patch error of a %s change', (status) => {
@@ -162,19 +242,32 @@ describe('codex fileChange results', () => {
 
   // A change still running has no outcome to state, so it draws its request alone.
   it('states no result while the change runs', () => {
-    const row = toolRow({ type: CODEX_ITEM.FileChange, status: 'inProgress', changes: [change] })
+    const row = toolRow({
+      type: CODEX_ITEM.FileChange,
+      status: 'inProgress',
+      changes: [change],
+    })
     expect(row?.call.result).toBeUndefined()
   })
 
   it('states no result for a failed change that reported no output', () => {
-    const row = toolRow({ type: CODEX_ITEM.FileChange, status: 'failed', changes: [change] })
+    const row = toolRow({
+      type: CODEX_ITEM.FileChange,
+      status: 'failed',
+      changes: [change],
+    })
     expect(row?.call.result).toBeUndefined()
   })
 
   // The diff of a change that never landed would report an edit the file never
   // received, so a failure states words and no diff.
   it('draws no diff for a change that did not land', () => {
-    const row = toolRow({ type: CODEX_ITEM.FileChange, status: 'failed', changes: [change], aggregatedOutput: 'refused' })
+    const row = toolRow({
+      type: CODEX_ITEM.FileChange,
+      status: 'failed',
+      changes: [change],
+      aggregatedOutput: 'refused',
+    })
     expect(row?.call.result).not.toHaveProperty('changes')
     expect(row?.call.kind === 'edit' && row.call.request.changes).toHaveLength(1)
   })
@@ -211,18 +304,40 @@ describe('codex imageView paths', () => {
   // the row degraded to the generic card and the picture never reached the reader.
   // The role's answer states the outcome the frame's own words cannot.
   it('reads a span final by completedAtMs alone as completed, with its pictures', () => {
-    const parsed = { wrapper: null, topLevel: { item: { type: CODEX_ITEM.ImageView, id: 'i1', path: '/repo/shot.png' }, completedAtMs: 2 }, parentObject: { item: { type: CODEX_ITEM.ImageView, id: 'i1', path: '/repo/shot.png' }, completedAtMs: 2 }, rawText: '', supplementalContent: undefined, messageMetadata: undefined }
+    const parsed = {
+      wrapper: null,
+      topLevel: {
+        item: { type: CODEX_ITEM.ImageView, id: 'i1', path: '/repo/shot.png' },
+        completedAtMs: 2,
+      },
+      parentObject: {
+        item: { type: CODEX_ITEM.ImageView, id: 'i1', path: '/repo/shot.png' },
+        completedAtMs: 2,
+      },
+      rawText: '',
+      supplementalContent: undefined,
+      messageMetadata: undefined,
+    }
     const row: ChatRow | null = codexExtractRow({
       resolved: parsed,
       category: { kind: 'tool_use' },
       // The role the span index resolved: final by `completedAtMs`, no completion
       // column and no status word on the item.
-      span: { request: undefined, result: parsed, role: 'result', visibleRows: { request: false, result: true } },
+      span: {
+        request: undefined,
+        result: parsed,
+        role: 'result',
+        visibleRows: { request: false, result: true },
+      },
     } as never)
-    const call = row?.kind === 'tool' ? row.call : undefined
+    const call = row?.kind === 'tool'
+      ? row.call
+      : undefined
     expect(call?.kind).toBe('read')
     expect(call?.status).toBe('completed')
-    expect(call?.kind === 'read' ? call.images.length : 0).toBe(1)
+    expect(call?.kind === 'read'
+      ? call.images.length
+      : 0).toBe(1)
   })
 })
 
@@ -232,7 +347,12 @@ describe('codex imageView paths', () => {
  * the header then drew as that function's own source text.
  */
 describe('codex item titles over an Object.prototype type', () => {
-  it.each(['constructor', 'toString', 'valueOf', 'hasOwnProperty'])('humanizes an item typed %s', (type) => {
+  it.each([
+    'constructor',
+    'toString',
+    'valueOf',
+    'hasOwnProperty',
+  ])('humanizes an item typed %s', (type) => {
     const row = toolRow({ type, id: 'x1', status: 'completed' })
     expect(row?.call.kind).toBe('other')
     expect(typeof row?.call.title).toBe('string')
@@ -257,18 +377,37 @@ describe('codex item titles over an Object.prototype type', () => {
  */
 describe('codex web search rows', () => {
   it('draws an opened page at the fetch kind', () => {
-    const row = toolRow({ type: CODEX_ITEM.WebSearch, id: 'w1', status: 'completed', action: { type: 'openPage', url: 'https://example.com/p' } })
+    const row = toolRow({
+      type: CODEX_ITEM.WebSearch,
+      id: 'w1',
+      status: 'completed',
+      action: { type: 'openPage', url: 'https://example.com/p' },
+    })
     expect(row?.call.kind).toBe('fetch')
     expect(row?.call.label).toBe('WebFetch')
     expect(row?.call.kind === 'fetch' && row.call.request.url).toBe('https://example.com/p')
   })
 
   it.each([
-    ['search', { type: 'search', query: 'a query' }],
-    ['findInPage', { type: 'findInPage', pattern: 'needle', url: 'https://example.com/p' }],
-    ['an action no release declared', { type: 'somethingLater' }],
+    [
+      'search',
+      { type: 'search', query: 'a query' },
+    ],
+    [
+      'findInPage',
+      { type: 'findInPage', pattern: 'needle', url: 'https://example.com/p' },
+    ],
+    [
+      'an action no release declared',
+      { type: 'somethingLater' },
+    ],
   ])('draws %s at the web_search kind', (_name, action) => {
-    const row = toolRow({ type: CODEX_ITEM.WebSearch, id: 'w2', status: 'completed', action })
+    const row = toolRow({
+      type: CODEX_ITEM.WebSearch,
+      id: 'w2',
+      status: 'completed',
+      action,
+    })
     expect(row?.call.kind).toBe('web_search')
     expect(row?.call.label).toBe('WebSearch')
   })
@@ -286,7 +425,23 @@ describe('codex web search rows', () => {
  */
 describe('CODEX_TOOL_READERS', () => {
   /** The kinds a Codex ITEM takes. Each has a reader of its own. */
-  const CODEX_READ_KINDS = ['agent', 'delete', 'edit', 'execute', 'fetch', 'image', 'mcp', 'move', 'other', 'read', 'skill', 'switch_mode', 'wait', 'web_search', 'write'] as const
+  const CODEX_READ_KINDS = [
+    'agent',
+    'delete',
+    'edit',
+    'execute',
+    'fetch',
+    'image',
+    'mcp',
+    'move',
+    'other',
+    'read',
+    'skill',
+    'switch_mode',
+    'wait',
+    'web_search',
+    'write',
+  ] as const
 
   /**
    * Every other kind. No Codex item takes one, so the table states the shared
@@ -296,7 +451,23 @@ describe('CODEX_TOOL_READERS', () => {
    * notification with no item behind it, and `codexTurnPlanRow` builds that row on
    * its own. The case below pins that row.
    */
-  const SHARED_REQUEST_KINDS = ['unspecified', 'agents', 'chart', 'glob', 'grep', 'list', 'memory', 'message', 'question', 'report', 'search', 'task', 'think', 'todo', 'trigger'] as const
+  const SHARED_REQUEST_KINDS = [
+    'unspecified',
+    'agents',
+    'chart',
+    'glob',
+    'grep',
+    'list',
+    'memory',
+    'message',
+    'question',
+    'report',
+    'search',
+    'task',
+    'think',
+    'todo',
+    'trigger',
+  ] as const
 
   type CodexReadKind = typeof CODEX_READ_KINDS[number]
 
@@ -353,8 +524,18 @@ describe('CODEX_TOOL_READERS', () => {
       cwd: '/repo',
       processId: 'process-79860',
       commandActions: [
-        { type: 'read', command: 'sed -n \'1,5p\' src/a.ts', name: 'a.ts', path: '/repo/src/a.ts' },
-        { type: 'search', command: 'rg -n \'needle\' src', query: 'needle', path: 'src' },
+        {
+          type: 'read',
+          command: 'sed -n \'1,5p\' src/a.ts',
+          name: 'a.ts',
+          path: '/repo/src/a.ts',
+        },
+        {
+          type: 'search',
+          command: 'rg -n \'needle\' src',
+          query: 'needle',
+          path: 'src',
+        },
       ],
       aggregatedOutput: 'a.ts\n',
       exitCode: 0,
@@ -362,20 +543,130 @@ describe('CODEX_TOOL_READERS', () => {
       cmd: 'shared cmd',
       description: 'shared description',
     },
-    edit: { type: CODEX_ITEM.FileChange, status: 'completed', changes: [{ path: 'src/a.ts', kind: 'update', diff: '@@ -1,1 +1,1 @@\n-old\n+new' }, { path: 'src/b.ts', kind: 'update', diff: '@@ -1,1 +1,1 @@\n-x\n+y' }], filePath: '/shared.ts' },
-    write: { type: CODEX_ITEM.FileChange, status: 'completed', changes: [{ path: 'src/new.ts', kind: 'add', diff: 'hello\n' }], filePath: '/shared.ts' },
-    delete: { type: CODEX_ITEM.FileChange, status: 'failed', changes: [{ path: 'src/gone.ts', kind: 'delete', diff: 'body\n' }], aggregatedOutput: 'apply_patch: refused', filePath: '/shared.ts' },
-    move: { type: CODEX_ITEM.FileChange, status: 'completed', changes: [{ path: 'old/name.ts', kind: { type: 'move', movePath: 'new/name.ts' } }], sourcePath: '/shared-src.ts', destinationPath: '/shared-dst.ts' },
-    image: { type: CODEX_ITEM.ImageGeneration, status: 'completed', result: 'aGk=', savedPath: '/repo/out.png', revisedPrompt: 'a codex prompt', prompt: 'shared prompt' },
-    read: { type: CODEX_ITEM.ImageView, id: 'i1', path: 'file:///repo/shot.png', filePath: '/shared.ts', offset: 3, limit: 9 },
-    fetch: { type: CODEX_ITEM.WebSearch, status: 'completed', action: { type: 'openPage', url: 'https://codex.example/page' }, url: 'https://shared.example', query: 'shared query' },
-    web_search: { type: CODEX_ITEM.WebSearch, status: 'completed', action: { type: 'search', query: 'a codex query', queries: ['a second query', 'a codex query'] }, query: 'shared query', q: 'shared q' },
-    agent: { type: CODEX_ITEM.CollabAgentToolCall, status: 'completed', tool: 'spawnAgent', prompt: 'a codex prompt', receiverThreadIds: ['a-1'], agentsStates: { 'a-1': { status: 'completed', message: 'done' } }, description: 'shared description', instructions: 'shared instructions' },
-    mcp: { type: CODEX_ITEM.McpToolCall, status: 'completed', server: 'srv', tool: 'do', arguments: { a: 1 }, args: { b: 2 }, result: { content: [{ type: 'text', text: 'ok' }] }, durationMs: 12 },
+    edit: {
+      type: CODEX_ITEM.FileChange,
+      status: 'completed',
+      changes: [
+        { path: 'src/a.ts', kind: 'update', diff: '@@ -1,1 +1,1 @@\n-old\n+new' },
+        { path: 'src/b.ts', kind: 'update', diff: '@@ -1,1 +1,1 @@\n-x\n+y' },
+      ],
+      filePath: '/shared.ts',
+    },
+    write: {
+      type: CODEX_ITEM.FileChange,
+      status: 'completed',
+      changes: [
+        { path: 'src/new.ts', kind: 'add', diff: 'hello\n' },
+      ],
+      filePath: '/shared.ts',
+    },
+    delete: {
+      type: CODEX_ITEM.FileChange,
+      status: 'failed',
+      changes: [
+        { path: 'src/gone.ts', kind: 'delete', diff: 'body\n' },
+      ],
+      aggregatedOutput: 'apply_patch: refused',
+      filePath: '/shared.ts',
+    },
+    move: {
+      type: CODEX_ITEM.FileChange,
+      status: 'completed',
+      changes: [
+        {
+          path: 'old/name.ts',
+          kind: { type: 'move', movePath: 'new/name.ts' },
+        },
+      ],
+      sourcePath: '/shared-src.ts',
+      destinationPath: '/shared-dst.ts',
+    },
+    image: {
+      type: CODEX_ITEM.ImageGeneration,
+      status: 'completed',
+      result: 'aGk=',
+      savedPath: '/repo/out.png',
+      revisedPrompt: 'a codex prompt',
+      prompt: 'shared prompt',
+    },
+    read: {
+      type: CODEX_ITEM.ImageView,
+      id: 'i1',
+      path: 'file:///repo/shot.png',
+      filePath: '/shared.ts',
+      offset: 3,
+      limit: 9,
+    },
+    fetch: {
+      type: CODEX_ITEM.WebSearch,
+      status: 'completed',
+      action: { type: 'openPage', url: 'https://codex.example/page' },
+      url: 'https://shared.example',
+      query: 'shared query',
+    },
+    web_search: {
+      type: CODEX_ITEM.WebSearch,
+      status: 'completed',
+      action: {
+        type: 'search',
+        query: 'a codex query',
+        queries: ['a second query', 'a codex query'],
+      },
+      query: 'shared query',
+      q: 'shared q',
+    },
+    agent: {
+      type: CODEX_ITEM.CollabAgentToolCall,
+      status: 'completed',
+      tool: 'spawnAgent',
+      prompt: 'a codex prompt',
+      receiverThreadIds: ['a-1'],
+      agentsStates: {
+        'a-1': { status: 'completed', message: 'done' },
+      },
+      description: 'shared description',
+      instructions: 'shared instructions',
+    },
+    mcp: {
+      type: CODEX_ITEM.McpToolCall,
+      status: 'completed',
+      server: 'srv',
+      tool: 'do',
+      arguments: { a: 1 },
+      args: { b: 2 },
+      result: {
+        content: [
+          { type: 'text', text: 'ok' },
+        ],
+      },
+      durationMs: 12,
+    },
     wait: { type: CODEX_ITEM.Sleep, status: 'completed', durationMs: 1200 },
-    switch_mode: { type: CODEX_ITEM.EnteredReviewMode, status: 'completed', review: 'the whole diff', mode: 'shared mode', targetModeId: 'shared target mode', target: 'shared target' },
-    skill: { type: CODEX_ITEM.HookPrompt, status: 'completed', fragments: [{ hookRunId: 'run-1', text: 'first words' }, { text: 'second words' }], text: 'shared text', name: 'shared name', skill: 'shared skill' },
-    other: { type: 'anItemFromALaterRelease', status: 'completed', review: 'the reason', durationMs: 1200 },
+    switch_mode: {
+      type: CODEX_ITEM.EnteredReviewMode,
+      status: 'completed',
+      review: 'the whole diff',
+      mode: 'shared mode',
+      targetModeId: 'shared target mode',
+      target: 'shared target',
+    },
+    skill: {
+      type: CODEX_ITEM.HookPrompt,
+      status: 'completed',
+      fragments: [
+        { hookRunId: 'run-1', text: 'first words' },
+        { text: 'second words' },
+      ],
+      text: 'shared text',
+      name: 'shared name',
+      skill: 'shared skill',
+    },
+    other: {
+      type: 'anItemFromALaterRelease',
+      status: 'completed',
+      review: 'the reason',
+      durationMs: 1200,
+    },
   }
 
   function payloadOf<K extends ToolKind>(kind: K, item: Record<string, unknown>, finished = true) {
@@ -387,15 +678,24 @@ describe('CODEX_TOOL_READERS', () => {
   })
 
   it('splits every tool kind between the two lists above', () => {
-    expect([...CODEX_READ_KINDS, ...SHARED_REQUEST_KINDS].sort()).toEqual([...TOOL_KINDS].sort())
+    expect([
+      ...CODEX_READ_KINDS,
+      ...SHARED_REQUEST_KINDS,
+    ].sort()).toEqual([...TOOL_KINDS].sort())
   })
 
   it.each(SHARED_REQUEST_KINDS)('takes the shared declared request for the %s kind', (kind) => {
-    expect(payloadOf(kind, SHARED_ARGUMENT_PROBE)).toEqual({ kind, request: DEFAULT_TOOL_REQUESTS[kind](SHARED_ARGUMENT_PROBE) })
+    expect(payloadOf(kind, SHARED_ARGUMENT_PROBE)).toEqual({
+      kind,
+      request: DEFAULT_TOOL_REQUESTS[kind](SHARED_ARGUMENT_PROBE),
+    })
   })
 
   it.each(CODEX_READ_KINDS)('reads its own facts for the %s kind', (kind) => {
-    expect(payloadOf(kind, CODEX_PROBE[kind])).not.toEqual({ kind, request: DEFAULT_TOOL_REQUESTS[kind](CODEX_PROBE[kind]) })
+    expect(payloadOf(kind, CODEX_PROBE[kind])).not.toEqual({
+      kind,
+      request: DEFAULT_TOOL_REQUESTS[kind](CODEX_PROBE[kind]),
+    })
   })
 
   // The matrix's own no-degradation assertion: every probe is a frame this build
@@ -414,7 +714,13 @@ describe('CODEX_TOOL_READERS', () => {
   // would answer an empty request for every item.
   it('hands the item to the shared table as the argument record', () => {
     expect(payloadOf('search', { pattern: 'needle', filePath: '/repo/a.ts' }))
-      .toEqual({ kind: 'search', request: { pattern: 'needle', paths: ['/repo/a.ts'] } })
+      .toEqual({
+        kind: 'search',
+        request: {
+          pattern: 'needle',
+          paths: ['/repo/a.ts'],
+        },
+      })
   })
 
   it('keeps the shared priority between two spellings of one argument', () => {
@@ -423,11 +729,27 @@ describe('CODEX_TOOL_READERS', () => {
 
   it('draws the plan of a turn/plan/updated notification at the todo kind', () => {
     const row = codexExtractRow({
-      resolved: { wrapper: null, topLevel: {}, parentObject: { method: 'turn/plan/updated', params: { plan: [{ step: 'Inspect messages', status: 'inProgress' }] } }, rawText: '', supplementalContent: undefined, messageMetadata: undefined },
+      resolved: {
+        wrapper: null,
+        topLevel: {},
+        parentObject: {
+          method: 'turn/plan/updated',
+          params: {
+            plan: [
+              { step: 'Inspect messages', status: 'inProgress' },
+            ],
+          },
+        },
+        rawText: '',
+        supplementalContent: undefined,
+        messageMetadata: undefined,
+      },
       category: { kind: 'tool_use' },
       span: NO_SIDES,
     } as never)
-    const call = row && row.kind === 'tool' ? row.call : null
+    const call = row && row.kind === 'tool'
+      ? row.call
+      : null
     expect(call?.kind).toBe('todo')
     expect(call?.kind === 'todo' && call.request.items).toHaveLength(1)
   })
@@ -439,11 +761,26 @@ describe('CODEX_TOOL_READERS', () => {
       cwd: '/repo',
       processId: 'process-79860',
       actions: [
-        { kind: 'read', command: 'sed -n \'1,5p\' src/a.ts', name: 'a.ts', path: '/repo/src/a.ts' },
-        { kind: 'search', command: 'rg -n \'needle\' src', query: 'needle', path: 'src' },
+        {
+          kind: 'read',
+          command: 'sed -n \'1,5p\' src/a.ts',
+          name: 'a.ts',
+          path: '/repo/src/a.ts',
+        },
+        {
+          kind: 'search',
+          command: 'rg -n \'needle\' src',
+          query: 'needle',
+          path: 'src',
+        },
       ],
     })
-    expect(payload.result).toEqual({ commands: [{ output: 'a.ts\n', exitCode: 0, durationMs: 40 }], unresolvedTerminals: [] })
+    expect(payload.result).toEqual({
+      commands: [
+        { output: 'a.ts\n', exitCode: 0, durationMs: 40 },
+      ],
+      unresolvedTerminals: [],
+    })
   })
 
   it('states the command a call asked for and no output while it runs', () => {
@@ -453,8 +790,18 @@ describe('CODEX_TOOL_READERS', () => {
       cwd: '/repo',
       processId: 'process-79860',
       actions: [
-        { kind: 'read', command: 'sed -n \'1,5p\' src/a.ts', name: 'a.ts', path: '/repo/src/a.ts' },
-        { kind: 'search', command: 'rg -n \'needle\' src', query: 'needle', path: 'src' },
+        {
+          kind: 'read',
+          command: 'sed -n \'1,5p\' src/a.ts',
+          name: 'a.ts',
+          path: '/repo/src/a.ts',
+        },
+        {
+          kind: 'search',
+          command: 'rg -n \'needle\' src',
+          query: 'needle',
+          path: 'src',
+        },
       ],
     })
     expect(payload.result).toBeUndefined()
@@ -464,24 +811,35 @@ describe('CODEX_TOOL_READERS', () => {
     const payload = payloadOf('edit', CODEX_PROBE.edit)
     expect(payload.title).toBe('2 files')
     expect(payload.request.changes.map(change => change.filePath)).toEqual(['src/a.ts', 'src/b.ts'])
-    expect(payload.result).toMatchObject({ changes: [{ filePath: 'src/a.ts' }, { filePath: 'src/b.ts' }] })
+    expect(payload.result).toMatchObject({
+      changes: [
+        { filePath: 'src/a.ts' },
+        { filePath: 'src/b.ts' },
+      ],
+    })
   })
 
   it('reads the body of a write from the change entry', () => {
     const payload = payloadOf('write', CODEX_PROBE.write)
     expect(payload.title).toBe('src/new.ts')
-    expect(payload.request.changes).toMatchObject([{ filePath: 'src/new.ts', operation: 'add' }])
+    expect(payload.request.changes).toMatchObject([
+      { filePath: 'src/new.ts', operation: 'add' },
+    ])
   })
 
   it('reads the file a removal states in its own change entry', () => {
     const payload = payloadOf('delete', CODEX_PROBE.delete)
-    expect(payload.request.changes).toMatchObject([{ filePath: 'src/gone.ts', operation: 'delete' }])
+    expect(payload.request.changes).toMatchObject([
+      { filePath: 'src/gone.ts', operation: 'delete' },
+    ])
     expect(payload.result).toEqual({ failure: true, text: 'apply_patch: refused' })
   })
 
   it('reads a move from the change entry, whose kind states the destination', () => {
     const payload = payloadOf('move', CODEX_PROBE.move)
-    expect(payload.request.changes).toMatchObject([{ filePath: 'new/name.ts', previousPath: 'old/name.ts', operation: 'move' }])
+    expect(payload.request.changes).toMatchObject([
+      { filePath: 'new/name.ts', previousPath: 'old/name.ts', operation: 'move' },
+    ])
   })
 
   // The REQUEST is the half that survives an outcome, and Codex reports `declined` on
@@ -492,23 +850,45 @@ describe('CODEX_TOOL_READERS', () => {
     ['failed', CODEX_STATUS.FAILED],
     ['completed', CODEX_STATUS.COMPLETED],
   ])('names the file a %s change asked for when its entry carried no body', (_word, status) => {
-    const payload = payloadOf('edit', { type: CODEX_ITEM.FileChange, status, changes: [{ path: '/repo/a.ts' }] })
-    expect(payload.request.changes).toMatchObject([{ filePath: '/repo/a.ts', operation: 'edit' }])
+    const payload = payloadOf('edit', {
+      type: CODEX_ITEM.FileChange,
+      status,
+      changes: [
+        { path: '/repo/a.ts' },
+      ],
+    })
+    expect(payload.request.changes).toMatchObject([
+      { filePath: '/repo/a.ts', operation: 'edit' },
+    ])
     expect(payload.title).toBe('/repo/a.ts')
   })
 
   // The two halves answer differently on purpose. Nothing landed that the row can
   // draw, and the request still states the file the call was about.
   it('lands no change for a completed update whose entry carried no body', () => {
-    const payload = payloadOf('edit', { type: CODEX_ITEM.FileChange, status: CODEX_STATUS.COMPLETED, changes: [{ path: '/repo/a.ts' }] })
+    const payload = payloadOf('edit', {
+      type: CODEX_ITEM.FileChange,
+      status: CODEX_STATUS.COMPLETED,
+      changes: [
+        { path: '/repo/a.ts' },
+      ],
+    })
     expect(payload.result).toEqual({ changes: [] })
   })
 
   // A body the row CAN draw still reaches the request, so a running change shows the
   // diff it proposes.
   it('keeps the body of a running change on its request', () => {
-    const payload = payloadOf('edit', { type: CODEX_ITEM.FileChange, status: CODEX_STATUS.IN_PROGRESS, changes: [{ path: 'src/a.ts', kind: 'update', diff: '@@ -1,1 +1,1 @@\n-old\n+new' }] }, false)
-    expect(payload.request.changes).toMatchObject([{ filePath: 'src/a.ts', operation: 'edit' }])
+    const payload = payloadOf('edit', {
+      type: CODEX_ITEM.FileChange,
+      status: CODEX_STATUS.IN_PROGRESS,
+      changes: [
+        { path: 'src/a.ts', kind: 'update', diff: '@@ -1,1 +1,1 @@\n-old\n+new' },
+      ],
+    }, false)
+    expect(payload.request.changes).toMatchObject([
+      { filePath: 'src/a.ts', operation: 'edit' },
+    ])
     expect(fileEditHasDiff(payload.request.changes[0])).toBe(true)
     expect(payload.result).toBeUndefined()
   })
@@ -516,7 +896,13 @@ describe('CODEX_TOOL_READERS', () => {
   // An entry that names no file identifies nothing a reader can use, and both halves
   // read one list -- so neither draws it.
   it('drops a change entry that names no file', () => {
-    const payload = payloadOf('edit', { type: CODEX_ITEM.FileChange, status: CODEX_STATUS.COMPLETED, changes: [{ kind: 'update', diff: '@@ -1,1 +1,1 @@\n-old\n+new' }] })
+    const payload = payloadOf('edit', {
+      type: CODEX_ITEM.FileChange,
+      status: CODEX_STATUS.COMPLETED,
+      changes: [
+        { kind: 'update', diff: '@@ -1,1 +1,1 @@\n-old\n+new' },
+      ],
+    })
     expect(payload.request.changes).toEqual([])
     expect(payload.result).toEqual({ changes: [] })
     expect(payload.title).toBeUndefined()
@@ -526,27 +912,46 @@ describe('CODEX_TOOL_READERS', () => {
   // counted an entry the request drops, so a one-file creation beside a nameless entry
   // took the `edit` kind and drew the wrong icon and noun.
   it('takes its kind from the entries that name a file', () => {
-    const item = { type: CODEX_ITEM.FileChange, status: CODEX_STATUS.COMPLETED, changes: [{ path: 'src/new.ts', kind: 'add', diff: 'hello\n' }, { kind: 'delete' }] }
+    const item = {
+      type: CODEX_ITEM.FileChange,
+      status: CODEX_STATUS.COMPLETED,
+      changes: [
+        { path: 'src/new.ts', kind: 'add', diff: 'hello\n' },
+        { kind: 'delete' },
+      ],
+    }
     expect(codexItemKind(item)).toBe('write')
-    expect(payloadOf('write', item).request.changes).toMatchObject([{ filePath: 'src/new.ts', operation: 'add' }])
+    expect(payloadOf('write', item).request.changes).toMatchObject([
+      { filePath: 'src/new.ts', operation: 'add' },
+    ])
   })
 
   // The wire word wins over the aggregated output: a change that landed draws its
   // diff, and the output is what states why one that did NOT land failed.
   it('draws the diff of a completed change ahead of the output it aggregated', () => {
     const payload = payloadOf('edit', { ...CODEX_PROBE.edit, aggregatedOutput: 'apply_patch: refused' })
-    expect(payload.result).toMatchObject({ changes: [{ filePath: 'src/a.ts' }, { filePath: 'src/b.ts' }] })
+    expect(payload.result).toMatchObject({
+      changes: [
+        { filePath: 'src/a.ts' },
+        { filePath: 'src/b.ts' },
+      ],
+    })
   })
 
   it('reads the revised prompt of a generated image, not the prompt the reader asked for', () => {
     const payload = payloadOf('image', CODEX_PROBE.image)
     expect(payload.request).toEqual({ prompt: 'a codex prompt' })
-    expect(payload.images).toEqual([{ data: 'aGk=', mimeType: 'image/png', filePath: '/repo/out.png' }])
+    expect(payload.images).toEqual([
+      { data: 'aGk=', mimeType: 'image/png', filePath: '/repo/out.png' },
+    ])
     expect(payload.result).toEqual({ revisedPrompt: 'a codex prompt' })
   })
 
   it('states the failure of an image ahead of the picture', () => {
-    const payload = payloadOf('image', { ...CODEX_PROBE.image, failure: { type: 'contentPolicy' } })
+    const payload = payloadOf('image', {
+      ...CODEX_PROBE.image,
+      failure: { type: 'contentPolicy' },
+    })
     expect(payload.title).toBe('Generate image contentPolicy')
     expect(payload.result).toEqual({ failure: true, text: 'contentPolicy' })
     expect(payload.statusOverride).toBe('failed')
@@ -555,7 +960,9 @@ describe('CODEX_TOOL_READERS', () => {
   it('strips the file scheme of a viewed image and reads no shared offset', () => {
     const payload = payloadOf('read', CODEX_PROBE.read)
     expect(payload.request).toEqual({ path: '/repo/shot.png' })
-    expect(payload.images).toEqual([{ filePath: '/repo/shot.png' }])
+    expect(payload.images).toEqual([
+      { filePath: '/repo/shot.png' },
+    ])
   })
 
   it('reads an opened page from the action rather than a shared url', () => {
@@ -565,19 +972,33 @@ describe('CODEX_TOOL_READERS', () => {
   })
 
   it('reads the page of an action that states no url from the item query', () => {
-    const payload = payloadOf('fetch', { type: CODEX_ITEM.WebSearch, action: { type: 'openPage' }, query: 'https://from-query.example' })
+    const payload = payloadOf('fetch', {
+      type: CODEX_ITEM.WebSearch,
+      action: { type: 'openPage' },
+      query: 'https://from-query.example',
+    })
     expect(payload.request).toEqual({ url: 'https://from-query.example' })
   })
 
   it('heads the query list of a search with the query the action states directly', () => {
     const payload = payloadOf('web_search', CODEX_PROBE.web_search)
-    expect(payload.request).toEqual({ query: 'a codex query', queries: ['a codex query', 'a second query'] })
+    expect(payload.request).toEqual({
+      query: 'a codex query',
+      queries: ['a codex query', 'a second query'],
+    })
     expect(payload.result).toEqual({ links: [], summary: '' })
   })
 
   it('reads a find in page as the pattern it looked for', () => {
-    const payload = payloadOf('web_search', { type: CODEX_ITEM.WebSearch, action: { type: 'findInPage', pattern: 'needle', url: 'https://example.com/p' }, query: 'shared query' })
-    expect(payload.request).toEqual({ query: 'needle', inPage: { pattern: 'needle', url: 'https://example.com/p' } })
+    const payload = payloadOf('web_search', {
+      type: CODEX_ITEM.WebSearch,
+      action: { type: 'findInPage', pattern: 'needle', url: 'https://example.com/p' },
+      query: 'shared query',
+    })
+    expect(payload.request).toEqual({
+      query: 'needle',
+      inPage: { pattern: 'needle', url: 'https://example.com/p' },
+    })
   })
 
   it('describes an agent launch by its tool rather than a shared description', () => {
@@ -585,10 +1006,16 @@ describe('CODEX_TOOL_READERS', () => {
     expect(payload.request).toEqual({
       description: 'Subagent',
       prompt: 'a codex prompt',
-      metadata: [{ label: 'Agent ID', value: 'a-1' }],
+      metadata: [
+        { label: 'Agent ID', value: 'a-1' },
+      ],
       registryKey: 'a-1',
     })
-    expect(payload.result).toMatchObject({ agents: [{ agentId: 'a-1', outcome: 'completed' }] })
+    expect(payload.result).toMatchObject({
+      agents: [
+        { agentId: 'a-1', outcome: 'completed' },
+      ],
+    })
   })
 
   it('words an interrupted agent call cancelled', () => {
@@ -597,16 +1024,35 @@ describe('CODEX_TOOL_READERS', () => {
 
   it('reads the arguments of a server call from the arguments field', () => {
     const payload = payloadOf('mcp', CODEX_PROBE.mcp)
-    expect(payload.request).toEqual({ server: 'srv', tool: 'do', args: { a: 1 } })
-    expect(payload.result).toMatchObject({ content: [{ type: 'text', text: 'ok' }], durationMs: 12 })
+    expect(payload.request).toEqual({
+      server: 'srv',
+      tool: 'do',
+      args: { a: 1 },
+    })
+    expect(payload.result).toMatchObject({
+      content: [
+        { type: 'text', text: 'ok' },
+      ],
+      durationMs: 12,
+    })
   })
 
   // `callId` is the call this output answers, and `id` is the output's own row. A
   // reader that took `id` titled every output after itself.
   it('identifies a function call output by its call id ahead of its own id', () => {
-    const payload = payloadOf('mcp', { type: CODEX_ITEM.FunctionCallOutput, callId: 'call-1', id: 'item-1', namespace: 'tools', output: 'the result' })
+    const payload = payloadOf('mcp', {
+      type: CODEX_ITEM.FunctionCallOutput,
+      callId: 'call-1',
+      id: 'item-1',
+      namespace: 'tools',
+      output: 'the result',
+    })
     expect(payload.request).toEqual({ server: 'tools', tool: 'call-1', args: {} })
-    expect(payload.result).toEqual({ content: [{ type: 'text', text: 'the result' }] })
+    expect(payload.result).toEqual({
+      content: [
+        { type: 'text', text: 'the result' },
+      ],
+    })
   })
 
   it('reads the duration of a sleep as a number', () => {
@@ -640,7 +1086,11 @@ describe('CODEX_TOOL_READERS', () => {
     const payload = payloadOf('other', CODEX_PROBE.other)
     expect(payload.title).toBe('AnItemFromALaterRelease')
     expect(payload.request).toEqual({ args: CODEX_PROBE.other })
-    expect(payload.result).toEqual({ content: [{ type: 'text', text: 'the reason' }] })
+    expect(payload.result).toEqual({
+      content: [
+        { type: 'text', text: 'the reason' },
+      ],
+    })
   })
 })
 
@@ -648,7 +1098,12 @@ describe('codexExtractRow user_content', () => {
   it('formats the full question from its stored source beside the unmodified answer', () => {
     const parentObject = { content: 'Red' }
     const title = `Which color?\n${'Long title '.repeat(80)}\r\nWhich shade?`
-    const supplementalContent = { request: { tool_name: 'CodexAsyncQuestion', input: { title } } }
+    const supplementalContent = {
+      request: {
+        tool_name: 'CodexAsyncQuestion',
+        input: { title },
+      },
+    }
     const resolved = resolveMessageForRendering({
       parentObject,
       topLevel: parentObject,
@@ -656,7 +1111,11 @@ describe('codexExtractRow user_content', () => {
       rawText: '',
       supplementalContent,
     }, AgentProvider.CODEX)
-    expect(codexExtractRow({ resolved, category: { kind: 'user_content' }, span: NO_SIDES }))
+    expect(codexExtractRow({
+      resolved,
+      category: { kind: 'user_content' },
+      span: NO_SIDES,
+    }))
       .toEqual({ kind: 'user', text: `> Which color?\n> ${'Long title '.repeat(80)}\n> Which shade?\n\nRed`, attachments: [] })
     expect(parentObject.content).toBe('Red')
     expect(supplementalContent.request.input.title).toBe(title)

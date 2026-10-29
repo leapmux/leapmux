@@ -42,7 +42,9 @@ function terminalReason(processes: Array<{ pid: number, name: string }>, totalCo
 
 describe('BusyTabCloseDialog', () => {
   it('names the tab it is about to interrupt', () => {
-    renderDialog(terminalReason([{ pid: 1, name: 'node' }]), 'dev server')
+    renderDialog(terminalReason([
+      { pid: 1, name: 'node' },
+    ]), 'dev server')
 
     expect(screen.getByText('dev server')).toBeTruthy()
   })
@@ -60,20 +62,26 @@ describe('BusyTabCloseDialog', () => {
     })
 
     it('uses the singular for one process', () => {
-      renderDialog(terminalReason([{ pid: 7, name: 'sleep' }]))
+      renderDialog(terminalReason([
+        { pid: 7, name: 'sleep' },
+      ]))
 
       expect(screen.getByText(/1 process still runs in this terminal. Closing the tab stops it./)).toBeTruthy()
     })
 
     it('says how many the cap dropped', () => {
-      renderDialog(terminalReason([{ pid: 1, name: 'cc' }], 48))
+      renderDialog(terminalReason([
+        { pid: 1, name: 'cc' },
+      ], 48))
 
       const rows = screen.getByTestId('busy-processes').querySelectorAll('li')
       expect([...rows].map(li => li.textContent)).toEqual(['cc (pid 1)', 'and 47 more'])
     })
 
     it('shows no overflow row when nothing was dropped', () => {
-      renderDialog(terminalReason([{ pid: 1, name: 'cc' }], 1))
+      renderDialog(terminalReason([
+        { pid: 1, name: 'cc' },
+      ], 1))
 
       expect(screen.queryByText(/and \d+ more/)).toBeNull()
     })
@@ -81,7 +89,9 @@ describe('BusyTabCloseDialog', () => {
     it('still shows the pid when the OS gave no name', () => {
       // macOS resolves a long name through a second syscall that fails for
       // another user's process, so the worker reports the pid alone.
-      renderDialog(terminalReason([{ pid: 99, name: '' }]))
+      renderDialog(terminalReason([
+        { pid: 99, name: '' },
+      ]))
 
       expect(screen.getByText('unnamed process (pid 99)')).toBeTruthy()
     })
@@ -99,8 +109,20 @@ describe('BusyTabCloseDialog', () => {
       renderDialog({
         kind: 'agent-turn',
         activeTasks: [
-          { rowKey: 'r1', kind: 'subagent', title: 'Research the API', activity: 'a', status: 'running' },
-          { rowKey: 'r2', kind: 'shell', title: 'npm test', activity: 'a', status: 'pending' },
+          {
+            rowKey: 'r1',
+            kind: 'subagent',
+            title: 'Research the API',
+            activity: 'a',
+            status: 'running',
+          },
+          {
+            rowKey: 'r2',
+            kind: 'shell',
+            title: 'npm test',
+            activity: 'a',
+            status: 'pending',
+          },
         ],
       })
 
@@ -112,7 +134,15 @@ describe('BusyTabCloseDialog', () => {
     it('uses the singular for one task', () => {
       renderDialog({
         kind: 'agent-turn',
-        activeTasks: [{ rowKey: 'r1', kind: 'subagent', title: 'One', activity: 'a', status: 'running' }],
+        activeTasks: [
+          {
+            rowKey: 'r1',
+            kind: 'subagent',
+            title: 'One',
+            activity: 'a',
+            status: 'running',
+          },
+        ],
       })
 
       expect(screen.getByText('1 background task is active:')).toBeTruthy()
@@ -125,7 +155,15 @@ describe('BusyTabCloseDialog', () => {
       // announcing it as "turn in progress" tells the user something false.
       renderDialog({
         kind: 'agent-turn',
-        activeTasks: [{ rowKey: 'r1', kind: 'subagent', title: 'Research', activity: 'a', status: 'running' }],
+        activeTasks: [
+          {
+            rowKey: 'r1',
+            kind: 'subagent',
+            title: 'Research',
+            activity: 'a',
+            status: 'running',
+          },
+        ],
       })
 
       expect(screen.queryByText(/turn is in progress/)).toBeNull()
@@ -135,7 +173,9 @@ describe('BusyTabCloseDialog', () => {
 
   describe('answers', () => {
     it('resolves false on cancel', () => {
-      const { resolve, onDismiss } = renderDialog(terminalReason([{ pid: 1, name: 'node' }]))
+      const { resolve, onDismiss } = renderDialog(terminalReason([
+        { pid: 1, name: 'node' },
+      ]))
 
       fireEvent.click(screen.getByTestId('busy-tab-close-cancel'))
 
@@ -144,7 +184,9 @@ describe('BusyTabCloseDialog', () => {
     })
 
     it('takes two clicks to confirm, and resolves true only on the second', () => {
-      const { resolve } = renderDialog(terminalReason([{ pid: 1, name: 'node' }]))
+      const { resolve } = renderDialog(terminalReason([
+        { pid: 1, name: 'node' },
+      ]))
 
       // `danger` renders the primary as a ConfirmButton, so the destructive
       // answer arms first and Enter cannot bypass it.

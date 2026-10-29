@@ -207,7 +207,9 @@ export function isProseResult(result: unknown): result is ProseResult {
 
 export function typedResult<K extends ToolKind>(call: { kind: K, result?: ToolResult<NoInfer<K>> | undefined }): ToolResultByKind[K] | undefined {
   const result = call.result
-  return result === undefined || isUnparsedToolResult(result) || isToolFailureResult(result) ? undefined : result
+  return result === undefined || isUnparsedToolResult(result) || isToolFailureResult(result)
+    ? undefined
+    : result
 }
 
 export function isGenericKind(kind: ToolKind): kind is GenericToolKind {

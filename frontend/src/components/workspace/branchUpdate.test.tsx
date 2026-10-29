@@ -104,7 +104,10 @@ describe('branchUpdate (change branch → sidebar reflects new label)', () => {
   it('buildTree re-runs reactively when the repo branch changes', () => {
     createRoot((dispose) => {
       const store = createRepoGitStore()
-      const tabs = [makeAgentTab('a1'), makeAgentTab('a2')]
+      const tabs = [
+        makeAgentTab('a1'),
+        makeAgentTab('a2'),
+      ]
       seedBranch(store, 'w1', '/repo', 'A')
 
       const tree = createMemo(() => buildTree(tabs, store))

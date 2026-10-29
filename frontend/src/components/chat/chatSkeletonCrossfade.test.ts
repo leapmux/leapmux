@@ -21,13 +21,21 @@ describe('chatSkeletonCrossfade', () => {
         lingering = createLingerSet(active, 1000).lingeringIds
       })
       // Nothing lingers while both are active.
-      expect([...lingering()]).toEqual([])
+      expect([
+        ...lingering(),
+      ]).toEqual([])
       setActive(['a']) // 'b' left the active set
-      expect([...lingering()]).toEqual(['b'])
+      expect([
+        ...lingering(),
+      ]).toEqual(['b'])
       vi.advanceTimersByTime(999)
-      expect([...lingering()]).toEqual(['b']) // still within the fade beat
+      expect([
+        ...lingering(),
+      ]).toEqual(['b']) // still within the fade beat
       vi.advanceTimersByTime(1)
-      expect([...lingering()]).toEqual([]) // dropped after the beat
+      expect([
+        ...lingering(),
+      ]).toEqual([]) // dropped after the beat
       dispose()
     })
 
@@ -40,12 +48,18 @@ describe('chatSkeletonCrossfade', () => {
         lingering = createLingerSet(active, 1000).lingeringIds
       })
       setActive([]) // 'a' left -> lingering
-      expect([...lingering()]).toEqual(['a'])
+      expect([
+        ...lingering(),
+      ]).toEqual(['a'])
       setActive(['a']) // re-entered -> linger cancelled immediately
-      expect([...lingering()]).toEqual([])
+      expect([
+        ...lingering(),
+      ]).toEqual([])
       // The cancelled timer must not re-drop (or re-add) it later.
       vi.advanceTimersByTime(1000)
-      expect([...lingering()]).toEqual([])
+      expect([
+        ...lingering(),
+      ]).toEqual([])
       dispose()
     })
 
@@ -58,7 +72,9 @@ describe('chatSkeletonCrossfade', () => {
         lingering = createLingerSet(active, 1000).lingeringIds
       })
       setActive([]) // linger 'a'
-      expect([...lingering()]).toEqual(['a'])
+      expect([
+        ...lingering(),
+      ]).toEqual(['a'])
       dispose()
       expect(() => vi.advanceTimersByTime(1000)).not.toThrow()
     })
@@ -74,11 +90,17 @@ describe('chatSkeletonCrossfade', () => {
         delayed = createDelayedSet(active, 500).delayedIds
       })
       setActive(['a']) // enters the active set -> delay timer armed, not shown yet
-      expect([...delayed()]).toEqual([])
+      expect([
+        ...delayed(),
+      ]).toEqual([])
       vi.advanceTimersByTime(499)
-      expect([...delayed()]).toEqual([]) // still within the show-delay
+      expect([
+        ...delayed(),
+      ]).toEqual([]) // still within the show-delay
       vi.advanceTimersByTime(1)
-      expect([...delayed()]).toEqual(['a']) // appears once the delay elapses
+      expect([
+        ...delayed(),
+      ]).toEqual(['a']) // appears once the delay elapses
       dispose()
     })
 
@@ -93,7 +115,9 @@ describe('chatSkeletonCrossfade', () => {
       vi.advanceTimersByTime(200) // measured quickly...
       setActive([]) // ...and revealed before the show-delay
       vi.advanceTimersByTime(500)
-      expect([...delayed()]).toEqual([]) // no skeleton ever appeared
+      expect([
+        ...delayed(),
+      ]).toEqual([]) // no skeleton ever appeared
       dispose()
     })
 
@@ -106,9 +130,13 @@ describe('chatSkeletonCrossfade', () => {
         delayed = createDelayedSet(active, 500).delayedIds
       })
       vi.advanceTimersByTime(500)
-      expect([...delayed()]).toEqual(['a']) // slow wait -> skeleton shown
+      expect([
+        ...delayed(),
+      ]).toEqual(['a']) // slow wait -> skeleton shown
       setActive([]) // measured -> leaves
-      expect([...delayed()]).toEqual([]) // drops immediately (createLingerSet handles the fade)
+      expect([
+        ...delayed(),
+      ]).toEqual([]) // drops immediately (createLingerSet handles the fade)
       dispose()
     })
 
@@ -124,9 +152,13 @@ describe('chatSkeletonCrossfade', () => {
       setActive([]) // left before appearing -> pending timer cancelled
       setActive(['a']) // re-entered -> a FRESH delay, not the leftover 200ms
       vi.advanceTimersByTime(300)
-      expect([...delayed()]).toEqual([]) // the earlier 300ms must not carry over
+      expect([
+        ...delayed(),
+      ]).toEqual([]) // the earlier 300ms must not carry over
       vi.advanceTimersByTime(200)
-      expect([...delayed()]).toEqual(['a'])
+      expect([
+        ...delayed(),
+      ]).toEqual(['a'])
       dispose()
     })
 
@@ -151,7 +183,9 @@ describe('chatSkeletonCrossfade', () => {
         delayed = createDelayedSet(active, 500, immediate).delayedIds
       })
       setActive(['a']) // enters while "flinging" -> painted at once, no delay wait
-      expect([...delayed()]).toEqual(['a'])
+      expect([
+        ...delayed(),
+      ]).toEqual(['a'])
       dispose()
     })
 
@@ -167,11 +201,17 @@ describe('chatSkeletonCrossfade', () => {
         dispose = d
         delayed = createDelayedSet(active, 500, immediate).delayedIds
       })
-      expect([...delayed()]).toEqual(['a']) // shown at once during the fling
+      expect([
+        ...delayed(),
+      ]).toEqual(['a']) // shown at once during the fling
       setImmediate(false) // fling settles, well before 500ms
-      expect([...delayed()]).toEqual(['a']) // STILL shown -- no drop, no flicker
+      expect([
+        ...delayed(),
+      ]).toEqual(['a']) // STILL shown -- no drop, no flicker
       vi.advanceTimersByTime(500) // and no stale timer re-drops or re-adds it
-      expect([...delayed()]).toEqual(['a'])
+      expect([
+        ...delayed(),
+      ]).toEqual(['a'])
       dispose()
     })
 
@@ -185,11 +225,17 @@ describe('chatSkeletonCrossfade', () => {
         delayed = createDelayedSet(active, 500, immediate).delayedIds
       })
       vi.advanceTimersByTime(200) // partway through the delay, nothing shown yet
-      expect([...delayed()]).toEqual([])
+      expect([
+        ...delayed(),
+      ]).toEqual([])
       setImmediate(true) // a fling starts -> show now, cancelling the pending delay
-      expect([...delayed()]).toEqual(['a'])
+      expect([
+        ...delayed(),
+      ]).toEqual(['a'])
       vi.advanceTimersByTime(500) // the cancelled delay timer must not re-fire
-      expect([...delayed()]).toEqual(['a'])
+      expect([
+        ...delayed(),
+      ]).toEqual(['a'])
       dispose()
     })
 
@@ -202,9 +248,13 @@ describe('chatSkeletonCrossfade', () => {
         dispose = d
         delayed = createDelayedSet(active, 500, immediate).delayedIds
       })
-      expect([...delayed()]).toEqual(['a'])
+      expect([
+        ...delayed(),
+      ]).toEqual(['a'])
       setActive([]) // measured -> leaves
-      expect([...delayed()]).toEqual([]) // drops immediately (createLingerSet fades it)
+      expect([
+        ...delayed(),
+      ]).toEqual([]) // drops immediately (createLingerSet fades it)
       dispose()
     })
   })
@@ -216,7 +266,10 @@ describe('chatSkeletonCrossfade', () => {
       let dispose!: () => void
       createRoot((d) => {
         dispose = d
-        phase = createRowUpgradePhase({ fastScrollActive: fast, hasMeasuredHeight: () => true }, 'a', 1000)
+        phase = createRowUpgradePhase({
+          fastScrollActive: fast,
+          hasMeasuredHeight: () => true,
+        }, 'a', 1000)
       })
       expect(phase()).toBe('real')
       dispose()
@@ -228,7 +281,10 @@ describe('chatSkeletonCrossfade', () => {
       let dispose!: () => void
       createRoot((d) => {
         dispose = d
-        phase = createRowUpgradePhase({ fastScrollActive: fast, hasMeasuredHeight: () => true }, 'a', 1000)
+        phase = createRowUpgradePhase({
+          fastScrollActive: fast,
+          hasMeasuredHeight: () => true,
+        }, 'a', 1000)
       })
       expect(phase()).toBe('skeleton')
       setFast(false) // scroll settled
@@ -247,7 +303,10 @@ describe('chatSkeletonCrossfade', () => {
       let dispose!: () => void
       createRoot((d) => {
         dispose = d
-        phase = createRowUpgradePhase({ fastScrollActive: fast, hasMeasuredHeight: () => true }, 'a', 1000)
+        phase = createRowUpgradePhase({
+          fastScrollActive: fast,
+          hasMeasuredHeight: () => true,
+        }, 'a', 1000)
       })
       expect(phase()).toBe('skeleton')
       setFast(false) // scroll settled -> crossfade begins
@@ -264,7 +323,10 @@ describe('chatSkeletonCrossfade', () => {
       let dispose!: () => void
       createRoot((d) => {
         dispose = d
-        phase = createRowUpgradePhase({ fastScrollActive: fast, hasMeasuredHeight: () => false }, 'a', 1000)
+        phase = createRowUpgradePhase({
+          fastScrollActive: fast,
+          hasMeasuredHeight: () => false,
+        }, 'a', 1000)
       })
       expect(phase()).toBe('real')
       dispose()
@@ -276,7 +338,10 @@ describe('chatSkeletonCrossfade', () => {
       let dispose!: () => void
       createRoot((d) => {
         dispose = d
-        phase = createRowUpgradePhase({ fastScrollActive: fast, hasMeasuredHeight: () => true }, 'a', 1000)
+        phase = createRowUpgradePhase({
+          fastScrollActive: fast,
+          hasMeasuredHeight: () => true,
+        }, 'a', 1000)
       })
       expect(phase()).toBe('real')
       setFast(true) // a later fling must not tear a real row back to a skeleton
@@ -298,9 +363,13 @@ describe('chatSkeletonCrossfade', () => {
         registry = createFlingSkeletonRegistry(measuredVirt(fast), 1000)
         registry.trackRow('a')
       })
-      expect([...registry.skeletonIds()]).toEqual(['a'])
+      expect([
+        ...registry.skeletonIds(),
+      ]).toEqual(['a'])
       setFast(false) // scroll settles -> phase leaves 'skeleton' -> row drops from the set
-      expect([...registry.skeletonIds()]).toEqual([])
+      expect([
+        ...registry.skeletonIds(),
+      ]).toEqual([])
       dispose()
     })
 
@@ -313,7 +382,9 @@ describe('chatSkeletonCrossfade', () => {
         registry = createFlingSkeletonRegistry(measuredVirt(fast, () => false), 1000)
         registry.trackRow('a')
       })
-      expect([...registry.skeletonIds()]).toEqual([])
+      expect([
+        ...registry.skeletonIds(),
+      ]).toEqual([])
       dispose()
     })
 
@@ -326,9 +397,13 @@ describe('chatSkeletonCrossfade', () => {
         registry = createFlingSkeletonRegistry(measuredVirt(fast), 1000)
         registry.trackRow('a')
       })
-      expect([...registry.skeletonIds()]).toEqual([])
+      expect([
+        ...registry.skeletonIds(),
+      ]).toEqual([])
       setFast(true) // a fling AFTER mount must not tear a settled row into a skeleton
-      expect([...registry.skeletonIds()]).toEqual([])
+      expect([
+        ...registry.skeletonIds(),
+      ]).toEqual([])
       dispose()
     })
 
@@ -346,9 +421,13 @@ describe('chatSkeletonCrossfade', () => {
           registry.trackRow('a')
         })
       })
-      expect([...registry.skeletonIds()]).toEqual(['a'])
+      expect([
+        ...registry.skeletonIds(),
+      ]).toEqual(['a'])
       disposeRow() // the row scrolls out / unmounts
-      expect([...registry.skeletonIds()]).toEqual([])
+      expect([
+        ...registry.skeletonIds(),
+      ]).toEqual([])
       dispose()
     })
 
@@ -364,9 +443,13 @@ describe('chatSkeletonCrossfade', () => {
         registry.trackRow('b')
         registry.trackRow('c') // unmeasured -> mounts real, never enters the set
       })
-      expect([...registry.skeletonIds()].sort()).toEqual(['a', 'b'])
+      expect([
+        ...registry.skeletonIds(),
+      ].sort()).toEqual(['a', 'b'])
       setFast(false)
-      expect([...registry.skeletonIds()]).toEqual([])
+      expect([
+        ...registry.skeletonIds(),
+      ]).toEqual([])
       dispose()
     })
   })

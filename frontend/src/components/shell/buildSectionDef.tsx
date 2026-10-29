@@ -277,15 +277,21 @@ export function buildSectionDef(
           getActiveTabKeyForWorkspace={(wsId: string) => ctx.selection?.activeKeyForWorkspace(wsId) ?? null}
           getTileOrderForWorkspace={(wsId: string) => ctx.getTileOrderForWorkspace?.(wsId) ?? []}
           onTabClick={ctx.onTabClick ?? (() => {})}
-          {...(ctx.tabItemOps !== undefined ? { tabItemOps: ctx.tabItemOps } : {})}
+          {...(ctx.tabItemOps !== undefined
+            ? { tabItemOps: ctx.tabItemOps }
+            : {})}
           workerInfoFn={ctx.workerInfoFn}
           isWorkerKnownOnline={workerId => isWorkerKnownOnline(ctx.workers, workerId)}
           // Derived here, beside the liveness predicate and exactly the same
           // way: one line off `ctx.workers` and one flag, rather than a prop
           // threaded down the whole sidebar chain.
           isLocalWorkerFn={workerId => isLocalWorker(ctx.workers, workerId, ctx.localSolo)}
-          {...(ctx.workspaceStartActions !== undefined ? { startActions: ctx.workspaceStartActions } : {})}
-          {...(ctx.branchActions !== undefined ? { branchActions: ctx.branchActions } : {})}
+          {...(ctx.workspaceStartActions !== undefined
+            ? { startActions: ctx.workspaceStartActions }
+            : {})}
+          {...(ctx.branchActions !== undefined
+            ? { branchActions: ctx.branchActions }
+            : {})}
           repoGitStore={ctx.gitStatusStore}
         />
       ),
@@ -301,7 +307,9 @@ export function buildSectionDef(
       defaultOpen: true,
       collapsible: true,
       draggable: true,
-      ...(defaultSize !== undefined ? { defaultSize } : {}),
+      ...(defaultSize !== undefined
+        ? { defaultSize }
+        : {}),
       testId: `section-header-${sectionTypeTestId(sectionType)}`,
       headerActions: () => (
         <FilesSectionHeaderActions
@@ -317,8 +325,11 @@ export function buildSectionDef(
             const probeCtx = { gitToplevel: ctx.gitToplevel, workingDir: ctx.workingDir }
             const path = gitStatusProbePath(probeCtx)
             const key = focusedRepoKeyFromTab(tab, probeCtx, ctx.gitStatusStore)
-            if (ctx.workerId && path)
-              void ctx.gitStatusStore.refresh(ctx.workerId, path, key !== undefined ? { repoKey: key } : {})
+            if (ctx.workerId && path) {
+              void ctx.gitStatusStore.refresh(ctx.workerId, path, key !== undefined
+                ? { repoKey: key }
+                : {})
+            }
             ctx.filesSectionHandle()?.refresh()
           }}
           hasActiveFileTab={ctx.hasActiveFileTab ?? false}
@@ -337,13 +348,23 @@ export function buildSectionDef(
             flavor={flavorFromOs(ctx.workerInfoFn(ctx.workerId)?.os)}
             fileTreePath={ctx.fileTreePath}
             onFileSelect={ctx.onFileSelect}
-            {...(ctx.onFileOpen !== undefined ? { onFileOpen: ctx.onFileOpen } : {})}
-            {...(ctx.onFileMention !== undefined ? { onMention: ctx.onFileMention } : {})}
-            {...(ctx.onOpenTerminal !== undefined ? { onOpenTerminal: ctx.onOpenTerminal } : {})}
+            {...(ctx.onFileOpen !== undefined
+              ? { onFileOpen: ctx.onFileOpen }
+              : {})}
+            {...(ctx.onFileMention !== undefined
+              ? { onMention: ctx.onFileMention }
+              : {})}
+            {...(ctx.onOpenTerminal !== undefined
+              ? { onOpenTerminal: ctx.onOpenTerminal }
+              : {})}
             gitStatusStore={ctx.gitStatusStore}
-            {...(ctx.activeFilePath !== undefined ? { activeFilePath: ctx.activeFilePath } : {})}
+            {...(ctx.activeFilePath !== undefined
+              ? { activeFilePath: ctx.activeFilePath }
+              : {})}
             hasActiveFileTab={ctx.hasActiveFileTab ?? false}
-            {...(ctx.turnEndTrigger !== undefined ? { turnEndTrigger: ctx.turnEndTrigger } : {})}
+            {...(ctx.turnEndTrigger !== undefined
+              ? { turnEndTrigger: ctx.turnEndTrigger }
+              : {})}
             enabled={ctx.activeTabReady}
             ref={ctx.setFilesSectionHandle}
           />
@@ -360,7 +381,9 @@ export function buildSectionDef(
       railTitle: section.name,
       visible: ctx.showGoalsAndTodos,
       draggable: true,
-      ...(defaultSize !== undefined ? { defaultSize } : {}),
+      ...(defaultSize !== undefined
+        ? { defaultSize }
+        : {}),
       testId: `section-header-${sectionTypeTestId(sectionType)}`,
       railBadge: () => {
         const { done, total } = todoProgress(ctx.activeTodos)
@@ -377,7 +400,9 @@ export function buildSectionDef(
       content: () => (
         <GoalsAndTodos
           variant="sidebar"
-          {...(ctx.activeGoal !== undefined ? { goal: ctx.activeGoal } : {})}
+          {...(ctx.activeGoal !== undefined
+            ? { goal: ctx.activeGoal }
+            : {})}
           todos={ctx.activeTodos}
           announceGoal
         />
@@ -400,15 +425,23 @@ export function buildSectionDef(
       railTitle: section.name,
       visible: ctx.showBackgroundTasks,
       draggable: true,
-      ...(defaultSize !== undefined ? { defaultSize } : {}),
+      ...(defaultSize !== undefined
+        ? { defaultSize }
+        : {}),
       testId: `section-header-${sectionTypeTestId(sectionType)}`,
-      ...(activeCount > 0 ? { railBadge: () => <span class={csStyles.railBadgeText}>{activeCount}</span> } : {}),
+      ...(activeCount > 0
+        ? {
+            railBadge: () => <span class={csStyles.railBadgeText}>{activeCount}</span>,
+          }
+        : {}),
       content: () => (
         <BackgroundTaskPanel
           variant="sidebar"
           tasks={ctx.activeBackgroundTasks}
           loadFailed={ctx.activeBackgroundTasksFailed}
-          {...(ctx.onOpenBackgroundTask !== undefined ? { onOpenSubagent: ctx.onOpenBackgroundTask } : {})}
+          {...(ctx.onOpenBackgroundTask !== undefined
+            ? { onOpenSubagent: ctx.onOpenBackgroundTask }
+            : {})}
         />
       ),
     }
@@ -423,7 +456,9 @@ export function buildSectionDef(
       defaultOpen: true,
       collapsible: true,
       draggable: true,
-      ...(defaultSize !== undefined ? { defaultSize } : {}),
+      ...(defaultSize !== undefined
+        ? { defaultSize }
+        : {}),
       testId: `section-header-${sectionTypeTestId(sectionType)}`,
       headerActions: () => (
         <IconButton

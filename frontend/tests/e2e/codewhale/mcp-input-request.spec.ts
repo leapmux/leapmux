@@ -21,11 +21,20 @@ import { nativeContext } from './scenarios'
 const MCP_EXECUTE_TIMEOUT_SECONDS = 10
 
 codewhaleTest('times out an MCP input request that the native client never answers, without a browser form', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+  })
   await withNativeMcpFormAgent(context, {
     directoryPrefix: 'codewhale-native-mcp-unanswered-',
     configurationPath: join(leapmuxServer.agentEnv.CODEWHALE_HOME!, 'mcp.json'),
-    configuration: server => ({ servers: { [server.name]: { command: server.command, args: server.args, execute_timeout: MCP_EXECUTE_TIMEOUT_SECONDS } } }),
+    configuration: server => ({
+      servers: {
+        [server.name]: { command: server.command, args: server.args, execute_timeout: MCP_EXECUTE_TIMEOUT_SECONDS },
+      },
+    }),
   }, async ({ server, receiptLog }) => {
     const callId = 'native-codewhale-form-unanswered'
     await expectUnansweredMcpInput(context, {
@@ -34,7 +43,12 @@ codewhaleTest('times out an MCP input request that the native client never answe
       additionalTestIds: ['control-banner'],
       nativeFailureText: `MCP tool failed: MCP method 'tools/call' on server '${server.name}' timed out after ${MCP_EXECUTE_TIMEOUT_SECONDS}s`,
       invoke: async () => {
-        const request = await invokeNativeMcpTool(context, { server: server.name, tool: 'ask', callId, input: {} })
+        const request = await invokeNativeMcpTool(context, {
+          server: server.name,
+          tool: 'ask',
+          callId,
+          input: {},
+        })
         // The direct MCP call initializes Codewhale's lazy server pool, so the server lists its tools during the call.
         await waitForMcpToolListed(receiptLog, 'ask')
         return request

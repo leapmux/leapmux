@@ -120,7 +120,9 @@ describe('ElevatePage', () => {
     mockElevateWithPassword.mockImplementation(elevationGranted())
     renderElevate(`/elevate?redirect=${encodeURIComponent('/oauth/authorize?state=s&elevated=1')}`)
 
-    fireEvent.input(await screen.findByTestId('elevate-password'), { target: { value: 'secret' } })
+    fireEvent.input(await screen.findByTestId('elevate-password'), {
+      target: { value: 'secret' },
+    })
     fireEvent.click(screen.getByTestId('elevate-password-submit'))
 
     await vi.waitFor(() => {
@@ -148,7 +150,9 @@ describe('ElevatePage', () => {
     mockElevateWithPassword.mockResolvedValue(undefined)
     const { navigations } = renderElevate('/elevate?redirect=%2F')
 
-    fireEvent.input(await screen.findByTestId('elevate-password'), { target: { value: 'secret' } })
+    fireEvent.input(await screen.findByTestId('elevate-password'), {
+      target: { value: 'secret' },
+    })
     fireEvent.click(screen.getByTestId('elevate-password-submit'))
 
     await vi.waitFor(() => {
@@ -172,7 +176,9 @@ describe('ElevatePage', () => {
     mockElevateWithPassword.mockResolvedValue(undefined)
     const { navigations } = renderElevate(`/elevate?redirect=${encodeURIComponent('https://evil.example/')}`)
 
-    fireEvent.input(await screen.findByTestId('elevate-password'), { target: { value: 'secret' } })
+    fireEvent.input(await screen.findByTestId('elevate-password'), {
+      target: { value: 'secret' },
+    })
     fireEvent.click(screen.getByTestId('elevate-password-submit'))
     await vi.waitFor(() => {
       expect(navigations).toContain('/')
@@ -217,7 +223,9 @@ describe('ElevatePage', () => {
       passwordSet: false,
       passkeyCount: 1,
       mayElevateThroughAProvider: false,
-      oauthProviders: [{ id: 'github', name: 'GitHub', enabled: true }],
+      oauthProviders: [
+        { id: 'github', name: 'GitHub', enabled: true },
+      ],
     })
 
     renderElevate('/elevate?redirect=%2F')
@@ -264,7 +272,9 @@ describe('ElevatePage', () => {
       passwordSet: true,
       passkeyCount: 0,
       mayElevateThroughAProvider: false,
-      oauthProviders: [{ id: 'okta', name: 'Okta', enabled: true }],
+      oauthProviders: [
+        { id: 'okta', name: 'Okta', enabled: true },
+      ],
     })
 
     renderElevate('/elevate?redirect=%2F')
@@ -285,7 +295,9 @@ describe('ElevatePage', () => {
       passwordSet: false,
       passkeyCount: 0,
       mayElevateThroughAProvider: true,
-      oauthProviders: [{ id: 'github', name: 'GitHub', enabled: true }],
+      oauthProviders: [
+        { id: 'github', name: 'GitHub', enabled: true },
+      ],
     })
 
     renderElevate('/elevate?redirect=%2F')

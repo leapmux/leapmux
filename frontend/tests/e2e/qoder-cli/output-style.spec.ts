@@ -33,7 +33,13 @@ qoderTest('selects each native output style for the next request, before and aft
   await sendNativeAnswer(native, 'Reply once before the output style changes.', 'The first turn answered.')
   await waitForNativeSettingsHydrated(native.page)
   // Qoder's initialize reply lists its built-in styles and the user style of the fixture.
-  await expectSettingsOptionsOffered(native.page, OUTPUT_STYLE, ['auto', 'default', 'Explanatory', 'Learning', QODER_PROBE_OUTPUT_STYLE.name])
+  await expectSettingsOptionsOffered(native.page, OUTPUT_STYLE, [
+    'auto',
+    'default',
+    'Explanatory',
+    'Learning',
+    QODER_PROBE_OUTPUT_STYLE.name,
+  ])
   await exerciseNativeOptionSequence(native, {
     groupId: OUTPUT_STYLE,
     steps: [

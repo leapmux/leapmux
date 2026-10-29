@@ -10,7 +10,11 @@ ohMyPiTest('keeps the actual native background task row through completion and r
   // row shows the subagent ID and the first line of the assignment.
   await exerciseHeldChildRow(context, {
     rowTitle: HELD_CHILD_NAME,
-    heldAnswer: { toolCalls: [ohMyPiYieldToolCall('held-child-yield', HELD_CHILD_REPORT)] },
+    heldAnswer: {
+      toolCalls: [
+        ohMyPiYieldToolCall('held-child-yield', HELD_CHILD_REPORT),
+      ],
+    },
     rowTexts: [HELD_CHILD_NAME, HELD_CHILD_TASK],
   })
 })

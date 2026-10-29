@@ -148,7 +148,9 @@ export const WorkingTreeIcon: Component<WorkingTreeIconProps> = props => (
   <Icon
     icon={props.isWorktree ? GitBranchFilled : GitBranch}
     size={props.size}
-    {...(props.class !== undefined ? { class: props.class } : {})}
+    {...(props.class !== undefined
+      ? { class: props.class }
+      : {})}
     data-testid={props.isWorktree ? 'worktree-icon' : 'branch-icon'}
     // A CONDITIONAL SPREAD, never `role={props.label ? 'img' : undefined}`.
     // Both glyphs decide `aria-hidden` by testing whether a `role`/`aria-*` key
@@ -157,7 +159,9 @@ export const WorkingTreeIcon: Component<WorkingTreeIconProps> = props => (
     // behave alike. A `role: undefined` key drops the automatic
     // `aria-hidden="true"` and puts every decorative glyph into the
     // accessibility tree with no name.
-    {...(props.label ? { 'role': 'img', 'aria-label': props.label } : {})}
+    {...(props.label
+      ? { 'role': 'img', 'aria-label': props.label }
+      : {})}
   />
 )
 
@@ -284,7 +288,9 @@ export const WorkingTreeTooltip: Component<WorkingTreeTooltipProps> = props => (
     // `''` for no reason: `Tooltip` decides `text` by truthiness, and the
     // rows take the content slot only when there is no reason to state.
     text={props.disabledReason ?? ''}
-    {...(props.disabledReason ? {} : { content: <WorkingTreeRows {...props.info} /> })}
+    {...(props.disabledReason
+      ? {}
+      : { content: <WorkingTreeRows {...props.info} /> })}
   >
     {props.children}
   </Tooltip>

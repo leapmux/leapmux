@@ -43,8 +43,18 @@ export function readPiNativeOutput(snapshot: NativeMessageSnapshot, proof: PiOut
   const excerpt = texts[1]
   if (!header || !/^Script completed\nWall time \d+(?:\.\d+)? seconds\nOutput:\n$/u.test(header) || excerpt === undefined)
     throw new Error('The native Pi result has no successful codemode header and preview.')
-  const previewText = [texts.filter(Boolean).join('\n\n'), prettifyJson(JSON.stringify(details))].filter(Boolean).join('\n\n')
-  return { nativeResult: result, paths: [path], previewText, excerpt, frame: record.frame, content: record.message.content }
+  const previewText = [
+    texts.filter(Boolean).join('\n\n'),
+    prettifyJson(JSON.stringify(details)),
+  ].filter(Boolean).join('\n\n')
+  return {
+    nativeResult: result,
+    paths: [path],
+    previewText,
+    excerpt,
+    frame: record.frame,
+    content: record.message.content,
+  }
 }
 
 /**
@@ -59,7 +69,12 @@ export function readPiNativeOutput(snapshot: NativeMessageSnapshot, proof: PiOut
  */
 export async function verifyPiOutputFilePaths(context: ManagedNativeScenarioContext, input: { callId: string, expectedText: string, omittedMarker: string }) {
   const agent = await currentNativeAgent(context)
-  const proof = { callId: input.callId, toolName: PI_TOOL.Codemode, agentId: agent.id, agentSessionId: agent.agentSessionId }
+  const proof = {
+    callId: input.callId,
+    toolName: PI_TOOL.Codemode,
+    agentId: agent.id,
+    agentSessionId: agent.agentSessionId,
+  }
   const readReceipt = (snapshot: NativeMessageSnapshot) => readPiNativeOutput(snapshot, proof)
   const receipt = readReceipt(await readNativeMessageSnapshot(context, agent.id))
   expect(receipt.excerpt).not.toContain(input.omittedMarker)

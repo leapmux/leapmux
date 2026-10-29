@@ -2,10 +2,21 @@ import type { PersistedControlResponse } from '../../persistedControlResponse'
 import { describe, expect, it, vi } from 'vitest'
 import { isOhMyPiApproval, ohMyPiAskAnswer, ohMyPiCancelResponse, ohMyPiConfirmResponse, ohMyPiControlResponseSummary, ohMyPiValueResponse, sendOhMyPiResponse } from './controlResponse'
 
-const approval = { type: 'extension_ui_request', id: 'a1', method: 'select', title: 'Allow tool: bash\nCommand: ls', options: ['Approve', 'Deny'] }
+const approval = {
+  type: 'extension_ui_request',
+  id: 'a1',
+  method: 'select',
+  title: 'Allow tool: bash\nCommand: ls',
+  options: ['Approve', 'Deny'],
+}
 
 function saved(request: Record<string, unknown> | undefined, response: Record<string, unknown> | undefined): PersistedControlResponse {
-  return { requestId: 'a1', claimToken: 't', request, response } as PersistedControlResponse
+  return {
+    requestId: 'a1',
+    claimToken: 't',
+    request,
+    response,
+  } as PersistedControlResponse
 }
 
 describe('ohMyPiValueResponse', () => {
@@ -20,11 +31,21 @@ describe('ohMyPiAskAnswer', () => {
   it('builds the bridge\'s answer and leaves out empty halves', () => {
     expect(ohMyPiAskAnswer('q1', [
       { id: 'name', selected: [], custom: 'gamma' },
-      { id: 'langs', selected: ['Go'], custom: '  ' },
+      {
+        id: 'langs',
+        selected: ['Go'],
+        custom: '  ',
+      },
     ])).toEqual({
       type: 'leapmux_ask_answer',
       id: 'q1',
-      answers: [{ id: 'name', custom: 'gamma' }, { id: 'langs', selected: ['Go'] }],
+      answers: [
+        { id: 'name', custom: 'gamma' },
+        {
+          id: 'langs',
+          selected: ['Go'],
+        },
+      ],
     })
   })
 })
@@ -41,7 +62,10 @@ describe('sendOhMyPiResponse', () => {
 describe('isOhMyPiApproval', () => {
   it('holds for the approval dialog alone', () => {
     expect(isOhMyPiApproval(approval)).toBe(true)
-    expect(isOhMyPiApproval({ ...approval, options: ['Approve'] })).toBe(false)
+    expect(isOhMyPiApproval({
+      ...approval,
+      options: ['Approve'],
+    })).toBe(false)
     expect(isOhMyPiApproval({ ...approval, title: 'Pick one' })).toBe(false)
     expect(isOhMyPiApproval({ ...approval, method: 'confirm' })).toBe(false)
     expect(isOhMyPiApproval(undefined)).toBe(false)
@@ -49,14 +73,20 @@ describe('isOhMyPiApproval', () => {
 
   it('holds for neither another frame type, a dialog without Approve, nor options that are not a list', () => {
     expect(isOhMyPiApproval({ ...approval, type: 'extension_ui_response' })).toBe(false)
-    expect(isOhMyPiApproval({ ...approval, options: ['Deny'] })).toBe(false)
+    expect(isOhMyPiApproval({
+      ...approval,
+      options: ['Deny'],
+    })).toBe(false)
     expect(isOhMyPiApproval({ ...approval, options: 'Approve Deny' })).toBe(false)
     expect(isOhMyPiApproval({ ...approval, title: undefined })).toBe(false)
   })
 
   it('holds for an approval whose title is the prefix alone, or that offers more options', () => {
     expect(isOhMyPiApproval({ ...approval, title: 'Allow tool: ' })).toBe(true)
-    expect(isOhMyPiApproval({ ...approval, options: ['Deny', 'Later', 'Approve'] })).toBe(true)
+    expect(isOhMyPiApproval({
+      ...approval,
+      options: ['Deny', 'Later', 'Approve'],
+    })).toBe(true)
   })
 })
 
@@ -72,50 +102,130 @@ describe('ohMyPiControlResponseSummary', () => {
   })
 
   it('reads the bridge\'s answers under their questions', () => {
-    const request = { type: 'leapmux_ask', id: 'q1', questions: [{ id: 'name', question: 'Project name?' }, { id: 'langs', question: 'Languages?' }] }
-    const response = ohMyPiAskAnswer('q1', [{ id: 'name', selected: [], custom: 'gamma' }, { id: 'langs', selected: ['Go', 'Rust'], custom: 'Zig' }])
+    const request = {
+      type: 'leapmux_ask',
+      id: 'q1',
+      questions: [
+        { id: 'name', question: 'Project name?' },
+        { id: 'langs', question: 'Languages?' },
+      ],
+    }
+    const response = ohMyPiAskAnswer('q1', [
+      { id: 'name', selected: [], custom: 'gamma' },
+      {
+        id: 'langs',
+        selected: ['Go', 'Rust'],
+        custom: 'Zig',
+      },
+    ])
     expect(ohMyPiControlResponseSummary(saved(request, response))).toEqual({ kind: 'label', text: 'Project name?: gamma\nLanguages?: Go, Rust; Zig' })
     expect(ohMyPiControlResponseSummary(saved(undefined, { type: 'leapmux_ask_answer', id: 'q1', answers: [] }))).toEqual({ kind: 'label', text: 'Answered' })
   })
 
   it('heads an answer with its id when the request states no such question, and states the bare answer with no id', () => {
-    const request = { type: 'leapmux_ask', id: 'q1', questions: [{ id: 'name', question: 'Project name?' }] }
-    const response = { type: 'leapmux_ask_answer', id: 'q1', answers: [{ id: 'color', selected: ['blue'] }, { selected: ['x'], custom: 'y' }] }
+    const request = {
+      type: 'leapmux_ask',
+      id: 'q1',
+      questions: [
+        { id: 'name', question: 'Project name?' },
+      ],
+    }
+    const response = {
+      type: 'leapmux_ask_answer',
+      id: 'q1',
+      answers: [
+        {
+          id: 'color',
+          selected: ['blue'],
+        },
+        {
+          selected: ['x'],
+          custom: 'y',
+        },
+      ],
+    }
     expect(ohMyPiControlResponseSummary(saved(request, response))).toEqual({ kind: 'label', text: 'color: blue\nx; y' })
   })
 
   it('leaves out a question the reader left blank, and reads an answer with no words as answered', () => {
     // The bridge's answer states each question's id, the unanswered ones included
     // (`ohMyPiAskAnswer` drops only the empty halves).
-    const request = { type: 'leapmux_ask', id: 'q1', questions: [{ id: 'name', question: 'Project name?' }, { id: 'langs', question: 'Languages?' }] }
-    const partly = ohMyPiAskAnswer('q1', [{ id: 'name', selected: [], custom: '  ' }, { id: 'langs', selected: ['Go'], custom: '' }])
+    const request = {
+      type: 'leapmux_ask',
+      id: 'q1',
+      questions: [
+        { id: 'name', question: 'Project name?' },
+        { id: 'langs', question: 'Languages?' },
+      ],
+    }
+    const partly = ohMyPiAskAnswer('q1', [
+      { id: 'name', selected: [], custom: '  ' },
+      {
+        id: 'langs',
+        selected: ['Go'],
+        custom: '',
+      },
+    ])
     expect(ohMyPiControlResponseSummary(saved(request, partly))).toEqual({ kind: 'label', text: 'Languages?: Go' })
-    const blank = ohMyPiAskAnswer('q1', [{ id: 'name', selected: [], custom: '' }, { id: 'langs', selected: [], custom: '' }])
+    const blank = ohMyPiAskAnswer('q1', [
+      { id: 'name', selected: [], custom: '' },
+      { id: 'langs', selected: [], custom: '' },
+    ])
     expect(ohMyPiControlResponseSummary(saved(request, blank))).toEqual({ kind: 'label', text: 'Answered' })
   })
 
   it('reads the bridge\'s answers when the answer list is not a list or holds no records', () => {
     expect(ohMyPiControlResponseSummary(saved(undefined, { type: 'leapmux_ask_answer', id: 'q1', answers: 'gamma' }))).toEqual({ kind: 'label', text: 'Answered' })
-    expect(ohMyPiControlResponseSummary(saved(undefined, { type: 'leapmux_ask_answer', id: 'q1', answers: ['gamma', null] }))).toEqual({ kind: 'label', text: 'Answered' })
+    expect(ohMyPiControlResponseSummary(saved(undefined, {
+      type: 'leapmux_ask_answer',
+      id: 'q1',
+      answers: ['gamma', null],
+    }))).toEqual({ kind: 'label', text: 'Answered' })
   })
 
   it('reads a cancellation before any other field the response states', () => {
     // omp's dismissal carries `cancelled` alone; a response that also states a value
     // is still a dismissal.
-    expect(ohMyPiControlResponseSummary(saved(approval, { ...ohMyPiValueResponse('a1', 'Approve'), cancelled: true }))).toEqual({ kind: 'label', text: 'Cancelled' })
-    expect(ohMyPiControlResponseSummary(saved(undefined, { type: 'leapmux_ask_answer', id: 'q1', answers: [], cancelled: true }))).toEqual({ kind: 'label', text: 'Cancelled' })
+    expect(ohMyPiControlResponseSummary(saved(approval, {
+      ...ohMyPiValueResponse('a1', 'Approve'),
+      cancelled: true,
+    }))).toEqual({ kind: 'label', text: 'Cancelled' })
+    expect(ohMyPiControlResponseSummary(saved(undefined, {
+      type: 'leapmux_ask_answer',
+      id: 'q1',
+      answers: [],
+      cancelled: true,
+    }))).toEqual({ kind: 'label', text: 'Cancelled' })
   })
 
   it('reads a response with `cancelled: false` by its other fields', () => {
-    const input = { type: 'extension_ui_request', id: 'i1', method: 'input', title: 'Name' }
-    expect(ohMyPiControlResponseSummary(saved(input, { ...ohMyPiValueResponse('i1', 'main'), cancelled: false }))).toEqual({ kind: 'label', text: 'main' })
+    const input = {
+      type: 'extension_ui_request',
+      id: 'i1',
+      method: 'input',
+      title: 'Name',
+    }
+    expect(ohMyPiControlResponseSummary(saved(input, {
+      ...ohMyPiValueResponse('i1', 'main'),
+      cancelled: false,
+    }))).toEqual({ kind: 'label', text: 'main' })
   })
 
   it('reads a confirm and a value', () => {
-    const confirm = { type: 'extension_ui_request', id: 'c1', method: 'confirm', title: 'Proceed?' }
+    const confirm = {
+      type: 'extension_ui_request',
+      id: 'c1',
+      method: 'confirm',
+      title: 'Proceed?',
+    }
     expect(ohMyPiControlResponseSummary(saved(confirm, ohMyPiConfirmResponse('c1', true)))).toEqual({ kind: 'label', text: 'Confirmed' })
     expect(ohMyPiControlResponseSummary(saved(confirm, ohMyPiConfirmResponse('c1', false)))).toEqual({ kind: 'label', text: 'Declined' })
-    const input = { type: 'extension_ui_request', id: 'i1', method: 'input', title: 'Name' }
+    const input = {
+      type: 'extension_ui_request',
+      id: 'i1',
+      method: 'input',
+      title: 'Name',
+    }
     expect(ohMyPiControlResponseSummary(saved(input, ohMyPiValueResponse('i1', 'main')))).toEqual({ kind: 'label', text: 'main' })
     expect(ohMyPiControlResponseSummary(saved(input, ohMyPiValueResponse('i1', '')))).toEqual({ kind: 'label', text: 'Empty answer' })
   })

@@ -27,7 +27,17 @@ export type DefaultToolRequest<P extends ToolKind> = (args: Record<string, unkno
  * because an agent answers a removal with a status and nothing else.
  */
 function removalChange(filePath: string | undefined): FileEditDiff[] {
-  return filePath ? [{ filePath, operation: 'delete', oldStr: '', newStr: '', structuredPatch: null }] : []
+  return filePath
+    ? [
+        {
+          filePath,
+          operation: 'delete',
+          oldStr: '',
+          newStr: '',
+          structuredPatch: null,
+        },
+      ]
+    : []
 }
 
 /**
@@ -48,13 +58,15 @@ function replacementChange(args: Record<string, unknown>, operation: Extract<Fil
   const filePath = pickFirstString(args, TOOL_FILE_PATH_KEYS)
   if (!filePath)
     return []
-  return [{
-    filePath,
-    operation,
-    oldStr: pickFirstString(args, TOOL_OLD_TEXT_KEYS) ?? '',
-    newStr: pickFirstString(args, TOOL_NEW_TEXT_KEYS) ?? '',
-    structuredPatch: null,
-  }]
+  return [
+    {
+      filePath,
+      operation,
+      oldStr: pickFirstString(args, TOOL_OLD_TEXT_KEYS) ?? '',
+      newStr: pickFirstString(args, TOOL_NEW_TEXT_KEYS) ?? '',
+      structuredPatch: null,
+    },
+  ]
 }
 
 /**
@@ -71,15 +83,19 @@ function moveChange(args: Record<string, unknown>): FileEditDiff[] {
   const filePath = destination ?? previousPath
   if (!filePath)
     return []
-  return [{
-    filePath,
-    // One path alone still identifies the file, so `previousPath` rides only on a real move.
-    ...(previousPath && previousPath !== filePath ? { previousPath } : {}),
-    operation: 'move',
-    oldStr: '',
-    newStr: '',
-    structuredPatch: null,
-  }]
+  return [
+    {
+      filePath,
+      // One path alone still identifies the file, so `previousPath` rides only on a real move.
+      ...(previousPath && previousPath !== filePath
+        ? { previousPath }
+        : {}),
+      operation: 'move',
+      oldStr: '',
+      newStr: '',
+      structuredPatch: null,
+    },
+  ]
 }
 
 /**
@@ -111,33 +127,78 @@ export const DEFAULT_TOOL_REQUESTS: { [P in ToolKind]: DefaultToolRequest<P> } =
   agents: (args): ToolRequestByKind['agents'] => {
     const channel = pickString(args, 'channel')
     const query = pickString(args, 'q') || pickString(args, 'query')
-    return { ...(channel ? { channel } : {}), ...(query ? { query } : {}) }
+    return {
+      ...(channel
+        ? { channel }
+        : {}),
+      ...(query
+        ? { query }
+        : {}),
+    }
   },
   chart: (args): ToolRequestByKind['chart'] => ({ spec: pickString(args, 'spec') || '' }),
-  delete: (args): ToolRequestByKind['delete'] => ({ changes: removalChange(pickFirstString(args, TOOL_FILE_PATH_KEYS)) }),
-  move: (args): ToolRequestByKind['move'] => ({ changes: moveChange(args) }),
-  glob: (args): ToolRequestByKind['glob'] => ({ pattern: pickString(args, 'pattern') || pickString(args, 'query') || '', paths: toolInputPaths(args) }),
-  grep: (args): ToolRequestByKind['grep'] => ({ pattern: pickString(args, 'pattern') || pickString(args, 'query') || '', paths: toolInputPaths(args) }),
+  delete: (args): ToolRequestByKind['delete'] => ({
+    changes: removalChange(pickFirstString(args, TOOL_FILE_PATH_KEYS)),
+  }),
+  move: (args): ToolRequestByKind['move'] => ({
+    changes: moveChange(args),
+  }),
+  glob: (args): ToolRequestByKind['glob'] => ({
+    pattern: pickString(args, 'pattern') || pickString(args, 'query') || '',
+    paths: toolInputPaths(args),
+  }),
+  grep: (args): ToolRequestByKind['grep'] => ({
+    pattern: pickString(args, 'pattern') || pickString(args, 'query') || '',
+    paths: toolInputPaths(args),
+  }),
   image: (args): ToolRequestByKind['image'] => {
     const prompt = pickString(args, 'prompt')
-    return prompt ? { prompt } : {}
+    return prompt
+      ? { prompt }
+      : {}
   },
   list: (args): ToolRequestByKind['list'] => ({ path: pickFirstString(args, TOOL_FILE_PATH_KEYS) || '.' }),
-  memory: (args): ToolRequestByKind['memory'] => (Object.keys(args).length > 0 ? { payload: args } : {}),
-  report: (args): ToolRequestByKind['report'] => (Object.keys(args).length > 0 ? { payload: args } : {}),
+  memory: (args): ToolRequestByKind['memory'] => (Object.keys(args).length > 0
+    ? { payload: args }
+    : {}),
+  report: (args): ToolRequestByKind['report'] => (Object.keys(args).length > 0
+    ? { payload: args }
+    : {}),
   message: (args): ToolRequestByKind['message'] => {
     const to = pickString(args, 'to')
     const summary = pickString(args, 'summary')
-    return { ...(to ? { to } : {}), text: pickString(args, 'text') || pickString(args, 'message') || '', ...(summary ? { summary } : {}) }
+    return {
+      ...(to
+        ? { to }
+        : {}),
+      text: pickString(args, 'text') || pickString(args, 'message') || '',
+      ...(summary
+        ? { summary }
+        : {}),
+    }
   },
   question: (): ToolRequestByKind['question'] => ({ questions: [] }),
   skill: (args): ToolRequestByKind['skill'] => {
     const name = pickString(args, 'name') || pickString(args, 'skill')
-    return { ...(name ? { name } : {}), ...(Object.keys(args).length > 0 ? { args: prettifyArgsJson(args) } : {}) }
+    return {
+      ...(name
+        ? { name }
+        : {}),
+      ...(Object.keys(args).length > 0
+        ? {
+            args: prettifyArgsJson(args),
+          }
+        : {}),
+    }
   },
   task: (args): ToolRequestByKind['task'] => {
     const taskId = pickString(args, 'task_id') || pickString(args, 'taskId')
-    return { action: 'other', ...(taskId ? { taskId } : {}) }
+    return {
+      action: 'other',
+      ...(taskId
+        ? { taskId }
+        : {}),
+    }
   },
   // The thought the arguments carry. A provider whose thought arrives as the call's
   // own content, and not as an argument, overrides this entry.
@@ -153,31 +214,57 @@ export const DEFAULT_TOOL_REQUESTS: { [P in ToolKind]: DefaultToolRequest<P> } =
     const schedule = pickString(args, 'schedule') || pickString(args, 'cron')
     return {
       action: 'other',
-      ...(triggerId ? { triggerId } : {}),
-      ...(name ? { name } : {}),
-      ...(schedule ? { schedule } : {}),
+      ...(triggerId
+        ? { triggerId }
+        : {}),
+      ...(name
+        ? { name }
+        : {}),
+      ...(schedule
+        ? { schedule }
+        : {}),
     }
   },
   wait: (): ToolRequestByKind['wait'] => ({}),
   web_search: (args): ToolRequestByKind['web_search'] => ({ query: pickString(args, 'query') || pickString(args, 'q') || '' }),
-  edit: (args): ToolRequestByKind['edit'] => ({ changes: replacementChange(args, 'edit') }),
-  write: (args): ToolRequestByKind['write'] => ({ changes: replacementChange(args, 'add') }),
+  edit: (args): ToolRequestByKind['edit'] => ({
+    changes: replacementChange(args, 'edit'),
+  }),
+  write: (args): ToolRequestByKind['write'] => ({
+    changes: replacementChange(args, 'add'),
+  }),
   execute: (args): ToolRequestByKind['execute'] => {
     const description = pickString(args, 'description')
-    return { command: pickString(args, 'command') || pickString(args, 'cmd') || '', ...(description ? { description } : {}) }
+    return {
+      command: pickString(args, 'command') || pickString(args, 'cmd') || '',
+      ...(description
+        ? { description }
+        : {}),
+    }
   },
   fetch: (args): ToolRequestByKind['fetch'] => ({ url: pickString(args, 'url') || pickString(args, 'uri') || '' }),
-  mcp: (args): ToolRequestByKind['mcp'] => ({ args, server: pickString(args, 'server'), tool: pickString(args, 'tool') }),
+  mcp: (args): ToolRequestByKind['mcp'] => ({
+    args,
+    server: pickString(args, 'server'),
+    tool: pickString(args, 'tool'),
+  }),
   read: (args): ToolRequestByKind['read'] => {
     const offset = pickNumber(args, 'offset', undefined)
     const limit = pickNumber(args, 'limit', undefined)
     return {
       path: pickFirstString(args, TOOL_FILE_PATH_KEYS) || '',
-      ...(offset !== undefined ? { offset } : {}),
-      ...(limit !== undefined ? { limit } : {}),
+      ...(offset !== undefined
+        ? { offset }
+        : {}),
+      ...(limit !== undefined
+        ? { limit }
+        : {}),
     }
   },
-  search: (args): ToolRequestByKind['search'] => ({ pattern: pickString(args, 'pattern') || pickString(args, 'query') || '', paths: toolInputPaths(args) }),
+  search: (args): ToolRequestByKind['search'] => ({
+    pattern: pickString(args, 'pattern') || pickString(args, 'query') || '',
+    paths: toolInputPaths(args),
+  }),
   // Two fields, and three keys, because the kind carries two separate facts. `mode`
   // is where the session lands, and the Agent Client Protocol spells it `targetModeId`
   // as well. `target` is what the switch acts on -- the worktree name that
@@ -185,7 +272,14 @@ export const DEFAULT_TOOL_REQUESTS: { [P in ToolKind]: DefaultToolRequest<P> } =
   switch_mode: (args): ToolRequestByKind['switch_mode'] => {
     const mode = pickString(args, 'mode') || pickString(args, 'targetModeId')
     const target = pickString(args, 'target')
-    return { ...(mode ? { mode } : {}), ...(target ? { target } : {}) }
+    return {
+      ...(mode
+        ? { mode }
+        : {}),
+      ...(target
+        ? { target }
+        : {}),
+    }
   },
   unspecified: (args): ToolRequestByKind['unspecified'] => ({ args }),
   other: (args): ToolRequestByKind['other'] => ({ args }),
@@ -245,5 +339,7 @@ export function toolRequestFor<K extends ToolKind, F>(
   overrides: ToolRequestOverrides<F>,
 ): ToolRequestByKind[K] {
   const override = overrides[kind]
-  return override ? override(args, facts) : DEFAULT_TOOL_REQUESTS[kind](args)
+  return override
+    ? override(args, facts)
+    : DEFAULT_TOOL_REQUESTS[kind](args)
 }

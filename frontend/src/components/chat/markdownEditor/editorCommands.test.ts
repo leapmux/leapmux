@@ -14,11 +14,22 @@ const schema = new Schema({
   nodes: {
     doc: { content: 'block+' },
     paragraph: { group: 'block', content: 'inline*' },
-    code_block: { group: 'block', content: 'text*', attrs: { language: { default: null } } },
+    code_block: {
+      group: 'block',
+      content: 'text*',
+      attrs: {
+        language: { default: null },
+      },
+    },
     text: { group: 'inline', inline: true },
   },
   marks: {
-    link: { attrs: { href: {}, title: { default: null } } },
+    link: {
+      attrs: {
+        href: {},
+        title: { default: null },
+      },
+    },
   },
 })
 
@@ -35,7 +46,11 @@ function fakeEditor(state: EditorState) {
     focus: vi.fn(),
   }
   const editor = {
-    action: (fn: (ctx: unknown) => void) => fn({ get: (key: unknown) => (key === editorViewCtx ? view : undefined) }),
+    action: (fn: (ctx: unknown) => void) => fn({
+      get: (key: unknown) => (key === editorViewCtx
+        ? view
+        : undefined),
+    }),
   }
   return { editor: editor as unknown as Editor, view: view as unknown as EditorView & { state: EditorState } }
 }
@@ -53,7 +68,9 @@ function linkAt(state: EditorState, pos: number) {
 describe('applyLinkHref', () => {
   it('rewrites the href in place rather than adding a second mark', () => {
     const { editor, view } = fakeEditor(
-      paragraphState('docs', [schema.marks.link!.create({ href: 'https://old.test' })]),
+      paragraphState('docs', [
+        schema.marks.link!.create({ href: 'https://old.test' }),
+      ]),
     )
 
     applyLinkHref(editor, { from: 1, to: 5 }, 'https://new.test')
@@ -77,7 +94,11 @@ describe('applyLinkHref', () => {
 
     applyLinkHref(
       editor,
-      { from: 1, to: 5, attrs: { href: 'https://old.test', title: 'The docs' } },
+      {
+        from: 1,
+        to: 5,
+        attrs: { href: 'https://old.test', title: 'The docs' },
+      },
       'https://new.test',
     )
 
@@ -108,7 +129,9 @@ describe('applyLinkHref', () => {
 describe('removeLinkRange', () => {
   it('strips the mark and leaves the text', () => {
     const { editor, view } = fakeEditor(
-      paragraphState('docs', [schema.marks.link!.create({ href: 'https://old.test' })]),
+      paragraphState('docs', [
+        schema.marks.link!.create({ href: 'https://old.test' }),
+      ]),
     )
 
     removeLinkRange(editor, { from: 1, to: 5 })

@@ -33,7 +33,10 @@ describe('reasonixNotificationEntry', () => {
   })
 
   it('leaves model chunks and other frames unknown', () => {
-    expect(reasonixNotificationEntry({ sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'A model answer.' } })).toEqual([])
+    expect(reasonixNotificationEntry({
+      sessionUpdate: 'agent_message_chunk',
+      content: { type: 'text', text: 'A model answer.' },
+    })).toEqual([])
     expect(reasonixNotificationEntry({ sessionUpdate: 'session_info_update' })).toEqual([])
   })
 })

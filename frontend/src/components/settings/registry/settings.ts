@@ -50,10 +50,18 @@ const KNOWN_EXTERNAL_APP_IDS: ReadonlySet<string> = new Set(SUPPORTED_EXTERNAL_A
  * function on every declaration in this file. `CustomTitlebar.tsx` resolves
  * `isMacDesktop` the same way for the same reason.
  */
-const TRAY_ICON_LABEL = isMac() ? 'Menu bar icon' : 'Tray icon'
-const TRAY_SURFACE = isMac() ? 'menu bar' : 'tray'
-const TRAY_HIDE_OPTION = isMac() ? 'Hide to the menu bar' : 'Hide to the tray'
-const TRAY_KEEP_OPTION = isMac() ? 'Keep in the Dock' : 'Keep in the taskbar'
+const TRAY_ICON_LABEL = isMac()
+  ? 'Menu bar icon'
+  : 'Tray icon'
+const TRAY_SURFACE = isMac()
+  ? 'menu bar'
+  : 'tray'
+const TRAY_HIDE_OPTION = isMac()
+  ? 'Hide to the menu bar'
+  : 'Hide to the tray'
+const TRAY_KEEP_OPTION = isMac()
+  ? 'Keep in the Dock'
+  : 'Keep in the taskbar'
 
 /**
  * Whether NEITHER tier of a dual boolean turns its feature on.
@@ -214,7 +222,14 @@ export const browserSettings: BrowserSettingDecl[] = [
     // The palette NAMES are searchable too, so a user who knows what they want
     // can type it. The list comes from the catalogue rather than being restated,
     // so a palette added there is findable here with no second edit.
-    keywords: ['dark', 'light', 'palette', 'color scheme', 'appearance', ...THEMES.map(t => t.label)],
+    keywords: [
+      'dark',
+      'light',
+      'palette',
+      'color scheme',
+      'appearance',
+      ...THEMES.map(t => t.label),
+    ],
     scope: 'dual',
     // No `optionLabels`: the wire field is a custom editor, not an enum, and
     // the palette list is the client's own (see ~/styles/themes).
@@ -230,7 +245,13 @@ export const browserSettings: BrowserSettingDecl[] = [
     // exist so Dimidium stays findable under a theme called Default, and the
     // row's own menu shows exactly that word. Indexing the plain label meant a
     // user who typed what the menu showed got no hit on this row.
-    keywords: ['terminal', 'ansi', 'palette', 'match ui', ...THEMES.map(t => themeLabel(t, 'terminal'))],
+    keywords: [
+      'terminal',
+      'ansi',
+      'palette',
+      'match ui',
+      ...THEMES.map(t => themeLabel(t, 'terminal')),
+    ],
     scope: 'dual',
     // No `optionLabels`: a custom editor, like `theme` above.
     sentinel: 'nullable',
@@ -242,7 +263,14 @@ export const browserSettings: BrowserSettingDecl[] = [
     label: 'Syntax theme',
     help: 'Colors for highlighted code. Follows the app until you give it a palette of its own. Changing it re-highlights, so code repaints as you scroll.',
     // `themeLabel(t, 'syntax')`, for the reason the terminal row above gives.
-    keywords: ['syntax', 'highlight', 'code', 'palette', 'match ui', ...THEMES.map(t => themeLabel(t, 'syntax'))],
+    keywords: [
+      'syntax',
+      'highlight',
+      'code',
+      'palette',
+      'match ui',
+      ...THEMES.map(t => themeLabel(t, 'syntax')),
+    ],
     scope: 'dual',
     sentinel: 'nullable',
     bind: prefs => dualScalar(prefs.dual.syntaxTheme),
@@ -408,10 +436,13 @@ export const browserSettings: BrowserSettingDecl[] = [
     label: 'Enter key behavior',
     help: 'Whether Enter sends the message or inserts a newline.',
     scope: 'browser',
-    control: { kind: 'enum', options: [
-      { value: 'enter-sends', label: 'Enter sends' },
-      { value: 'cmd-enter-sends', label: 'Cmd/Ctrl+Enter sends' },
-    ] },
+    control: {
+      kind: 'enum',
+      options: [
+        { value: 'enter-sends', label: 'Enter sends' },
+        { value: 'cmd-enter-sends', label: 'Cmd/Ctrl+Enter sends' },
+      ],
+    },
     sentinel: 'nullable',
     bind: prefs => ({
       value: prefs.enterKeyMode,
@@ -438,11 +469,14 @@ export const browserSettings: BrowserSettingDecl[] = [
     label: 'Terminal renderer',
     help: 'GPU-accelerated (WebGL) or DOM (canvas) text rendering.',
     scope: 'browser',
-    control: { kind: 'enum', options: [
-      { value: 'auto', label: 'Auto' },
-      { value: 'webgl', label: 'WebGL' },
-      { value: 'canvas', label: 'Canvas' },
-    ] },
+    control: {
+      kind: 'enum',
+      options: [
+        { value: 'auto', label: 'Auto' },
+        { value: 'webgl', label: 'WebGL' },
+        { value: 'canvas', label: 'Canvas' },
+      ],
+    },
     sentinel: 'nullable',
     bind: prefs => ({
       value: prefs.terminalRenderer,
@@ -458,9 +492,21 @@ export const browserSettings: BrowserSettingDecl[] = [
     protoKey: SETTING_KEY_QUAKE_ORIENTATION,
     label: 'Quake terminal position',
     help: 'Edge of the centre area the quake terminal slides in from.',
-    keywords: ['quake', 'drop-down', 'dropdown', 'overlay', 'panel', 'hotkey'],
+    keywords: [
+      'quake',
+      'drop-down',
+      'dropdown',
+      'overlay',
+      'panel',
+      'hotkey',
+    ],
     scope: 'dual',
-    optionLabels: { top: 'Top', bottom: 'Bottom', left: 'Left', right: 'Right' },
+    optionLabels: {
+      top: 'Top',
+      bottom: 'Bottom',
+      left: 'Left',
+      right: 'Right',
+    },
     sentinel: 'nullable',
     bind: prefs => dualScalar(prefs.dual.quakeOrientation),
   },
@@ -469,7 +515,13 @@ export const browserSettings: BrowserSettingDecl[] = [
     protoKey: SETTING_KEY_QUAKE_SIZE_PERCENT,
     label: 'Quake terminal size',
     help: 'Share of the centre area the quake terminal covers.',
-    keywords: ['quake', 'height', 'width', 'overlay', 'panel'],
+    keywords: [
+      'quake',
+      'height',
+      'width',
+      'overlay',
+      'panel',
+    ],
     scope: 'dual',
     sentinel: 'nullable',
     bind: prefs => dualScalar(prefs.dual.quakeSizePercent),
@@ -479,7 +531,13 @@ export const browserSettings: BrowserSettingDecl[] = [
     protoKey: SETTING_KEY_QUAKE_ANIMATION_MS,
     label: 'Quake terminal animation',
     help: 'How long the quake terminal takes to slide in and out. The system reduced-motion setting overrides it.',
-    keywords: ['quake', 'slide', 'motion', 'duration', 'speed'],
+    keywords: [
+      'quake',
+      'slide',
+      'motion',
+      'duration',
+      'speed',
+    ],
     scope: 'dual',
     sentinel: 'nullable',
     bind: prefs => dualScalar(prefs.dual.quakeAnimationMs),
@@ -489,7 +547,13 @@ export const browserSettings: BrowserSettingDecl[] = [
     protoKey: SETTING_KEY_QUAKE_BACKGROUND_OPACITY,
     label: 'Quake terminal background opacity',
     help: 'Opacity of the quake terminal background. The text stays fully opaque.',
-    keywords: ['quake', 'transparency', 'translucent', 'alpha', 'overlay'],
+    keywords: [
+      'quake',
+      'transparency',
+      'translucent',
+      'alpha',
+      'overlay',
+    ],
     scope: 'dual',
     sentinel: 'nullable',
     bind: prefs => dualScalar(prefs.dual.quakeBackgroundOpacity),
@@ -509,7 +573,14 @@ export const browserSettings: BrowserSettingDecl[] = [
     help: `Show a LeapMux icon in the ${TRAY_SURFACE}. The icon keeps LeapMux available when no window is open.`,
     // BOTH platform words, whichever the label shows. A user who knows the
     // feature from Windows types "tray" on a Mac and must still find the row.
-    keywords: ['tray', 'menu bar', 'system tray', 'status icon', 'notification area', 'background'],
+    keywords: [
+      'tray',
+      'menu bar',
+      'system tray',
+      'status icon',
+      'notification area',
+      'background',
+    ],
     scope: 'dual',
     sentinel: 'nullable',
     hidden: () => !isDesktopApp(),
@@ -520,7 +591,14 @@ export const browserSettings: BrowserSettingDecl[] = [
     protoKey: 'tray_on_close',
     label: 'When you close the window',
     help: 'Select what LeapMux does when you close the last window.',
-    keywords: ['close', 'quit', 'exit', 'tray', 'menu bar', 'background'],
+    keywords: [
+      'close',
+      'quit',
+      'exit',
+      'tray',
+      'menu bar',
+      'background',
+    ],
     scope: 'dual',
     optionLabels: { [TRAY_ON_CLOSE_TRAY]: TRAY_HIDE_OPTION, [TRAY_ON_CLOSE_QUIT]: 'Quit LeapMux' },
     sentinel: 'nullable',
@@ -533,7 +611,14 @@ export const browserSettings: BrowserSettingDecl[] = [
     protoKey: 'tray_on_minimize',
     label: 'When you minimize the window',
     help: 'Select what LeapMux does when you minimize the window.',
-    keywords: ['minimize', 'taskbar', 'dock', 'tray', 'menu bar', 'hide'],
+    keywords: [
+      'minimize',
+      'taskbar',
+      'dock',
+      'tray',
+      'menu bar',
+      'hide',
+    ],
     scope: 'dual',
     optionLabels: { [TRAY_ON_MINIMIZE_TRAY]: TRAY_HIDE_OPTION, [TRAY_ON_MINIMIZE_TASKBAR]: TRAY_KEEP_OPTION },
     sentinel: 'nullable',
@@ -546,7 +631,15 @@ export const browserSettings: BrowserSettingDecl[] = [
     protoKey: 'start_on_login',
     label: 'Start at login',
     help: 'Start LeapMux when you sign in to the computer.',
-    keywords: ['login', 'startup', 'autostart', 'start up', 'launch', 'boot', 'login item'],
+    keywords: [
+      'login',
+      'startup',
+      'autostart',
+      'start up',
+      'launch',
+      'boot',
+      'login item',
+    ],
     scope: 'dual',
     sentinel: 'nullable',
     hidden: () => !isDesktopApp(),
@@ -557,7 +650,14 @@ export const browserSettings: BrowserSettingDecl[] = [
     protoKey: 'start_minimized',
     label: 'Window at login',
     help: `Select if LeapMux shows a window when it starts at login. If the ${TRAY_SURFACE} icon is on, LeapMux starts in the ${TRAY_SURFACE}. If it is off, LeapMux starts minimized.`,
-    keywords: ['login', 'startup', 'minimized', 'hidden', 'background', 'window'],
+    keywords: [
+      'login',
+      'startup',
+      'minimized',
+      'hidden',
+      'background',
+      'window',
+    ],
     scope: 'dual',
     optionLabels: { [START_MINIMIZED_WINDOW]: 'Show the window', [START_MINIMIZED_MINIMIZED]: 'Hide the window' },
     sentinel: 'nullable',
@@ -581,7 +681,9 @@ export const browserSettings: BrowserSettingDecl[] = [
     bind: prefs => ({
       value: prefs.preferredExternalAppId,
       set: (v) => {
-        const id = typeof v === 'string' ? v.trim() : ''
+        const id = typeof v === 'string'
+          ? v.trim()
+          : ''
         if (id === '') {
           prefs.setPreferredExternalAppId(undefined)
           return undefined
@@ -712,7 +814,12 @@ export const browserSettings: BrowserSettingDecl[] = [
     category: 'account',
     label: 'Profile',
     help: 'The username other people address you by, and the name the app shows.',
-    keywords: ['username', 'display name', 'profile', 'name'],
+    keywords: [
+      'username',
+      'display name',
+      'profile',
+      'name',
+    ],
     scope: 'account',
     control: { kind: 'custom', id: 'accountProfile' },
     sentinel: 'nullable',
@@ -724,7 +831,12 @@ export const browserSettings: BrowserSettingDecl[] = [
     category: 'account',
     label: 'Email',
     help: 'The address that receives the account-recovery link, and how to change it.',
-    keywords: ['email', 'address', 'verify', 'recovery'],
+    keywords: [
+      'email',
+      'address',
+      'verify',
+      'recovery',
+    ],
     scope: 'account',
     control: { kind: 'custom', id: 'accountEmail' },
     sentinel: 'nullable',
@@ -763,7 +875,12 @@ export const browserSettings: BrowserSettingDecl[] = [
     category: 'account',
     label: 'Passkeys',
     help: 'The passkeys registered to this account, and how to add or remove one.',
-    keywords: ['passkey', 'webauthn', 'security key', 'fido'],
+    keywords: [
+      'passkey',
+      'webauthn',
+      'security key',
+      'fido',
+    ],
     scope: 'account',
     control: { kind: 'custom', id: 'accountPasskeys' },
     sentinel: 'nullable',
@@ -776,7 +893,14 @@ export const browserSettings: BrowserSettingDecl[] = [
     category: 'account',
     label: 'Linked accounts',
     help: 'The identity providers you sign in through, and how to detach one.',
-    keywords: ['oauth', 'provider', 'github', 'link', 'unlink', 'sso'],
+    keywords: [
+      'oauth',
+      'provider',
+      'github',
+      'link',
+      'unlink',
+      'sso',
+    ],
     scope: 'account',
     control: { kind: 'custom', id: 'accountLinkedProviders' },
     sentinel: 'nullable',
@@ -795,7 +919,17 @@ export const browserSettings: BrowserSettingDecl[] = [
     category: 'apps',
     label: 'Connected apps',
     help: 'Apps you authorized, what each one may do, and how to disconnect it.',
-    keywords: ['app', 'oauth', 'cli', 'token', 'device', 'revoke', 'disconnect', 'permission', 'scope'],
+    keywords: [
+      'app',
+      'oauth',
+      'cli',
+      'token',
+      'device',
+      'revoke',
+      'disconnect',
+      'permission',
+      'scope',
+    ],
     scope: 'account',
     control: { kind: 'custom', id: 'accountConnectedApps' },
     sentinel: 'nullable',
@@ -810,7 +944,15 @@ export const browserSettings: BrowserSettingDecl[] = [
     category: 'apps',
     label: 'App registrations',
     help: 'Apps registered on this hub. Yours are visible to you alone; an administrator\'s are visible to everybody.',
-    keywords: ['app', 'oauth', 'register', 'client', 'redirect', 'secret', 'developer'],
+    keywords: [
+      'app',
+      'oauth',
+      'register',
+      'client',
+      'redirect',
+      'secret',
+      'developer',
+    ],
     scope: 'account',
     control: { kind: 'custom', id: 'accountAppRegistrations' },
     sentinel: 'nullable',
@@ -876,7 +1018,11 @@ export function buildBrowserReset(prefs: PreferencesState): BrowserResetAction[]
     const resetBrowser = decl.resetBrowser
     if (resetBrowser === undefined)
       continue
-    actions.push({ id: decl.id, sentinel: decl.sentinel, reset: () => resetBrowser(prefs) })
+    actions.push({
+      id: decl.id,
+      sentinel: decl.sentinel,
+      reset: () => resetBrowser(prefs),
+    })
   }
   return actions
 }

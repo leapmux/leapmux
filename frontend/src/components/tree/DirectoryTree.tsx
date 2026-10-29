@@ -247,17 +247,29 @@ const TreeContextMenu: Component<{
   const tree = useTree()
   return (
     <FileActionsMenu
-      {...(props.contextMenuFor !== undefined ? { contextMenuFor: props.contextMenuFor } : {})}
+      {...(props.contextMenuFor !== undefined
+        ? { contextMenuFor: props.contextMenuFor }
+        : {})}
       workerId={tree.workerId}
       path={props.path}
       flavor={tree.flavor()}
       isDir={props.isDir}
       rootPath={tree.rootPath}
-      {...(tree.homeDir !== undefined ? { homeDir: tree.homeDir } : {})}
-      {...(props.size !== undefined ? { size: props.size } : {})}
-      {...(props.modTime !== undefined ? { modTime: props.modTime } : {})}
-      {...(tree.onMention !== undefined ? { onMention: tree.onMention } : {})}
-      {...(tree.onOpenTerminal !== undefined ? { onOpenTerminal: tree.onOpenTerminal } : {})}
+      {...(tree.homeDir !== undefined
+        ? { homeDir: tree.homeDir }
+        : {})}
+      {...(props.size !== undefined
+        ? { size: props.size }
+        : {})}
+      {...(props.modTime !== undefined
+        ? { modTime: props.modTime }
+        : {})}
+      {...(tree.onMention !== undefined
+        ? { onMention: tree.onMention }
+        : {})}
+      {...(tree.onOpenTerminal !== undefined
+        ? { onOpenTerminal: tree.onOpenTerminal }
+        : {})}
       triggerClass={menuTrigger}
       triggerTestId="tree-context-button"
       itemTestIdPrefix="tree"
@@ -319,7 +331,9 @@ const TreeNode: Component<{
     if (wrapperRect.bottom > containerRect.bottom) {
       // Scroll so the children are visible, but clamp so the node
       // row itself (the selected directory) stays visible at the top.
-      const nodeRowHeight = nodeRef ? nodeRef.getBoundingClientRect().height : 0
+      const nodeRowHeight = nodeRef
+        ? nodeRef.getBoundingClientRect().height
+        : 0
       const overflow = wrapperRect.bottom - containerRect.bottom
       const maxScroll = wrapperRect.top - containerRect.top - nodeRowHeight
       container.scrollTop += Math.min(overflow, Math.max(0, maxScroll))
@@ -510,7 +524,9 @@ const TreeNode: Component<{
         : NO_GIT_ICON
     }
     const entry = store.getFileStatus(props.node.path)
-    return entry ? getGitFileIconClass(entry) : NO_GIT_ICON
+    return entry
+      ? getGitFileIconClass(entry)
+      : NO_GIT_ICON
   })
   const diffStats = createMemo<DiffStats | null>(() => {
     if (!tree.showGitStatus)
@@ -527,21 +543,31 @@ const TreeNode: Component<{
           tree.registerRow(props.node.path, el)
         }}
         class={styles.node}
-        classList={{ [styles.nodeSelected]: isSelected() }}
+        classList={{
+          [styles.nodeSelected]: isSelected(),
+        }}
         // The row's own statement of selection, so the coarse-pointer kebab
         // reveal (~/components/tree/sidebarActions.css.ts) keys on ONE marker
         // for every row type, not on each type's style class.
-        data-active={isSelected() ? 'true' : 'false'}
-        style={{ 'padding-left': indent() }}
+        data-active={isSelected()
+          ? 'true'
+          : 'false'}
+        style={{
+          'padding-left': indent(),
+        }}
         data-testid="tree-row"
         role="treeitem"
         // Omitted for a file. `aria-expanded` on a row that can never open
         // announces it as a directory that happens to be closed.
-        aria-expanded={props.node.isDir ? expanded() : undefined}
+        aria-expanded={props.node.isDir
+          ? expanded()
+          : undefined}
         aria-selected={isSelected()}
         // The root row is level 1, so a depth-0 child is level 2.
         aria-level={props.depth + 2}
-        tabIndex={tree.tabStopPath() === props.node.path ? 0 : -1}
+        tabIndex={tree.tabStopPath() === props.node.path
+          ? 0
+          : -1}
         onFocus={() => tree.noteRowFocus(props.node.path)}
         onClick={toggle}
       >
@@ -549,7 +575,13 @@ const TreeNode: Component<{
           when={props.node.isDir}
           fallback={<span class={styles.chevronPlaceholder} />}
         >
-          <Icon icon={ChevronRight} size="md" class={`${styles.chevron}${expanded() ? ` ${styles.chevronExpanded}` : ''}`} />
+          <Icon
+            icon={ChevronRight}
+            size="md"
+            class={`${styles.chevron}${expanded()
+              ? ` ${styles.chevronExpanded}`
+              : ''}`}
+          />
         </Show>
         <Show
           when={props.node.isDir}
@@ -904,7 +936,9 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
    */
   const visibleRows = createMemo<VisibleRow[]>(() => {
     const rp = rootPath()
-    const rows: VisibleRow[] = [{ path: rp, isDir: true, parent: undefined }]
+    const rows: VisibleRow[] = [
+      { path: rp, isDir: true, parent: undefined },
+    ]
     const walk = (parent: string) => {
       const all = getChildren(parent)
       if (!all)
@@ -1064,7 +1098,12 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
     // `enabled` is a dependency, not just a guard: a worktree-creating agent
     // starts disabled and flips true once its directory exists, and the stat
     // has to run then rather than wait for a manual refresh.
-    () => [props.workerId, rootPath(), refreshVersion(), props.enabled !== false] as const,
+    () => [
+      props.workerId,
+      rootPath(),
+      refreshVersion(),
+      props.enabled !== false,
+    ] as const,
     ([workerId, root, , enabled], prev) => {
       // Blank the old value only when the ROW changes. A refresh re-stats the
       // same directory, so clearing there would make the menu's Modified row
@@ -1183,7 +1222,9 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
                 ref={setRootNodeEl}
                 class={styles.node}
                 classList={{ [styles.nodeSelected]: props.selectedPath === rootPath() }}
-                data-active={props.selectedPath === rootPath() ? 'true' : 'false'}
+                data-active={props.selectedPath === rootPath()
+                  ? 'true'
+                  : 'false'}
                 style={{ 'padding-left': '8px' }}
                 data-testid="tree-root-node"
                 role="treeitem"
@@ -1192,7 +1233,9 @@ export const DirectoryTree: Component<DirectoryTreeProps> = (props) => {
                 aria-expanded={true}
                 aria-selected={props.selectedPath === rootPath()}
                 aria-level={1}
-                tabIndex={tabStopPath() === rootPath() ? 0 : -1}
+                tabIndex={tabStopPath() === rootPath()
+                  ? 0
+                  : -1}
                 onFocus={() => setFocusedPath(rootPath())}
                 onClick={() => props.onSelect(rootPath())}
               >

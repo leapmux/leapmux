@@ -429,8 +429,10 @@ tasks:
         - exclude: frontend/node_modules/.cache/**/*
         - exclude: frontend/node_modules/.vite/**/*
         - exclude: frontend/node_modules/.vite-temp/**/*
-        # The frontend build owns TanStack's generated server-function manifests.
-        - exclude: frontend/node_modules/.tanstack-start/**/*
+        # The frontend build owns Nitro's server bundle and prerender output.
+        - exclude: frontend/node_modules/.nitro/**/*
+        # Vitest owns its module cache, which every test run rewrites.
+        - exclude: frontend/node_modules/.vitest-cache/**/*
     generates: *outputs_install_frontend_deps
     status: *artifact_status
     cmds:
@@ -598,7 +600,8 @@ tasks:
       - scripts/task-state.mjs
       - frontend/package.json
       - frontend/bun.lock
-      - frontend/app.config.ts
+      - frontend/vite.config.ts
+      - frontend/viteAssetAccess.ts
       - frontend/tsconfig.json
       - frontend/.env*
       - frontend/src/**/*
@@ -1645,7 +1648,7 @@ tasks:
     desc: Remove frontend build artifacts
     cmds:
       - rm -rf frontend/.output/
-      - rm -rf frontend/.vinxi/
+      - rm -rf frontend/dist/
       - rm -f  frontend/public/NOTICE.html
       - rm -rf frontend/public/icons/
       - rm -rf frontend/src/spinners/

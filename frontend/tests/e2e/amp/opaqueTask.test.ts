@@ -50,7 +50,10 @@ vi.mock('@playwright/test', async (importOriginal) => {
       toHaveAttribute: async (name: string, expected: string) => actual.expect(value.attributes[name], message).toBe(expected),
     }
   }
-  return { ...actual, expect: Object.assign(check, actual.expect) }
+  return {
+    ...actual,
+    expect: Object.assign(check, actual.expect),
+  }
 })
 
 vi.mock('../helpers/nativeScenario', async importOriginal => ({
@@ -62,7 +65,9 @@ vi.mock('../helpers/nativeSidebarSnapshot', async importOriginal => ({
   ...await importOriginal<typeof import('../helpers/nativeSidebarSnapshot')>(),
   readNativeSidebarSnapshot: async (_context: unknown, agentId?: string) => {
     fake.log.push(`snapshot ${agentId ?? ''}`)
-    return { backgroundTasks: fake.reloaded ? fake.savedTasks : fake.runningTasks }
+    return {
+      backgroundTasks: fake.reloaded ? fake.savedTasks : fake.runningTasks,
+    }
   },
 }))
 
@@ -73,7 +78,9 @@ vi.mock('../helpers/subagentRegistry', async importOriginal => ({
 
 vi.mock('./toolResult', async importOriginal => ({
   ...await importOriginal<typeof import('./toolResult')>(),
-  ampToolResultReader: () => async (request: MockModelRequestRecord) => ({ text: String(request.body) }),
+  ampToolResultReader: () => async (request: MockModelRequestRecord) => ({
+    text: String(request.body),
+  }),
 }))
 
 vi.mock('../helpers/ui', async importOriginal => ({
@@ -91,7 +98,13 @@ vi.mock('../helpers/ui', async importOriginal => ({
   },
   messageContents: () => ({
     filter: ({ hasText }: { hasText: string }) => ({
-      first: () => ({ probe: true, count: fake.row.attributes['data-status'] === 'succeeded' && hasText === fake.childReport ? 1 : 0, attributes: {} }),
+      first: () => ({
+        probe: true,
+        count: fake.row.attributes['data-status'] === 'succeeded' && hasText === fake.childReport
+          ? 1
+          : 0,
+        attributes: {},
+      }),
     }),
   }),
   waitForSettingsHydrated: async (_page: Page, groupId: string) => {
@@ -100,8 +113,21 @@ vi.mock('../helpers/ui', async importOriginal => ({
 }))
 
 function status(): MockModelScenarioStatus {
-  const childRequest: MockModelRequestRecord = { protocol: 'anthropic-messages', path: '/v1/messages', rule: fake.childRule, body: 'AMPREMOTETASK' }
-  return { complete: false, nextStep: QUEUE_START + 1, stepCount: QUEUE_START + 2, ruleMatches: {}, pendingGates: [], requests: [childRequest], unexpectedRequests: [] }
+  const childRequest: MockModelRequestRecord = {
+    protocol: 'anthropic-messages',
+    path: '/v1/messages',
+    rule: fake.childRule,
+    body: 'AMPREMOTETASK',
+  }
+  return {
+    complete: false,
+    nextStep: QUEUE_START + 1,
+    stepCount: QUEUE_START + 2,
+    ruleMatches: {},
+    pendingGates: [],
+    requests: [childRequest],
+    unexpectedRequests: [],
+  }
 }
 
 /** A context whose page and model script are the fakes of this file. */
@@ -141,14 +167,37 @@ function fakeContext(): ManagedNativeScenarioContext {
       fake.log.push(`requestAt ${stepIndex}`)
       if (fake.failFinish)
         throw new Error('The parent request never arrived.')
-      return { protocol: 'anthropic-messages', path: '/v1/messages', stepIndex, body: fake.childReport }
+      return {
+        protocol: 'anthropic-messages',
+        path: '/v1/messages',
+        stepIndex,
+        body: fake.childReport,
+      }
     },
   })
-  return { page, modelScript, provider: AgentProvider.AMP, providerAgent: { provider: AgentProvider.AMP, prefix: 'native-e2e' }, workspaceId: 'amp-opaque', leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'unused', workerId: 'unused' } }
+  return {
+    page,
+    modelScript,
+    provider: AgentProvider.AMP,
+    providerAgent: { provider: AgentProvider.AMP, prefix: 'native-e2e' },
+    workspaceId: 'amp-opaque',
+    leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'unused', workerId: 'unused' },
+  }
 }
 
-const OPEN_LOG = ['rule', 'queue 2', 'send', 'gate', 'snapshot amp-parent']
-const FINISH_LOG = ['release', `requestAt ${QUEUE_START + 1}`, 'click amp-parent', 'idle']
+const OPEN_LOG = [
+  'rule',
+  'queue 2',
+  'send',
+  'gate',
+  'snapshot amp-parent',
+]
+const FINISH_LOG = [
+  'release',
+  `requestAt ${QUEUE_START + 1}`,
+  'click amp-parent',
+  'idle',
+]
 const RELOAD_LOG = ['reload', 'hydrated permissionMode', 'snapshot amp-parent']
 
 describe('exerciseOpaqueAmpTaskLimit', () => {
@@ -158,9 +207,17 @@ describe('exerciseOpaqueAmpTaskLimit', () => {
     fake.childRule = ''
     fake.childReport = ''
     fake.failFinish = false
-    fake.row = { probe: true, count: 1, attributes: { 'data-status': 'running', 'data-child-agent-id': '', 'aria-disabled': 'true' } }
-    fake.runningTasks = [{ kind: BackgroundTaskKind.SUBAGENT, status: BackgroundTaskStatus.RUNNING, childAgentId: '' }]
-    fake.savedTasks = [{ kind: BackgroundTaskKind.SUBAGENT, status: BackgroundTaskStatus.SUCCEEDED, childAgentId: '' }]
+    fake.row = {
+      probe: true,
+      count: 1,
+      attributes: { 'data-status': 'running', 'data-child-agent-id': '', 'aria-disabled': 'true' },
+    }
+    fake.runningTasks = [
+      { kind: BackgroundTaskKind.SUBAGENT, status: BackgroundTaskStatus.RUNNING, childAgentId: '' },
+    ]
+    fake.savedTasks = [
+      { kind: BackgroundTaskKind.SUBAGENT, status: BackgroundTaskStatus.SUCCEEDED, childAgentId: '' },
+    ]
   })
 
   it('runs the proof while the task runs, then finishes the task and proves the saved task after a reload', async () => {
@@ -173,7 +230,12 @@ describe('exerciseOpaqueAmpTaskLimit', () => {
       expect(task.childRequest.rule).toBe(fake.childRule)
       expect(fake.row.attributes['data-status']).toBe('running')
     })
-    expect(fake.log).toEqual([...OPEN_LOG, 'proof', ...FINISH_LOG, ...RELOAD_LOG])
+    expect(fake.log).toEqual([
+      ...OPEN_LOG,
+      'proof',
+      ...FINISH_LOG,
+      ...RELOAD_LOG,
+    ])
   })
 
   it('finishes the task and keeps the proof error when the proof fails', async () => {
@@ -181,7 +243,11 @@ describe('exerciseOpaqueAmpTaskLimit', () => {
       fake.log.push('proof')
       throw new Error('The opaque limit proof failed.')
     })).rejects.toThrow('The opaque limit proof failed.')
-    expect(fake.log).toEqual([...OPEN_LOG, 'proof', ...FINISH_LOG])
+    expect(fake.log).toEqual([
+      ...OPEN_LOG,
+      'proof',
+      ...FINISH_LOG,
+    ])
   })
 
   it('keeps the proof error and the finish error together', async () => {
@@ -205,20 +271,41 @@ describe('exerciseOpaqueAmpTaskLimit', () => {
       await task.finish()
     })
     expect(fake.log.filter(entry => entry === 'release')).toHaveLength(1)
-    expect(fake.log).toEqual([...OPEN_LOG, ...FINISH_LOG, ...RELOAD_LOG])
+    expect(fake.log).toEqual([
+      ...OPEN_LOG,
+      ...FINISH_LOG,
+      ...RELOAD_LOG,
+    ])
   })
 
   it('fails when the saved task links a child agent', async () => {
-    fake.savedTasks = [{ kind: BackgroundTaskKind.SUBAGENT, status: BackgroundTaskStatus.SUCCEEDED, childAgentId: 'amp-child' }]
+    fake.savedTasks = [
+      { kind: BackgroundTaskKind.SUBAGENT, status: BackgroundTaskStatus.SUCCEEDED, childAgentId: 'amp-child' },
+    ]
     // Playwright's `expect` fails with the values that it compared: the child link must be empty.
-    await expect(exerciseOpaqueAmpTaskLimit(fakeContext(), async () => {})).rejects.toMatchObject({ matcherResult: { actual: 'amp-child', expected: '' } })
-    expect(fake.log).toEqual([...OPEN_LOG, ...FINISH_LOG, ...RELOAD_LOG])
+    await expect(exerciseOpaqueAmpTaskLimit(fakeContext(), async () => {})).rejects.toMatchObject({
+      matcherResult: { actual: 'amp-child', expected: '' },
+    })
+    expect(fake.log).toEqual([
+      ...OPEN_LOG,
+      ...FINISH_LOG,
+      ...RELOAD_LOG,
+    ])
   })
 
   it('fails when the registry saves more than one task', async () => {
-    fake.savedTasks = [...fake.savedTasks, { kind: BackgroundTaskKind.SUBAGENT, status: BackgroundTaskStatus.SUCCEEDED, childAgentId: '' }]
-    await expect(exerciseOpaqueAmpTaskLimit(fakeContext(), async () => {})).rejects.toMatchObject({ matcherResult: { name: 'toHaveLength', pass: false } })
-    expect(fake.log).toEqual([...OPEN_LOG, ...FINISH_LOG, ...RELOAD_LOG])
+    fake.savedTasks = [
+      ...fake.savedTasks,
+      { kind: BackgroundTaskKind.SUBAGENT, status: BackgroundTaskStatus.SUCCEEDED, childAgentId: '' },
+    ]
+    await expect(exerciseOpaqueAmpTaskLimit(fakeContext(), async () => {})).rejects.toMatchObject({
+      matcherResult: { name: 'toHaveLength', pass: false },
+    })
+    expect(fake.log).toEqual([
+      ...OPEN_LOG,
+      ...FINISH_LOG,
+      ...RELOAD_LOG,
+    ])
   })
 
   it('releases the gate and runs no proof when the running row links a child agent', async () => {
@@ -226,14 +313,26 @@ describe('exerciseOpaqueAmpTaskLimit', () => {
     let proved = false
     await expect(exerciseOpaqueAmpTaskLimit(fakeContext(), async () => {
       proved = true
-    })).rejects.toMatchObject({ matcherResult: { actual: 'amp-child', expected: '' } })
+    })).rejects.toMatchObject({
+      matcherResult: { actual: 'amp-child', expected: '' },
+    })
     expect(proved).toBe(false)
-    expect(fake.log).toEqual(['rule', 'queue 2', 'send', 'gate', 'release'])
+    expect(fake.log).toEqual([
+      'rule',
+      'queue 2',
+      'send',
+      'gate',
+      'release',
+    ])
   })
 
   it('releases the gate and runs no proof when the Worker task links a child agent', async () => {
-    fake.runningTasks = [{ kind: BackgroundTaskKind.SUBAGENT, status: BackgroundTaskStatus.RUNNING, childAgentId: 'amp-child' }]
-    await expect(exerciseOpaqueAmpTaskLimit(fakeContext(), async () => {})).rejects.toMatchObject({ matcherResult: { actual: 'amp-child', expected: '' } })
+    fake.runningTasks = [
+      { kind: BackgroundTaskKind.SUBAGENT, status: BackgroundTaskStatus.RUNNING, childAgentId: 'amp-child' },
+    ]
+    await expect(exerciseOpaqueAmpTaskLimit(fakeContext(), async () => {})).rejects.toMatchObject({
+      matcherResult: { actual: 'amp-child', expected: '' },
+    })
     expect(fake.log).toEqual([...OPEN_LOG, 'release'])
   })
 })

@@ -6,14 +6,16 @@ import { controlButton, messageContents, savedControlAnswer } from '../helpers/u
 import { mimoTest } from '../mimo-fixtures'
 
 mimoTest.describe('questions for MiMo Code', () => {
-  const questions: QuestionRequest[] = [{
-    question: 'Choose a style',
-    header: 'Style',
-    options: [
-      { label: 'Alpha', description: 'Use the first style.' },
-      { label: 'Beta', description: 'Use the second style.' },
-    ],
-  }]
+  const questions: QuestionRequest[] = [
+    {
+      question: 'Choose a style',
+      header: 'Style',
+      options: [
+        { label: 'Alpha', description: 'Use the first style.' },
+        { label: 'Beta', description: 'Use the second style.' },
+      ],
+    },
+  ]
 
   mimoTest('delivers the selected answer to the question tool', async ({ native }) => {
     const { result } = await exerciseQuestionAnswer(native, {
@@ -64,7 +66,12 @@ mimoTest.describe('questions for MiMo Code', () => {
       callId: 'pizza-questions',
       prompt: 'Ask me about the pizza.',
       answer: 'Recorded the pizza.',
-      reply: chooseQuestionPages(native, questions, [{ labels: ['Cheese', 'Basil'] }, { text: 'Garden Special' }]),
+      reply: chooseQuestionPages(native, questions, [
+        {
+          labels: ['Cheese', 'Basil'],
+        },
+        { text: 'Garden Special' },
+      ]),
     })
     expect(result).toContain('Cheese')
     expect(result).toContain('Basil')

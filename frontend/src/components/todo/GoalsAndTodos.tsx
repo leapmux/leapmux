@@ -30,7 +30,9 @@ export const GoalsAndTodos: Component<GoalsAndTodosProps> = props => (
       {goal => (
         <GoalCard
           goal={goal()}
-          {...(props.announceGoal !== undefined ? { announce: props.announceGoal } : {})}
+          {...(props.announceGoal !== undefined
+            ? { announce: props.announceGoal }
+            : {})}
         />
       )}
     </Show>

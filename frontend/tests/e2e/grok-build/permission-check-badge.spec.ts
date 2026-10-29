@@ -27,7 +27,11 @@ grokTest('shows the permission-check badge while the Smart classifier holds a to
     respond: { text: '{"thinking":"The command removes the fixture file.","shouldBlock":true,"reason":"Ask before the fixture removal."}', gate },
   })
   const start = await modelScript.queue(
-    { toolCalls: [bashToolCall(native.provider, 'smart-permission-badge', `rm -rf ${quotePosixShellArgument(file)}`)] },
+    {
+      toolCalls: [
+        bashToolCall(native.provider, 'smart-permission-badge', `rm -rf ${quotePosixShellArgument(file)}`),
+      ],
+    },
     nativeTextStep(native, 'The Smart reviewer blocked the removal.'),
   )
   try {

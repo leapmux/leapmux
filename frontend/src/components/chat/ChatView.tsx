@@ -288,10 +288,18 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // Each member is omitted (not undefined) when the agent scope holds none, so the
   // host's plain -- non-getter -- members never carry a stray undefined.
   const hostLookups = createMemo(() => ({
-    ...(props.messageContext !== undefined ? { messages: props.messageContext } : {}),
-    ...(props.agentLifecycle?.onOpenSubagent !== undefined ? { onOpenSubagent: props.agentLifecycle.onOpenSubagent } : {}),
-    ...(props.agentLifecycle?.onOpenImage !== undefined ? { onOpenImage: props.agentLifecycle.onOpenImage } : {}),
-    ...(props.agentLifecycle?.onApproveAutoReviewDenial !== undefined ? { onApproveAutoReviewDenial: props.agentLifecycle.onApproveAutoReviewDenial } : {}),
+    ...(props.messageContext !== undefined
+      ? { messages: props.messageContext }
+      : {}),
+    ...(props.agentLifecycle?.onOpenSubagent !== undefined
+      ? { onOpenSubagent: props.agentLifecycle.onOpenSubagent }
+      : {}),
+    ...(props.agentLifecycle?.onOpenImage !== undefined
+      ? { onOpenImage: props.agentLifecycle.onOpenImage }
+      : {}),
+    ...(props.agentLifecycle?.onApproveAutoReviewDenial !== undefined
+      ? { onApproveAutoReviewDenial: props.agentLifecycle.onApproveAutoReviewDenial }
+      : {}),
   }))
 
   // The scroll container (also handed to scroll.attachListRef below). Read
@@ -351,7 +359,9 @@ export const ChatView: Component<ChatViewProps> = (props) => {
     onHeight: setViewportHeight,
   })
   onCleanup(() => viewportSizeObserver.disconnect())
-  const effectiveContentWidth = createMemo(() => contentWidth() > 0 ? contentWidth() : PRE_MEASURE_WIDTH_PX)
+  const effectiveContentWidth = createMemo(() => contentWidth() > 0
+    ? contentWidth()
+    : PRE_MEASURE_WIDTH_PX)
 
   // DOM heights are width-sensitive, so the measured-height cache key folds the effective
   // layout width into EVERY row -- width genuinely rewraps every kind. The width fallback
@@ -377,7 +387,9 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // (expandedUiKeyFor / messageUiDefault), so the cache key can't disagree with the render.
   const effectiveThinkingExpanded = (entry: ClassifiedEntry): boolean => {
     const key = expandedUiKeyFor(entry.category.kind)
-    return getMessageUiBool(entry.message.id, key) ?? messageUiDefault(key, { expandAgentThoughts: prefs.expandAgentThoughts() })
+    return getMessageUiBool(entry.message.id, key) ?? messageUiDefault(key, {
+      expandAgentThoughts: prefs.expandAgentThoughts(),
+    })
   }
 
   // Minimal per-row descriptors for the virtualizer. Unmeasured rows use only the
@@ -449,7 +461,9 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   // touch viewport that resolves to 'native' shows NEITHER bar. That is a deliberate exception,
   // recorded on resolveScrollbarOwner and messageListRailActive; the resolution below is unchanged.
   const railPresent = createMemo(() => props.rail !== undefined)
-  const railRowSeqs = createMemo(() => (railPresent() ? rowStartSeqs(virtualItems()) : null))
+  const railRowSeqs = createMemo(() => (railPresent()
+    ? rowStartSeqs(virtualItems())
+    : null))
   const railOwner = createMemo(() => {
     const rail = props.rail
     if (!rail)
@@ -685,10 +699,18 @@ export const ChatView: Component<ChatViewProps> = (props) => {
       message={entry.message}
       prepared={entry}
       host={buildMessageHost(entry)}
-      {...(props.workingDir !== undefined ? { workingDir: props.workingDir } : {})}
-      {...(props.homeDir !== undefined ? { homeDir: props.homeDir } : {})}
-      {...(props.onReply !== undefined ? { onReply: props.onReply } : {})}
-      {...(opts.premeasureMode !== undefined ? { premeasureMode: opts.premeasureMode } : {})}
+      {...(props.workingDir !== undefined
+        ? { workingDir: props.workingDir }
+        : {})}
+      {...(props.homeDir !== undefined
+        ? { homeDir: props.homeDir }
+        : {})}
+      {...(props.onReply !== undefined
+        ? { onReply: props.onReply }
+        : {})}
+      {...(opts.premeasureMode !== undefined
+        ? { premeasureMode: opts.premeasureMode }
+        : {})}
     />
   )
 
@@ -735,7 +757,9 @@ export const ChatView: Component<ChatViewProps> = (props) => {
   const lingeringSkeletonSlice = createMemo(() => {
     // eslint-disable-next-line solid/reactivity -- `byId` is read by the `.map` below, in this same memo evaluation
     const byId = visibleEntryById()
-    return [...lingeringSkeletonIds()]
+    return [
+      ...lingeringSkeletonIds(),
+    ]
       .map(id => byId.get(id))
       .filter((entry): entry is ClassifiedEntry => entry !== undefined)
   })
@@ -966,7 +990,9 @@ export const ChatView: Component<ChatViewProps> = (props) => {
             // Hide the native scrollbar when the rail is active and either can draw a thumb
             // from a server anchor, or there is no scrollable local-only overflow that would
             // need the native scrollbar as a fallback.
-            class={`${styles.messageList} ${hideNativeScrollbar() ? styles.messageListRailActive : ''}`}
+            class={`${styles.messageList} ${hideNativeScrollbar()
+              ? styles.messageListRailActive
+              : ''}`}
             data-chat-scroll-container="true"
             tabIndex={0}
             {...scrollHandlers}
@@ -1084,8 +1110,12 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                               // Absolute rows do not reserve flow height for
                               // siblings — see rowHiddenUntilMeasured for why an
                               // unmeasured premeasuring row stays invisible.
-                              visibility: rowHiddenUntilMeasured(message.id) ? 'hidden' : undefined,
-                              opacity: rowHiddenUntilMeasured(message.id) ? '0' : '1',
+                              visibility: rowHiddenUntilMeasured(message.id)
+                                ? 'hidden'
+                                : undefined,
+                              opacity: rowHiddenUntilMeasured(message.id)
+                                ? '0'
+                                : '1',
                             }}
                             data-seq={message.seq.toString()}
                             ref={(el) => {
@@ -1170,16 +1200,32 @@ export const ChatView: Component<ChatViewProps> = (props) => {
                     <CompactionIndicator compaction={props.agentLifecycle?.liveCompaction} />
                     {/* Each optional indicator prop is omitted (not undefined) while the lifecycle scope holds none. */}
                     <ThinkingIndicator
-                      {...(props.agentId !== undefined ? { id: props.agentId } : {})}
+                      {...(props.agentId !== undefined
+                        ? { id: props.agentId }
+                        : {})}
                       visible={props.agentLifecycle?.agentWorking ?? false}
-                      {...(props.agentLifecycle?.thinkingTokens !== undefined ? { thinkingTokens: props.agentLifecycle.thinkingTokens } : {})}
-                      {...(props.agentLifecycle?.outputBytes !== undefined ? { outputBytes: props.agentLifecycle.outputBytes } : {})}
-                      {...(props.agentLifecycle?.outputBytesMinimum !== undefined ? { outputBytesMinimum: props.agentLifecycle.outputBytesMinimum } : {})}
+                      {...(props.agentLifecycle?.thinkingTokens !== undefined
+                        ? { thinkingTokens: props.agentLifecycle.thinkingTokens }
+                        : {})}
+                      {...(props.agentLifecycle?.outputBytes !== undefined
+                        ? { outputBytes: props.agentLifecycle.outputBytes }
+                        : {})}
+                      {...(props.agentLifecycle?.outputBytesMinimum !== undefined
+                        ? { outputBytesMinimum: props.agentLifecycle.outputBytesMinimum }
+                        : {})}
                       paused={props.tabActive === false}
-                      {...(props.agentLifecycle?.backgroundTasks !== undefined ? { backgroundTasks: props.agentLifecycle.backgroundTasks } : {})}
-                      {...(props.agentLifecycle?.onOpenSubagent !== undefined ? { onOpenSubagent: props.agentLifecycle.onOpenSubagent } : {})}
-                      {...(props.agentLifecycle?.todos !== undefined ? { todos: props.agentLifecycle.todos } : {})}
-                      {...(props.agentLifecycle?.goal !== undefined ? { goal: props.agentLifecycle.goal } : {})}
+                      {...(props.agentLifecycle?.backgroundTasks !== undefined
+                        ? { backgroundTasks: props.agentLifecycle.backgroundTasks }
+                        : {})}
+                      {...(props.agentLifecycle?.onOpenSubagent !== undefined
+                        ? { onOpenSubagent: props.agentLifecycle.onOpenSubagent }
+                        : {})}
+                      {...(props.agentLifecycle?.todos !== undefined
+                        ? { todos: props.agentLifecycle.todos }
+                        : {})}
+                      {...(props.agentLifecycle?.goal !== undefined
+                        ? { goal: props.agentLifecycle.goal }
+                        : {})}
                       onExpandTick={() => {
                         if (scroll.isAtBottomFresh())
                           scroll.jumpToBottom()
@@ -1272,8 +1318,12 @@ export const ChatView: Component<ChatViewProps> = (props) => {
               onJumpToSeq={seq => scroll.jumpToSeq(seq)}
               previewScrollTo={top => scroll.previewScrollTo(top)}
               onSeekInterrupt={() => scroll.cancelPendingSeek()}
-              {...(props.rail!.previewFor !== undefined ? { previewFor: props.rail!.previewFor } : {})}
-              {...(props.rail!.warmPreview !== undefined ? { warmPreview: props.rail!.warmPreview } : {})}
+              {...(props.rail!.previewFor !== undefined
+                ? { previewFor: props.rail!.previewFor }
+                : {})}
+              {...(props.rail!.warmPreview !== undefined
+                ? { warmPreview: props.rail!.warmPreview }
+                : {})}
             />
           </Show>
         </div>

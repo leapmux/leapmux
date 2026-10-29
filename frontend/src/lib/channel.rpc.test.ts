@@ -49,8 +49,12 @@ describe('ChannelManager call', () => {
     // 2^53 + 1 is not exactly representable and rounds DOWN onto 2^53, so a naive
     // Number() conversion would hand it to a live handler.
     const unsafeId = BigInt(Number.MAX_SAFE_INTEGER) + 1n
-    const resp = create(InnerRpcResponseSchema, { payload: new Uint8Array([9]) })
-    const envelope = create(InnerMessageSchema, { kind: { case: 'response', value: resp } })
+    const resp = create(InnerRpcResponseSchema, {
+      payload: new Uint8Array([9]),
+    })
+    const envelope = create(InnerMessageSchema, {
+      kind: { case: 'response', value: resp },
+    })
     const ct = pair.responder.send.encrypt(toBinary(InnerMessageSchema, envelope))
     h.mockWs.simulateMessage(encodeWireMessageWithBigIntId(channelId, ct, unsafeId))
 
@@ -63,7 +67,9 @@ describe('ChannelManager call', () => {
 
     // ...and the real response still routes.
     h.sendResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID, new Uint8Array([4, 5, 6]))
-    await expect(callPromise).resolves.toMatchObject({ payload: new Uint8Array([4, 5, 6]) })
+    await expect(callPromise).resolves.toMatchObject({
+      payload: new Uint8Array([4, 5, 6]),
+    })
   })
 
   it('should send a request and receive a response', async () => {
@@ -382,7 +388,9 @@ describe('ChannelManager stream', () => {
     // unwinds into the WS message dispatch nor stops later chunks arriving.
     expect(() => h.sendStreamMessageFromWorker(channelId, handle.requestId, new Uint8Array([1]))).not.toThrow()
     expect(() => h.sendStreamMessageFromWorker(channelId, handle.requestId, new Uint8Array([2]))).not.toThrow()
-    expect(received).toEqual([new Uint8Array([2])])
+    expect(received).toEqual([
+      new Uint8Array([2]),
+    ])
     // Still live: a non-terminal throw does not unregister.
     expect(channelInternals(h.mgr, channelId).streamListeners.has(handle.requestId)).toBe(true)
   })
@@ -447,7 +455,9 @@ describe('ChannelManager late frames', () => {
     // The drop leaves the channel healthy: the next call still gets its answer.
     const nextCall = h.mgr.call(channelId, 'TestMethod', new Uint8Array())
     h.sendResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID + 1, new Uint8Array([2]))
-    await expect(nextCall).resolves.toMatchObject({ payload: new Uint8Array([2]) })
+    await expect(nextCall).resolves.toMatchObject({
+      payload: new Uint8Array([2]),
+    })
   })
 
   it('logs the late response to a timed-out call at debug level instead of warning', async () => {
@@ -497,8 +507,13 @@ describe('ChannelManager late frames', () => {
     controller.abort(new Error('aborted'))
     await expect(callPromise).rejects.toThrow('aborted')
 
-    const resp = create(InnerRpcResponseSchema, { payload: new Uint8Array([9, 9]), isError: false })
-    const plaintext = toBinary(InnerMessageSchema, create(InnerMessageSchema, { kind: { case: 'response', value: resp } }))
+    const resp = create(InnerRpcResponseSchema, {
+      payload: new Uint8Array([9, 9]),
+      isError: false,
+    })
+    const plaintext = toBinary(InnerMessageSchema, create(InnerMessageSchema, {
+      kind: { case: 'response', value: resp },
+    }))
     const mid = Math.floor(plaintext.length / 2)
     h.mockWs.simulateMessage(encodeWireMessage(channelId, pair.responder.send.encrypt(plaintext.slice(0, mid)), { id: FIRST_TEST_REQUEST_ID, flags: 1 }))
     h.mockWs.simulateMessage(encodeWireMessage(channelId, pair.responder.send.encrypt(plaintext.slice(mid)), { id: FIRST_TEST_REQUEST_ID, flags: 0 }))
@@ -515,7 +530,9 @@ describe('ChannelManager late frames', () => {
     const channelId = await h.openTestChannel('w1')
     const callPromise = h.mgr.call(channelId, 'TestMethod', new Uint8Array())
     h.sendResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID, new Uint8Array([1]))
-    await expect(callPromise).resolves.toMatchObject({ payload: new Uint8Array([1]) })
+    await expect(callPromise).resolves.toMatchObject({
+      payload: new Uint8Array([1]),
+    })
 
     h.sendResponseFromWorker(channelId, FIRST_TEST_REQUEST_ID, new Uint8Array([2]))
 
@@ -651,8 +668,13 @@ describe('ChannelManager chunking', () => {
     const pair = sessions.get(channelId)!
     const callPromise = h.mgr.call(channelId, 'Test', new Uint8Array([1]))
 
-    const resp = create(InnerRpcResponseSchema, { payload: new Uint8Array([9]), isError: false })
-    const envelope = create(InnerMessageSchema, { kind: { case: 'response', value: resp } })
+    const resp = create(InnerRpcResponseSchema, {
+      payload: new Uint8Array([9]),
+      isError: false,
+    })
+    const envelope = create(InnerMessageSchema, {
+      kind: { case: 'response', value: resp },
+    })
     const ct1 = pair.responder.send.encrypt(toBinary(InnerMessageSchema, envelope))
     h.mockWs.simulateMessage(encodeWireMessage(channelId, ct1, { id: FIRST_TEST_REQUEST_ID, flags: 3 }))
 
@@ -943,7 +965,9 @@ describe('ChannelManager chunking', () => {
       const pair = sessions.get(channelId)!
       pair.responder.receive.decrypt(sentMsg.ciphertext)
       h.sendResponseFromWorker(channelId, Number(sentMsg.correlationId), new Uint8Array([42]))
-      await expect(callPromise).resolves.toMatchObject({ payload: new Uint8Array([42]) })
+      await expect(callPromise).resolves.toMatchObject({
+        payload: new Uint8Array([42]),
+      })
       expect(await smallMgr.getOrOpenChannel('w1')).toBe(channelId)
     }
     finally {
@@ -997,7 +1021,11 @@ describe('ChannelManager reassembly lifetime', () => {
       handshake2: mockHandshake2,
       testPayloadBudget: maxMessageSize,
       testReassembledCeiling: maxMessageSize,
-      ...(rpcTimeoutMs === undefined ? {} : { rpcTimeoutFn: () => rpcTimeoutMs }),
+      ...(rpcTimeoutMs === undefined
+        ? {}
+        : {
+            rpcTimeoutFn: () => rpcTimeoutMs,
+          }),
     })
     const openPromise = cm.openChannel('w1')
     await h.flushMicrotasks()
@@ -1113,14 +1141,21 @@ describe('ChannelManager reassembly lifetime', () => {
 
     // The cap is untouched: a real chunked response still reassembles.
     const callPromise = h.mgr.call(channelId, 'Test', new Uint8Array())
-    const resp = create(InnerRpcResponseSchema, { payload: new Uint8Array([9, 9]), isError: false })
-    const envelope = create(InnerMessageSchema, { kind: { case: 'response', value: resp } })
+    const resp = create(InnerRpcResponseSchema, {
+      payload: new Uint8Array([9, 9]),
+      isError: false,
+    })
+    const envelope = create(InnerMessageSchema, {
+      kind: { case: 'response', value: resp },
+    })
     const plaintext = toBinary(InnerMessageSchema, envelope)
     const mid = Math.floor(plaintext.length / 2)
     h.mockWs.simulateMessage(encodeWireMessage(channelId, pair.responder.send.encrypt(plaintext.slice(0, mid)), { id: FIRST_TEST_REQUEST_ID, flags: 1 }))
     h.mockWs.simulateMessage(encodeWireMessage(channelId, pair.responder.send.encrypt(plaintext.slice(mid)), { id: FIRST_TEST_REQUEST_ID, flags: 0 }))
 
-    await expect(callPromise).resolves.toMatchObject({ payload: new Uint8Array([9, 9]) })
+    await expect(callPromise).resolves.toMatchObject({
+      payload: new Uint8Array([9, 9]),
+    })
   })
 
   // (c) A reassembly buffer exists only to feed one request, so it must die with it.

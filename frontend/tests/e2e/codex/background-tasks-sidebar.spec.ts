@@ -9,8 +9,15 @@ codexTest('shows and restores the actual running child row and its completed sta
   const { page, modelScript } = native
   const child = await openRunningNativeChild(native, {
     gate: 'codex-sidebar-child',
-    child: { matcher: { body: ['NEW_TASK', 'codex_sidebar_child'] } },
-    spawn: spawnSubagentToolCall(AgentProvider.CODEX, 'spawn-sidebar-child', { description: 'codex sidebar child', prompt: modelScript.prompt('Complete the sidebar child task.') }),
+    child: {
+      matcher: {
+        body: ['NEW_TASK', 'codex_sidebar_child'],
+      },
+    },
+    spawn: spawnSubagentToolCall(AgentProvider.CODEX, 'spawn-sidebar-child', {
+      description: 'codex sidebar child',
+      prompt: modelScript.prompt('Complete the sidebar child task.'),
+    }),
   })
   try {
     await expect(child.row).toHaveAttribute('data-child-agent-id', child.childId)

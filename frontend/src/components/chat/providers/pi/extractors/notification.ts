@@ -25,7 +25,13 @@ export function describePiNotification(parsed: unknown): string | null {
     const ext = pickString(parsed, 'extensionPath')
     const evt = pickString(parsed, 'event')
     const err = pickString(parsed, 'error')
-    return `Extension error${ext ? ` in ${ext}` : ''}${evt ? ` (${evt})` : ''}${err ? `: ${err}` : ''}`
+    return `Extension error${ext
+      ? ` in ${ext}`
+      : ''}${evt
+      ? ` (${evt})`
+      : ''}${err
+      ? `: ${err}`
+      : ''}`
   }
 
   // Pi `extension_ui_request` with `method:"notify"` carries a user-visible message;
@@ -38,10 +44,16 @@ export function describePiNotification(parsed: unknown): string | null {
       if (!text)
         return null
       const level = pickString(parsed, 'notifyType')
-      const prefix = level === PI_NOTIFY_TYPE.Warning ? 'Warning: ' : level === PI_NOTIFY_TYPE.Error ? 'Error: ' : ''
+      const prefix = level === PI_NOTIFY_TYPE.Warning
+        ? 'Warning: '
+        : level === PI_NOTIFY_TYPE.Error
+          ? 'Error: '
+          : ''
       return `${prefix}${text}`
     }
-    return method ? `Extension UI: ${method}` : 'Extension UI request'
+    return method
+      ? `Extension UI: ${method}`
+      : 'Extension UI request'
   }
 
   return null
@@ -52,9 +64,15 @@ function piCompactionDetail(result: Record<string, unknown>, trigger?: string): 
   const pre = tokenCount(result.tokensBefore)
   const post = tokenCount(result.estimatedTokensAfter)
   return {
-    ...(trigger ? { trigger } : {}),
-    ...(pre !== undefined ? { pre } : {}),
-    ...(post !== undefined ? { post } : {}),
+    ...(trigger
+      ? { trigger }
+      : {}),
+    ...(pre !== undefined
+      ? { pre }
+      : {}),
+    ...(post !== undefined
+      ? { post }
+      : {}),
   }
 }
 
@@ -88,18 +106,45 @@ export function piNotificationEntry(msg: Record<string, unknown>): NotificationE
   const type = pickString(msg, 'type')
 
   const entry = piSessionEntry(msg)
-  if (entry?.type === PI_ENTRY_TYPE.Compaction)
-    return [{ kind: 'compaction', phase: 'end', detail: piCompactionDetail(entry) }]
+  if (entry?.type === PI_ENTRY_TYPE.Compaction) {
+    return [
+      {
+        kind: 'compaction',
+        phase: 'end',
+        detail: piCompactionDetail(entry),
+      },
+    ]
+  }
   if (type === PI_EVENT.CompactionEnd) {
-    if (msg.aborted === true)
-      return [{ kind: 'compaction', phase: 'end', outcome: 'aborted' }]
+    if (msg.aborted === true) {
+      return [
+        { kind: 'compaction', phase: 'end', outcome: 'aborted' },
+      ]
+    }
     const result = pickObject(msg, 'result')
     if (!result) {
       const rawError = pickString(msg, 'errorMessage')
-      const error = (rawError.startsWith(PI_MANUAL_COMPACTION_ERROR_PREFIX) ? rawError.slice(PI_MANUAL_COMPACTION_ERROR_PREFIX.length) : rawError).trim()
-      return [{ kind: 'compaction', phase: 'end', outcome: 'failed', ...(error ? { error } : {}) }]
+      const error = (rawError.startsWith(PI_MANUAL_COMPACTION_ERROR_PREFIX)
+        ? rawError.slice(PI_MANUAL_COMPACTION_ERROR_PREFIX.length)
+        : rawError).trim()
+      return [
+        {
+          kind: 'compaction',
+          phase: 'end',
+          outcome: 'failed',
+          ...(error
+            ? { error }
+            : {}),
+        },
+      ]
     }
-    return [{ kind: 'compaction', phase: 'end', detail: piCompactionDetail(result, pickString(msg, 'reason')) }]
+    return [
+      {
+        kind: 'compaction',
+        phase: 'end',
+        detail: piCompactionDetail(result, pickString(msg, 'reason')),
+      },
+    ]
   }
 
   if (type === PI_EVENT.AutoRetryStart) {
@@ -107,25 +152,47 @@ export function piNotificationEntry(msg: Record<string, unknown>): NotificationE
     const maxAttempts = pickNumber(msg, 'maxAttempts', undefined)
     const delayMs = pickNumber(msg, 'delayMs', undefined)
     const error = pickString(msg, 'errorMessage') || undefined
-    return [retryEntry('api', {
-      ...(attempt !== undefined ? { attempt } : {}),
-      ...(maxAttempts !== undefined ? { maxAttempts } : {}),
-      ...(delayMs !== undefined ? { delayMs } : {}),
-      ...(error !== undefined ? { error } : {}),
-    })]
+    return [
+      retryEntry('api', {
+        ...(attempt !== undefined
+          ? { attempt }
+          : {}),
+        ...(maxAttempts !== undefined
+          ? { maxAttempts }
+          : {}),
+        ...(delayMs !== undefined
+          ? { delayMs }
+          : {}),
+        ...(error !== undefined
+          ? { error }
+          : {}),
+      }),
+    ]
   }
   if (type === PI_EVENT.AutoRetryEnd) {
     // A retry that SUCCEEDED ends the stall, and the row says so. One that failed
     // gave up, which is what `willRetry: false` states.
     const attempt = pickNumber(msg, 'attempt', undefined)
     const succeeded = msg.success === true
-    const error = succeeded ? undefined : pickString(msg, 'finalError') || undefined
-    return [retryEntry('api', {
-      ...(attempt !== undefined ? { attempt } : {}),
-      ...(succeeded ? {} : { willRetry: false }),
-      ...(error !== undefined ? { error } : {}),
-      ...(succeeded ? { succeeded: true } : {}),
-    })]
+    const error = succeeded
+      ? undefined
+      : pickString(msg, 'finalError') || undefined
+    return [
+      retryEntry('api', {
+        ...(attempt !== undefined
+          ? { attempt }
+          : {}),
+        ...(succeeded
+          ? {}
+          : { willRetry: false }),
+        ...(error !== undefined
+          ? { error }
+          : {}),
+        ...(succeeded
+          ? { succeeded: true }
+          : {}),
+      }),
+    ]
   }
 
   // The three summarization-retry events state the same stall for the SUMMARY that
@@ -135,22 +202,41 @@ export function piNotificationEntry(msg: Record<string, unknown>): NotificationE
     const maxAttempts = pickNumber(msg, 'maxAttempts', undefined)
     const delayMs = pickNumber(msg, 'delayMs', undefined)
     const error = pickString(msg, 'errorMessage') || undefined
-    return [retryEntry('summarization', {
-      ...(attempt !== undefined ? { attempt } : {}),
-      ...(maxAttempts !== undefined ? { maxAttempts } : {}),
-      ...(delayMs !== undefined ? { delayMs } : {}),
-      ...(error !== undefined ? { error } : {}),
-    })]
+    return [
+      retryEntry('summarization', {
+        ...(attempt !== undefined
+          ? { attempt }
+          : {}),
+        ...(maxAttempts !== undefined
+          ? { maxAttempts }
+          : {}),
+        ...(delayMs !== undefined
+          ? { delayMs }
+          : {}),
+        ...(error !== undefined
+          ? { error }
+          : {}),
+      }),
+    ]
   }
   if (type === PI_EVENT.SummarizationRetryAttemptStart) {
     const subject = PI_SUMMARY_SOURCE_LABEL.get(pickString(msg, 'source')) ?? 'summary'
-    return [{ kind: 'status', text: `Retrying the ${subject}` }]
+    return [
+      { kind: 'status', text: `Retrying the ${subject}` },
+    ]
   }
-  if (type === PI_EVENT.SummarizationRetryFinished)
-    return [{ kind: 'status', text: 'Summary retry finished' }]
+  if (type === PI_EVENT.SummarizationRetryFinished) {
+    return [
+      { kind: 'status', text: 'Summary retry finished' },
+    ]
+  }
 
   const text = describePiNotification(msg)
-  return text === null ? [] : [{ kind: 'text', text }]
+  return text === null
+    ? []
+    : [
+        { kind: 'text', text },
+      ]
 }
 
 /** Identify an old stored start without changing its ordinary category. */

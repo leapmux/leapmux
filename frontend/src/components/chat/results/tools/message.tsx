@@ -11,7 +11,13 @@ export const messageRenderer: ToolKindRenderer<'message'> = {
   icon: Send,
   label: 'Message',
   title(call, context) {
-    return <>{call.request.to ? <SendMessageRecipient to={call.request.to} navigation={context?.subagents} /> : call.title ?? 'Message'}</>
+    return (
+      <>
+        {call.request.to
+          ? <SendMessageRecipient to={call.request.to} navigation={context?.subagents} />
+          : call.title ?? 'Message'}
+      </>
+    )
   },
   summary(call) {
     // Clipped to one line: the summary has no height cap of its own, and a long

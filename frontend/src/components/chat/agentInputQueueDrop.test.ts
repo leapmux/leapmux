@@ -13,7 +13,10 @@ describe('queueHeadIndex', () => {
     expect(queueHeadIndex([])).toBe(-1)
     const pending = locked('pending', AgentInputState.AWAITING_ECHO)
     expect(queueHeadIndex([pending])).toBe(-1)
-    expect(queueHeadIndex([pending, item('head')])).toBe(1)
+    expect(queueHeadIndex([
+      pending,
+      item('head'),
+    ])).toBe(1)
   })
 })
 
@@ -69,7 +72,11 @@ describe('shareReorderSegment', () => {
 // gesture is covered in tests/e2e/108-agent-input-queue.spec.ts; the
 // arithmetic it feeds is covered directly.
 describe('resolveQueueDrop', () => {
-  const three = [item('one'), item('two'), item('three')]
+  const three = [
+    item('one'),
+    item('two'),
+    item('three'),
+  ]
 
   it('points an upward drop at the drop target itself', () => {
     expect(resolveQueueDrop(three, 'qi-two', 'qi-one')).toEqual({
@@ -104,13 +111,19 @@ describe('resolveQueueDrop', () => {
   })
 
   it('refuses to move a dispatching row', () => {
-    const list = [locked('one', AgentInputState.DISPATCHING), item('two')]
+    const list = [
+      locked('one', AgentInputState.DISPATCHING),
+      item('two'),
+    ]
     expect(resolveQueueDrop(list, 'qi-one', 'qi-two')).toBeUndefined()
   })
 
   it('refuses to displace a dispatching row', () => {
     // The Worker is already sending it, so its slot is not the user's to take.
-    const list = [locked('one', AgentInputState.DISPATCHING), item('two')]
+    const list = [
+      locked('one', AgentInputState.DISPATCHING),
+      item('two'),
+    ]
     expect(resolveQueueDrop(list, 'qi-two', 'qi-one')).toBeUndefined()
   })
 
@@ -124,12 +137,19 @@ describe('resolveQueueDrop', () => {
 // passes here holds for every path.
 describe('resolveQueueMove', () => {
   it('refuses to move an awaiting-echo row or onto one', () => {
-    const items = [locked('sent', AgentInputState.AWAITING_ECHO), item('queued')]
+    const items = [
+      locked('sent', AgentInputState.AWAITING_ECHO),
+      item('queued'),
+    ]
     expect(resolveQueueMove(items, 0, 1)).toBeUndefined()
     expect(resolveQueueMove(items, 1, 0)).toBeUndefined()
   })
 
-  const three = [item('one'), item('two'), item('three')]
+  const three = [
+    item('one'),
+    item('two'),
+    item('three'),
+  ]
 
   it('points an upward move at the item one slot above', () => {
     expect(resolveQueueMove(three, 1, 0)).toEqual({
@@ -160,9 +180,18 @@ describe('resolveQueueMove', () => {
   })
 
   it('handles a two-item list in both directions', () => {
-    const two = [item('one'), item('two')]
-    expect(resolveQueueMove(two, 0, 1)).toEqual({ moved: expect.objectContaining({ id: 'one' }), beforeInputId: '' })
-    expect(resolveQueueMove(two, 1, 0)).toEqual({ moved: expect.objectContaining({ id: 'two' }), beforeInputId: 'one' })
+    const two = [
+      item('one'),
+      item('two'),
+    ]
+    expect(resolveQueueMove(two, 0, 1)).toEqual({
+      moved: expect.objectContaining({ id: 'one' }),
+      beforeInputId: '',
+    })
+    expect(resolveQueueMove(two, 1, 0)).toEqual({
+      moved: expect.objectContaining({ id: 'two' }),
+      beforeInputId: 'one',
+    })
   })
 
   it('refuses a move to the row itself', () => {
@@ -178,7 +207,10 @@ describe('resolveQueueMove', () => {
   })
 
   it('refuses to move a dispatching row and refuses to displace one', () => {
-    const list = [locked('one', AgentInputState.DISPATCHING), item('two')]
+    const list = [
+      locked('one', AgentInputState.DISPATCHING),
+      item('two'),
+    ]
     expect(resolveQueueMove(list, 0, 1)).toBeUndefined()
     expect(resolveQueueMove(list, 1, 0)).toBeUndefined()
   })
@@ -192,14 +224,21 @@ describe('resolveQueueMove', () => {
 // to, and a legal move never leaves its segment.
 describe('resolveQueueMove across reorder segments', () => {
   it('refuses a move between two segments, such as an immediate and a future item', () => {
-    const list = [item('now'), item('later', { scheduledAt: '2030-01-01T09:00:00.000Z', reorderSegment: 2 })]
+    const list = [
+      item('now'),
+      item('later', { scheduledAt: '2030-01-01T09:00:00.000Z', reorderSegment: 2 }),
+    ]
     expect(resolveQueueMove(list, 1, 0)).toBeUndefined()
     expect(resolveQueueMove(list, 0, 1)).toBeUndefined()
   })
 
   it('moves items that share one segment, such as one scheduled instant', () => {
     const at = { scheduledAt: '2030-01-01T09:00:00.000Z', reorderSegment: 2 }
-    const list = [item('now'), item('a', at), item('b', at)]
+    const list = [
+      item('now'),
+      item('a', at),
+      item('b', at),
+    ]
     expect(resolveQueueMove(list, 2, 1)?.beforeInputId).toBe('a')
   })
 
@@ -215,7 +254,11 @@ describe('resolveQueueMove across reorder segments', () => {
   })
 
   it('takes the segment end when a downward move reaches a locked row', () => {
-    const list = [item('one'), item('two'), locked('sending', AgentInputState.DISPATCHING)]
+    const list = [
+      item('one'),
+      item('two'),
+      locked('sending', AgentInputState.DISPATCHING),
+    ]
     // The Worker refuses a locked `beforeInputId`, and resolves the empty one
     // as the slot before the locked row.
     expect(resolveQueueMove(list, 0, 1)?.beforeInputId).toBe('')
@@ -223,7 +266,11 @@ describe('resolveQueueMove across reorder segments', () => {
   })
 
   it('refuses a move whose span crosses a locked row', () => {
-    const list = [item('one'), locked('dispatching', AgentInputState.DISPATCHING), item('three', { reorderSegment: 2 })]
+    const list = [
+      item('one'),
+      locked('dispatching', AgentInputState.DISPATCHING),
+      item('three', { reorderSegment: 2 }),
+    ]
     expect(resolveQueueMove(list, 2, 0)).toBeUndefined()
     expect(resolveQueueMove(list, 0, 2)).toBeUndefined()
   })
@@ -239,16 +286,24 @@ describe('movableSegmentIds', () => {
       item('later-1', { scheduledAt: '2030-01-01T09:00:00.000Z', reorderSegment: 3 }),
       item('later-2', { scheduledAt: '2030-01-01T10:00:00.000Z', reorderSegment: 4 }),
     ]
-    expect([...movableSegmentIds(list)].sort()).toEqual(['now-1', 'now-2'])
+    expect([
+      ...movableSegmentIds(list),
+    ].sort()).toEqual(['now-1', 'now-2'])
   })
 
   it('marks nothing in a queue of one row per segment', () => {
-    const list = [item('now'), item('later', { scheduledAt: '2030-01-01T09:00:00.000Z', reorderSegment: 2 })]
+    const list = [
+      item('now'),
+      item('later', { scheduledAt: '2030-01-01T09:00:00.000Z', reorderSegment: 2 }),
+    ]
     expect(movableSegmentIds(list)).toEqual(new Set())
   })
 
   it('marks no locked rows, however many there are', () => {
-    const list = [locked('a', AgentInputState.DISPATCHING), locked('b', AgentInputState.AWAITING_ECHO)]
+    const list = [
+      locked('a', AgentInputState.DISPATCHING),
+      locked('b', AgentInputState.AWAITING_ECHO),
+    ]
     expect(movableSegmentIds(list)).toEqual(new Set())
   })
 

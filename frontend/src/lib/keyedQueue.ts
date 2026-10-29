@@ -44,7 +44,9 @@ export function createKeyedQueue(): KeyedQueue {
       // call runs whether the previous one succeeded or failed. `then(call,
       // call)` keeps that true for whatever the chain holds later: a single
       // refusal must not stall the key.
-      const run = pending === undefined ? runNow(call) : pending.then(call, call)
+      const run = pending === undefined
+        ? runNow(call)
+        : pending.then(call, call)
       const settled = run.then(() => {}, () => {})
       chain.set(key, settled)
       // Drop the entry once nothing waits behind it, so a long session

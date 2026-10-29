@@ -63,7 +63,13 @@ function setup(activeWsId: string = ACTIVE_WS) {
     move,
     add(type: TabType, id: string, tileId: string, meta: Record<string, unknown> = {}) {
       seq += 1
-      emitAddTab({ type, id, tileId, position: `p${seq}`, workerId: 'w1' })
+      emitAddTab({
+        type,
+        id,
+        tileId,
+        position: `p${seq}`,
+        workerId: 'w1',
+      })
       if (Object.keys(meta).length > 0)
         stores.metadata.patch(id, meta)
     },
@@ -319,7 +325,12 @@ describe('useCrossWorkspaceMove', () => {
   it('moves a tab that names no worker', async () => {
     await createRoot(async (dispose) => {
       const h = setup()
-      emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: ACTIVE_TILE, position: 'p1' })
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'a1',
+        tileId: ACTIVE_TILE,
+        position: 'p1',
+      })
 
       h.move(TARGET_WS, key(TabType.AGENT, 'a1'))
       await flush()

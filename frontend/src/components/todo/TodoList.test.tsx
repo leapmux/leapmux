@@ -10,7 +10,17 @@ import { classSelector } from '~/test-support/composedClass'
 
 describe('TodoList', () => {
   it('keeps blocked work unfinished and shows its stable label', () => {
-    const { container, getByRole } = render(() => <TodoList todos={[{ rowKey: 'blocked', content: 'Request access', activeForm: 'Requesting access', status: 'blocked' }]} />)
+    const { container, getByRole } = render(() => (
+      <TodoList todos={[
+        {
+          rowKey: 'blocked',
+          content: 'Request access',
+          activeForm: 'Requesting access',
+          status: 'blocked',
+        },
+      ]}
+      />
+    ))
     expect(getByRole('img', { name: 'Blocked' })).toBeVisible()
     expect(container.textContent).toBe('Request access')
     const row = container.querySelector('[data-task-checkbox="blocked"]')?.closest('div')?.parentElement
@@ -19,7 +29,16 @@ describe('TodoList', () => {
 
   it('renders the deleted checkbox + strike-through for a deleted row', () => {
     const { container } = render(() => (
-      <TodoList todos={[{ id: '1', rowKey: '1', content: 'gone task', status: 'deleted', activeForm: '' }]} />
+      <TodoList todos={[
+        {
+          id: '1',
+          rowKey: '1',
+          content: 'gone task',
+          status: 'deleted',
+          activeForm: '',
+        },
+      ]}
+      />
     ))
     // The strike-through is applied to the row that wraps the checkbox.
     // vanilla-extract hashes class names but always retains the source
@@ -32,7 +51,16 @@ describe('TodoList', () => {
 
   it('renders activeForm (not content) for in_progress rows', () => {
     const { container } = render(() => (
-      <TodoList todos={[{ id: '2', rowKey: '2', content: 'Run tests', status: 'in_progress', activeForm: 'Running tests' }]} />
+      <TodoList todos={[
+        {
+          id: '2',
+          rowKey: '2',
+          content: 'Run tests',
+          status: 'in_progress',
+          activeForm: 'Running tests',
+        },
+      ]}
+      />
     ))
     expect(container.textContent).toContain('Running tests')
     expect(container.textContent).not.toContain('Run tests')
@@ -43,10 +71,34 @@ describe('TodoList', () => {
     const { container } = render(() => (
       <TodoList
         todos={[
-          { id: 'a', rowKey: 'a', content: 'still pending', status: 'pending', activeForm: '' },
-          { id: 'b', rowKey: 'b', content: 'doing now', status: 'in_progress', activeForm: 'Working on it' },
-          { id: 'c', rowKey: 'c', content: 'all done', status: 'completed', activeForm: '' },
-          { id: 'd', rowKey: 'd', content: 'removed', status: 'deleted', activeForm: '' },
+          {
+            id: 'a',
+            rowKey: 'a',
+            content: 'still pending',
+            status: 'pending',
+            activeForm: '',
+          },
+          {
+            id: 'b',
+            rowKey: 'b',
+            content: 'doing now',
+            status: 'in_progress',
+            activeForm: 'Working on it',
+          },
+          {
+            id: 'c',
+            rowKey: 'c',
+            content: 'all done',
+            status: 'completed',
+            activeForm: '',
+          },
+          {
+            id: 'd',
+            rowKey: 'd',
+            content: 'removed',
+            status: 'deleted',
+            activeForm: '',
+          },
         ]}
       />
     ))
@@ -69,7 +121,13 @@ describe('TodoList', () => {
    */
   it('follows an in-place status change into the label and the row class', () => {
     const [todos, setTodos] = createStore<TodoItem[]>([
-      { id: '1', rowKey: '1', content: 'Run tests', status: 'pending', activeForm: 'Running tests' },
+      {
+        id: '1',
+        rowKey: '1',
+        content: 'Run tests',
+        status: 'pending',
+        activeForm: 'Running tests',
+      },
     ])
     const { container } = render(() => <TodoList todos={todos} />)
     expect(container.textContent).toContain('Run tests')
@@ -91,7 +149,16 @@ describe('TodoList', () => {
   // route to a description and to a label the row had to clip.
   it('clips the label to one line', () => {
     const { container } = render(() => (
-      <TodoList todos={[{ id: '1', rowKey: '1', content: 'A label wider than the sidebar', status: 'pending', activeForm: '' }]} />
+      <TodoList todos={[
+        {
+          id: '1',
+          rowKey: '1',
+          content: 'A label wider than the sidebar',
+          status: 'pending',
+          activeForm: '',
+        },
+      ]}
+      />
     ))
     const text = container.querySelector(classSelector(styles.todoText))!
     expect(text.textContent).toBe('A label wider than the sidebar')
@@ -109,7 +176,15 @@ describe('TodoList', () => {
    * what a unit test can see; the rules it selects are asserted in the browser.
    */
   it('marks the list for wrapping only in the full variant', () => {
-    const todos: TodoItem[] = [{ id: '1', rowKey: '1', content: 'Run tests', status: 'pending', activeForm: '' }]
+    const todos: TodoItem[] = [
+      {
+        id: '1',
+        rowKey: '1',
+        content: 'Run tests',
+        status: 'pending',
+        activeForm: '',
+      },
+    ]
 
     const compact = render(() => <TodoList todos={todos} />)
     expect(compact.container.firstElementChild!.className).not.toMatch(/todoListWrapping/)
@@ -125,14 +200,40 @@ describe('TodoList', () => {
     const { container } = render(() => (
       <TodoList
         todos={[
-          { id: '1', rowKey: '1', content: 'done', status: 'completed', activeForm: '' },
-          { id: '2', rowKey: '2', content: 'gone', status: 'deleted', activeForm: '' },
-          { id: '3', rowKey: '3', content: 'todo', status: 'pending', activeForm: '' },
-          { id: '4', rowKey: '4', content: 'now', status: 'in_progress', activeForm: '' },
+          {
+            id: '1',
+            rowKey: '1',
+            content: 'done',
+            status: 'completed',
+            activeForm: '',
+          },
+          {
+            id: '2',
+            rowKey: '2',
+            content: 'gone',
+            status: 'deleted',
+            activeForm: '',
+          },
+          {
+            id: '3',
+            rowKey: '3',
+            content: 'todo',
+            status: 'pending',
+            activeForm: '',
+          },
+          {
+            id: '4',
+            rowKey: '4',
+            content: 'now',
+            status: 'in_progress',
+            activeForm: '',
+          },
         ]}
       />
     ))
-    const labels = [...container.querySelectorAll('[data-task-checkbox]')]
+    const labels = [
+      ...container.querySelectorAll('[data-task-checkbox]'),
+    ]
       .map(el => el.closest('div')?.parentElement?.textContent ?? '')
     expect(labels).toEqual(['now', 'todo', 'done', 'gone'])
   })
@@ -141,13 +242,33 @@ describe('TodoList', () => {
     const { container } = render(() => (
       <TodoList
         todos={[
-          { id: '1', rowKey: '1', content: 'first', status: 'pending', activeForm: '' },
-          { id: '2', rowKey: '2', content: 'second', status: 'pending', activeForm: '' },
-          { id: '3', rowKey: '3', content: 'third', status: 'pending', activeForm: '' },
+          {
+            id: '1',
+            rowKey: '1',
+            content: 'first',
+            status: 'pending',
+            activeForm: '',
+          },
+          {
+            id: '2',
+            rowKey: '2',
+            content: 'second',
+            status: 'pending',
+            activeForm: '',
+          },
+          {
+            id: '3',
+            rowKey: '3',
+            content: 'third',
+            status: 'pending',
+            activeForm: '',
+          },
         ]}
       />
     ))
-    const labels = [...container.querySelectorAll('[data-task-checkbox]')]
+    const labels = [
+      ...container.querySelectorAll('[data-task-checkbox]'),
+    ]
       .map(el => el.closest('div')?.parentElement?.textContent ?? '')
     expect(labels).toEqual(['first', 'second', 'third'])
   })
@@ -179,7 +300,16 @@ describe('TodoList label tooltip', () => {
   it('shows the label and its description together when a task has one', () => {
     const { container } = render(() => (
       <TodoList
-        todos={[{ id: '1', rowKey: '1', content: 'Task with details', status: 'pending', activeForm: '', description: 'Long-form explanation' }]}
+        todos={[
+          {
+            id: '1',
+            rowKey: '1',
+            content: 'Task with details',
+            status: 'pending',
+            activeForm: '',
+            description: 'Long-form explanation',
+          },
+        ]}
       />
     ))
     // Shown although the label fits: the description is the part the row
@@ -192,7 +322,16 @@ describe('TodoList label tooltip', () => {
   it('uses the in-progress label, not the content, in that tooltip', () => {
     const { container } = render(() => (
       <TodoList
-        todos={[{ id: '2', rowKey: '2', content: 'Run tests', status: 'in_progress', activeForm: 'Running tests', description: 'The whole suite' }]}
+        todos={[
+          {
+            id: '2',
+            rowKey: '2',
+            content: 'Run tests',
+            status: 'in_progress',
+            activeForm: 'Running tests',
+            description: 'The whole suite',
+          },
+        ]}
       />
     ))
     const tip = hover(labelOf(container))!
@@ -204,7 +343,17 @@ describe('TodoList label tooltip', () => {
   // on a label that fits, and it must not render a blank second line.
   it('treats an empty description as absent', () => {
     const { container } = render(() => (
-      <TodoList todos={[{ id: '1', rowKey: '1', content: 'Short', status: 'pending', activeForm: '', description: '' }]} />
+      <TodoList todos={[
+        {
+          id: '1',
+          rowKey: '1',
+          content: 'Short',
+          status: 'pending',
+          activeForm: '',
+          description: '',
+        },
+      ]}
+      />
     ))
     const label = labelOf(container)
     stubFitting(label)
@@ -218,7 +367,16 @@ describe('TodoList label tooltip', () => {
   // at all. Now it gets one, but only once its label is actually clipped.
   it('gives a task without a description the full label once it is clipped', () => {
     const { container } = render(() => (
-      <TodoList todos={[{ id: '1', rowKey: '1', content: 'A label far wider than this row', status: 'pending', activeForm: '' }]} />
+      <TodoList todos={[
+        {
+          id: '1',
+          rowKey: '1',
+          content: 'A label far wider than this row',
+          status: 'pending',
+          activeForm: '',
+        },
+      ]}
+      />
     ))
     const label = labelOf(container)
     stubFitting(label)
@@ -239,7 +397,13 @@ describe('TodoList label tooltip', () => {
    */
   it('follows an in-place description change', () => {
     const [todos, setTodos] = createStore<TodoItem[]>([
-      { id: '1', rowKey: '1', content: 'Run tests', status: 'pending', activeForm: '' },
+      {
+        id: '1',
+        rowKey: '1',
+        content: 'Run tests',
+        status: 'pending',
+        activeForm: '',
+      },
     ])
     const { container } = render(() => <TodoList todos={todos} />)
     const label = labelOf(container)

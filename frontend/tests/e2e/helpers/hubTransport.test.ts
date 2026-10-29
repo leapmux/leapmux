@@ -33,7 +33,12 @@ describe('hubTransportUrl', () => {
     }
   })
 
-  it.each(['', 'relative/path', 'http://localhost:-1/', 'http://localhost:65536/'])('rejects an invalid URL: %j', (url) => {
+  it.each([
+    '',
+    'relative/path',
+    'http://localhost:-1/',
+    'http://localhost:65536/',
+  ])('rejects an invalid URL: %j', (url) => {
     expect(() => hubTransportUrl(url)).toThrow(TypeError)
   })
 })
@@ -61,13 +66,18 @@ describe('fetchHub', () => {
       const address = server.address()
       if (!address || typeof address === 'string')
         throw new Error('The private HTTP server has no TCP address.')
-      const response = await fetchHub(`http://localhost:${address.port}/`, { headers: { Cookie: 'private-session' } })
+      const response = await fetchHub(`http://localhost:${address.port}/`, {
+        headers: { Cookie: 'private-session' },
+      })
       expect(await response.json()).toEqual({ host: `127.0.0.1:${address.port}`, cookie: 'private-session', peer: E2E_HUB_HOST })
     }
     finally {
       server.closeAllConnections()
-      if (server.listening)
-        await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
+      if (server.listening) {
+        await new Promise<void>((resolve, reject) => server.close(error => error
+          ? reject(error)
+          : resolve()))
+      }
     }
   })
 
@@ -76,13 +86,26 @@ describe('fetchHub', () => {
     vi.stubGlobal('fetch', transport)
     const headers = new Headers({ Cookie: 'private-session' })
     const controller = new AbortController()
-    const options: RequestInit = { method: 'POST', body: '0', redirect: 'manual', signal: controller.signal, headers }
+    const options: RequestInit = {
+      method: 'POST',
+      body: '0',
+      redirect: 'manual',
+      signal: controller.signal,
+      headers,
+    }
     await fetchHub('http://localhost:43210/path', options)
     const [url, sent] = transport.mock.calls[0]!
     expect(url).toBe('http://127.0.0.1:43210/path')
-    expect(sent).toMatchObject({ method: 'POST', body: '0', redirect: 'manual', signal: controller.signal })
+    expect(sent).toMatchObject({
+      method: 'POST',
+      body: '0',
+      redirect: 'manual',
+      signal: controller.signal,
+    })
     expect(sent).toBe(options)
-    expect([...headers]).toEqual([['cookie', 'private-session']])
+    expect([...headers]).toEqual([
+      ['cookie', 'private-session'],
+    ])
   })
 
   it('passes an unrelated request and its options through unchanged', async () => {

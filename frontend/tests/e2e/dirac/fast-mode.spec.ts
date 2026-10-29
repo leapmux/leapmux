@@ -9,7 +9,12 @@ import { nativeContext } from './scenarios'
 anthropicDiracTest.use({ anthropicModel: 'claude-opus-5' })
 
 anthropicDiracTest('enables and disables native fast serving with the model and effort fixed', async ({ anthropicDiracWorkspace, page, modelScript }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer: anthropicDiracWorkspace.server, workspaceId: anthropicDiracWorkspace.workspaceId })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer: anthropicDiracWorkspace.server,
+    workspaceId: anthropicDiracWorkspace.workspaceId,
+  })
   await waitForSettingsHydrated(page)
   const before = await currentNativeAgent(context)
   const effort = nativeOptionGroup(before, 'reasoning_effort') ?? nativeOptionGroup(before, 'effort')

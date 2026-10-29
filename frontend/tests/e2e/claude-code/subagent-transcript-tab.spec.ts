@@ -35,10 +35,12 @@ claudeTest.describe('subagent background tasks for Claude', () => {
     // reach this script rather than the ambient scenario.
     await modelScript.fallback({ text: `The subagent wrote about the ocean and ended with ${MARKER}.` })
     const start = await modelScript.queue({
-      toolCalls: [spawnSubagentToolCall(AgentProvider.CLAUDE_CODE, 'spawn-ocean', {
-        description: 'Write about the ocean',
-        prompt: modelScript.prompt(`Write two sentences about the ocean, then end your reply with the token ${MARKER}.`),
-      })],
+      toolCalls: [
+        spawnSubagentToolCall(AgentProvider.CLAUDE_CODE, 'spawn-ocean', {
+          description: 'Write about the ocean',
+          prompt: modelScript.prompt(`Write two sentences about the ocean, then end your reply with the token ${MARKER}.`),
+        }),
+      ],
     })
     await sendMessage(page, modelScript.prompt('Spawn one general-purpose subagent to write about the ocean, then tell me what it wrote.'))
     await modelScript.waitForSteps(start + 1)
@@ -99,7 +101,9 @@ claudeTest.describe('subagent background tasks for Claude', () => {
 
     // Wait for whichever the inspect produces -- the prompt, or the close going
     // straight through -- rather than reading visibility before either lands.
-    const closeDialog = page.getByRole('dialog').filter({ has: page.getByRole('heading', { name: 'Close Last Tab' }) })
+    const closeDialog = page.getByRole('dialog').filter({
+      has: page.getByRole('heading', { name: 'Close Last Tab' }),
+    })
     await expect.poll(async () =>
       await closeDialog.count() > 0 || await agentTabs(page).count() === 0,
     ).toBe(true)
@@ -165,10 +169,12 @@ claudeTest.describe('subagent spawn has no span', () => {
     })
     const start = await modelScript.queue(
       {
-        toolCalls: [spawnSubagentToolCall(AgentProvider.CLAUDE_CODE, 'spawn-tide', {
-          description: 'Write about the tide',
-          prompt: modelScript.prompt(`Write one sentence about the tide, then end your reply with the token ${MARKER}.`),
-        })],
+        toolCalls: [
+          spawnSubagentToolCall(AgentProvider.CLAUDE_CODE, 'spawn-tide', {
+            description: 'Write about the tide',
+            prompt: modelScript.prompt(`Write one sentence about the tide, then end your reply with the token ${MARKER}.`),
+          }),
+        ],
       },
       { text: `The subagent wrote about the tide and ended with ${MARKER}.` },
     )
@@ -202,7 +208,9 @@ claudeTest.describe('subagent spawn has no span', () => {
     // which never draws a rail, and passes however the spawn card renders.
     const spawnCardRow = page
       .locator('[data-span-columns]:visible')
-      .filter({ has: page.locator(ASSISTANT_BUBBLE_SELECTOR) })
+      .filter({
+        has: page.locator(ASSISTANT_BUBBLE_SELECTOR),
+      })
       .filter({ hasText: AGENT_TYPE })
       .first()
     await expect(spawnCardRow).toBeVisible()

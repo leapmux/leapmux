@@ -19,10 +19,16 @@ export function piSpanRole(parsed: ResolvedMessageContent): ToolSpanRole {
     return 'other'
   // A turn that ended while the call ran stores the start frame AGAIN as the closing
   // row, so the completion is what separates the two copies.
-  return retainedRowIsFinal(parsed.completion) ? 'result' : 'request'
+  return retainedRowIsFinal(parsed.completion)
+    ? 'result'
+    : 'request'
 }
 
 export function piRelatedMessages(parsed: ResolvedMessageContent) {
   const role = piSpanRole(parsed)
-  return role === 'result' ? ['request'] as const : role === 'request' ? ['result'] as const : []
+  return role === 'result'
+    ? ['request'] as const
+    : role === 'request'
+      ? ['result'] as const
+      : []
 }

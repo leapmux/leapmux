@@ -56,7 +56,14 @@ export function museToolCall(input: RowExtractionInput): ToolCall | null {
     return createToolCall(envelope, {
       kind: 'other',
       request: { args },
-      metadata: [{ label: 'Native status', value: pickString(resultItem, 'status') || 'Unspecified' }, ...(preview ? [{ label: 'Native output', value: preview }] : [])],
+      metadata: [
+        { label: 'Native status', value: pickString(resultItem, 'status') || 'Unspecified' },
+        ...(preview
+          ? [
+              { label: 'Native output', value: preview },
+            ]
+          : []),
+      ],
     })
   }
   const native = museNativeResult(resultParse?.parentObject, resultParse?.supplementalContent)
@@ -66,20 +73,68 @@ export function museToolCall(input: RowExtractionInput): ToolCall | null {
       && structured.command === args.command && typeof structured.output === 'string'
       ? structured.output
       : preview
-    const commandOutput = { output, ...(nativeFinal && !native ? { outputUnavailable: true } : {}) }
+    const commandOutput = {
+      output,
+      ...(nativeFinal && !native
+        ? { outputUnavailable: true }
+        : {}),
+    }
     const code = structured?.exit_code
     const signal = structured?.exit_signal
     const outcome: CommandResult = typeof code === 'number' && Number.isSafeInteger(code)
       ? { ...commandOutput, exitCode: code }
       : typeof signal === 'number' && Number.isSafeInteger(signal)
-        ? { ...commandOutput, signal: String(signal) }
-        : structured?.terminal_status === 'failed' ? { ...commandOutput, failed: true } : commandOutput
-    return createToolCall(envelope, { kind: 'execute', request: DEFAULT_TOOL_REQUESTS.execute(args), label: 'Shell', ...(nativeFinal ? { result: { commands: [outcome], unresolvedTerminals: [] } } : {}) })
+        ? {
+            ...commandOutput,
+            signal: String(signal),
+          }
+        : structured?.terminal_status === 'failed'
+          ? { ...commandOutput, failed: true }
+          : commandOutput
+    return createToolCall(envelope, {
+      kind: 'execute',
+      request: DEFAULT_TOOL_REQUESTS.execute(args),
+      label: 'Shell',
+      ...(nativeFinal
+        ? {
+            result: {
+              commands: [outcome],
+              unresolvedTerminals: [],
+            },
+          }
+        : {}),
+    })
   }
   if (kind === 'todo') {
-    return createToolCall(envelope, museTodoSpec({ args, hasResult: facts.resultFrameLanded, failed, output: preview }))
+    return createToolCall(envelope, museTodoSpec({
+      args,
+      hasResult: facts.resultFrameLanded,
+      failed,
+      output: preview,
+    }))
   }
-  if (kind === 'read')
-    return createToolCall(envelope, { kind: 'read', request: DEFAULT_TOOL_REQUESTS.read(args), ...(nativeFinal ? { result: failed ? failedResult(preview) : { lines: null, fallbackContent: preview } } : {}) })
-  return createToolCall(envelope, { kind, request: DEFAULT_TOOL_REQUESTS[kind](args), ...(nativeFinal ? { result: failed || declined ? failedResult(preview) : unparsedResult(preview) } : {}) })
+  if (kind === 'read') {
+    return createToolCall(envelope, {
+      kind: 'read',
+      request: DEFAULT_TOOL_REQUESTS.read(args),
+      ...(nativeFinal
+        ? {
+            result: failed
+              ? failedResult(preview)
+              : { lines: null, fallbackContent: preview },
+          }
+        : {}),
+    })
+  }
+  return createToolCall(envelope, {
+    kind,
+    request: DEFAULT_TOOL_REQUESTS[kind](args),
+    ...(nativeFinal
+      ? {
+          result: failed || declined
+            ? failedResult(preview)
+            : unparsedResult(preview),
+        }
+      : {}),
+  })
 }

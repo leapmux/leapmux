@@ -213,7 +213,9 @@ export async function expectReopenedNativeAgent(
   let agentId = ''
   await expect.poll(async () => {
     const [id] = await tab.evaluateAll(tabs => tabs.map(item => item.getAttribute('data-tab-id') ?? ''))
-    agentId = id && !earlierAgentIds.includes(id) ? id : ''
+    agentId = id && !earlierAgentIds.includes(id)
+      ? id
+      : ''
     return agentId
   }, { message: 'The picker must select the agent tab that it opened.' }).not.toBe('')
   const settled = await retryUntilPass(async () => {

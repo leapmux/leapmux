@@ -24,11 +24,20 @@ piTest('keeps the native codemode output path and preview without an MCP call af
     await openAgentViaAPI(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, directory, { agentProvider: AgentProvider.PI, ...settings })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     const code = `// @options: {"max_output_tokens": 100}\ntext(${JSON.stringify(output)})`
-    const start = await modelScript.queue({ toolCalls: [piCodemodeToolCall('native-codemode-only', code)] }, { text: 'The native codemode-only output completed.' })
+    const start = await modelScript.queue({
+      toolCalls: [
+        piCodemodeToolCall('native-codemode-only', code),
+      ],
+    }, { text: 'The native codemode-only output completed.' })
     await sendMessage(page, modelScript.prompt('Run the native codemode output probe.'))
     await modelScript.waitForSteps(start + 2)
     await waitForAgentIdle(page)
-    const native = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    const native = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
     const completed = await readPiMcpResult(native, 'native-codemode-only', 'codemode')
     expect(completed.failed).toBe(false)
     expect(isObject(completed.result.details) && completed.result.details.calls).toEqual([])
@@ -55,13 +64,22 @@ piTest('keeps empty native codemode output and a real nested file read after rel
     const workspaceId = authenticatedEmptyWorkspace.workspaceId
     await openAgentViaAPI(leapmuxServer, workspaceId, directory, { agentProvider: AgentProvider.PI, ...settings })
     await openWorkspace(page, workspaceId)
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId,
+    })
     const cases = [
       { callId: 'native-codemode-empty', code: 'text("");', expected: '' },
       { callId: 'native-codemode-read', code: `const result = await tools.read({ path: ${JSON.stringify(file)} }); text(result);`, expected: value },
     ]
     for (const [index, item] of cases.entries()) {
-      const start = await modelScript.queue({ toolCalls: [piCodemodeToolCall(item.callId, item.code)] }, { text: `The native codemode boundary ${index} completed.` })
+      const start = await modelScript.queue({
+        toolCalls: [
+          piCodemodeToolCall(item.callId, item.code),
+        ],
+      }, { text: `The native codemode boundary ${index} completed.` })
       await sendMessage(page, modelScript.prompt(`Run native codemode boundary ${index}.`))
       await modelScript.waitForSteps(start + 2)
       await waitForAgentIdle(page)
@@ -83,7 +101,9 @@ piTest('keeps empty native codemode output and a real nested file read after rel
         expect(JSON.stringify(completed.result.content)).toContain(value)
         const nested = await readPiMcpResult(context, `${item.callId}/1`, 'read')
         expect(nested.failed).toBe(false)
-        expect(nested.result.content).toEqual([{ type: 'text', text: value }])
+        expect(nested.result.content).toEqual([
+          { type: 'text', text: value },
+        ])
       }
       const bubble = toolCallRow(page, item.callId)
       await expect(bubble).toHaveCount(1)
@@ -107,12 +127,21 @@ piTest('keeps the native codemode script failure and exact failed status after r
     await openAgentViaAPI(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, directory, { agentProvider: AgentProvider.PI, ...settings })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     const callId = 'native-codemode-failure'
-    const start = await modelScript.queue({ toolCalls: [piCodemodeToolCall(callId, 'throw new Error("NATIVE_CODEMODE_FAILURE");')] }, { text: 'The native script failure reached the model.' })
+    const start = await modelScript.queue({
+      toolCalls: [
+        piCodemodeToolCall(callId, 'throw new Error("NATIVE_CODEMODE_FAILURE");'),
+      ],
+    }, { text: 'The native script failure reached the model.' })
     await sendMessage(page, modelScript.prompt('Run the native codemode error probe.'))
     await modelScript.waitForSteps(start + 2)
     await waitForAgentIdle(page)
     expect(nativeToolResult(await modelScript.requestAt(start + 1), callId)).toContain('NATIVE_CODEMODE_FAILURE')
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
     expect((await readPiMcpResult(context, callId, 'codemode')).failed).toBe(true)
     const bubble = toolCallRow(page, callId)
     await expect(bubble).toHaveAttribute('data-tool-status', 'failed')

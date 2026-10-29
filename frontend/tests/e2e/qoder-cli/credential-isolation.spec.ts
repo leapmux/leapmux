@@ -11,7 +11,9 @@ qoderTest('runs the actual native turn with private configuration and mock crede
   await exerciseCredentialIsolation(native, {
     privateDirectories: [home],
     expectedCredential: MODEL_KEY,
-    configurationFiles: [join(home, '.qoder', 'settings.json')],
+    configurationFiles: [
+      join(home, '.qoder', 'settings.json'),
+    ],
     configurationMarkers: ['mockprov'],
   })
 })

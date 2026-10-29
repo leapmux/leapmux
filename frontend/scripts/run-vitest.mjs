@@ -13,7 +13,9 @@ export function launchVitest(args) {
   // Node 25 introduced a web storage stub that conflicts with jsdom. Older Node versions reject this flag.
   if (Number.parseInt(process.versions.node, 10) >= 25) {
     const flag = '--no-experimental-webstorage'
-    env.NODE_OPTIONS = env.NODE_OPTIONS ? `${env.NODE_OPTIONS} ${flag}` : flag
+    env.NODE_OPTIONS = env.NODE_OPTIONS
+      ? `${env.NODE_OPTIONS} ${flag}`
+      : flag
   }
   return spawn(process.execPath, [cli, ...args], { stdio: 'inherit', env })
 }

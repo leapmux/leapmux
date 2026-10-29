@@ -34,12 +34,21 @@ export function piResultDivider(parsed: unknown, completion?: MessageCompletion)
   if (!isObject(parsed) || pickString(parsed, 'type') !== PI_EVENT.AgentEnd)
     return null
 
-  if (completion === MessageCompletion.INTERRUPTED)
-    return { label: turnEndLabel('interrupted', { durationMs: pickNumber(parsed, 'duration_ms') }) }
+  if (completion === MessageCompletion.INTERRUPTED) {
+    return {
+      label: turnEndLabel('interrupted', {
+        durationMs: pickNumber(parsed, 'duration_ms'),
+      }),
+    }
+  }
 
   const assistant = lastAssistantMessage(parsed.messages)
-  const stopReason = assistant ? pickString(assistant, 'stopReason') : ''
-  const errorMessage = assistant ? pickString(assistant, 'errorMessage') : ''
+  const stopReason = assistant
+    ? pickString(assistant, 'stopReason')
+    : ''
+  const errorMessage = assistant
+    ? pickString(assistant, 'errorMessage')
+    : ''
 
   const durationMs = pickNumber(parsed, 'duration_ms')
 
@@ -50,8 +59,11 @@ export function piResultDivider(parsed: unknown, completion?: MessageCompletion)
     }
   }
   // An aborted turn is not an error: the reader asked for it.
-  if (stopReason === PI_STOP_REASON.Aborted)
-    return { label: turnEndLabel('interrupted', { durationMs }) }
+  if (stopReason === PI_STOP_REASON.Aborted) {
+    return {
+      label: turnEndLabel('interrupted', { durationMs }),
+    }
+  }
   return {
     label: turnEndLabel('ended', {
       durationMs,

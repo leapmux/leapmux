@@ -13,7 +13,10 @@ const recorded = vi.hoisted(() => ({ events: [] as string[], counts: {} as Recor
 
 vi.mock('./nativeControlObservation', () => ({
   expectNoNativeControl: async (_context: unknown, options: { testId: string, additionalTestIds?: readonly string[], relatedProof: () => Promise<void> }) => {
-    recorded.events.push(`observe ${[options.testId, ...(options.additionalTestIds ?? [])].join(' ')}`)
+    recorded.events.push(`observe ${[
+      options.testId,
+      ...(options.additionalTestIds ?? []),
+    ].join(' ')}`)
     await options.relatedProof()
     recorded.events.push('observation ended')
   },
@@ -26,7 +29,9 @@ vi.mock('./ui', async importOriginal => ({
   },
   openSettingsMenu: async (_page: unknown, groupId: string) => {
     recorded.events.push(`menu ${groupId}`)
-    return { getByTestId: (testId: string) => ({ testId }) }
+    return {
+      getByTestId: (testId: string) => ({ testId }),
+    }
   },
   closeComposerMenus: async () => {
     recorded.events.push('close menus')
@@ -44,7 +49,16 @@ vi.mock('./nativeScenario', async importOriginal => ({
   currentNativeAgent: async () => {
     recorded.events.push('agent')
     const options = recorded.modes.shift()
-    return { optionGroups: options === undefined ? [] : [{ id: 'permissionMode', options: options.map(id => ({ id })) }] }
+    return {
+      optionGroups: options === undefined
+        ? []
+        : [
+            {
+              id: 'permissionMode',
+              options: options.map(id => ({ id })),
+            },
+          ],
+    }
   },
 }))
 
@@ -75,7 +89,12 @@ function fakeContext(): ManagedNativeScenarioContext {
       return null
     },
   })
-  return { page, provider: 0, workspaceId: 'workspace', leapmuxServer: { hubUrl: '', adminToken: '', workerId: '' } } as unknown as ManagedNativeScenarioContext
+  return {
+    page,
+    provider: 0,
+    workspaceId: 'workspace',
+    leapmuxServer: { hubUrl: '', adminToken: '', workerId: '' },
+  } as unknown as ManagedNativeScenarioContext
 }
 
 beforeEach(() => {
@@ -86,9 +105,11 @@ beforeEach(() => {
 
 describe('expectNoPlanReview', () => {
   it('observes both plan buttons during the proof, reloads, waits for the live catalog, and counts both buttons', async () => {
-    await expectNoPlanReview(fakeContext(), { relatedProof: async () => {
-      recorded.events.push('proof')
-    } })
+    await expectNoPlanReview(fakeContext(), {
+      relatedProof: async () => {
+        recorded.events.push('proof')
+      },
+    })
     expect(recorded.events).toEqual([
       'observe plan-approve-btn plan-reject-btn',
       'proof',
@@ -119,20 +140,27 @@ describe('expectNoPlanReview', () => {
 
   it.each(PLAN_REVIEW_BUTTON_TEST_IDS)('fails when the reloaded page holds %s', async (testId) => {
     recorded.counts[testId] = 1
-    await expect(expectNoPlanReview(fakeContext(), { relatedProof: async () => {} })).rejects.toThrow(`the reloaded page holds no ${testId}`)
+    await expect(expectNoPlanReview(fakeContext(), {
+      relatedProof: async () => {},
+    })).rejects.toThrow(`the reloaded page holds no ${testId}`)
   })
 
   it('does not reload when the proof fails', async () => {
-    await expect(expectNoPlanReview(fakeContext(), { relatedProof: async () => {
-      throw new Error('the native operation failed')
-    } })).rejects.toThrow('the native operation failed')
+    await expect(expectNoPlanReview(fakeContext(), {
+      relatedProof: async () => {
+        throw new Error('the native operation failed')
+      },
+    })).rejects.toThrow('the native operation failed')
     expect(recorded.events).not.toContain('reload')
   })
 })
 
 describe('expectNoPlanOption', () => {
   it('runs a native turn, then checks the catalog and the menu before and after a reload', async () => {
-    recorded.modes = [['default', 'acceptEdits'], ['default', 'acceptEdits']]
+    recorded.modes = [
+      ['default', 'acceptEdits'],
+      ['default', 'acceptEdits'],
+    ]
     await expectNoPlanOption(fakeContext())
     expect(recorded.events).toEqual([
       'answer',
@@ -152,8 +180,20 @@ describe('expectNoPlanOption', () => {
 
   // Each case gives both passes a catalog, so only the catalog check can fail it.
   it.each([
-    { label: 'before the reload', modes: [['default', 'plan'], ['default']] },
-    { label: 'after the reload', modes: [['default'], ['default', 'plan']] },
+    {
+      label: 'before the reload',
+      modes: [
+        ['default', 'plan'],
+        ['default'],
+      ],
+    },
+    {
+      label: 'after the reload',
+      modes: [
+        ['default'],
+        ['default', 'plan'],
+      ],
+    },
   ])('fails for a catalog that offers plan $label', async ({ modes }) => {
     recorded.modes = modes
     await expect(expectNoPlanOption(fakeContext())).rejects.toThrow('the native mode catalog offers no plan value')
@@ -161,14 +201,20 @@ describe('expectNoPlanOption', () => {
 
   it.each([
     { label: 'no mode group', modes: [] },
-    { label: 'an empty mode group', modes: [[]] },
+    {
+      label: 'an empty mode group',
+      modes: [[]],
+    },
   ])('fails for $label', async ({ modes }) => {
     recorded.modes = modes
     await expect(expectNoPlanOption(fakeContext())).rejects.toThrow('native mode catalog is absent')
   })
 
   it('fails for a menu that offers plan, before the reload', async () => {
-    recorded.modes = [['default'], ['default']]
+    recorded.modes = [
+      ['default'],
+      ['default'],
+    ]
     recorded.counts['permissionMode-plan'] = 1
     await expect(expectNoPlanOption(fakeContext())).rejects.toThrow('the mode menu offers no plan value')
     expect(recorded.events).not.toContain('reload')

@@ -6,12 +6,21 @@ import { codewhaleChildBlock, codewhaleEnvelope, codewhaleFrameDrawsNothing, cod
 
 /** A final tool event whose item states exactly this metadata, with no fixture defaults. */
 function toolEnd(event: string, metadata: Record<string, unknown>, detail = 'x'): Record<string, unknown> {
-  return codewhaleEvent(event, { item: { detail, metadata: { tool_use_id: CALL, tool_name: CODEWHALE_TOOL.Bash, ...metadata } } })
+  return codewhaleEvent(event, {
+    item: {
+      detail,
+      metadata: { tool_use_id: CALL, tool_name: CODEWHALE_TOOL.Bash, ...metadata },
+    },
+  })
 }
 
 describe('codewhaleEnvelope', () => {
   it('reads the event, the turn and the payload', () => {
-    expect(codewhaleEnvelope(codewhaleEvent(CODEWHALE_EVENT.TurnCompleted, { turn: {} }))).toStrictEqual({ event: CODEWHALE_EVENT.TurnCompleted, turnId: 'turn-1', payload: { turn: {} } })
+    expect(codewhaleEnvelope(codewhaleEvent(CODEWHALE_EVENT.TurnCompleted, { turn: {} }))).toStrictEqual({
+      event: CODEWHALE_EVENT.TurnCompleted,
+      turnId: 'turn-1',
+      payload: { turn: {} },
+    })
   })
 
   it('states an empty payload for an event that sends none', () => {
@@ -20,7 +29,10 @@ describe('codewhaleEnvelope', () => {
 
   it('states an empty payload and an empty turn for fields in another shape', () => {
     expect(codewhaleEnvelope({ event: 'x', turn_id: 7, payload: 'text' })).toStrictEqual({ event: 'x', turnId: '', payload: {} })
-    expect(codewhaleEnvelope({ event: 'x', payload: [1, 2] })?.payload).toStrictEqual({})
+    expect(codewhaleEnvelope({
+      event: 'x',
+      payload: [1, 2],
+    })?.payload).toStrictEqual({})
   })
 
   it('answers null for a row that is not an event', () => {
@@ -44,7 +56,13 @@ describe('codewhaleItemOutcome', () => {
 
 describe('codewhaleItem', () => {
   it('reads the item of an item event', () => {
-    expect(codewhaleItem(itemFinished(CODEWHALE_ITEM_KIND.AgentMessage, 'Hello.'))).toStrictEqual({ outcome: 'completed', kind: CODEWHALE_ITEM_KIND.AgentMessage, summary: 'Hello.', detail: 'Hello.', metadata: {} })
+    expect(codewhaleItem(itemFinished(CODEWHALE_ITEM_KIND.AgentMessage, 'Hello.'))).toStrictEqual({
+      outcome: 'completed',
+      kind: CODEWHALE_ITEM_KIND.AgentMessage,
+      summary: 'Hello.',
+      detail: 'Hello.',
+      metadata: {},
+    })
   })
 
   it('answers null for another event, or an item event that carries no item', () => {
@@ -56,7 +74,15 @@ describe('codewhaleItem', () => {
 describe('codewhaleToolFrame', () => {
   it('prefers the parsed arguments of a start event', () => {
     const frame = codewhaleToolFrame(toolStarted(CODEWHALE_TOOL.Bash, { command: 'ls' }))
-    expect(frame).toStrictEqual({ callId: CALL, toolName: CODEWHALE_TOOL.Bash, input: { command: 'ls' }, outcome: 'open', text: '', metadata: { tool_use_id: CALL, tool_name: CODEWHALE_TOOL.Bash, tool_input: '{"command":"ls"}' }, deferredLoad: false })
+    expect(frame).toStrictEqual({
+      callId: CALL,
+      toolName: CODEWHALE_TOOL.Bash,
+      input: { command: 'ls' },
+      outcome: 'open',
+      text: '',
+      metadata: { tool_use_id: CALL, tool_name: CODEWHALE_TOOL.Bash, tool_input: '{"command":"ls"}' },
+      deferredLoad: false,
+    })
   })
 
   it('parses the argument string of a final event', () => {
@@ -67,35 +93,70 @@ describe('codewhaleToolFrame', () => {
   // test makes them differ, so it can tell which copy the reader took.
   it('takes the parsed arguments over the argument string when the two differ', () => {
     const start = codewhaleEvent(CODEWHALE_EVENT.ItemStarted, {
-      item: { detail: '', metadata: { tool_use_id: CALL, tool_name: CODEWHALE_TOOL.Bash, tool_input: '{"command":"from the string"}' } },
-      tool: { id: CALL, name: CODEWHALE_TOOL.Bash, input: { command: 'parsed' } },
+      item: {
+        detail: '',
+        metadata: { tool_use_id: CALL, tool_name: CODEWHALE_TOOL.Bash, tool_input: '{"command":"from the string"}' },
+      },
+      tool: {
+        id: CALL,
+        name: CODEWHALE_TOOL.Bash,
+        input: { command: 'parsed' },
+      },
     })
     expect(codewhaleToolFrame(start)?.input).toStrictEqual({ command: 'parsed' })
   })
 
   it('takes the tool record\'s name and id over the metadata, and tool_use_id over tool_call_id', () => {
     const start = codewhaleEvent(CODEWHALE_EVENT.ItemStarted, {
-      item: { detail: '', metadata: { tool_use_id: 'from-metadata', tool_call_id: 'from-question', tool_name: CODEWHALE_TOOL.Bash } },
+      item: {
+        detail: '',
+        metadata: { tool_use_id: 'from-metadata', tool_call_id: 'from-question', tool_name: CODEWHALE_TOOL.Bash },
+      },
       tool: { id: 'from-tool', name: CODEWHALE_TOOL.Read, input: {} },
     })
     expect(codewhaleToolFrame(start)).toMatchObject({ callId: 'from-tool', toolName: CODEWHALE_TOOL.Read })
-    const end = codewhaleEvent(CODEWHALE_EVENT.ItemCompleted, { item: { detail: 'x', metadata: { tool_use_id: 'from-metadata', tool_call_id: 'from-question', tool_name: CODEWHALE_TOOL.Bash } } })
+    const end = codewhaleEvent(CODEWHALE_EVENT.ItemCompleted, {
+      item: {
+        detail: 'x',
+        metadata: { tool_use_id: 'from-metadata', tool_call_id: 'from-question', tool_name: CODEWHALE_TOOL.Bash },
+      },
+    })
     expect(codewhaleToolFrame(end)?.callId).toBe('from-metadata')
   })
 
   it('answers null for an item that names a call but no tool', () => {
-    expect(codewhaleToolFrame(codewhaleEvent(CODEWHALE_EVENT.ItemCompleted, { item: { detail: 'x', metadata: { tool_use_id: CALL } } }))).toBeNull()
+    expect(codewhaleToolFrame(codewhaleEvent(CODEWHALE_EVENT.ItemCompleted, {
+      item: {
+        detail: 'x',
+        metadata: { tool_use_id: CALL },
+      },
+    }))).toBeNull()
   })
 
   it('states no arguments for a string that does not parse into an object', () => {
-    const broken = codewhaleEvent(CODEWHALE_EVENT.ItemCompleted, { item: { detail: '', metadata: { tool_use_id: CALL, tool_name: 'x', tool_input: '{nope' } } })
-    const array = codewhaleEvent(CODEWHALE_EVENT.ItemCompleted, { item: { detail: '', metadata: { tool_use_id: CALL, tool_name: 'x', tool_input: '[1]' } } })
+    const broken = codewhaleEvent(CODEWHALE_EVENT.ItemCompleted, {
+      item: {
+        detail: '',
+        metadata: { tool_use_id: CALL, tool_name: 'x', tool_input: '{nope' },
+      },
+    })
+    const array = codewhaleEvent(CODEWHALE_EVENT.ItemCompleted, {
+      item: {
+        detail: '',
+        metadata: { tool_use_id: CALL, tool_name: 'x', tool_input: '[1]' },
+      },
+    })
     expect(codewhaleToolFrame(broken)?.input).toStrictEqual({})
     expect(codewhaleToolFrame(array)?.input).toStrictEqual({})
   })
 
   it('reads the redacted question result by its tool_call_id', () => {
-    const answered = codewhaleEvent(CODEWHALE_EVENT.ItemCompleted, { item: { detail: 'User input submitted', metadata: { tool_call_id: 'q1', tool_name: CODEWHALE_TOOL.RequestUserInput, response_redacted: true } } })
+    const answered = codewhaleEvent(CODEWHALE_EVENT.ItemCompleted, {
+      item: {
+        detail: 'User input submitted',
+        metadata: { tool_call_id: 'q1', tool_name: CODEWHALE_TOOL.RequestUserInput, response_redacted: true },
+      },
+    })
     expect(codewhaleToolFrame(answered)).toMatchObject({ callId: 'q1', outcome: 'completed', text: 'User input submitted' })
   })
 
@@ -115,23 +176,67 @@ describe('codewhaleToolFrame', () => {
   })
 
   it('reads the two tool blocks of a subagent transcript', () => {
-    expect(codewhaleToolFrame(childBlock(CODEWHALE_TRANSCRIPT_ROLE.Assistant, { type: CODEWHALE_BLOCK_TYPE.ToolUse, id: 'b1', name: 'read', input: { path: 'a' } })))
-      .toStrictEqual({ callId: 'b1', toolName: 'read', input: { path: 'a' }, outcome: 'open', text: '', metadata: {}, deferredLoad: false })
-    expect(codewhaleToolFrame(childBlock(CODEWHALE_TRANSCRIPT_ROLE.User, { type: CODEWHALE_BLOCK_TYPE.ToolResult, tool_use_id: 'b1', content: 'x', is_error: true })))
-      .toMatchObject({ callId: 'b1', toolName: '', outcome: 'failed', text: 'x' })
+    expect(codewhaleToolFrame(childBlock(CODEWHALE_TRANSCRIPT_ROLE.Assistant, {
+      type: CODEWHALE_BLOCK_TYPE.ToolUse,
+      id: 'b1',
+      name: 'read',
+      input: { path: 'a' },
+    })))
+      .toStrictEqual({
+        callId: 'b1',
+        toolName: 'read',
+        input: { path: 'a' },
+        outcome: 'open',
+        text: '',
+        metadata: {},
+        deferredLoad: false,
+      })
+    expect(codewhaleToolFrame(childBlock(CODEWHALE_TRANSCRIPT_ROLE.User, {
+      type: CODEWHALE_BLOCK_TYPE.ToolResult,
+      tool_use_id: 'b1',
+      content: 'x',
+      is_error: true,
+    })))
+      .toMatchObject({
+        callId: 'b1',
+        toolName: '',
+        outcome: 'failed',
+        text: 'x',
+      })
   })
 
   it('reads a result block with no text of its own as an empty answer that ran', () => {
-    for (const content of [undefined, 42, { text: 'not a list' }]) {
-      const block = content === undefined ? { type: CODEWHALE_BLOCK_TYPE.ToolResult, tool_use_id: 'b1' } : { type: CODEWHALE_BLOCK_TYPE.ToolResult, tool_use_id: 'b1', content }
-      expect(codewhaleToolFrame(childBlock(CODEWHALE_TRANSCRIPT_ROLE.User, block)), String(content)).toMatchObject({ callId: 'b1', outcome: 'completed', text: '', deferredLoad: false })
+    for (const content of [
+      undefined,
+      42,
+      { text: 'not a list' },
+    ]) {
+      const block = content === undefined
+        ? { type: CODEWHALE_BLOCK_TYPE.ToolResult, tool_use_id: 'b1' }
+        : { type: CODEWHALE_BLOCK_TYPE.ToolResult, tool_use_id: 'b1', content }
+      expect(codewhaleToolFrame(childBlock(CODEWHALE_TRANSCRIPT_ROLE.User, block)), String(content)).toMatchObject({
+        callId: 'b1',
+        outcome: 'completed',
+        text: '',
+        deferredLoad: false,
+      })
     }
   })
 
   // Only a boolean `true` marks an error, as it does on the item metadata.
   it('reads a result block as failed only for an is_error of true', () => {
-    expect(codewhaleToolFrame(childBlock(CODEWHALE_TRANSCRIPT_ROLE.User, { type: CODEWHALE_BLOCK_TYPE.ToolResult, tool_use_id: 'b1', content: 'x', is_error: 'true' }))?.outcome).toBe('completed')
-    expect(codewhaleToolFrame(childBlock(CODEWHALE_TRANSCRIPT_ROLE.User, { type: CODEWHALE_BLOCK_TYPE.ToolResult, tool_use_id: 'b1', content: 'x', is_error: false }))?.outcome).toBe('completed')
+    expect(codewhaleToolFrame(childBlock(CODEWHALE_TRANSCRIPT_ROLE.User, {
+      type: CODEWHALE_BLOCK_TYPE.ToolResult,
+      tool_use_id: 'b1',
+      content: 'x',
+      is_error: 'true',
+    }))?.outcome).toBe('completed')
+    expect(codewhaleToolFrame(childBlock(CODEWHALE_TRANSCRIPT_ROLE.User, {
+      type: CODEWHALE_BLOCK_TYPE.ToolResult,
+      tool_use_id: 'b1',
+      content: 'x',
+      is_error: false,
+    }))?.outcome).toBe('completed')
   })
 
   // The classifier, the span role and the extractor read one row in turn, and each
@@ -161,27 +266,94 @@ describe('codewhaleToolFrame', () => {
 
 describe('codewhaleChildBlock', () => {
   it('reads the one block a stored row carries', () => {
-    expect(codewhaleChildBlock(childBlock('assistant', { type: 'text', text: 'x' }))).toStrictEqual({ role: 'assistant', type: 'text', block: { type: 'text', text: 'x' } })
+    expect(codewhaleChildBlock(childBlock('assistant', { type: 'text', text: 'x' }))).toStrictEqual({
+      role: 'assistant',
+      type: 'text',
+      block: { type: 'text', text: 'x' },
+    })
   })
 
   it('answers null for a header, a row without an index, and a row of several blocks', () => {
     expect(codewhaleChildBlock({ kind: 'subagent_transcript_header', agent_id: 'a1' })).toBeNull()
-    expect(codewhaleChildBlock({ kind: 'message', message: { role: 'assistant', content: [{ type: 'text' }] } })).toBeNull()
-    expect(codewhaleChildBlock({ kind: 'message', index: 1, message: { role: 'assistant', content: [{ type: 'text' }, { type: 'text' }] } })).toBeNull()
-    expect(codewhaleChildBlock({ kind: 'message', index: 1, message: { role: 'assistant', content: [{ text: 'no type' }] } })).toBeNull()
+    expect(codewhaleChildBlock({
+      kind: 'message',
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'text' },
+        ],
+      },
+    })).toBeNull()
+    expect(codewhaleChildBlock({
+      kind: 'message',
+      index: 1,
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'text' },
+          { type: 'text' },
+        ],
+      },
+    })).toBeNull()
+    expect(codewhaleChildBlock({
+      kind: 'message',
+      index: 1,
+      message: {
+        role: 'assistant',
+        content: [
+          { text: 'no type' },
+        ],
+      },
+    })).toBeNull()
   })
 
   it('answers null for a row whose content holds no block record', () => {
-    expect(codewhaleChildBlock({ kind: 'message', index: 1, message: { role: 'assistant', content: [] } })).toBeNull()
-    expect(codewhaleChildBlock({ kind: 'message', index: 1, message: { role: 'assistant', content: ['text'] } })).toBeNull()
-    expect(codewhaleChildBlock({ kind: 'message', index: 1, message: { role: 'assistant', content: 'text' } })).toBeNull()
+    expect(codewhaleChildBlock({
+      kind: 'message',
+      index: 1,
+      message: { role: 'assistant', content: [] },
+    })).toBeNull()
+    expect(codewhaleChildBlock({
+      kind: 'message',
+      index: 1,
+      message: {
+        role: 'assistant',
+        content: ['text'],
+      },
+    })).toBeNull()
+    expect(codewhaleChildBlock({
+      kind: 'message',
+      index: 1,
+      message: { role: 'assistant', content: 'text' },
+    })).toBeNull()
     expect(codewhaleChildBlock({ kind: 'message', index: 1 })).toBeNull()
     // An index that is not a number is a row this reader cannot place.
-    expect(codewhaleChildBlock({ kind: 'message', index: '1', message: { role: 'assistant', content: [{ type: 'text' }] } })).toBeNull()
+    expect(codewhaleChildBlock({
+      kind: 'message',
+      index: '1',
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'text' },
+        ],
+      },
+    })).toBeNull()
   })
 
   it('states an empty role for a message that sends none', () => {
-    expect(codewhaleChildBlock({ kind: 'message', index: 0, message: { content: [{ type: 'text', text: 'x' }] } })).toStrictEqual({ role: '', type: 'text', block: { type: 'text', text: 'x' } })
+    expect(codewhaleChildBlock({
+      kind: 'message',
+      index: 0,
+      message: {
+        content: [
+          { type: 'text', text: 'x' },
+        ],
+      },
+    })).toStrictEqual({
+      role: '',
+      type: 'text',
+      block: { type: 'text', text: 'x' },
+    })
   })
 })
 
@@ -207,7 +379,12 @@ describe('codewhaleFrameDrawsNothing', () => {
   // The opening frame is the only row that states the call's arguments, so no
   // metadata flag hides it.
   it('never hides an opening frame', () => {
-    const start = (metadata: Record<string, unknown>) => frame(codewhaleEvent(CODEWHALE_EVENT.ItemStarted, { item: { detail: '', metadata: { tool_use_id: CALL, tool_name: CODEWHALE_TOOL.Bash, ...metadata } } }))
+    const start = (metadata: Record<string, unknown>) => frame(codewhaleEvent(CODEWHALE_EVENT.ItemStarted, {
+      item: {
+        detail: '',
+        metadata: { tool_use_id: CALL, tool_name: CODEWHALE_TOOL.Bash, ...metadata },
+      },
+    }))
     expect(codewhaleFrameDrawsNothing(start({ deferred_tool_loaded: true }))).toBe(false)
     expect(codewhaleFrameDrawsNothing(start({ response_redacted: true }))).toBe(false)
   })
@@ -220,7 +397,12 @@ describe('codewhaleFrameDrawsNothing', () => {
 
 describe('codewhaleFrameFailed', () => {
   it('reads a failed event and a completed call that reports an error', () => {
-    const failed = codewhaleToolFrame(codewhaleEvent(CODEWHALE_EVENT.ItemFailed, { item: { detail: 'x', metadata: { tool_use_id: CALL, tool_name: 'bash' } } }))!
+    const failed = codewhaleToolFrame(codewhaleEvent(CODEWHALE_EVENT.ItemFailed, {
+      item: {
+        detail: 'x',
+        metadata: { tool_use_id: CALL, tool_name: 'bash' },
+      },
+    }))!
     expect(codewhaleFrameFailed(failed)).toBe(true)
     expect(codewhaleFrameFailed(codewhaleToolFrame(toolCompleted('bash', {}, 'x', { is_error: true }))!)).toBe(true)
     expect(codewhaleFrameFailed(codewhaleToolFrame(toolCompleted('bash', {}, 'x'))!)).toBe(false)
@@ -242,15 +424,28 @@ describe('codewhaleToolSpanRole', () => {
 
   it('reads a retained opening frame as the result', () => {
     const frame = codewhaleToolFrame(toolStarted('bash', {}))!
-    expect(codewhaleToolSpanRole(frame, { ...requestSide(toolStarted('bash', {})), completion: MessageCompletion.ERROR })).toBe('result')
+    expect(codewhaleToolSpanRole(frame, {
+      ...requestSide(toolStarted('bash', {})),
+      completion: MessageCompletion.ERROR,
+    })).toBe('result')
   })
 
   it('reads an opening frame that carries a tool-outcome note as the result', () => {
     const frame = codewhaleToolFrame(toolStarted('bash', {}))!
-    const noted = { ...requestSide(toolStarted('bash', {})), messageMetadata: { tool_outcome: { source: 'batch_summary', outcome: 'succeeded' } } }
+    const noted = {
+      ...requestSide(toolStarted('bash', {})),
+      messageMetadata: {
+        tool_outcome: { source: 'batch_summary', outcome: 'succeeded' },
+      },
+    }
     expect(codewhaleToolSpanRole(frame, noted)).toBe('result')
     // A note that states no source is no note, and the frame decides again.
-    const partial = { ...requestSide(toolStarted('bash', {})), messageMetadata: { tool_outcome: { outcome: 'succeeded' } } }
+    const partial = {
+      ...requestSide(toolStarted('bash', {})),
+      messageMetadata: {
+        tool_outcome: { outcome: 'succeeded' },
+      },
+    }
     expect(codewhaleToolSpanRole(frame, partial)).toBe('request')
   })
 })

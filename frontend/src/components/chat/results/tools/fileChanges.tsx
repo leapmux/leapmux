@@ -33,7 +33,12 @@ import { RequestedFileChanges } from '../requestedFileChanges'
 export function RequestedChangesBody(props: { request: FileChangeRequest, view: ToolRowView, hasResult: boolean, status: ToolCallStatus }): JSX.Element {
   return (
     <Show when={!props.hasResult && !fileChangeFailed(props.status) && props.request.changes.length > 0}>
-      <RequestedFileChanges sources={props.request.changes} {...(props.view.context !== undefined ? { context: props.view.context } : {})} />
+      <RequestedFileChanges
+        sources={props.request.changes}
+        {...(props.view.context !== undefined
+          ? { context: props.view.context }
+          : {})}
+      />
     </Show>
   )
 }
@@ -45,9 +50,26 @@ export function FileChangesBody(props: { changes: FileEditDiff[], view: ToolRowV
       {source => (
         <>
           <Show when={props.changes.length > 1}>
-            <div class={toolResultPrompt}><FileEditDiffTitle source={source} {...(props.view.context !== undefined ? { context: props.view.context } : {})} /></div>
+            <div class={toolResultPrompt}>
+              <FileEditDiffTitle
+                source={source}
+                {...(props.view.context !== undefined
+                  ? { context: props.view.context }
+                  : {})}
+              />
+            </div>
           </Show>
-          <Show when={fileEditHasDiff(source)}><FileEditDiffBody source={source} diff={{ view: () => props.view.context?.diffView?.() ?? 'unified' }} {...(props.view.context !== undefined ? { context: props.view.context } : {})} /></Show>
+          <Show when={fileEditHasDiff(source)}>
+            <FileEditDiffBody
+              source={source}
+              diff={{
+                view: () => props.view.context?.diffView?.() ?? 'unified',
+              }}
+              {...(props.view.context !== undefined
+                ? { context: props.view.context }
+                : {})}
+            />
+          </Show>
         </>
       )}
     </For>
@@ -69,7 +91,12 @@ export function fileChangesTitle(changes: FileEditDiff[], replaceAll: boolean | 
       ? null
       : (
           <>
-            <FileEditDiffTitle source={change} {...(context !== undefined ? { context } : {})} />
+            <FileEditDiffTitle
+              source={change}
+              {...(context !== undefined
+                ? { context }
+                : {})}
+            />
             <Show when={replaceAll}><span class={toolInputText}>{' (replace all)'}</span></Show>
           </>
         )

@@ -38,18 +38,38 @@ async function withThinkingWorkspace(
         modelKey: MODEL_KEY,
         providerID: 'deepseek',
         modelID: 'deepseek-v4-pro',
-        ...(options.profileEffort === undefined ? {} : { reasoning: { enabled: true, effort: options.profileEffort } }),
+        ...(options.profileEffort === undefined
+          ? {}
+          : {
+              reasoning: { enabled: true, effort: options.profileEffort },
+            }),
       })
       const profile = join(home, '.cline', 'data', 'settings', 'providers.json')
       return {
-        agentEnv: { ...leapmuxServer.agentEnv, ...environment, HOME: home, USERPROFILE: home, ZDOTDIR: home },
-        setup: { profile, originalProfile: readFileSync(profile, 'utf8') },
+        agentEnv: {
+          ...leapmuxServer.agentEnv,
+          ...environment,
+          HOME: home,
+          USERPROFILE: home,
+          ZDOTDIR: home,
+        },
+        setup: {
+          profile,
+          originalProfile: readFileSync(profile, 'utf8'),
+        },
       }
     },
-    openAgent: (server, workspaceId, workingDir) => openAgentViaAPI(server, workspaceId, workingDir, agentOpenOptions(CLINE_AGENT.provider, { optionValues: { thinking: options.thinking, effort: options.effort } })),
+    openAgent: (server, workspaceId, workingDir) => openAgentViaAPI(server, workspaceId, workingDir, agentOpenOptions(CLINE_AGENT.provider, {
+      optionValues: { thinking: options.thinking, effort: options.effort },
+    })),
   }, async ({ server, workspaceId, setup }) => {
     const assertProfileUnchanged = () => expect(readFileSync(setup.profile, 'utf8')).toBe(setup.originalProfile)
-    await use(await nativeContext({ page, leapmuxServer: server, workspaceId, modelScript }), assertProfileUnchanged)
+    await use(await nativeContext({
+      page,
+      leapmuxServer: server,
+      workspaceId,
+      modelScript,
+    }), assertProfileUnchanged)
     assertProfileUnchanged()
   })
 }
@@ -72,9 +92,15 @@ clineTest('starts with thinking Off and retains the chosen effort through live c
     const before = await currentNativeAgent(native)
     await exerciseNativeOptionSequence(native, {
       groupId: 'thinking',
-      steps: [{ value: 'false', via: 'default' }, { value: 'true', via: 'choose' }, { value: 'false', via: 'choose' }],
+      steps: [
+        { value: 'false', via: 'default' },
+        { value: 'true', via: 'choose' },
+        { value: 'false', via: 'choose' },
+      ],
       nativeProof: async (request, step) => {
-        expectNativeThinking(request, step.value === 'false' ? 'off' : 'low')
+        expectNativeThinking(request, step.value === 'false'
+          ? 'off'
+          : 'low')
         const current = await currentNativeAgent(native)
         expectSameNativeSession(before, current, 'Changing the thinking preference')
         expect(nativeOptionValue(current, 'effort')).toBe('low')
@@ -87,7 +113,10 @@ clineTest('starts with thinking Off and retains the chosen effort through live c
     expect(nativeOptionValue(await currentNativeAgent(native), 'effort')).toBe('high')
     await exerciseNativeOptionSequence(native, {
       groupId: 'thinking',
-      steps: [{ value: 'true', via: 'choose' }, { value: 'true', via: 'reload' }],
+      steps: [
+        { value: 'true', via: 'choose' },
+        { value: 'true', via: 'reload' },
+      ],
       nativeProof: async (request) => {
         expectNativeThinking(request, 'high')
         expectSameNativeSession(before, await currentNativeAgent(native), 'Restoring the chosen effort')
@@ -113,7 +142,11 @@ clineTest('restores configured effort for On and Auto without losing the session
     expectNativeThinking(await sendNativeAnswer(native, 'Keep thinking disabled with configured effort.', 'The configured effort remains disabled.'), 'off')
     await exerciseNativeOptionSequence(native, {
       groupId: 'thinking',
-      steps: [{ value: 'true', via: 'choose' }, { value: 'auto', via: 'choose' }, { value: 'auto', via: 'reload' }],
+      steps: [
+        { value: 'true', via: 'choose' },
+        { value: 'auto', via: 'choose' },
+        { value: 'auto', via: 'reload' },
+      ],
       nativeProof: async (request) => {
         expectNativeThinking(request, 'low')
         expect(JSON.stringify(request.body)).toContain(contextMarker)
@@ -132,7 +165,10 @@ clineTest('preserves explicit thinking and effort through native mode rebuilds a
     const before = await currentNativeAgent(native)
     await exerciseNativeOptionSequence(native, {
       groupId: 'permissionMode',
-      steps: [{ value: 'plan', via: 'choose' }, { value: 'act', via: 'choose' }],
+      steps: [
+        { value: 'plan', via: 'choose' },
+        { value: 'act', via: 'choose' },
+      ],
       nativeProof: async (request) => {
         expectNativeThinking(request, 'high')
         const current = await currentNativeAgent(native)
@@ -144,7 +180,11 @@ clineTest('preserves explicit thinking and effort through native mode rebuilds a
     })
     await exerciseNativeOptionSequence(native, {
       groupId: 'model',
-      steps: [{ value: 'deepseek-flash', via: 'choose' }, { value: 'deepseek-v4-pro', via: 'choose' }, { value: 'deepseek-v4-pro', via: 'reload' }],
+      steps: [
+        { value: 'deepseek-flash', via: 'choose' },
+        { value: 'deepseek-v4-pro', via: 'choose' },
+        { value: 'deepseek-v4-pro', via: 'reload' },
+      ],
       nativeProof: async (request, step) => {
         expectNativeThinking(request, 'high', step.value)
         const current = await currentNativeAgent(native)

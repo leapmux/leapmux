@@ -28,7 +28,12 @@ copilotTest('keeps exact file bytes after a native Deny decision', async ({ nati
   const file = join(agent.workingDir, fileName)
   const initialContent = `KEEP_THE_NATIVE_FILE_${randomUUID()}\n`
   const callId = 'copilot-denied-write'
-  const operation = await createNativePermissionFileWrite(native, { fileName, callId, outputPrefix: 'UNAPPROVED_WRITE', initialContent })
+  const operation = await createNativePermissionFileWrite(native, {
+    fileName,
+    callId,
+    outputPrefix: 'UNAPPROVED_WRITE',
+    initialContent,
+  })
   await exerciseNativePermissionRefusal(native, {
     toolCall: operation.toolCall,
     prompt: 'Run the scripted permission probe.',
@@ -52,7 +57,12 @@ copilotTest('hands the reader\'s typed refusal reason to the model', async ({ na
   const agent = await currentNativeAgent(native)
   const initialContent = `KEEP_THE_NATIVE_FILE_${randomUUID()}\n`
   const file = join(agent.workingDir, 'native-reason-write.txt')
-  const operation = await createNativePermissionFileWrite(native, { fileName: 'native-reason-write.txt', callId: 'copilot-reason-write', outputPrefix: 'UNAPPROVED_WRITE', initialContent })
+  const operation = await createNativePermissionFileWrite(native, {
+    fileName: 'native-reason-write.txt',
+    callId: 'copilot-reason-write',
+    outputPrefix: 'UNAPPROVED_WRITE',
+    initialContent,
+  })
   await exerciseNativePermissionReason(native, {
     toolCall: operation.toolCall,
     route: 'native-reply',

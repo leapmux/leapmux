@@ -105,7 +105,12 @@ const readContract = name => JSON.parse(readFileSync(join(ROOT, 'contracts', `${
 function museTodoContract() {
   const contract = readContract('muse-protocol')
   contract.methods.TodoListChanged = 'session/todoListChanged'
-  contract.todoStatuses = { Pending: 'pending', InProgress: 'inProgress', Completed: 'completed', Cancelled: 'cancelled' }
+  contract.todoStatuses = {
+    Pending: 'pending',
+    InProgress: 'inProgress',
+    Completed: 'completed',
+    Cancelled: 'cancelled',
+  }
   return contract
 }
 
@@ -175,14 +180,20 @@ describe('checkWire', () => {
 
   it('rejects a rekey interval longer than the key lifetime', () => {
     expectContractError(
-      () => checkWire({ ...WIRE, sessionKey: { ...WIRE.sessionKey, minRekeyIntervalMs: WIRE.sessionKey.maxAgeMs + 1 } }),
+      () => checkWire({
+        ...WIRE,
+        sessionKey: { ...WIRE.sessionKey, minRekeyIntervalMs: WIRE.sessionKey.maxAgeMs + 1 },
+      }),
       '<= sessionKey.maxAgeMs',
     )
   })
 
   it('rejects a framing width other than the uint32 both framers write', () => {
     expectContractError(
-      () => checkWire({ ...WIRE, framing: { lengthPrefixBytes: 8 } }),
+      () => checkWire({
+        ...WIRE,
+        framing: { lengthPrefixBytes: 8 },
+      }),
       'must be 4',
     )
   })
@@ -200,11 +211,17 @@ describe('checkWire', () => {
     // The soft trigger must run before the wrap limit. Otherwise, the session
     // rekeys after it passes the refusal point.
     expectContractError(
-      () => checkWire({ ...WIRE, noise: { softNonceLimit: WIRE.noise.softNonceLimit, hardNonceLimit: WIRE.noise.softNonceLimit } }),
+      () => checkWire({
+        ...WIRE,
+        noise: { softNonceLimit: WIRE.noise.softNonceLimit, hardNonceLimit: WIRE.noise.softNonceLimit },
+      }),
       '< noise.hardNonceLimit',
     )
     expectContractError(
-      () => checkWire({ ...WIRE, noise: { ...WIRE.noise, hardNonceLimit: 2 ** 32 } }),
+      () => checkWire({
+        ...WIRE,
+        noise: { ...WIRE.noise, hardNonceLimit: 2 ** 32 },
+      }),
       'uint32 nonce space',
     )
   })
@@ -234,14 +251,34 @@ describe('checkHeaders / checkRetry', () => {
 
   it('rejects jitter at or above 1 on any policy', () => {
     expectContractError(
-      () => checkRetry({ policies: { eventsRejection: { initialMs: 1, maxMs: 2, multiplier: 2, jitterFactor: 1, maxAttempts: 1 } } }),
+      () => checkRetry({
+        policies: {
+          eventsRejection: {
+            initialMs: 1,
+            maxMs: 2,
+            multiplier: 2,
+            jitterFactor: 1,
+            maxAttempts: 1,
+          },
+        },
+      }),
       'jitterFactor',
     )
   })
 
   it('rejects a ceiling below the initial delay', () => {
     expectContractError(
-      () => checkRetry({ policies: { eventsRejection: { initialMs: 5, maxMs: 2, multiplier: 2, jitterFactor: 0, maxAttempts: 1 } } }),
+      () => checkRetry({
+        policies: {
+          eventsRejection: {
+            initialMs: 5,
+            maxMs: 2,
+            multiplier: 2,
+            jitterFactor: 0,
+            maxAttempts: 1,
+          },
+        },
+      }),
       '>= initialMs',
     )
   })
@@ -250,7 +287,17 @@ describe('checkHeaders / checkRetry', () => {
     // An unknown policy would emit `undefinedInitial` in Go and `undefined` in
     // TypeScript. Both outputs compile. The bijection makes generation fail.
     expectContractError(
-      () => checkRetry({ policies: { connect: { initialMs: 1, maxMs: 2, multiplier: 2, jitterFactor: 0, maxAttempts: 1 } } }),
+      () => checkRetry({
+        policies: {
+          connect: {
+            initialMs: 1,
+            maxMs: 2,
+            multiplier: 2,
+            jitterFactor: 0,
+            maxAttempts: 1,
+          },
+        },
+      }),
       'has no RETRY_GO_NAMES entry',
     )
   })
@@ -448,10 +495,22 @@ describe('emitters', () => {
   it('is deterministic across runs', () => {
     const d = deriveWire(WIRE)
     for (const [again, once] of [
-      [emitGoWire(WIRE, d), emitGoWire(WIRE, d)],
-      [emitTsWire(WIRE, d), emitTsWire(WIRE, d)],
-      [emitGoRetry(RETRY), emitGoRetry(RETRY)],
-      [emitTsRetry(RETRY), emitTsRetry(RETRY)],
+      [
+        emitGoWire(WIRE, d),
+        emitGoWire(WIRE, d),
+      ],
+      [
+        emitTsWire(WIRE, d),
+        emitTsWire(WIRE, d),
+      ],
+      [
+        emitGoRetry(RETRY),
+        emitGoRetry(RETRY),
+      ],
+      [
+        emitTsRetry(RETRY),
+        emitTsRetry(RETRY),
+      ],
     ]) {
       expect(once).toBe(again)
     }
@@ -464,33 +523,59 @@ describe('emitters', () => {
 describe('checkProviderProtocol', () => {
   const spec = {
     name: 'test-protocol',
-    tables: [{ key: 'events' }, { key: 'modes' }],
+    tables: [
+      { key: 'events' },
+      { key: 'modes' },
+    ],
   }
-  const ok = () => ({ events: { A: 'a' }, modes: { Plan: 'plan', Build: 'build' }, defaultMode: 'Build' })
+  const ok = () => ({
+    events: { A: 'a' },
+    modes: { Plan: 'plan', Build: 'build' },
+    defaultMode: 'Build',
+  })
 
   it('accepts a complete contract', () => {
     expect(checkProviderProtocol(spec, ok())).toEqual({})
   })
 
   it('permits equal numeric limits while retaining unique string dispatch words', () => {
-    const limitsSpec = { ...spec, tables: [...spec.tables, { key: 'mediaRules' }] }
+    const limitsSpec = {
+      ...spec,
+      tables: [
+        ...spec.tables,
+        { key: 'mediaRules' },
+      ],
+    }
     const limits = { CurrentVersion: 1, MaxWidth: 8192, MaxHeight: 8192 }
-    expect(checkProviderProtocol(limitsSpec, { ...ok(), mediaRules: limits })).toEqual({})
-    expectContractError(() => checkProviderProtocol(limitsSpec, { ...ok(), events: { A: 'repeated', B: 'repeated' }, mediaRules: limits }), 'repeats the literal')
+    expect(checkProviderProtocol(limitsSpec, {
+      ...ok(),
+      mediaRules: limits,
+    })).toEqual({})
+    expectContractError(() => checkProviderProtocol(limitsSpec, {
+      ...ok(),
+      events: { A: 'repeated', B: 'repeated' },
+      mediaRules: limits,
+    }), 'repeats the literal')
   })
 
   it('rejects a declared table that is missing or empty', () => {
     const missing = ok()
     delete missing.events
     expectContractError(() => checkProviderProtocol(spec, missing), 'events is missing or empty')
-    expectContractError(() => checkProviderProtocol(spec, { ...ok(), events: {} }), 'events is missing or empty')
+    expectContractError(() => checkProviderProtocol(spec, {
+      ...ok(),
+      events: {},
+    }), 'events is missing or empty')
   })
 
   // A JSON table outside PROVIDER_PROTOCOLS emits nothing. One language could
   // then read vocabulary that the other language lacks.
   it('rejects a table the spec does not declare', () => {
     expectContractError(
-      () => checkProviderProtocol(spec, { ...ok(), decisions: { Allow: 'allow' } }),
+      () => checkProviderProtocol(spec, {
+        ...ok(),
+        decisions: { Allow: 'allow' },
+      }),
       'table decisions is not declared',
     )
   })
@@ -498,14 +583,20 @@ describe('checkProviderProtocol', () => {
   // Two keys with one literal make two dispatch cases identical on the wire.
   it('rejects a repeated literal inside one table', () => {
     expectContractError(
-      () => checkProviderProtocol(spec, { ...ok(), events: { A: 'a', B: 'a' } }),
+      () => checkProviderProtocol(spec, {
+        ...ok(),
+        events: { A: 'a', B: 'a' },
+      }),
       'repeats the literal',
     )
   })
 
   it('allows the same literal in two DIFFERENT tables', () => {
     // `error` is both a tool-update kind and a stream kind in ZCode's own protocol.
-    expect(checkProviderProtocol(spec, { ...ok(), events: { A: 'plan' } })).toEqual({})
+    expect(checkProviderProtocol(spec, {
+      ...ok(),
+      events: { A: 'plan' },
+    })).toEqual({})
   })
 
   // A DEFAULTS table states one starting value for each axis of its target table.
@@ -513,7 +604,12 @@ describe('checkProviderProtocol', () => {
   describe('defaultsFor', () => {
     const withDefaults = {
       name: 'test-protocol',
-      tables: [{ key: 'events' }, { key: 'modes' }, { key: 'options' }, { key: 'optionDefaults', defaultsFor: 'options' }],
+      tables: [
+        { key: 'events' },
+        { key: 'modes' },
+        { key: 'options' },
+        { key: 'optionDefaults', defaultsFor: 'options' },
+      ],
     }
     const complete = () => ({
       ...ok(),
@@ -540,10 +636,17 @@ describe('checkProviderProtocol', () => {
     it('rejects a defaultsFor that points at no declared table', () => {
       const dangling = {
         name: 'test-protocol',
-        tables: [{ key: 'events' }, { key: 'modes' }, { key: 'optionDefaults', defaultsFor: 'options' }],
+        tables: [
+          { key: 'events' },
+          { key: 'modes' },
+          { key: 'optionDefaults', defaultsFor: 'options' },
+        ],
       }
       expectContractError(
-        () => checkProviderProtocol(dangling, { ...ok(), optionDefaults: { Mode: 'default' } }),
+        () => checkProviderProtocol(dangling, {
+          ...ok(),
+          optionDefaults: { Mode: 'default' },
+        }),
         'states defaultsFor "options", which is not a declared table',
       )
     })
@@ -551,7 +654,10 @@ describe('checkProviderProtocol', () => {
 
   it('rejects a defaultMode that specifies no mode', () => {
     expectContractError(
-      () => checkProviderProtocol(spec, { ...ok(), defaultMode: 'Nope' }),
+      () => checkProviderProtocol(spec, {
+        ...ok(),
+        defaultMode: 'Nope',
+      }),
       'defaultMode "Nope" is not a key of modes',
     )
   })
@@ -559,12 +665,30 @@ describe('checkProviderProtocol', () => {
   // Compare readers as a set. Duplicate entries do not add a language side.
   // Both ['ts', 'ts'] and ['go', 'go'] must fail before the readersWhy check.
   it('rejects a table that lists one reader twice', () => {
-    const repeated = { ...spec, tables: [{ key: 'events', readers: ['ts', 'ts'] }, { key: 'modes' }] }
+    const repeated = {
+      ...spec,
+      tables: [
+        {
+          key: 'events',
+          readers: ['ts', 'ts'],
+        },
+        { key: 'modes' },
+      ],
+    }
     expectContractError(() => checkProviderProtocol(repeated, ok()), 'lists a reader twice')
   })
 
   it('still demands readersWhy from a one-sided table', () => {
-    const oneSided = { ...spec, tables: [{ key: 'events', readers: ['ts'] }, { key: 'modes' }] }
+    const oneSided = {
+      ...spec,
+      tables: [
+        {
+          key: 'events',
+          readers: ['ts'],
+        },
+        { key: 'modes' },
+      ],
+    }
     expectContractError(() => checkProviderProtocol(oneSided, ok()), 'must say why in readersWhy')
   })
 
@@ -574,92 +698,208 @@ describe('checkProviderProtocol', () => {
     const sliced = {
       ...spec,
       goPrefix: 'Test',
-      tables: [{ key: 'events', goTable: 'Event', goSlice: true }, { key: 'modes', goTable: 'Mode' }],
+      tables: [
+        { key: 'events', goTable: 'Event', goSlice: true },
+        { key: 'modes', goTable: 'Mode' },
+      ],
     }
     expectContractError(
-      () => checkProviderProtocol(sliced, { ...ok(), events: { A: 'a', Keys: 'keys' } }),
+      () => checkProviderProtocol(sliced, {
+        ...ok(),
+        events: { A: 'a', Keys: 'keys' },
+      }),
       'collides with the ordered key slice TestEventKeys',
     )
   })
 
   it('accepts a key called Keys on a table that is not a goSlice one', () => {
-    expect(checkProviderProtocol(spec, { ...ok(), events: { A: 'a', Keys: 'keys' } })).toEqual({})
+    expect(checkProviderProtocol(spec, {
+      ...ok(),
+      events: { A: 'a', Keys: 'keys' },
+    })).toEqual({})
   })
 
   it('rejects a goTagPin on a table with no go reader', () => {
     const pinned = {
       ...spec,
-      tables: [{ key: 'events', readers: ['ts'], readersWhy: 'the browser alone reads this vocabulary', goTagPin: 'x_test.go' }, { key: 'modes' }],
+      tables: [
+        {
+          key: 'events',
+          readers: ['ts'],
+          readersWhy: 'the browser alone reads this vocabulary',
+          goTagPin: 'x_test.go',
+        },
+        { key: 'modes' },
+      ],
     }
     expectContractError(() => checkProviderProtocol(pinned, ok()), 'does not list go as a reader')
   })
 
   it('rejects a goTagPin that is not the path of a Go test', () => {
-    const pinned = { ...spec, tables: [{ key: 'events', goTagPin: 'backend/x.go' }, { key: 'modes' }] }
+    const pinned = {
+      ...spec,
+      tables: [
+        { key: 'events', goTagPin: 'backend/x.go' },
+        { key: 'modes' },
+      ],
+    }
     expectContractError(() => checkProviderProtocol(pinned, ok()), 'must give goTagPin as the path')
   })
 
   it('accepts each frameKind value', () => {
-    const marked = { ...spec, tables: [{ key: 'events', frameKind: 'name' }, { key: 'modes', frameKind: 'prefix' }] }
+    const marked = {
+      ...spec,
+      tables: [
+        { key: 'events', frameKind: 'name' },
+        { key: 'modes', frameKind: 'prefix' },
+      ],
+    }
     expect(checkProviderProtocol(marked, ok())).toEqual({})
   })
 
   // The collector reads only `name` and `prefix`. A misspelled mark would take the
   // table out of the lint with no message.
   it.each(['names', 'Name', '', true])('rejects the frameKind %j', (frameKind) => {
-    const marked = { ...spec, tables: [{ key: 'events', frameKind }, { key: 'modes' }] }
+    const marked = {
+      ...spec,
+      tables: [
+        { key: 'events', frameKind },
+        { key: 'modes' },
+      ],
+    }
     expectContractError(() => checkProviderProtocol(marked, ok()), 'which is not one of name, prefix')
   })
 })
 
 describe('subsetOf tables', () => {
-  const parent = { key: 'events', goTable: 'Event', tsTable: 'EVENT', tsType: 'ProbeEvent', doc: 'events', frameKind: 'name' }
-  const subset = { key: 'notifications', subsetOf: 'events', goTable: 'NotificationEvent', tsTable: 'NOTIFICATION_EVENT', doc: 'notification events' }
-  const spec = { name: 'probe-protocol', title: 'Probe', goPrefix: 'Probe', tsPrefix: 'PROBE', tables: [parent, subset] }
-  const data = () => ({ events: { A: 'a', B: 'b' }, notifications: ['B'] })
+  const parent = {
+    key: 'events',
+    goTable: 'Event',
+    tsTable: 'EVENT',
+    tsType: 'ProbeEvent',
+    doc: 'events',
+    frameKind: 'name',
+  }
+  const subset = {
+    key: 'notifications',
+    subsetOf: 'events',
+    goTable: 'NotificationEvent',
+    tsTable: 'NOTIFICATION_EVENT',
+    doc: 'notification events',
+  }
+  const spec = {
+    name: 'probe-protocol',
+    title: 'Probe',
+    goPrefix: 'Probe',
+    tsPrefix: 'PROBE',
+    tables: [parent, subset],
+  }
+  const data = () => ({
+    events: { A: 'a', B: 'b' },
+    notifications: ['B'],
+  })
 
   it('accepts a subset of a declared table', () => {
     expect(checkProviderProtocol(spec, data())).toEqual({})
   })
 
   it('refuses an unknown parent', () => {
-    expectContractError(() => checkProviderProtocol({ ...spec, tables: [parent, { ...subset, subsetOf: 'missing' }] }, data()), 'parent table')
+    expectContractError(() => checkProviderProtocol({
+      ...spec,
+      tables: [
+        parent,
+        { ...subset, subsetOf: 'missing' },
+      ],
+    }, data()), 'parent table')
   })
 
   it('refuses a key the parent lacks', () => {
-    expectContractError(() => checkProviderProtocol(spec, { ...data(), notifications: ['Missing'] }), 'not a key of events')
+    expectContractError(() => checkProviderProtocol(spec, {
+      ...data(),
+      notifications: ['Missing'],
+    }), 'not a key of events')
   })
 
   it('refuses a repeated key', () => {
-    expectContractError(() => checkProviderProtocol(spec, { ...data(), notifications: ['B', 'B'] }), 'repeats key B')
+    expectContractError(() => checkProviderProtocol(spec, {
+      ...data(),
+      notifications: ['B', 'B'],
+    }), 'repeats key B')
   })
 
   it('refuses an empty subset', () => {
-    expectContractError(() => checkProviderProtocol(spec, { ...data(), notifications: [] }), 'empty')
+    expectContractError(() => checkProviderProtocol(spec, {
+      ...data(),
+      notifications: [],
+    }), 'empty')
   })
 
   it('refuses a subset of a subset', () => {
-    const nested = { ...spec, tables: [...spec.tables, { ...subset, key: 'nested', subsetOf: 'notifications' }] }
-    expectContractError(() => checkProviderProtocol(nested, { ...data(), nested: ['B'] }), 'subset of a subset')
+    const nested = {
+      ...spec,
+      tables: [
+        ...spec.tables,
+        { ...subset, key: 'nested', subsetOf: 'notifications' },
+      ],
+    }
+    expectContractError(() => checkProviderProtocol(nested, {
+      ...data(),
+      nested: ['B'],
+    }), 'subset of a subset')
   })
 
-  it.each(['frameKind', 'goSlice', 'defaultsFor', 'tsType', 'goType'])('refuses %s on a subset', (field) => {
-    const marked = { ...spec, tables: [parent, { ...subset, [field]: field === 'frameKind' ? 'name' : true }] }
+  it.each([
+    'frameKind',
+    'goSlice',
+    'defaultsFor',
+    'tsType',
+    'goType',
+  ])('refuses %s on a subset', (field) => {
+    const marked = {
+      ...spec,
+      tables: [
+        parent,
+        {
+          ...subset,
+          [field]: field === 'frameKind'
+            ? 'name'
+            : true,
+        },
+      ],
+    }
     expectContractError(() => checkProviderProtocol(marked, data()), `cannot state ${field}`)
   })
 
   it('refuses a non-array subset and a non-string member', () => {
-    expectContractError(() => checkProviderProtocol(spec, { ...data(), notifications: { B: 'b' } }), 'array')
-    expectContractError(() => checkProviderProtocol(spec, { ...data(), notifications: [1] }), 'string key')
+    expectContractError(() => checkProviderProtocol(spec, {
+      ...data(),
+      notifications: { B: 'b' },
+    }), 'array')
+    expectContractError(() => checkProviderProtocol(spec, {
+      ...data(),
+      notifications: [1],
+    }), 'string key')
   })
 
   it('refuses a numeric member value because the Go slice holds strings', () => {
-    expectContractError(() => checkProviderProtocol(spec, { ...data(), events: { B: 1 } }), 'string value')
+    expectContractError(() => checkProviderProtocol(spec, {
+      ...data(),
+      events: { B: 1 },
+    }), 'string value')
   })
 
   it('refuses a generated Members name that a parent constant uses', () => {
-    const collision = { ...spec, tables: [parent, { ...subset, goTable: 'Event' }] }
-    expectContractError(() => checkProviderProtocol(collision, { ...data(), events: { B: 'b', Members: 'members' } }), 'collides')
+    const collision = {
+      ...spec,
+      tables: [
+        parent,
+        { ...subset, goTable: 'Event' },
+      ],
+    }
+    expectContractError(() => checkProviderProtocol(collision, {
+      ...data(),
+      events: { B: 'b', Members: 'members' },
+    }), 'collides')
   })
 
   it('emits a Go slice of the parent constants', () => {
@@ -673,22 +913,50 @@ describe('subsetOf tables', () => {
   })
 
   it('emits the parent before a subset that precedes it in the descriptor', () => {
-    const emitted = emitTsProviderProtocol({ ...spec, tables: [subset, parent] }, data())
+    const emitted = emitTsProviderProtocol({
+      ...spec,
+      tables: [subset, parent],
+    }, data())
     expect(emitted.indexOf('export const PROBE_EVENT =')).toBeLessThan(emitted.indexOf('export const PROBE_NOTIFICATION_EVENT'))
   })
 
   it('retains the declared reader checks for a subset', () => {
-    const oneSide = { ...spec, tables: [parent, { ...subset, readers: ['go'] }] }
+    const oneSide = {
+      ...spec,
+      tables: [
+        parent,
+        {
+          ...subset,
+          readers: ['go'],
+        },
+      ],
+    }
     expectContractError(() => checkProviderProtocol(oneSide, data()), 'readersWhy')
   })
 })
 
 describe('cross-contract subsets', () => {
-  const subset = { key: 'selectedKinds', subsetOf: 'attachment-media.kinds', goTable: 'SelectedKind', tsTable: 'SELECTED_KIND', doc: 'selected attachment kinds' }
-  const spec = { name: 'consumer-protocol', title: 'Consumer', goPrefix: 'Consumer', tsPrefix: 'CONSUMER', tables: [subset] }
-  const data = () => ({ selectedKinds: ['Audio', 'Pdf'] })
+  const subset = {
+    key: 'selectedKinds',
+    subsetOf: 'attachment-media.kinds',
+    goTable: 'SelectedKind',
+    tsTable: 'SELECTED_KIND',
+    doc: 'selected attachment kinds',
+  }
+  const spec = {
+    name: 'consumer-protocol',
+    title: 'Consumer',
+    goPrefix: 'Consumer',
+    tsPrefix: 'CONSUMER',
+    tables: [subset],
+  }
+  const data = () => ({
+    selectedKinds: ['Audio', 'Pdf'],
+  })
   const parent = () => JSON.parse(readFileSync(new URL('../contracts/attachment-media.json', import.meta.url), 'utf8'))
-  const read = name => name === 'attachment-media' ? parent() : undefined
+  const read = name => name === 'attachment-media'
+    ? parent()
+    : undefined
 
   it('validates membership against a registered foreign contract', () => {
     expect(checkProviderProtocol(spec, data(), read)).toEqual({})
@@ -707,12 +975,30 @@ describe('cross-contract subsets', () => {
   })
 
   it('deduplicates imports and retains multiple tables from one contract', () => {
-    const descriptor = { ...spec, tables: [
-      subset,
-      { ...subset, key: 'otherKinds', goTable: 'OtherKind', tsTable: 'OTHER_KIND' },
-      { ...subset, key: 'documents', subsetOf: 'attachment-media.documentMimeTypes', goTable: 'DocumentMIME', tsTable: 'DOCUMENT_MIME' },
-    ] }
-    const values = { ...data(), otherKinds: ['Text'], documents: ['Pdf'] }
+    const descriptor = {
+      ...spec,
+      tables: [
+        subset,
+        {
+          ...subset,
+          key: 'otherKinds',
+          goTable: 'OtherKind',
+          tsTable: 'OTHER_KIND',
+        },
+        {
+          ...subset,
+          key: 'documents',
+          subsetOf: 'attachment-media.documentMimeTypes',
+          goTable: 'DocumentMIME',
+          tsTable: 'DOCUMENT_MIME',
+        },
+      ],
+    }
+    const values = {
+      ...data(),
+      otherKinds: ['Text'],
+      documents: ['Pdf'],
+    }
     expect(checkProviderProtocol(descriptor, values, read)).toEqual({})
     const output = emitTsProviderProtocol(descriptor, values)
     expect(output.match(/from '\.\/attachment-media'/g)).toHaveLength(1)
@@ -722,11 +1008,23 @@ describe('cross-contract subsets', () => {
   })
 
   it('treats a qualified local parent as local', () => {
-    const descriptor = { ...spec, tables: [
-      { key: 'values', goTable: 'Value', tsTable: 'VALUE', tsType: 'ConsumerValue', doc: 'local values' },
-      { ...subset, subsetOf: 'consumer-protocol.values' },
-    ] }
-    const values = { values: { Audio: 'audio', Pdf: 'pdf' }, ...data() }
+    const descriptor = {
+      ...spec,
+      tables: [
+        {
+          key: 'values',
+          goTable: 'Value',
+          tsTable: 'VALUE',
+          tsType: 'ConsumerValue',
+          doc: 'local values',
+        },
+        { ...subset, subsetOf: 'consumer-protocol.values' },
+      ],
+    }
+    const values = {
+      values: { Audio: 'audio', Pdf: 'pdf' },
+      ...data(),
+    }
     expect(checkProviderProtocol(descriptor, values)).toEqual({})
     const output = emitTsProviderProtocol(descriptor, values)
     expect(output).not.toContain('from \'./consumer-protocol\'')
@@ -741,36 +1039,101 @@ describe('cross-contract subsets', () => {
 
   it('rejects unknown contracts, tables and malformed qualifications', () => {
     for (const reference of ['missing.kinds', 'attachment-media.missing', 'attachment-media.kinds.extra']) {
-      const descriptor = { ...spec, tables: [{ ...subset, subsetOf: reference }] }
+      const descriptor = {
+        ...spec,
+        tables: [
+          { ...subset, subsetOf: reference },
+        ],
+      }
       expect(() => checkProviderProtocol(descriptor, data(), read)).toThrow(ContractError)
     }
   })
 
   it('rejects invalid foreign membership and non-string parent values', () => {
-    expectContractError(() => checkProviderProtocol(spec, { selectedKinds: ['Missing'] }, read), 'not a key')
-    expectContractError(() => checkProviderProtocol(spec, { selectedKinds: ['Audio', 'Audio'] }, read), 'repeats key')
-    expectContractError(() => checkProviderProtocol(spec, data(), () => ({ ...parent(), kinds: { Audio: 1, Pdf: 'pdf' } })), 'string value')
+    expectContractError(() => checkProviderProtocol(spec, {
+      selectedKinds: ['Missing'],
+    }, read), 'not a key')
+    expectContractError(() => checkProviderProtocol(spec, {
+      selectedKinds: ['Audio', 'Audio'],
+    }, read), 'repeats key')
+    expectContractError(() => checkProviderProtocol(spec, data(), () => ({
+      ...parent(),
+      kinds: { Audio: 1, Pdf: 'pdf' },
+    })), 'string value')
   })
 
   it('rejects a foreign parent that is itself a subset', () => {
-    const descriptor = { ...spec, tables: [{ ...subset, subsetOf: 'commandcode-protocol.notificationEvents' }] }
-    expectContractError(() => checkProviderProtocol(descriptor, data(), () => ({ notificationEvents: ['Audio'] })), 'subset of a subset')
+    const descriptor = {
+      ...spec,
+      tables: [
+        { ...subset, subsetOf: 'commandcode-protocol.notificationEvents' },
+      ],
+    }
+    expectContractError(() => checkProviderProtocol(descriptor, data(), () => ({
+      notificationEvents: ['Audio'],
+    })), 'subset of a subset')
   })
 
   it('rejects a foreign import that collides with a local declaration', () => {
-    const descriptor = { ...spec, tsPrefix: 'ATTACHMENT_MEDIA', tables: [
-      { key: 'local', goTable: 'Local', tsTable: 'KIND', tsType: 'ConsumerLocal', doc: 'local values' },
-      subset,
-    ] }
-    expectContractError(() => checkProviderProtocol(descriptor, { ...data(), local: { Local: 'local' } }, read), 'collides')
+    const descriptor = {
+      ...spec,
+      tsPrefix: 'ATTACHMENT_MEDIA',
+      tables: [
+        {
+          key: 'local',
+          goTable: 'Local',
+          tsTable: 'KIND',
+          tsType: 'ConsumerLocal',
+          doc: 'local values',
+        },
+        subset,
+      ],
+    }
+    expectContractError(() => checkProviderProtocol(descriptor, {
+      ...data(),
+      local: { Local: 'local' },
+    }, read), 'collides')
   })
 
   it('rejects equal imported symbols from different contracts', () => {
-    const foreign = { name: 'foreign-probe', title: 'Foreign', goPrefix: 'Foreign', tsPrefix: 'ATTACHMENT_MEDIA', tables: [{ key: 'kinds', goTable: 'Kind', tsTable: 'KIND', tsType: 'ForeignKind', doc: 'foreign kinds' }] }
+    const foreign = {
+      name: 'foreign-probe',
+      title: 'Foreign',
+      goPrefix: 'Foreign',
+      tsPrefix: 'ATTACHMENT_MEDIA',
+      tables: [
+        {
+          key: 'kinds',
+          goTable: 'Kind',
+          tsTable: 'KIND',
+          tsType: 'ForeignKind',
+          doc: 'foreign kinds',
+        },
+      ],
+    }
     PROVIDER_PROTOCOLS.push(foreign)
     try {
-      const descriptor = { ...spec, tables: [subset, { ...subset, key: 'others', subsetOf: 'foreign-probe.kinds', goTable: 'OtherKind', tsTable: 'OTHER_KIND' }] }
-      expectContractError(() => checkProviderProtocol(descriptor, { ...data(), others: ['Other'] }, name => name === foreign.name ? { kinds: { Other: 'other' } } : read(name)), 'collides')
+      const descriptor = {
+        ...spec,
+        tables: [
+          subset,
+          {
+            ...subset,
+            key: 'others',
+            subsetOf: 'foreign-probe.kinds',
+            goTable: 'OtherKind',
+            tsTable: 'OTHER_KIND',
+          },
+        ],
+      }
+      expectContractError(() => checkProviderProtocol(descriptor, {
+        ...data(),
+        others: ['Other'],
+      }, name => name === foreign.name
+        ? {
+            kinds: { Other: 'other' },
+          }
+        : read(name)), 'collides')
     }
     finally {
       PROVIDER_PROTOCOLS.pop()
@@ -779,25 +1142,52 @@ describe('cross-contract subsets', () => {
 })
 
 describe('checkProviderProtocolDependencies', () => {
-  const values = { key: 'values', goTable: 'Value', tsTable: 'VALUE', tsType: 'Value', doc: 'values' }
+  const values = {
+    key: 'values',
+    goTable: 'Value',
+    tsTable: 'VALUE',
+    tsType: 'Value',
+    doc: 'values',
+  }
   const descriptor = (name, dependency) => ({
     name,
     title: name,
     goPrefix: name,
     tsPrefix: name.toUpperCase(),
-    tables: [values, ...(dependency ? [{ key: 'selection', subsetOf: `${dependency}.values`, goTable: 'Selection', tsTable: 'SELECTION', doc: 'selected values' }] : [])],
+    tables: [
+      values,
+      ...(dependency
+        ? [
+            {
+              key: 'selection',
+              subsetOf: `${dependency}.values`,
+              goTable: 'Selection',
+              tsTable: 'SELECTION',
+              doc: 'selected values',
+            },
+          ]
+        : []),
+    ],
   })
 
   it('accepts an acyclic dependency graph', () => {
-    expect(() => checkProviderProtocolDependencies([descriptor('first', 'second'), descriptor('second')])).not.toThrow()
+    expect(() => checkProviderProtocolDependencies([
+      descriptor('first', 'second'),
+      descriptor('second'),
+    ])).not.toThrow()
   })
 
   it('rejects a cycle between module imports with its dependency path', () => {
-    expectContractError(() => checkProviderProtocolDependencies([descriptor('first', 'second'), descriptor('second', 'first')]), 'first -> second -> first')
+    expectContractError(() => checkProviderProtocolDependencies([
+      descriptor('first', 'second'),
+      descriptor('second', 'first'),
+    ]), 'first -> second -> first')
   })
 
   it('keeps qualified local references out of the import graph', () => {
-    expect(() => checkProviderProtocolDependencies([descriptor('first', 'first')])).not.toThrow()
+    expect(() => checkProviderProtocolDependencies([
+      descriptor('first', 'first'),
+    ])).not.toThrow()
   })
 })
 
@@ -871,7 +1261,10 @@ describe('qwen registry namespace', () => {
 describe('muse native question selection vocabulary', () => {
   const spec = PROVIDER_PROTOCOLS.find(spec => spec.name === 'muse-protocol')
   const selectionModes = { Single: 'single', Multiple: 'multiple' }
-  const valid = () => ({ ...readContract('muse-protocol'), questionSelectionModes: { ...selectionModes } })
+  const valid = () => ({
+    ...readContract('muse-protocol'),
+    questionSelectionModes: { ...selectionModes },
+  })
 
   it('stores the exact closed native selection vocabulary', () => {
     expect(readContract('muse-protocol').questionSelectionModes).toEqual(selectionModes)
@@ -915,12 +1308,30 @@ describe('muse native question selection vocabulary', () => {
 
 describe('emitTsProviderFrameKinds', () => {
   const first = {
-    spec: { name: 'first-protocol', tables: [{ key: 'events', frameKind: 'name' }, { key: 'modes' }, { key: 'families', frameKind: 'prefix' }] },
-    p: { events: { Started: 'turn.started', Ended: 'turn.ended' }, modes: { Plan: 'plan' }, families: { Hook: 'hook.' } },
+    spec: {
+      name: 'first-protocol',
+      tables: [
+        { key: 'events', frameKind: 'name' },
+        { key: 'modes' },
+        { key: 'families', frameKind: 'prefix' },
+      ],
+    },
+    p: {
+      events: { Started: 'turn.started', Ended: 'turn.ended' },
+      modes: { Plan: 'plan' },
+      families: { Hook: 'hook.' },
+    },
   }
   const second = {
-    spec: { name: 'second-protocol', tables: [{ key: 'methods', frameKind: 'name' }] },
-    p: { methods: { Ended: 'turn.ended', Quoted: 'say "hi"' } },
+    spec: {
+      name: 'second-protocol',
+      tables: [
+        { key: 'methods', frameKind: 'name' },
+      ],
+    },
+    p: {
+      methods: { Ended: 'turn.ended', Quoted: 'say "hi"' },
+    },
   }
 
   it('emits each literal of each marked table, in the order of the domains, the tables and the keys', () => {
@@ -940,7 +1351,17 @@ describe('emitTsProviderFrameKinds', () => {
   })
 
   it('emits an empty list when no table is marked', () => {
-    const unmarked = { spec: { name: 'bare-protocol', tables: [{ key: 'modes' }] }, p: { modes: { Plan: 'plan' } } }
+    const unmarked = {
+      spec: {
+        name: 'bare-protocol',
+        tables: [
+          { key: 'modes' },
+        ],
+      },
+      p: {
+        modes: { Plan: 'plan' },
+      },
+    }
     expect(emitTsProviderFrameKinds([unmarked])).toContain('export const PROVIDER_FRAME_KINDS: readonly ProviderFrameKind[] = [\n]\n')
   })
 
@@ -952,18 +1373,48 @@ describe('emitTsProviderFrameKinds', () => {
 describe('_unread exemptions', () => {
   const spec = {
     name: 'test-protocol',
-    tables: [{ key: 'events' }, { key: 'modes', readers: ['ts'], readersWhy: 'the browser alone words these modes' }],
+    tables: [
+      { key: 'events' },
+      {
+        key: 'modes',
+        readers: ['ts'],
+        readersWhy: 'the browser alone words these modes',
+      },
+    ],
   }
-  const ok = over => ({ events: { A: 'a' }, modes: { Plan: 'plan', Build: 'build' }, defaultMode: 'Build', ...over })
+  const ok = over => ({
+    events: { A: 'a' },
+    modes: { Plan: 'plan', Build: 'build' },
+    defaultMode: 'Build',
+    ...over,
+  })
   const why = 'the worker matches the row before it reads this key, so the browser never compares it'
 
   it('accepts an exemption that points at a real key and a declared side', () => {
-    expect(checkProviderProtocol(spec, ok({ _unread: { events: { A: { sides: ['go'], why } } } }))).toEqual({})
+    expect(checkProviderProtocol(spec, ok({
+      _unread: {
+        events: {
+          A: {
+            sides: ['go'],
+            why,
+          },
+        },
+      },
+    }))).toEqual({})
   })
 
   it('rejects an exemption for a table the spec does not declare', () => {
     expectContractError(
-      () => checkProviderProtocol(spec, ok({ _unread: { absent: { A: { sides: ['go'], why } } } })),
+      () => checkProviderProtocol(spec, ok({
+        _unread: {
+          absent: {
+            A: {
+              sides: ['go'],
+              why,
+            },
+          },
+        },
+      })),
       '_unread.absent is not a declared table',
     )
   })
@@ -971,34 +1422,76 @@ describe('_unread exemptions', () => {
   // An exemption requires an existing key. Reject an exemption after its key disappears.
   it('rejects an exemption for a key the table no longer carries', () => {
     expectContractError(
-      () => checkProviderProtocol(spec, ok({ _unread: { events: { Gone: { sides: ['go'], why } } } })),
+      () => checkProviderProtocol(spec, ok({
+        _unread: {
+          events: {
+            Gone: {
+              sides: ['go'],
+              why,
+            },
+          },
+        },
+      })),
       '_unread.events.Gone is not a key of the events table',
     )
   })
 
   it('rejects an exemption for a side the table does not declare as a reader', () => {
     expectContractError(
-      () => checkProviderProtocol(spec, ok({ _unread: { modes: { Plan: { sides: ['go'], why } } } })),
+      () => checkProviderProtocol(spec, ok({
+        _unread: {
+          modes: {
+            Plan: {
+              sides: ['go'],
+              why,
+            },
+          },
+        },
+      })),
       'which the modes table does not declare as a reader at all',
     )
   })
 
   it('rejects an exemption with no reason worth reading', () => {
     expectContractError(
-      () => checkProviderProtocol(spec, ok({ _unread: { events: { A: { sides: ['go'], why: 'because' } } } })),
+      () => checkProviderProtocol(spec, ok({
+        _unread: {
+          events: {
+            A: {
+              sides: ['go'],
+              why: 'because',
+            },
+          },
+        },
+      })),
       '_unread.events.A.why must say what reads the key instead',
     )
   })
 
   it('rejects an exemption that excuses no side', () => {
     expectContractError(
-      () => checkProviderProtocol(spec, ok({ _unread: { events: { A: { sides: [], why } } } })),
+      () => checkProviderProtocol(spec, ok({
+        _unread: {
+          events: {
+            A: { sides: [], why },
+          },
+        },
+      })),
       'must list at least one side',
     )
   })
 
   it('reads every exemption back as the set of sides that skip the key', () => {
-    const contract = ok({ _unread: { events: { A: { sides: ['go'], why } } } })
+    const contract = ok({
+      _unread: {
+        events: {
+          A: {
+            sides: ['go'],
+            why,
+          },
+        },
+      },
+    })
     expect(unreadKeys(contract).get('events.A')).toEqual(new Set(['go']))
     expect(unreadKeys(ok()).size).toBe(0)
   })
@@ -1077,7 +1570,12 @@ describe('checkCodexPermissionPresets', () => {
   })
 
   it('rejects unknown settings and inherited properties', () => {
-    for (const key of ['Missing', '__proto__', 'toString', null]) {
+    for (const key of [
+      'Missing',
+      '__proto__',
+      'toString',
+      null,
+    ]) {
       const contract = valid()
       contract.presets.smart[1] = key
       expectContractError(() => checkCodexPermissionPresets(contract), 'selects an unknown setting')
@@ -1092,7 +1590,10 @@ describe('checkCodexPermissionPresets', () => {
 
   it('rejects absent or empty settings definitions', () => {
     for (const settings of [undefined, null, {}, []]) {
-      expectContractError(() => checkCodexPermissionPresets({ ...valid(), settings }), 'settings must hold at least one definition')
+      expectContractError(() => checkCodexPermissionPresets({
+        ...valid(),
+        settings,
+      }), 'settings must hold at least one definition')
     }
   })
 
@@ -1100,7 +1601,13 @@ describe('checkCodexPermissionPresets', () => {
     const invalidKey = valid()
     invalidKey.settings['not-a-constant'] = { id: 'other', value: 'x' }
     expectContractError(() => checkCodexPermissionPresets(invalidKey), 'invalid settings key')
-    for (const setting of [null, {}, { id: '', value: 'x' }, { id: 'other', value: '' }, { id: 1, value: 'x' }]) {
+    for (const setting of [
+      null,
+      {},
+      { id: '', value: 'x' },
+      { id: 'other', value: '' },
+      { id: 1, value: 'x' },
+    ]) {
       const contract = valid()
       contract.settings.Other = setting
       expectContractError(() => checkCodexPermissionPresets(contract), 'must hold nonempty id and value strings')
@@ -1122,7 +1629,10 @@ describe('checkCodexPermissionPresets', () => {
       c => c.presets.smart = ['PermissionModeApproveForMe', 'PermissionModeApproveForMe'],
       c => c.presets.smart[0] = { id: 'permissionMode', value: 'auto-review' },
     ]) {
-      const contract = { _readme: 'test', ...valid() }
+      const contract = {
+        _readme: 'test',
+        ...valid(),
+      }
       change(contract)
       expect(validate(contract)).toBe(false)
     }
@@ -1157,7 +1667,10 @@ describe('checkTabNames', () => {
   // overwrite terminal titles.
   it('rejects equal title prefixes', () => {
     expectContractError(
-      () => checkTabNames({ ...ok(), titlePrefixes: { agent: 'Tab', terminal: 'Tab' } }),
+      () => checkTabNames({
+        ...ok(),
+        titlePrefixes: { agent: 'Tab', terminal: 'Tab' },
+      }),
       'title prefixes must differ',
     )
   })
@@ -1166,14 +1679,20 @@ describe('checkTabNames', () => {
   // near-repeat visible during review.
   it('rejects an unsorted list', () => {
     expectContractError(
-      () => checkTabNames({ ...ok(), names: ['Ada', 'Gabe', 'Bella', 'Tim'] }),
+      () => checkTabNames({
+        ...ok(),
+        names: ['Ada', 'Gabe', 'Bella', 'Tim'],
+      }),
       'names must be sorted',
     )
   })
 
   it('rejects a repeated name, which sorting also surfaces', () => {
     expectContractError(
-      () => checkTabNames({ ...ok(), names: ['Ada', 'Gabe', 'Gabe', 'Tim'] }),
+      () => checkTabNames({
+        ...ok(),
+        names: ['Ada', 'Gabe', 'Gabe', 'Tim'],
+      }),
       'names must be sorted',
     )
   })
@@ -1194,29 +1713,56 @@ describe('checkListen', () => {
   // listenset.Parse checks the wildcard token before an address or host name.
   // A sentinel that resembles a host would hide that host.
   it('rejects an anyHost spelled like a host', () => {
-    expectContractError(() => checkListen({ ...ok(), anyHost: '0.0.0.0' }), 'is spelled like a host')
-    expectContractError(() => checkListen({ ...ok(), anyHost: '::' }), 'is spelled like a host')
-    expectContractError(() => checkListen({ ...ok(), anyHost: 'any' }), 'is spelled like a host')
-    expectContractError(() => checkListen({ ...ok(), anyHost: 'fe80::1%en0' }), 'is spelled like a host')
+    expectContractError(() => checkListen({
+      ...ok(),
+      anyHost: '0.0.0.0',
+    }), 'is spelled like a host')
+    expectContractError(() => checkListen({
+      ...ok(),
+      anyHost: '::',
+    }), 'is spelled like a host')
+    expectContractError(() => checkListen({
+      ...ok(),
+      anyHost: 'any',
+    }), 'is spelled like a host')
+    expectContractError(() => checkListen({
+      ...ok(),
+      anyHost: 'fe80::1%en0',
+    }), 'is spelled like a host')
   })
 
   it('rejects a cap that is not a positive integer', () => {
-    expectContractError(() => checkListen({ ...ok(), maxExtraAddresses: 0 }), 'integer >= 1')
-    expectContractError(() => checkListen({ ...ok(), maxExtraAddresses: 2.5 }), 'integer >= 1')
+    expectContractError(() => checkListen({
+      ...ok(),
+      maxExtraAddresses: 0,
+    }), 'integer >= 1')
+    expectContractError(() => checkListen({
+      ...ok(),
+      maxExtraAddresses: 2.5,
+    }), 'integer >= 1')
   })
 
   // A token without a name-table entry emits nothing. One side could compile
   // against a constant that the other side lacks.
   it('rejects a source token no name table renders', () => {
     expectContractError(
-      () => checkListen({ ...ok(), addressSources: { ...ok().addressSources, proxied: 'd' } }),
+      () => checkListen({
+        ...ok(),
+        addressSources: {
+          ...ok().addressSources,
+          proxied: 'd',
+        },
+      }),
       'has no LISTEN_SOURCE_GO_NAMES entry',
     )
   })
 
   it('rejects a name-table entry with no token', () => {
     expectContractError(
-      () => checkListen({ ...ok(), addressSources: { listen: 'a', extra: 'b' } }),
+      () => checkListen({
+        ...ok(),
+        addressSources: { listen: 'a', extra: 'b' },
+      }),
       'matches no addressSources key',
     )
   })
@@ -1561,8 +2107,20 @@ describe('checkProviderStructs', () => {
     tsPrefix: 'PROBE',
     title: 'Probe',
     tables: [
-      { key: 'supplement', goTable: 'Supplement', tsTable: 'SUPPLEMENT', tsType: 'ProbeSupplementField', doc: 'x' },
-      { key: 'nested', goTable: 'Nested', tsTable: 'NESTED', tsType: 'ProbeNestedField', doc: 'y' },
+      {
+        key: 'supplement',
+        goTable: 'Supplement',
+        tsTable: 'SUPPLEMENT',
+        tsType: 'ProbeSupplementField',
+        doc: 'x',
+      },
+      {
+        key: 'nested',
+        goTable: 'Nested',
+        tsTable: 'NESTED',
+        tsType: 'ProbeNestedField',
+        doc: 'y',
+      },
     ],
   }
   const contract = over => ({
@@ -1574,7 +2132,12 @@ describe('checkProviderStructs', () => {
 
   it('accepts a struct whose every field identifies a key of its table', () => {
     expect(() => checkProviderStructs(spec, withStructs({
-      Probe: { table: 'supplement', fields: [{ key: 'ToolCallID', type: 'string' }] },
+      Probe: {
+        table: 'supplement',
+        fields: [
+          { key: 'ToolCallID', type: 'string' },
+        ],
+      },
     }))).not.toThrow()
   })
 
@@ -1582,7 +2145,10 @@ describe('checkProviderStructs', () => {
     expect(() => checkProviderStructs(spec, withStructs({
       Probe: {
         table: 'supplement',
-        fields: [{ key: 'ToolCallID', type: 'string' }, { key: 'Path', type: 'string', table: 'nested' }],
+        fields: [
+          { key: 'ToolCallID', type: 'string' },
+          { key: 'Path', type: 'string', table: 'nested' },
+        ],
       },
     }))).not.toThrow()
   })
@@ -1591,25 +2157,45 @@ describe('checkProviderStructs', () => {
   // Reject it to keep both readers consistent.
   it('rejects a field that identifies no key of its table', () => {
     expectContractError(() => checkProviderStructs(spec, withStructs({
-      Probe: { table: 'supplement', fields: [{ key: 'Missing', type: 'string' }] },
+      Probe: {
+        table: 'supplement',
+        fields: [
+          { key: 'Missing', type: 'string' },
+        ],
+      },
     })), 'is not a key of the supplement table')
   })
 
   it('rejects a table the domain does not declare', () => {
     expectContractError(() => checkProviderStructs(spec, withStructs({
-      Probe: { table: 'absent', fields: [{ key: 'ToolCallID', type: 'string' }] },
+      Probe: {
+        table: 'absent',
+        fields: [
+          { key: 'ToolCallID', type: 'string' },
+        ],
+      },
     })), 'is not a declared table')
   })
 
   it('rejects a Go type a generated struct may not take', () => {
     expectContractError(() => checkProviderStructs(spec, withStructs({
-      Probe: { table: 'supplement', fields: [{ key: 'ToolCallID', type: 'chan int' }] },
+      Probe: {
+        table: 'supplement',
+        fields: [
+          { key: 'ToolCallID', type: 'chan int' },
+        ],
+      },
     })), 'is not one a generated struct may take')
   })
 
   it('rejects a reference to a struct the domain does not declare', () => {
     expectContractError(() => checkProviderStructs(spec, withStructs({
-      Probe: { table: 'supplement', fields: [{ key: 'ToolCallID', type: '#Absent' }] },
+      Probe: {
+        table: 'supplement',
+        fields: [
+          { key: 'ToolCallID', type: '#Absent' },
+        ],
+      },
     })), 'which this domain does not declare')
   })
 
@@ -1617,7 +2203,10 @@ describe('checkProviderStructs', () => {
     expectContractError(() => checkProviderStructs(spec, withStructs({
       Probe: {
         table: 'supplement',
-        fields: [{ key: 'ToolCallID', type: 'string' }, { key: 'ToolCallID', type: 'string' }],
+        fields: [
+          { key: 'ToolCallID', type: 'string' },
+          { key: 'ToolCallID', type: 'string' },
+        ],
       },
     })), 'lists ToolCallID twice')
   })
@@ -1626,7 +2215,12 @@ describe('checkProviderStructs', () => {
   // The compiler reports the generated file without identifying its contract.
   it('rejects a struct name that collides with a constant the domain emits', () => {
     expectContractError(() => checkProviderStructs(spec, withStructs({
-      ProbeSupplementOutput: { table: 'supplement', fields: [{ key: 'Output', type: 'string' }] },
+      ProbeSupplementOutput: {
+        table: 'supplement',
+        fields: [
+          { key: 'Output', type: 'string' },
+        ],
+      },
     })), 'takes the name of a generated declaration this domain already emits')
   })
 
@@ -1636,10 +2230,18 @@ describe('checkProviderStructs', () => {
   it('rejects a struct name that collides with a goSlice key slice', () => {
     const sliced = {
       ...spec,
-      tables: [{ ...spec.tables[0], goSlice: true }, spec.tables[1]],
+      tables: [
+        { ...spec.tables[0], goSlice: true },
+        spec.tables[1],
+      ],
     }
     expectContractError(() => checkProviderStructs(sliced, withStructs({
-      ProbeSupplementKeys: { table: 'supplement', fields: [{ key: 'Output', type: 'string' }] },
+      ProbeSupplementKeys: {
+        table: 'supplement',
+        fields: [
+          { key: 'Output', type: 'string' },
+        ],
+      },
     })), 'takes the name of a generated declaration this domain already emits')
   })
 
@@ -1647,14 +2249,29 @@ describe('checkProviderStructs', () => {
   // Detect the cycle before generation produces a file that cannot compile.
   it('rejects a struct that refers to itself by value', () => {
     expectContractError(() => checkProviderStructs(spec, withStructs({
-      Probe: { table: 'supplement', fields: [{ key: 'ToolCallID', type: '#Probe' }] },
+      Probe: {
+        table: 'supplement',
+        fields: [
+          { key: 'ToolCallID', type: '#Probe' },
+        ],
+      },
     })), 'is a cycle of by-value references')
   })
 
   it('rejects a cycle that runs through a second struct', () => {
     expectContractError(() => checkProviderStructs(spec, withStructs({
-      Probe: { table: 'supplement', fields: [{ key: 'ToolCallID', type: '#Other' }] },
-      Other: { table: 'nested', fields: [{ key: 'Path', type: '#Probe' }] },
+      Probe: {
+        table: 'supplement',
+        fields: [
+          { key: 'ToolCallID', type: '#Other' },
+        ],
+      },
+      Other: {
+        table: 'nested',
+        fields: [
+          { key: 'Path', type: '#Probe' },
+        ],
+      },
     })), 'Probe -> Other -> Probe')
   })
 
@@ -1662,13 +2279,23 @@ describe('checkProviderStructs', () => {
   // and Go compiles the struct.
   it('accepts a self-reference behind a slice', () => {
     expect(() => checkProviderStructs(spec, withStructs({
-      Probe: { table: 'supplement', fields: [{ key: 'ToolCallID', type: '[]#Probe' }] },
+      Probe: {
+        table: 'supplement',
+        fields: [
+          { key: 'ToolCallID', type: '[]#Probe' },
+        ],
+      },
     }))).not.toThrow()
   })
 
   it('accepts a self-reference behind a map', () => {
     expect(() => checkProviderStructs(spec, withStructs({
-      Probe: { table: 'supplement', fields: [{ key: 'ToolCallID', type: 'map[string]#Probe' }] },
+      Probe: {
+        table: 'supplement',
+        fields: [
+          { key: 'ToolCallID', type: 'map[string]#Probe' },
+        ],
+      },
     }))).not.toThrow()
   })
 
@@ -1676,9 +2303,24 @@ describe('checkProviderStructs', () => {
   // A second visit alone does not prove a cycle.
   it('accepts two structs that refer to the same third one', () => {
     expect(() => checkProviderStructs(spec, withStructs({
-      Leaf: { table: 'nested', fields: [{ key: 'Path', type: 'string' }] },
-      Left: { table: 'supplement', fields: [{ key: 'ToolCallID', type: '#Leaf' }] },
-      Right: { table: 'supplement', fields: [{ key: 'Output', type: '#Leaf' }] },
+      Leaf: {
+        table: 'nested',
+        fields: [
+          { key: 'Path', type: 'string' },
+        ],
+      },
+      Left: {
+        table: 'supplement',
+        fields: [
+          { key: 'ToolCallID', type: '#Leaf' },
+        ],
+      },
+      Right: {
+        table: 'supplement',
+        fields: [
+          { key: 'Output', type: '#Leaf' },
+        ],
+      },
     }))).not.toThrow()
   })
 
@@ -1748,12 +2390,25 @@ describe('emitted structs', () => {
     goPrefix: 'Probe',
     tsPrefix: 'PROBE',
     title: 'Probe',
-    tables: [{ key: 'fields', goTable: 'Field', tsTable: 'FIELD', tsType: 'ProbeField', doc: 'native fields' }],
+    tables: [
+      {
+        key: 'fields',
+        goTable: 'Field',
+        tsTable: 'FIELD',
+        tsType: 'ProbeField',
+        doc: 'native fields',
+      },
+    ],
   }
   const probeContract = (type, omitempty) => ({
     fields: { Value: 'native_value' },
     structs: {
-      ProbeValue: { table: 'fields', fields: [{ key: 'Value', type, omitempty }] },
+      ProbeValue: {
+        table: 'fields',
+        fields: [
+          { key: 'Value', type, omitempty },
+        ],
+      },
     },
   })
 
@@ -1762,7 +2417,12 @@ describe('emitted structs', () => {
     expect(go).toContain(`Value *string \`json:"native_value${omitempty ? ',omitempty' : ''}"\``)
   })
 
-  it.each(['string', '*string', 'json.RawMessage', '[]json.RawMessage'])('imports JSON only for the emitted field type: %s', (type) => {
+  it.each([
+    'string',
+    '*string',
+    'json.RawMessage',
+    '[]json.RawMessage',
+  ])('imports JSON only for the emitted field type: %s', (type) => {
     const go = emitGoProviderProtocol(probe, probeContract(type, false))
     expect(go.includes('import "encoding/json"')).toBe(type.includes('json.RawMessage'))
     expect(go).toContain(`Value ${type} \`json:"native_value"\``)
@@ -1779,7 +2439,13 @@ describe('checkUserSettings', () => {
   // Each assertion requires the intended validation failure.
   const withSetting = (name, patch) => ({
     ...USER_SETTINGS,
-    settings: { ...USER_SETTINGS.settings, [name]: { ...USER_SETTINGS.settings[name], ...patch } },
+    settings: {
+      ...USER_SETTINGS.settings,
+      [name]: {
+        ...USER_SETTINGS.settings[name],
+        ...patch,
+      },
+    },
   })
 
   it('accepts the shipped contract', () => {
@@ -1849,7 +2515,11 @@ describe('checkProviders', () => {
   })
 
   it('rejects a proto enum value with no entry', () => {
-    const p = { providers: { AGENT_PROVIDER_CLAUDE_CODE: { displayName: 'X', cliAlias: 'x', parseAliases: [] } } }
+    const p = {
+      providers: {
+        AGENT_PROVIDER_CLAUDE_CODE: { displayName: 'X', cliAlias: 'x', parseAliases: [] },
+      },
+    }
     expectContractError(() => checkProviders(p, ENUM), 'AGENT_PROVIDER_CODEX has no entry')
   })
 
@@ -1857,7 +2527,11 @@ describe('checkProviders', () => {
     // emitTsProviders inserts the suffix into AgentProvider.<suffix>. Protobuf
     // permits an initial digit, but TypeScript does not. Reject it before Go and
     // TypeScript produce different results.
-    const p = { providers: { AGENT_PROVIDER_2FA_CODEX: { displayName: 'X', cliAlias: 'x', parseAliases: [] } } }
+    const p = {
+      providers: {
+        AGENT_PROVIDER_2FA_CODEX: { displayName: 'X', cliAlias: 'x', parseAliases: [] },
+      },
+    }
     expectContractError(() => checkProviders(p, ['AGENT_PROVIDER_UNSPECIFIED', 'AGENT_PROVIDER_2FA_CODEX']), 'not a valid TS member name')
   })
 
@@ -1875,8 +2549,16 @@ describe('checkProviders', () => {
   it('rejects an alias claimed by two providers', () => {
     const p = {
       providers: {
-        AGENT_PROVIDER_CLAUDE_CODE: { displayName: 'X', cliAlias: 'x', parseAliases: ['dup'] },
-        AGENT_PROVIDER_CODEX: { displayName: 'Y', cliAlias: 'y', parseAliases: ['dup'] },
+        AGENT_PROVIDER_CLAUDE_CODE: {
+          displayName: 'X',
+          cliAlias: 'x',
+          parseAliases: ['dup'],
+        },
+        AGENT_PROVIDER_CODEX: {
+          displayName: 'Y',
+          cliAlias: 'y',
+          parseAliases: ['dup'],
+        },
       },
     }
     expectContractError(() => checkProviders(p, ENUM), 'claimed by both')
@@ -1885,7 +2567,11 @@ describe('checkProviders', () => {
   it('rejects an alias repeated inside one provider (cliAlias duplicated in parseAliases)', () => {
     const p = {
       providers: {
-        AGENT_PROVIDER_CLAUDE_CODE: { displayName: 'X', cliAlias: 'x', parseAliases: ['x'] },
+        AGENT_PROVIDER_CLAUDE_CODE: {
+          displayName: 'X',
+          cliAlias: 'x',
+          parseAliases: ['x'],
+        },
         AGENT_PROVIDER_CODEX: { displayName: 'Y', cliAlias: 'y', parseAliases: [] },
       },
     }
@@ -1914,7 +2600,12 @@ describe('checkScopes / checkTheme / checkValidate', () => {
     expectContractError(() => checkScopes({
       nonGrantable: ['SCOPE_UNSPECIFIED'],
       scopes,
-      categories: [{ label: 'Account', scopes: ['SCOPE_ACCOUNT_READ'] }],
+      categories: [
+        {
+          label: 'Account',
+          scopes: ['SCOPE_ACCOUNT_READ'],
+        },
+      ],
       impliedBy: {},
     }, ['SCOPE_UNSPECIFIED', 'SCOPE_ACCOUNT_READ', 'SCOPE_NEW_UNCOVERED']), 'SCOPE_NEW_UNCOVERED')
   })
@@ -1923,7 +2614,10 @@ describe('checkScopes / checkTheme / checkValidate', () => {
     const theme = {
       light: { '--background': 'a', '--accent': 'b' },
       dark: { '--background': 'c' },
-      oauthPage: { tokens: ['--background', '--accent'], renames: {} },
+      oauthPage: {
+        tokens: ['--background', '--accent'],
+        renames: {},
+      },
     }
     expectContractError(() => checkTheme(theme), 'missing from the dark palette')
   })
@@ -1932,7 +2626,10 @@ describe('checkScopes / checkTheme / checkValidate', () => {
     const theme = {
       light: { '--background': 'a' },
       dark: { '--background': 'c' },
-      oauthPage: { tokens: ['--danger-subtle'], renames: { '--danger-subtle': '--lm-danger-subtle' } },
+      oauthPage: {
+        tokens: ['--danger-subtle'],
+        renames: { '--danger-subtle': '--lm-danger-subtle' },
+      },
     }
     expectContractError(() => checkTheme(theme), '--lm-danger-subtle')
   })
@@ -1940,18 +2637,63 @@ describe('checkScopes / checkTheme / checkValidate', () => {
   it('rejects an impliedBy cycle', () => {
     expectContractError(() => checkScopes({
       nonGrantable: [],
-      scopes: { A: { token: 'a:x', description: 'd', consentSentence: 'c' }, B: { token: 'b:x', description: 'd', consentSentence: 'c' } },
-      categories: [{ label: 'L', scopes: ['A', 'B'] }],
-      impliedBy: { A: ['B'], B: ['A'] },
+      scopes: {
+        A: { token: 'a:x', description: 'd', consentSentence: 'c' },
+        B: { token: 'b:x', description: 'd', consentSentence: 'c' },
+      },
+      categories: [
+        {
+          label: 'L',
+          scopes: ['A', 'B'],
+        },
+      ],
+      impliedBy: {
+        A: ['B'],
+        B: ['A'],
+      },
     }, ['A', 'B']), 'cycle')
   })
 
   it('rejects overlapping ranges in the validate contract', () => {
     expectContractError(() => checkValidate({
-      name: { byteLimit: 1, invisibleFormat: [[10, 20], [15, 30]], whitespaceFold: [[1, 2]] },
-      session: { byteLimit: 1, filePathByteLimit: 2, invisibleFormat: [[1, 1]], refusedControl: [[0, 1]], refusedAscii: [[2, 2]] },
-      password: { minLength: 1, maxLength: 2, printableAsciiMin: 32, printableAsciiMax: 126 },
-      branch: { byteLimit: 1, refusedControl: [[0, 1]], refusedAscii: [[2, 2]] },
+      name: {
+        byteLimit: 1,
+        invisibleFormat: [
+          [10, 20],
+          [15, 30],
+        ],
+        whitespaceFold: [
+          [1, 2],
+        ],
+      },
+      session: {
+        byteLimit: 1,
+        filePathByteLimit: 2,
+        invisibleFormat: [
+          [1, 1],
+        ],
+        refusedControl: [
+          [0, 1],
+        ],
+        refusedAscii: [
+          [2, 2],
+        ],
+      },
+      password: {
+        minLength: 1,
+        maxLength: 2,
+        printableAsciiMin: 32,
+        printableAsciiMax: 126,
+      },
+      branch: {
+        byteLimit: 1,
+        refusedControl: [
+          [0, 1],
+        ],
+        refusedAscii: [
+          [2, 2],
+        ],
+      },
     }), 'non-overlapping')
   })
 
@@ -1960,19 +2702,85 @@ describe('checkScopes / checkTheme / checkValidate', () => {
     // Basic Multilingual Plane escape plus a digit. goRangeTable also writes
     // uint16 fields. Reject astral points before the languages disagree.
     expectContractError(() => checkValidate({
-      name: { byteLimit: 1, invisibleFormat: [[128545, 128545]], whitespaceFold: [[1, 2]] },
-      session: { byteLimit: 1, filePathByteLimit: 2, invisibleFormat: [[1, 1]], refusedControl: [[0, 1]], refusedAscii: [[2, 2]] },
-      password: { minLength: 1, maxLength: 2, printableAsciiMin: 32, printableAsciiMax: 126 },
-      branch: { byteLimit: 1, refusedControl: [[0, 1]], refusedAscii: [[2, 2]] },
+      name: {
+        byteLimit: 1,
+        invisibleFormat: [
+          [128545, 128545],
+        ],
+        whitespaceFold: [
+          [1, 2],
+        ],
+      },
+      session: {
+        byteLimit: 1,
+        filePathByteLimit: 2,
+        invisibleFormat: [
+          [1, 1],
+        ],
+        refusedControl: [
+          [0, 1],
+        ],
+        refusedAscii: [
+          [2, 2],
+        ],
+      },
+      password: {
+        minLength: 1,
+        maxLength: 2,
+        printableAsciiMin: 32,
+        printableAsciiMax: 126,
+      },
+      branch: {
+        byteLimit: 1,
+        refusedControl: [
+          [0, 1],
+        ],
+        refusedAscii: [
+          [2, 2],
+        ],
+      },
     }), 'leaves the BMP')
   })
 
   it('rejects an astral refusedAscii code point', () => {
     expectContractError(() => checkValidate({
-      name: { byteLimit: 1, invisibleFormat: [[1, 2]], whitespaceFold: [[3, 4]] },
-      session: { byteLimit: 1, filePathByteLimit: 2, invisibleFormat: [[1, 2]], refusedControl: [[0, 1]], refusedAscii: [[128545, 128545]] },
-      password: { minLength: 1, maxLength: 2, printableAsciiMin: 32, printableAsciiMax: 126 },
-      branch: { byteLimit: 1, refusedControl: [[0, 1]], refusedAscii: [[2, 2]] },
+      name: {
+        byteLimit: 1,
+        invisibleFormat: [
+          [1, 2],
+        ],
+        whitespaceFold: [
+          [3, 4],
+        ],
+      },
+      session: {
+        byteLimit: 1,
+        filePathByteLimit: 2,
+        invisibleFormat: [
+          [1, 2],
+        ],
+        refusedControl: [
+          [0, 1],
+        ],
+        refusedAscii: [
+          [128545, 128545],
+        ],
+      },
+      password: {
+        minLength: 1,
+        maxLength: 2,
+        printableAsciiMin: 32,
+        printableAsciiMax: 126,
+      },
+      branch: {
+        byteLimit: 1,
+        refusedControl: [
+          [0, 1],
+        ],
+        refusedAscii: [
+          [2, 2],
+        ],
+      },
     }), 'leaves the BMP')
   })
 
@@ -1981,10 +2789,43 @@ describe('checkScopes / checkTheme / checkValidate', () => {
     // incorrect JavaScript range. Check both ends before the languages receive
     // different character sets.
     expectContractError(() => checkValidate({
-      name: { byteLimit: 1, invisibleFormat: [[1, 2]], whitespaceFold: [[3, 4]] },
-      session: { byteLimit: 1, filePathByteLimit: 2, invisibleFormat: [[1, 2]], refusedControl: [[0, 1]], refusedAscii: [[34, 128545]] },
-      password: { minLength: 1, maxLength: 2, printableAsciiMin: 32, printableAsciiMax: 126 },
-      branch: { byteLimit: 1, refusedControl: [[0, 1]], refusedAscii: [[2, 2]] },
+      name: {
+        byteLimit: 1,
+        invisibleFormat: [
+          [1, 2],
+        ],
+        whitespaceFold: [
+          [3, 4],
+        ],
+      },
+      session: {
+        byteLimit: 1,
+        filePathByteLimit: 2,
+        invisibleFormat: [
+          [1, 2],
+        ],
+        refusedControl: [
+          [0, 1],
+        ],
+        refusedAscii: [
+          [34, 128545],
+        ],
+      },
+      password: {
+        minLength: 1,
+        maxLength: 2,
+        printableAsciiMin: 32,
+        printableAsciiMax: 126,
+      },
+      branch: {
+        byteLimit: 1,
+        refusedControl: [
+          [0, 1],
+        ],
+        refusedAscii: [
+          [2, 2],
+        ],
+      },
     }), 'leaves the BMP')
   })
 
@@ -1992,10 +2833,43 @@ describe('checkScopes / checkTheme / checkValidate', () => {
     // An inverted entry makes the browser reject its character class. Go would
     // instead omit the rune. Reject the entry during generation.
     expectContractError(() => checkValidate({
-      name: { byteLimit: 1, invisibleFormat: [[1, 2]], whitespaceFold: [[3, 4]] },
-      session: { byteLimit: 1, filePathByteLimit: 2, invisibleFormat: [[1, 2]], refusedControl: [[0, 1]], refusedAscii: [[2, 2]] },
-      password: { minLength: 1, maxLength: 2, printableAsciiMin: 32, printableAsciiMax: 126 },
-      branch: { byteLimit: 1, refusedControl: [[0, 1]], refusedAscii: [[126, 34]] },
+      name: {
+        byteLimit: 1,
+        invisibleFormat: [
+          [1, 2],
+        ],
+        whitespaceFold: [
+          [3, 4],
+        ],
+      },
+      session: {
+        byteLimit: 1,
+        filePathByteLimit: 2,
+        invisibleFormat: [
+          [1, 2],
+        ],
+        refusedControl: [
+          [0, 1],
+        ],
+        refusedAscii: [
+          [2, 2],
+        ],
+      },
+      password: {
+        minLength: 1,
+        maxLength: 2,
+        printableAsciiMin: 32,
+        printableAsciiMax: 126,
+      },
+      branch: {
+        byteLimit: 1,
+        refusedControl: [
+          [0, 1],
+        ],
+        refusedAscii: [
+          [126, 34],
+        ],
+      },
     }), 'inverted')
   })
 
@@ -2003,10 +2877,43 @@ describe('checkScopes / checkTheme / checkValidate', () => {
     // These caps form one relation. A session file path contains a directory
     // prefix that a token lacks. The file-path cap must stay above the token cap.
     expectContractError(() => checkValidate({
-      name: { byteLimit: 1, invisibleFormat: [[1, 2]], whitespaceFold: [[3, 4]] },
-      session: { byteLimit: 1, filePathByteLimit: 1, invisibleFormat: [[1, 2]], refusedControl: [[0, 1]], refusedAscii: [[2, 2]] },
-      password: { minLength: 1, maxLength: 2, printableAsciiMin: 32, printableAsciiMax: 126 },
-      branch: { byteLimit: 1, refusedControl: [[0, 1]], refusedAscii: [[2, 2]] },
+      name: {
+        byteLimit: 1,
+        invisibleFormat: [
+          [1, 2],
+        ],
+        whitespaceFold: [
+          [3, 4],
+        ],
+      },
+      session: {
+        byteLimit: 1,
+        filePathByteLimit: 1,
+        invisibleFormat: [
+          [1, 2],
+        ],
+        refusedControl: [
+          [0, 1],
+        ],
+        refusedAscii: [
+          [2, 2],
+        ],
+      },
+      password: {
+        minLength: 1,
+        maxLength: 2,
+        printableAsciiMin: 32,
+        printableAsciiMax: 126,
+      },
+      branch: {
+        byteLimit: 1,
+        refusedControl: [
+          [0, 1],
+        ],
+        refusedAscii: [
+          [2, 2],
+        ],
+      },
       usernames: { systemReserved: {}, publicReserved: {} },
     }), 'filePathByteLimit must be > session.byteLimit')
   })
@@ -2015,11 +2922,47 @@ describe('checkScopes / checkTheme / checkValidate', () => {
     // goReservedUsernames builds `Username<Name>` with case changes only. A
     // hyphen produces invalid Go. Generation must identify that username.
     expectContractError(() => checkValidate({
-      name: { byteLimit: 1, invisibleFormat: [[1, 2]], whitespaceFold: [[3, 4]] },
-      session: { byteLimit: 1, filePathByteLimit: 2, invisibleFormat: [[1, 2]], refusedControl: [[0, 1]], refusedAscii: [[2, 2]] },
-      password: { minLength: 1, maxLength: 2, printableAsciiMin: 32, printableAsciiMax: 126 },
-      branch: { byteLimit: 1, refusedControl: [[0, 1]], refusedAscii: [[2, 2]] },
-      usernames: { systemReserved: { 'ci-bot': 'why' }, publicReserved: {} },
+      name: {
+        byteLimit: 1,
+        invisibleFormat: [
+          [1, 2],
+        ],
+        whitespaceFold: [
+          [3, 4],
+        ],
+      },
+      session: {
+        byteLimit: 1,
+        filePathByteLimit: 2,
+        invisibleFormat: [
+          [1, 2],
+        ],
+        refusedControl: [
+          [0, 1],
+        ],
+        refusedAscii: [
+          [2, 2],
+        ],
+      },
+      password: {
+        minLength: 1,
+        maxLength: 2,
+        printableAsciiMin: 32,
+        printableAsciiMax: 126,
+      },
+      branch: {
+        byteLimit: 1,
+        refusedControl: [
+          [0, 1],
+        ],
+        refusedAscii: [
+          [2, 2],
+        ],
+      },
+      usernames: {
+        systemReserved: { 'ci-bot': 'why' },
+        publicReserved: {},
+      },
     }), 'not a valid Go identifier')
   })
 
@@ -2027,10 +2970,43 @@ describe('checkScopes / checkTheme / checkValidate', () => {
     // This repetition is intentional. A change to the identifier rules must not
     // change the token rules. The generator checks both beside the data.
     expectContractError(() => checkValidate({
-      name: { byteLimit: 1, invisibleFormat: [[1, 2]], whitespaceFold: [[3, 4]] },
-      session: { byteLimit: 1, filePathByteLimit: 2, invisibleFormat: [[1, 3]], refusedControl: [[0, 1]], refusedAscii: [[2, 2]] },
-      password: { minLength: 1, maxLength: 2, printableAsciiMin: 32, printableAsciiMax: 126 },
-      branch: { byteLimit: 1, refusedControl: [[0, 1]], refusedAscii: [[2, 2]] },
+      name: {
+        byteLimit: 1,
+        invisibleFormat: [
+          [1, 2],
+        ],
+        whitespaceFold: [
+          [3, 4],
+        ],
+      },
+      session: {
+        byteLimit: 1,
+        filePathByteLimit: 2,
+        invisibleFormat: [
+          [1, 3],
+        ],
+        refusedControl: [
+          [0, 1],
+        ],
+        refusedAscii: [
+          [2, 2],
+        ],
+      },
+      password: {
+        minLength: 1,
+        maxLength: 2,
+        printableAsciiMin: 32,
+        printableAsciiMax: 126,
+      },
+      branch: {
+        byteLimit: 1,
+        refusedControl: [
+          [0, 1],
+        ],
+        refusedAscii: [
+          [2, 2],
+        ],
+      },
       usernames: { systemReserved: {}, publicReserved: {} },
     }), 'FROZEN')
   })
@@ -2041,7 +3017,10 @@ describe('checkScopes / checkTheme / checkValidate', () => {
     const theme = {
       light: { '--background': 'a', '--lm-danger-subtle': 'x' },
       dark: { '--background': 'c', '--lm-danger-subtle': 'y' },
-      oauthPage: { tokens: ['--background'], renames: { '--danger-subtle': '--lm-danger-subtle' } },
+      oauthPage: {
+        tokens: ['--background'],
+        renames: { '--danger-subtle': '--lm-danger-subtle' },
+      },
     }
     expectContractError(() => checkTheme(theme), 'not in oauthPage.tokens')
   })
@@ -2052,8 +3031,15 @@ describe('checkScopes / checkTheme / checkValidate', () => {
     // only one language fails.
     expectContractError(() => checkScopes({
       nonGrantable: ['SCOPE_UNSPECIFIED'],
-      scopes: { SCOPE_2FA: { token: 'account:2fa', description: 'd', consentSentence: 'c' } },
-      categories: [{ label: 'Account', scopes: ['SCOPE_2FA'] }],
+      scopes: {
+        SCOPE_2FA: { token: 'account:2fa', description: 'd', consentSentence: 'c' },
+      },
+      categories: [
+        {
+          label: 'Account',
+          scopes: ['SCOPE_2FA'],
+        },
+      ],
       impliedBy: {},
     }, ['SCOPE_UNSPECIFIED', 'SCOPE_2FA']), 'not a valid TS member name')
   })
@@ -2140,17 +3126,31 @@ describe('checkSessionInfo', () => {
 
   it('rejects two entries of one table sharing a wire token', () => {
     expectContractError(
-      () => checkSessionInfo(sessionInfo({ keys: { A: 'same_token', B: 'same_token' } })),
+      () => checkSessionInfo(sessionInfo({
+        keys: { A: 'same_token', B: 'same_token' },
+      })),
       'two keys entries share one wire token',
     )
   })
 
   it('rejects a duplicate token in a NESTED table too', () => {
     for (const [table, fields] of [
-      ['rateLimitFields', { A: 'status', B: 'status' }],
-      ['turnRetryOfferFields', { A: 'turn_id', B: 'turn_id' }],
-      ['compactionFields', { A: 'trigger', B: 'trigger' }],
-      ['promptSuggestionFields', { A: 'text', B: 'text' }],
+      [
+        'rateLimitFields',
+        { A: 'status', B: 'status' },
+      ],
+      [
+        'turnRetryOfferFields',
+        { A: 'turn_id', B: 'turn_id' },
+      ],
+      [
+        'compactionFields',
+        { A: 'trigger', B: 'trigger' },
+      ],
+      [
+        'promptSuggestionFields',
+        { A: 'text', B: 'text' },
+      ],
     ]) {
       expectContractError(
         () => checkSessionInfo(sessionInfo({ [table]: fields })),
@@ -2194,7 +3194,9 @@ describe('checkSessionInfo', () => {
   // generation report the missing registration.
   it('rejects a contract table that no SESSION_INFO_TABLES entry renders', () => {
     expectContractError(
-      () => checkSessionInfo(sessionInfo({ probeFutureFields: { PreTokens: 'pre_tokens' } })),
+      () => checkSessionInfo(sessionInfo({
+        probeFutureFields: { PreTokens: 'pre_tokens' },
+      })),
       'probeFutureFields has no SESSION_INFO_TABLES entry',
     )
   })
@@ -2286,10 +3288,20 @@ describe('checkWorkerVocab / checkDesktop', () => {
     messageSupplementFields: { Provider: 'provider', Metadata: 'metadata' },
     notificationFields: { PlanTitle: 'plan_title', PlanFilePath: 'plan_file_path' },
     assembledMessage: {
-      fields: { Type: 'type', Kind: 'kind', Text: 'text', Completion: 'completion' },
+      fields: {
+        Type: 'type',
+        Kind: 'kind',
+        Text: 'text',
+        Completion: 'completion',
+      },
       types: { Assembled: 'assembled_message' },
       kinds: { Text: 'text', Reasoning: 'reasoning', Plan: 'plan' },
-      completions: { Complete: 'complete', Interrupted: 'interrupted', Error: 'error', Finished: 'finished' },
+      completions: {
+        Complete: 'complete',
+        Interrupted: 'interrupted',
+        Error: 'error',
+        Finished: 'finished',
+      },
     },
     notificationThreadWrapperType: 'notification_thread',
     modelSentinels: { accountDefaultModel: 'default', effortAuto: 'auto' },
@@ -2332,14 +3344,24 @@ describe('checkWorkerVocab / checkDesktop', () => {
 
   it('rejects a missing or empty DEV frontend URL', () => {
     expectContractError(() => checkDesktop({
-      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z', agentHelper: 'E_V' },
+      envVars: {
+        devEndpoint: 'A_X',
+        binaryHash: 'B_Y',
+        devFrontend: 'C_Z',
+        agentHelper: 'E_V',
+      },
       tauriEvents: events(),
       windowBehavior: behavior(),
       launchVisibility: launch(),
       windowMode: windowMode(),
     }), 'devFrontendUrl must be a non-empty URL string')
     expectContractError(() => checkDesktop({
-      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z', agentHelper: 'E_V' },
+      envVars: {
+        devEndpoint: 'A_X',
+        binaryHash: 'B_Y',
+        devFrontend: 'C_Z',
+        agentHelper: 'E_V',
+      },
       devFrontendUrl: '',
       tauriEvents: events(),
       windowBehavior: behavior(),
@@ -2407,14 +3429,27 @@ describe('checkWorkerVocab / checkDesktop', () => {
     expect(validate(vocab)).toBe(true)
     delete vocab.assembledMessage.completions.Finished
     expect(validate(vocab)).toBe(false)
-    expect(validate.errors).toContainEqual(expect.objectContaining({ keyword: 'required', params: { missingProperty: 'Finished' } }))
+    expect(validate.errors).toContainEqual(expect.objectContaining({
+      keyword: 'required',
+      params: { missingProperty: 'Finished' },
+    }))
   })
 
   it('rejects two Tauri events sharing one name', () => {
     expectContractError(() => checkDesktop({
-      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z', agentHelper: 'E_V' },
+      envVars: {
+        devEndpoint: 'A_X',
+        binaryHash: 'B_Y',
+        devFrontend: 'C_Z',
+        agentHelper: 'E_V',
+      },
       devFrontendUrl: 'http://localhost:4328',
-      tauriEvents: { channelMessage: 'same:event', channelClose: 'same:event', userEventsMessage: 'u:m', userEventsClose: 'u:c' },
+      tauriEvents: {
+        channelMessage: 'same:event',
+        channelClose: 'same:event',
+        userEventsMessage: 'u:m',
+        userEventsClose: 'u:c',
+      },
       windowBehavior: behavior(),
       launchVisibility: launch(),
       windowMode: windowMode(),
@@ -2423,7 +3458,12 @@ describe('checkWorkerVocab / checkDesktop', () => {
 
   it('rejects two desktop env vars sharing one name', () => {
     expectContractError(() => checkDesktop({
-      envVars: { devEndpoint: 'SAME_X', binaryHash: 'SAME_X', devFrontend: 'C_Z', agentHelper: 'E_V' },
+      envVars: {
+        devEndpoint: 'SAME_X',
+        binaryHash: 'SAME_X',
+        devFrontend: 'C_Z',
+        agentHelper: 'E_V',
+      },
       devFrontendUrl: 'http://localhost:4328',
       tauriEvents: events(),
       windowBehavior: behavior(),
@@ -2434,26 +3474,56 @@ describe('checkWorkerVocab / checkDesktop', () => {
 
   it('rejects a desktop value with no name-table entry instead of emitting nothing', () => {
     expectContractError(() => checkDesktop({
-      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z', agentHelper: 'E_V', extra: 'D_W' },
+      envVars: {
+        devEndpoint: 'A_X',
+        binaryHash: 'B_Y',
+        devFrontend: 'C_Z',
+        agentHelper: 'E_V',
+        extra: 'D_W',
+      },
       devFrontendUrl: 'http://localhost:4328',
-      tauriEvents: { channelMessage: 'c:m', channelClose: 'c:c', userEventsMessage: 'u:m', userEventsClose: 'u:c' },
+      tauriEvents: {
+        channelMessage: 'c:m',
+        channelClose: 'c:c',
+        userEventsMessage: 'u:m',
+        userEventsClose: 'u:c',
+      },
       windowBehavior: behavior(),
       launchVisibility: launch(),
       windowMode: windowMode(),
     }), 'has no DESKTOP_GO_ENV_NAMES entry')
     expectContractError(() => checkDesktop({
-      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z', agentHelper: 'E_V' },
+      envVars: {
+        devEndpoint: 'A_X',
+        binaryHash: 'B_Y',
+        devFrontend: 'C_Z',
+        agentHelper: 'E_V',
+      },
       devFrontendUrl: 'http://localhost:4328',
-      tauriEvents: { channelMessage: 'c:m', channelClose: 'c:c', userEventsMessage: 'u:m', userEventsClose: 'u:c', extra: 'e:x' },
+      tauriEvents: {
+        channelMessage: 'c:m',
+        channelClose: 'c:c',
+        userEventsMessage: 'u:m',
+        userEventsClose: 'u:c',
+        extra: 'e:x',
+      },
       windowBehavior: behavior(),
       launchVisibility: launch(),
       windowMode: windowMode(),
     }), 'has no DESKTOP_RS_EVENT_NAMES entry')
     expectContractError(() => checkDesktop({
-      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z', agentHelper: 'E_V' },
+      envVars: {
+        devEndpoint: 'A_X',
+        binaryHash: 'B_Y',
+        devFrontend: 'C_Z',
+        agentHelper: 'E_V',
+      },
       devFrontendUrl: 'http://localhost:4328',
       tauriEvents: events(),
-      windowBehavior: { ...behavior(), extra: { one: 'x', two: 'y' } },
+      windowBehavior: {
+        ...behavior(),
+        extra: { one: 'x', two: 'y' },
+      },
       launchVisibility: launch(),
       windowMode: windowMode(),
     }), 'has no DESKTOP_GO_BEHAVIOR_NAMES entry')
@@ -2465,9 +3535,19 @@ describe('checkWorkerVocab / checkDesktop', () => {
     DESKTOP_RS_MACOS_ONLY_EVENTS.add('noSuchEvent')
     try {
       expectContractError(() => checkDesktop({
-        envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z', agentHelper: 'E_V' },
+        envVars: {
+          devEndpoint: 'A_X',
+          binaryHash: 'B_Y',
+          devFrontend: 'C_Z',
+          agentHelper: 'E_V',
+        },
         devFrontendUrl: 'http://localhost:4328',
-        tauriEvents: { channelMessage: 'c:m', channelClose: 'c:c', userEventsMessage: 'u:m', userEventsClose: 'u:c' },
+        tauriEvents: {
+          channelMessage: 'c:m',
+          channelClose: 'c:c',
+          userEventsMessage: 'u:m',
+          userEventsClose: 'u:c',
+        },
         windowBehavior: behavior(),
       }), 'missing from DESKTOP_RS_EVENT_NAMES')
     }
@@ -2479,10 +3559,18 @@ describe('checkWorkerVocab / checkDesktop', () => {
   it('rejects one setting whose two tokens are the same string', () => {
     // Equal tokens give the pill group two options that store one value.
     expectContractError(() => checkDesktop({
-      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z', agentHelper: 'E_V' },
+      envVars: {
+        devEndpoint: 'A_X',
+        binaryHash: 'B_Y',
+        devFrontend: 'C_Z',
+        agentHelper: 'E_V',
+      },
       devFrontendUrl: 'http://localhost:4328',
       tauriEvents: events(),
-      windowBehavior: { ...behavior(), trayOnClose: { tray: 'tray', quit: 'tray' } },
+      windowBehavior: {
+        ...behavior(),
+        trayOnClose: { tray: 'tray', quit: 'tray' },
+      },
       launchVisibility: launch(),
       windowMode: windowMode(),
     }), 'windowBehavior.trayOnClose declares one token twice')
@@ -2493,10 +3581,18 @@ describe('checkWorkerVocab / checkDesktop', () => {
   // that setting.
   it('checks token uniqueness for a setting no name table knows yet', () => {
     expectContractError(() => checkDesktop({
-      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z', agentHelper: 'E_V' },
+      envVars: {
+        devEndpoint: 'A_X',
+        binaryHash: 'B_Y',
+        devFrontend: 'C_Z',
+        agentHelper: 'E_V',
+      },
       devFrontendUrl: 'http://localhost:4328',
       tauriEvents: events(),
-      windowBehavior: { ...behavior(), closeToDock: { dock: 'dock', tray: 'dock' } },
+      windowBehavior: {
+        ...behavior(),
+        closeToDock: { dock: 'dock', tray: 'dock' },
+      },
       launchVisibility: launch(),
       windowMode: windowMode(),
     }), 'windowBehavior.closeToDock declares one token twice')
@@ -2516,22 +3612,38 @@ describe('checkWorkerVocab / checkDesktop', () => {
   // wrong state.
   it('rejects two launch-visibility states sharing one token', () => {
     expectContractError(() => checkDesktop({
-      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z', agentHelper: 'E_V' },
+      envVars: {
+        devEndpoint: 'A_X',
+        binaryHash: 'B_Y',
+        devFrontend: 'C_Z',
+        agentHelper: 'E_V',
+      },
       devFrontendUrl: 'http://localhost:4328',
       tauriEvents: events(),
       windowBehavior: behavior(),
-      launchVisibility: { ...launch(), hidden: 'normal' },
+      launchVisibility: {
+        ...launch(),
+        hidden: 'normal',
+      },
       windowMode: windowMode(),
     }), 'launchVisibility declares one token twice')
   })
 
   it('rejects a launch-visibility key with no name-table entry', () => {
     expectContractError(() => checkDesktop({
-      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z', agentHelper: 'E_V' },
+      envVars: {
+        devEndpoint: 'A_X',
+        binaryHash: 'B_Y',
+        devFrontend: 'C_Z',
+        agentHelper: 'E_V',
+      },
       devFrontendUrl: 'http://localhost:4328',
       tauriEvents: events(),
       windowBehavior: behavior(),
-      launchVisibility: { ...launch(), extra: 'x' },
+      launchVisibility: {
+        ...launch(),
+        extra: 'x',
+      },
       windowMode: windowMode(),
     }), 'has no DESKTOP_RS_LAUNCH_NAMES entry')
   })
@@ -2541,12 +3653,20 @@ describe('checkWorkerVocab / checkDesktop', () => {
   // replaces three manual copies.
   it('rejects two window modes sharing one token', () => {
     expectContractError(() => checkDesktop({
-      envVars: { devEndpoint: 'A_X', binaryHash: 'B_Y', devFrontend: 'C_Z', agentHelper: 'E_V' },
+      envVars: {
+        devEndpoint: 'A_X',
+        binaryHash: 'B_Y',
+        devFrontend: 'C_Z',
+        agentHelper: 'E_V',
+      },
       devFrontendUrl: 'http://localhost:4328',
       tauriEvents: events(),
       windowBehavior: behavior(),
       launchVisibility: launch(),
-      windowMode: { ...windowMode(), fullscreen: 'maximized' },
+      windowMode: {
+        ...windowMode(),
+        fullscreen: 'maximized',
+      },
     }), 'windowMode declares one token twice')
   })
 
@@ -2675,8 +3795,14 @@ describe('checkExternalApps', () => {
         EXTERNAL_APP_KIND_FILE_MANAGER: 'the file manager',
       },
       apps: {
-        'file-manager': { kind: 'EXTERNAL_APP_KIND_FILE_MANAGER', oses: ['darwin', 'linux', 'windows'] },
-        'vscode': { kind: 'EXTERNAL_APP_KIND_EDITOR', oses: ['darwin', 'linux', 'windows'] },
+        'file-manager': {
+          kind: 'EXTERNAL_APP_KIND_FILE_MANAGER',
+          oses: ['darwin', 'linux', 'windows'],
+        },
+        'vscode': {
+          kind: 'EXTERNAL_APP_KIND_EDITOR',
+          oses: ['darwin', 'linux', 'windows'],
+        },
       },
       ...overrides,
     }
@@ -2714,7 +3840,10 @@ describe('checkExternalApps', () => {
 
   it('rejects an OS with two file managers', () => {
     const c = contract()
-    c.apps.finder = { kind: 'EXTERNAL_APP_KIND_FILE_MANAGER', oses: ['darwin'] }
+    c.apps.finder = {
+      kind: 'EXTERNAL_APP_KIND_FILE_MANAGER',
+      oses: ['darwin'],
+    }
     expect(() => checkExternalApps(c)).toThrow(/darwin must carry exactly one/)
   })
 
@@ -2726,7 +3855,12 @@ describe('checkExternalApps', () => {
   // could then ship none or two.
   it('rejects an os token no emitter writes a table for', () => {
     const c = contract()
-    c.apps.vscode.oses = ['darwin', 'linux', 'windows', 'freebsd']
+    c.apps.vscode.oses = [
+      'darwin',
+      'linux',
+      'windows',
+      'freebsd',
+    ]
     expect(() => checkExternalApps(c)).toThrow(/app vscode lists os freebsd/)
   })
 })
@@ -2735,10 +3869,21 @@ describe('generation trace vocabulary', () => {
   const contract = () => ({
     enabledEnv: 'LEAPMUX_TRACE_UNIT',
     marker: 'unit_generation',
-    fields: { Scope: 'scope', Kind: 'kind', SHA256: 'sha256', Bytes: 'bytes' },
+    fields: {
+      Scope: 'scope',
+      Kind: 'kind',
+      SHA256: 'sha256',
+      Bytes: 'bytes',
+    },
   })
 
-  it.each(['time', 'level', 'msg', 'source', 'marker'])('rejects a field that replaces logger metadata: %s', (field) => {
+  it.each([
+    'time',
+    'level',
+    'msg',
+    'source',
+    'marker',
+  ])('rejects a field that replaces logger metadata: %s', (field) => {
     const value = contract()
     value.fields.Scope = field
     expect(() => checkGenerationTrace(value)).toThrow('trace field names must not replace logger fields')
@@ -2758,7 +3903,11 @@ describe('generation trace vocabulary', () => {
     const ts = emitTsGenerationTrace(value)
     expect(go).toMatch(/GenerationTraceFieldScope\s*=\s*"native_scope"/)
     expect(ts).toContain('"Scope": "native_scope"')
-    for (const token of [value.enabledEnv, value.marker, ...Object.values(value.fields)]) {
+    for (const token of [
+      value.enabledEnv,
+      value.marker,
+      ...Object.values(value.fields),
+    ]) {
       expect(go).toContain(JSON.stringify(token))
       expect(ts).toContain(JSON.stringify(token))
     }
@@ -2773,9 +3922,18 @@ describe('emitGoExternalApps and emitTsExternalApps', () => {
       EXTERNAL_APP_KIND_FILE_MANAGER: 'the file manager',
     },
     apps: {
-      'file-manager': { kind: 'EXTERNAL_APP_KIND_FILE_MANAGER', oses: ['darwin', 'linux', 'windows'] },
-      'vscode': { kind: 'EXTERNAL_APP_KIND_EDITOR', oses: ['darwin', 'linux', 'windows'] },
-      'xcode': { kind: 'EXTERNAL_APP_KIND_EDITOR', oses: ['darwin'] },
+      'file-manager': {
+        kind: 'EXTERNAL_APP_KIND_FILE_MANAGER',
+        oses: ['darwin', 'linux', 'windows'],
+      },
+      'vscode': {
+        kind: 'EXTERNAL_APP_KIND_EDITOR',
+        oses: ['darwin', 'linux', 'windows'],
+      },
+      'xcode': {
+        kind: 'EXTERNAL_APP_KIND_EDITOR',
+        oses: ['darwin'],
+      },
     },
   }
 
@@ -2886,7 +4044,10 @@ describe('background-task status vocabulary', () => {
     'BACKGROUND_TASK_STATUS_INTERRUPTED',
     'BACKGROUND_TASK_STATUS_ENDED_WITH_UNKNOWN_OUTCOME',
   ]
-  const vocabulary = () => ({ ...readContract('worker-vocab'), backgroundTaskStatusTokens: { ...tokens } })
+  const vocabulary = () => ({
+    ...readContract('worker-vocab'),
+    backgroundTaskStatusTokens: { ...tokens },
+  })
 
   it('emits the distinct success and unknown-outcome tokens for Go and TypeScript', () => {
     const vocab = vocabulary()
@@ -2938,14 +4099,32 @@ describe('background-task status vocabulary', () => {
     expect(validate(vocab)).toBe(true)
     delete vocab.backgroundTaskStatusTokens
     expect(validate(vocab)).toBe(false)
-    expect(validate.errors).toContainEqual(expect.objectContaining({ keyword: 'required', params: { missingProperty: 'backgroundTaskStatusTokens' } }))
+    expect(validate.errors).toContainEqual(expect.objectContaining({
+      keyword: 'required',
+      params: { missingProperty: 'backgroundTaskStatusTokens' },
+    }))
   })
 })
 
 describe('typed string vocabulary', () => {
-  const table = { key: 'kinds', goTable: 'Kind', goType: 'Kind', tsTable: 'KIND', tsType: 'ProbeKind', doc: 'attachment kinds' }
-  const spec = { name: 'probe-protocol', title: 'Probe', goPrefix: 'Probe', tsPrefix: 'PROBE', tables: [table] }
-  const data = { kinds: { Text: 'text', Audio: 'audio' } }
+  const table = {
+    key: 'kinds',
+    goTable: 'Kind',
+    goType: 'Kind',
+    tsTable: 'KIND',
+    tsType: 'ProbeKind',
+    doc: 'attachment kinds',
+  }
+  const spec = {
+    name: 'probe-protocol',
+    title: 'Probe',
+    goPrefix: 'Probe',
+    tsPrefix: 'PROBE',
+    tables: [table],
+  }
+  const data = {
+    kinds: { Text: 'text', Audio: 'audio' },
+  }
 
   it('emits a defined string type and typed constants', () => {
     const code = emitGoProviderProtocol(spec, data)
@@ -2955,33 +4134,103 @@ describe('typed string vocabulary', () => {
   })
 
   it('uses the declared type for ordered memberships and subsets', () => {
-    const marked = { ...spec, tables: [{ ...table, goSlice: true }, { key: 'limited', subsetOf: 'kinds', goTable: 'LimitedKind', tsTable: 'LIMITED_KIND', doc: 'limited kinds' }] }
-    const code = emitGoProviderProtocol(marked, { ...data, limited: ['Audio'] })
+    const marked = {
+      ...spec,
+      tables: [
+        { ...table, goSlice: true },
+        {
+          key: 'limited',
+          subsetOf: 'kinds',
+          goTable: 'LimitedKind',
+          tsTable: 'LIMITED_KIND',
+          doc: 'limited kinds',
+        },
+      ],
+    }
+    const code = emitGoProviderProtocol(marked, {
+      ...data,
+      limited: ['Audio'],
+    })
     expect(code).toContain('var ProbeKindKeys = []ProbeKind{')
     expect(code).toContain('var ProbeLimitedKindMembers = []ProbeKind{')
   })
 
-  it.each(['', 'string', '[]string', 'Kind.Name', null, false, 0, -1])('refuses an invalid generated type: %j', (goType) => {
-    expectContractError(() => checkProviderProtocol({ ...spec, tables: [{ ...table, goType }] }, data), 'goType')
+  it.each([
+    '',
+    'string',
+    '[]string',
+    'Kind.Name',
+    null,
+    false,
+    0,
+    -1,
+  ])('refuses an invalid generated type: %j', (goType) => {
+    expectContractError(() => checkProviderProtocol({
+      ...spec,
+      tables: [
+        { ...table, goType },
+      ],
+    }, data), 'goType')
   })
 
   it('rejects a struct that takes the generated type identifier', () => {
-    expectContractError(() => checkProviderStructs(spec, { ...data, structs: { ProbeKind: { table: 'kinds', fields: [{ key: 'Text', type: 'string' }] } } }), 'ProbeKind')
+    expectContractError(() => checkProviderStructs(spec, {
+      ...data,
+      structs: {
+        ProbeKind: {
+          table: 'kinds',
+          fields: [
+            { key: 'Text', type: 'string' },
+          ],
+        },
+      },
+    }), 'ProbeKind')
   })
 })
 
 describe('emitTsProviderProtocol', () => {
-  const table = { key: 'tools', goTable: 'Tool', tsTable: 'TOOL', doc: 'native tools' }
-  const descriptor = { name: 'type-probe-protocol', title: 'Probe', goPrefix: 'Probe', tsPrefix: 'PROBE', tables: [table] }
-  const data = { tools: { Read: 'read' } }
+  const table = {
+    key: 'tools',
+    goTable: 'Tool',
+    tsTable: 'TOOL',
+    doc: 'native tools',
+  }
+  const descriptor = {
+    name: 'type-probe-protocol',
+    title: 'Probe',
+    goPrefix: 'Probe',
+    tsPrefix: 'PROBE',
+    tables: [table],
+  }
+  const data = {
+    tools: { Read: 'read' },
+  }
 
-  it.each([undefined, null, 42, '', ' ', 'undefined', 'Has Space'])('refuses the invalid type alias %j before emitting a table', (tsType) => {
-    const spec = { ...descriptor, tables: [{ ...table, tsType }] }
+  it.each([
+    undefined,
+    null,
+    42,
+    '',
+    ' ',
+    'undefined',
+    'Has Space',
+  ])('refuses the invalid type alias %j before emitting a table', (tsType) => {
+    const spec = {
+      ...descriptor,
+      tables: [
+        { ...table, tsType },
+      ],
+    }
     expectContractError(() => emitTsProviderProtocol(spec, data), 'table tools.tsType')
   })
 
   it('emits a declared type alias and keeps Go emission independent of it', () => {
-    const emitted = emitTsProviderProtocol({ ...descriptor, tables: [{ ...table, tsType: 'ProbeTool' }] }, data)
+    const emitted = emitTsProviderProtocol({
+      ...descriptor,
+      tables: [
+        { ...table, tsType: 'ProbeTool' },
+      ],
+    }, data)
     expect(emitted).toContain('export type ProbeTool = typeof PROBE_TOOL[keyof typeof PROBE_TOOL]')
     expect(emitted).not.toContain('export type undefined')
     expect(emitGoProviderProtocol(descriptor, data)).toContain('ProbeToolRead = "read"')

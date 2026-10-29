@@ -72,7 +72,9 @@ export async function exerciseReasonixMcpForm(fixtures: NativeContextFixtures): 
 
 /** Require the native text and display-label answers in the durable form draft. */
 export function reasonixMcpFormDraftSaved(record: unknown): boolean {
-  const choices = isObject(record) ? pickObject(record, 'choices') : null
+  const choices = isObject(record)
+    ? pickObject(record, 'choices')
+    : null
   return choices !== null
     && choices[elicitationFieldKey('count')] === '0'
     && choices[elicitationFieldKey('enabled')] === JSON.stringify('No')

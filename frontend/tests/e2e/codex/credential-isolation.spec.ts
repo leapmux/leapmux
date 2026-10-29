@@ -8,7 +8,9 @@ codexTest('uses private provider configuration and the actual mock credential', 
   await exerciseCredentialIsolation(native, {
     expectedCredential: MODEL_KEY,
     privateDirectories: [environment.HOME!, environment.CODEX_HOME!],
-    configurationFiles: [join(environment.CODEX_HOME!, 'config.toml')],
+    configurationFiles: [
+      join(environment.CODEX_HOME!, 'config.toml'),
+    ],
     inlineConfiguration: [environment.LEAPMUX_E2E_MODEL_API_KEY!],
     configurationMarkers: ['LEAPMUX_E2E_MODEL_API_KEY'],
   })

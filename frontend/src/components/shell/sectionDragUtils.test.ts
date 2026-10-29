@@ -305,15 +305,29 @@ describe('computeInsertPosition', () => {
     ]
 
     it('should return "before" when drag ref is above the header midpoint', () => {
-      const draggable = { transformed: { center: { y: 100 } }, layout: { height: 36 } }
-      const droppable = { layout: { top: 100 } }
+      const draggable = {
+        transformed: {
+          center: { y: 100 },
+        },
+        layout: { height: 36 },
+      }
+      const droppable = {
+        layout: { top: 100 },
+      }
       // refY = 100 - 18 = 82, headerMidY = 100 + 18 = 118
       expect(computeInsertPosition('a', 'b', sections, draggable, droppable)).toBe('before')
     })
 
     it('should return "after" when drag ref is below the header midpoint', () => {
-      const draggable = { transformed: { center: { y: 200 } }, layout: { height: 36 } }
-      const droppable = { layout: { top: 100 } }
+      const draggable = {
+        transformed: {
+          center: { y: 200 },
+        },
+        layout: { height: 36 },
+      }
+      const droppable = {
+        layout: { top: 100 },
+      }
       // refY = 200 - 18 = 182, headerMidY = 100 + 18 = 118
       expect(computeInsertPosition('a', 'b', sections, draggable, droppable)).toBe('after')
     })
@@ -321,12 +335,16 @@ describe('computeInsertPosition', () => {
 
   describe('missing sections', () => {
     it('should return "before" when dragged section is not found', () => {
-      const sections = [makeSection('b', Sidebar.LEFT, 'bbb')]
+      const sections = [
+        makeSection('b', Sidebar.LEFT, 'bbb'),
+      ]
       expect(computeInsertPosition('nonexistent', 'b', sections)).toBe('before')
     })
 
     it('should return "before" when target section is not found', () => {
-      const sections = [makeSection('a', Sidebar.LEFT, 'aaa')]
+      const sections = [
+        makeSection('a', Sidebar.LEFT, 'aaa'),
+      ]
       expect(computeInsertPosition('a', 'nonexistent', sections)).toBe('before')
     })
   })

@@ -45,11 +45,16 @@ export const codexControls: ProviderControlCapability = {
   elicitation: codexElicitation,
   buildControlResponse(payload, content, requestId) {
     const method = pickString(payload, 'method', '')
-    if (isCodexPlanModePrompt(payload))
-      return content ? buildDenyResponse(requestId, content) : buildAllowResponse(requestId, getToolInput(payload))
+    if (isCodexPlanModePrompt(payload)) {
+      return content
+        ? buildDenyResponse(requestId, content)
+        : buildAllowResponse(requestId, getToolInput(payload))
+    }
     if (method === CODEX_METHOD.PermissionsRequestApproval) {
       return buildJsonRpcResult(requestId, {
-        permissions: content ? {} : codexRequestedPermissions(payload),
+        permissions: content
+          ? {}
+          : codexRequestedPermissions(payload),
         scope: 'turn',
       })
     }

@@ -8,13 +8,18 @@ import { ASSEMBLED_MESSAGE } from '../../../src/generated/contracts/worker-vocab
 import { AgentInputKind, EnqueueAgentInputRequestSchema, EnqueueAgentInputResponseSchema, MessageSource } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { assertFastAgentCatalogNoInference, assertFastAgentShellCatalog, fastAgentCatalogCommandReply, parseFastAgentCatalog, parseFastAgentToolSchema, sendFastAgentCatalogCommand } from './toolCatalog'
 
-const calls = vi.hoisted(() => ({ channel: vi.fn(), enqueue: vi.fn() }))
+const calls = vi.hoisted(() => ({
+  channel: vi.fn(),
+  enqueue: vi.fn(),
+}))
 vi.mock('../helpers/api', () => ({ getTestChannel: calls.channel }))
 
 beforeEach(() => {
   vi.resetAllMocks()
   calls.channel.mockResolvedValue({ callWorker: calls.enqueue })
-  calls.enqueue.mockResolvedValue(create(EnqueueAgentInputResponseSchema, { snapshot: { agentId: 'native-agent' } }))
+  calls.enqueue.mockResolvedValue(create(EnqueueAgentInputResponseSchema, {
+    snapshot: { agentId: 'native-agent' },
+  }))
 })
 
 const listing = '# tools\n\n## MCP / local tools\n\n1. **execute**\n    > Execute a shell command.\n    > **Args:** `command`\n\n2. **read\\_text\\_file**\n    > Read content from a text file.\n    > Returns the file contents.\n'
@@ -45,8 +50,12 @@ describe('sendFastAgentCatalogCommand', () => {
 
   it.each([
     create(EnqueueAgentInputResponseSchema),
-    create(EnqueueAgentInputResponseSchema, { snapshot: { agentId: 'another-agent' } }),
-    create(EnqueueAgentInputResponseSchema, { snapshot: { agentId: 'native-agent', paused: true } }),
+    create(EnqueueAgentInputResponseSchema, {
+      snapshot: { agentId: 'another-agent' },
+    }),
+    create(EnqueueAgentInputResponseSchema, {
+      snapshot: { agentId: 'native-agent', paused: true },
+    }),
   ])('rejects an absent, unrelated, or paused Worker queue', async (response) => {
     calls.enqueue.mockResolvedValue(response)
     await expect(sendFastAgentCatalogCommand(server, 'native-agent', '/tools')).rejects.toThrow('active queue')
@@ -67,7 +76,10 @@ function schemaReply(name: string, schema: unknown): string {
 describe('parseFastAgentCatalog', () => {
   it('reads the complete sequential list and wrapped descriptions without argument metadata', () => {
     expect(parseFastAgentCatalog(listing)).toEqual({
-      tools: [{ name: 'execute', description: 'Execute a shell command.' }, { name: 'read_text_file', description: 'Read content from a text file.\nReturns the file contents.' }],
+      tools: [
+        { name: 'execute', description: 'Execute a shell command.' },
+        { name: 'read_text_file', description: 'Read content from a text file.\nReturns the file contents.' },
+      ],
       hosted: [],
     })
   })
@@ -81,12 +93,30 @@ describe('parseFastAgentCatalog', () => {
   it.each([
     ['', 'headings'],
     ['# tools\n\nNo tools available for this agent.', 'headings'],
-    [listing.replace('2. **', '3. **'), 'sequence'],
-    [listing.replace('1. **', '0. **'), 'sequence'],
-    [listing.replace('2. **read\\_text\\_file**', '2. read_text_file'), 'malformed'],
-    [listing.replace('read\\_text\\_file', 'execute'), 'repeats'],
-    [listing.replace('    > Execute a shell command.\n', ''), 'complete'],
-    [listing.replace('## MCP / local tools', '## unknown'), 'headings'],
+    [
+      listing.replace('2. **', '3. **'),
+      'sequence',
+    ],
+    [
+      listing.replace('1. **', '0. **'),
+      'sequence',
+    ],
+    [
+      listing.replace('2. **read\\_text\\_file**', '2. read_text_file'),
+      'malformed',
+    ],
+    [
+      listing.replace('read\\_text\\_file', 'execute'),
+      'repeats',
+    ],
+    [
+      listing.replace('    > Execute a shell command.\n', ''),
+      'complete',
+    ],
+    [
+      listing.replace('## MCP / local tools', '## unknown'),
+      'headings',
+    ],
     [`${listing}\n## MCP / local tools\n`, 'repeated'],
     [`${listing}\n## unknown\n`, 'unknown'],
     [`${listing}\n## Provider-managed / hosted tools\n- wrong\n`, 'malformed'],
@@ -98,7 +128,13 @@ describe('parseFastAgentCatalog', () => {
 
 describe('parseFastAgentToolSchema', () => {
   it('reads the exact tool schema and ignores a separate structured output schema', () => {
-    const input = { type: 'object', properties: { command: { type: 'string' } }, required: ['command'] }
+    const input = {
+      type: 'object',
+      properties: {
+        command: { type: 'string' },
+      },
+      required: ['command'],
+    }
     const output = `${schemaReply('native_출력-code.v2', input)}\n\n## Structured output schema\n\n\`\`\`json\n{"type":"string"}\n\`\`\``
     expect(parseFastAgentToolSchema(output, 'native_출력-code.v2')).toEqual(input)
   })
@@ -107,7 +143,13 @@ describe('parseFastAgentToolSchema', () => {
     expect(parseFastAgentToolSchema(schemaReply('empty', { type: 'object' }), 'empty')).toEqual({ type: 'object' })
   })
 
-  it.each([null, [], {}, { type: 'array' }, { type: 'object', properties: null }])('refuses an invalid native schema: %j', (schema) => {
+  it.each([
+    null,
+    [],
+    {},
+    { type: 'array' },
+    { type: 'object', properties: null },
+  ])('refuses an invalid native schema: %j', (schema) => {
     expect(() => parseFastAgentToolSchema(schemaReply('execute', schema), 'execute')).toThrow('object schema')
   })
 
@@ -139,7 +181,12 @@ function snapshot(messages: NativeMessageSnapshot['messages'] = []): NativeMessa
   return { agentId: 'actual-agent', agentSessionId: 'native-session', messages }
 }
 
-const assembled = { type: ASSEMBLED_MESSAGE.Type, kind: ASSEMBLED_MESSAGE.KindText, completion: ASSEMBLED_MESSAGE.CompletionComplete, text: listing }
+const assembled = {
+  type: ASSEMBLED_MESSAGE.Type,
+  kind: ASSEMBLED_MESSAGE.KindText,
+  completion: ASSEMBLED_MESSAGE.CompletionComplete,
+  text: listing,
+}
 
 describe('fastAgentCatalogCommandReply', () => {
   it('uses only the new completed native response after the exact Worker cursor', () => {
@@ -149,11 +196,19 @@ describe('fastAgentCatalogCommandReply', () => {
     const incomplete = nativeMessage(2n, { ...assembled, completion: ASSEMBLED_MESSAGE.CompletionInterrupted })
     const reasoning = nativeMessage(3n, { ...assembled, kind: ASSEMBLED_MESSAGE.KindReasoning })
     expect(fastAgentCatalogCommandReply(before, snapshot([earlier, user, incomplete, reasoning]), '# tools\n')).toBeNull()
-    expect(fastAgentCatalogCommandReply(before, snapshot([earlier, user, incomplete, reasoning, nativeMessage(4n, assembled)]), '# tools\n')).toBe(listing)
+    expect(fastAgentCatalogCommandReply(before, snapshot([
+      earlier,
+      user,
+      incomplete,
+      reasoning,
+      nativeMessage(4n, assembled),
+    ]), '# tools\n')).toBe(listing)
   })
 
   it('accepts sequence zero in an initially empty history', () => {
-    expect(fastAgentCatalogCommandReply(snapshot(), snapshot([nativeMessage(0n, assembled)]), '# tools\n')).toBe(listing)
+    expect(fastAgentCatalogCommandReply(snapshot(), snapshot([
+      nativeMessage(0n, assembled),
+    ]), '# tools\n')).toBe(listing)
   })
 
   it('ignores a new Worker row from another native session', () => {
@@ -166,17 +221,36 @@ describe('fastAgentCatalogCommandReply', () => {
     { agentId: 'another-agent' },
     { agentSessionId: 'another-session' },
   ])('refuses a changed native identity: %j', (change) => {
-    expect(() => fastAgentCatalogCommandReply(snapshot(), { ...snapshot([nativeMessage(0n, assembled)]), ...change }, '# tools\n')).toThrow('identity changed')
+    expect(() => fastAgentCatalogCommandReply(snapshot(), {
+      ...snapshot([
+        nativeMessage(0n, assembled),
+      ]),
+      ...change,
+    }, '# tools\n')).toThrow('identity changed')
   })
 
   it('refuses an empty native session and duplicate matching responses', () => {
-    expect(() => fastAgentCatalogCommandReply({ ...snapshot(), agentSessionId: '' }, snapshot(), '# tools\n')).toThrow('identity')
-    expect(() => fastAgentCatalogCommandReply(snapshot(), snapshot([nativeMessage(0n, assembled), nativeMessage(1n, assembled)]), '# tools\n')).toThrow('ambiguous')
+    expect(() => fastAgentCatalogCommandReply({
+      ...snapshot(),
+      agentSessionId: '',
+    }, snapshot(), '# tools\n')).toThrow('identity')
+    expect(() => fastAgentCatalogCommandReply(snapshot(), snapshot([
+      nativeMessage(0n, assembled),
+      nativeMessage(1n, assembled),
+    ]), '# tools\n')).toThrow('ambiguous')
   })
 })
 
 function status(): MockModelScenarioStatus {
-  return { complete: true, nextStep: 1, stepCount: 1, ruleMatches: {}, pendingGates: [], requests: [], unexpectedRequests: [] }
+  return {
+    complete: true,
+    nextStep: 1,
+    stepCount: 1,
+    ruleMatches: {},
+    pendingGates: [],
+    requests: [],
+    unexpectedRequests: [],
+  }
 }
 
 describe('assertFastAgentCatalogNoInference', () => {
@@ -187,18 +261,35 @@ describe('assertFastAgentCatalogNoInference', () => {
   it.each([
     { nextStep: 2 },
     { stepCount: 2 },
-    { ruleMatches: { native: 1 } },
-    { pendingGates: ['native'] },
+    {
+      ruleMatches: { native: 1 },
+    },
+    {
+      pendingGates: ['native'],
+    },
   ])('rejects changed model scenario counters: %j', (change) => {
-    expect(() => assertFastAgentCatalogNoInference(status(), { ...status(), ...change })).toThrow('model inference')
+    expect(() => assertFastAgentCatalogNoInference(status(), {
+      ...status(),
+      ...change,
+    })).toThrow('model inference')
   })
 
   it('rejects a fallback request and an unexpected request without a queued-step change', () => {
     const after = status()
-    after.requests.push({ protocol: 'openai-chat-completions', path: '/v1/chat/completions', body: {}, fallback: true })
+    after.requests.push({
+      protocol: 'openai-chat-completions',
+      path: '/v1/chat/completions',
+      body: {},
+      fallback: true,
+    })
     expect(() => assertFastAgentCatalogNoInference(status(), after)).toThrow('model inference')
     const unexpected = status()
-    unexpected.unexpectedRequests.push({ protocol: 'openai-chat-completions', path: '/v1/chat/completions', body: {}, reason: 'Unscripted native request.' })
+    unexpected.unexpectedRequests.push({
+      protocol: 'openai-chat-completions',
+      path: '/v1/chat/completions',
+      body: {},
+      reason: 'Unscripted native request.',
+    })
     expect(() => assertFastAgentCatalogNoInference(status(), unexpected)).toThrow('model inference')
   })
 })
@@ -208,10 +299,24 @@ function shellCatalog(): FastAgentCompleteCatalog {
     execute: ['command', 'args', 'env', 'cwd'],
     read_text_file: ['path', 'line', 'limit'],
     write_text_file: ['path', 'content'],
-    subagent: ['message', 'model', 'label', 'include_user_message'],
+    subagent: [
+      'message',
+      'model',
+      'label',
+      'include_user_message',
+    ],
   }
   return {
-    tools: Object.entries(fields).map(([name, properties]) => ({ name, description: name === 'execute' ? 'Execute a shell command.' : 'Native tool.', schema: { type: 'object', properties: Object.fromEntries(properties.map(field => [field, {}])) } })),
+    tools: Object.entries(fields).map(([name, properties]) => ({
+      name,
+      description: name === 'execute'
+        ? 'Execute a shell command.'
+        : 'Native tool.',
+      schema: {
+        type: 'object',
+        properties: Object.fromEntries(properties.map(field => [field, {}])),
+      },
+    })),
     hosted: [],
   }
 }
@@ -223,10 +328,21 @@ describe('assertFastAgentShellCatalog', () => {
 
   it('rejects an executor under an arbitrary name and a code input added to an existing native tool', () => {
     const added = shellCatalog()
-    added.tools.push({ name: 'native-runner', description: 'Run arbitrary JavaScript.', schema: { type: 'object', properties: { code: { type: 'string' } } } })
+    added.tools.push({
+      name: 'native-runner',
+      description: 'Run arbitrary JavaScript.',
+      schema: {
+        type: 'object',
+        properties: {
+          code: { type: 'string' },
+        },
+      },
+    })
     expect(() => assertFastAgentShellCatalog(added)).toThrow('audited')
     const replaced = shellCatalog()
-    replaced.tools[0]!.schema.properties = { code: { type: 'string' } }
+    replaced.tools[0]!.schema.properties = {
+      code: { type: 'string' },
+    }
     expect(() => assertFastAgentShellCatalog(replaced)).toThrow('unaudited')
   })
 
@@ -237,7 +353,10 @@ describe('assertFastAgentShellCatalog', () => {
     const repeated = shellCatalog()
     repeated.tools[1] = repeated.tools[0]!
     expect(() => assertFastAgentShellCatalog(repeated)).toThrow('unaudited')
-    expect(() => assertFastAgentShellCatalog({ ...shellCatalog(), hosted: ['code_interpreter'] })).toThrow('audited')
+    expect(() => assertFastAgentShellCatalog({
+      ...shellCatalog(),
+      hosted: ['code_interpreter'],
+    })).toThrow('audited')
   })
 
   it('rejects a changed native executor description even when its input fields stay unchanged', () => {

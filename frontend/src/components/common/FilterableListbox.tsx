@@ -67,7 +67,9 @@ export function FilterableListbox(props: {
   | { filter: Accessor<string>, setFilter: (value: string) => void }
 )): JSX.Element {
   const [internalFilter, setInternalFilter] = createSignal('')
-  const filter = () => props.filter ? props.filter() : internalFilter()
+  const filter = () => props.filter
+    ? props.filter()
+    : internalFilter()
   const setFilter = (value: string) => (props.setFilter ?? setInternalFilter)(value)
   const [highlightedIndex, setHighlightedIndex] = createSignal(0)
   let listRef: HTMLDivElement | undefined
@@ -94,7 +96,9 @@ export function FilterableListbox(props: {
   createEffect(() => {
     // eslint-disable-next-line solid/reactivity -- `len` is read by the setHighlightedIndex updater, which runs synchronously in this effect
     const len = filtered().length
-    setHighlightedIndex(i => (i > len - 1 ? Math.max(len - 1, 0) : i))
+    setHighlightedIndex(i => (i > len - 1
+      ? Math.max(len - 1, 0)
+      : i))
   })
 
   // A fresh view: clear the filter, put the highlight on the selected row, show
@@ -116,8 +120,12 @@ export function FilterableListbox(props: {
       // re-select the current value instead of silently switching to the first
       // option.
       const rows = filtered()
-      const selected = props.current == null ? -1 : rows.findIndex(i => i.value === props.current)
-      setHighlightedIndex(selected < 0 ? 0 : selected)
+      const selected = props.current == null
+        ? -1
+        : rows.findIndex(i => i.value === props.current)
+      setHighlightedIndex(selected < 0
+        ? 0
+        : selected)
       if (listRef)
         listRef.scrollTop = 0
       if (selected > 0)
@@ -175,8 +183,18 @@ export function FilterableListbox(props: {
                 data-listbox-item=""
                 role="option"
                 aria-selected={selected()}
-                class={[styles.comboboxItem, index() === highlightedIndex() ? styles.comboboxItemHighlighted : '', selected() ? styles.comboboxItemSelected : ''].filter(Boolean).join(' ')}
-                data-testid={props.testIdPrefix ? `${props.testIdPrefix}-${item.value}` : undefined}
+                class={[
+                  styles.comboboxItem,
+                  index() === highlightedIndex()
+                    ? styles.comboboxItemHighlighted
+                    : '',
+                  selected()
+                    ? styles.comboboxItemSelected
+                    : '',
+                ].filter(Boolean).join(' ')}
+                data-testid={props.testIdPrefix
+                  ? `${props.testIdPrefix}-${item.value}`
+                  : undefined}
                 onClick={() => props.onSelect(item.value)}
                 onMouseEnter={() => setHighlightedIndex(index())}
               >
@@ -192,7 +210,9 @@ export function FilterableListbox(props: {
                 </Show>
               </div>
             )
-            return item.tooltip ? <Tooltip text={item.tooltip}>{row}</Tooltip> : row
+            return item.tooltip
+              ? <Tooltip text={item.tooltip}>{row}</Tooltip>
+              : row
           }}
         </For>
       </div>
@@ -211,7 +231,9 @@ export function FilterableListbox(props: {
             setHighlightedIndex(0)
           }}
           onKeyDown={handleKeyDown}
-          data-testid={props.testIdPrefix ? `${props.testIdPrefix}-filter` : undefined}
+          data-testid={props.testIdPrefix
+            ? `${props.testIdPrefix}-filter`
+            : undefined}
           ref={(el: HTMLInputElement) => (inputRef = el)}
         />
       </div>

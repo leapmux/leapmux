@@ -7,12 +7,16 @@ const INFORMATIONAL_WARNING_LEVEL = 'warning'
 
 /** The server names of one list field of an `mcp_status` finish line. A malformed entry is skipped. */
 function serverNames(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((name): name is string => typeof name === 'string' && name.trim() !== '') : []
+  return Array.isArray(value)
+    ? value.filter((name): name is string => typeof name === 'string' && name.trim() !== '')
+    : []
 }
 
 /** One sentence for a list of MCP servers, in the singular or the plural form. */
 function serverSentence(names: readonly string[], singular: string, plural: string): string {
-  return `${names.length === 1 ? singular : plural}: ${names.join(', ')}`
+  return `${names.length === 1
+    ? singular
+    : plural}: ${names.join(', ')}`
 }
 
 /**
@@ -30,7 +34,14 @@ export function codebuddyNotificationEntry(m: Record<string, unknown>): Notifica
   const type = pickString(m, 'type')
   if (type === CODEBUDDY_FRAME_KIND.Error) {
     const message = pickString(m, 'error').trim()
-    return [{ kind: 'text', text: message === '' ? 'Error' : `Error: ${message}` }]
+    return [
+      {
+        kind: 'text',
+        text: message === ''
+          ? 'Error'
+          : `Error: ${message}`,
+      },
+    ]
   }
   if (type !== CODEBUDDY_FRAME_KIND.System)
     return []
@@ -39,17 +50,32 @@ export function codebuddyNotificationEntry(m: Record<string, unknown>): Notifica
       const failed = serverNames(m.failed)
       const timedOut = serverNames(m.timed_out)
       const entries: NotificationEntry[] = []
-      if (failed.length > 0)
-        entries.push({ kind: 'text', text: serverSentence(failed, 'Failed to start MCP server', 'Failed to start MCP servers') })
-      if (timedOut.length > 0)
-        entries.push({ kind: 'text', text: serverSentence(timedOut, 'MCP server did not start in time', 'MCP servers did not start in time') })
+      if (failed.length > 0) {
+        entries.push({
+          kind: 'text',
+          text: serverSentence(failed, 'Failed to start MCP server', 'Failed to start MCP servers'),
+        })
+      }
+      if (timedOut.length > 0) {
+        entries.push({
+          kind: 'text',
+          text: serverSentence(timedOut, 'MCP server did not start in time', 'MCP servers did not start in time'),
+        })
+      }
       return entries
     }
     case CODEBUDDY_SYSTEM_SUBTYPE.Informational: {
       const content = pickString(m, 'content').trim()
       if (content === '')
         return []
-      return [{ kind: 'text', text: pickString(m, 'level') === INFORMATIONAL_WARNING_LEVEL ? `Warning: ${content}` : content }]
+      return [
+        {
+          kind: 'text',
+          text: pickString(m, 'level') === INFORMATIONAL_WARNING_LEVEL
+            ? `Warning: ${content}`
+            : content,
+        },
+      ]
     }
     default:
       return []

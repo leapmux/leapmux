@@ -17,7 +17,10 @@ import { grokElicitation, grokFolderTrustLabel } from './extractControl'
  */
 export function grokPermissionRejectReason(result: Record<string, unknown>, reason: string): Record<string, unknown> {
   const meta = pickObject(result, '_meta') ?? {}
-  return { ...result, _meta: { ...meta, [GROK_REPLY_FIELD.FollowupMessage]: reason } }
+  return {
+    ...result,
+    _meta: { ...meta, [GROK_REPLY_FIELD.FollowupMessage]: reason },
+  }
 }
 
 /** The display of one saved plan approval, from the reply the worker sent Grok. */
@@ -56,7 +59,13 @@ function grokElicitationDisplay(cr: PersistedControlResponse, result: Record<str
   if (!(Object.values(MCP_ELICITATION_ACTION) as string[]).includes(outcome))
     return null
   const { [GROK_REPLY_FIELD.Outcome]: _outcome, ...rest } = result
-  return withElicitationResponse(grokElicitation, () => null)({ ...cr, response: { ...cr.response, result: { ...rest, action: outcome } } })
+  return withElicitationResponse(grokElicitation, () => null)({
+    ...cr,
+    response: {
+      ...cr.response,
+      result: { ...rest, action: outcome },
+    },
+  })
 }
 
 /**
@@ -80,7 +89,9 @@ export function grokControlResponseSummary(cr: PersistedControlResponse): Contro
       return labelOrNull(grokFolderTrustLabel(pickString(result, GROK_REPLY_FIELD.Outcome)) ?? null)
     default: {
       const reason = pickString(pickObject(result, '_meta'), GROK_REPLY_FIELD.FollowupMessage).trim()
-      return reason ? feedback(reason) : acpControlResponseSummary(cr)
+      return reason
+        ? feedback(reason)
+        : acpControlResponseSummary(cr)
     }
   }
 }

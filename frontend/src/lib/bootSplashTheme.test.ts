@@ -184,7 +184,12 @@ describe('bootThemeScript', () => {
     installThemeColorMetas()
     localStorage.setItem(
       'leapmux:browser-prefs',
-      JSON.stringify({ v: { theme: { mode: 'dark' } }, e: Date.now() + 60_000 }),
+      JSON.stringify({
+        v: {
+          theme: { mode: 'dark' },
+        },
+        e: Date.now() + 60_000,
+      }),
     )
 
     runBootScript(false)

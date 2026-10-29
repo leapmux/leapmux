@@ -15,10 +15,18 @@ export function createClipboardPageFixture() {
     nativeWrites.push(text)
     clipboardText = text
   }
-  const clipboard = { writeText: originalWriteText, readText: async () => clipboardText }
+  const clipboard = {
+    writeText: originalWriteText,
+    readText: async () => clipboardText,
+  }
   const navigator = { clipboard: clipboard as typeof clipboard | undefined }
   const document = {
-    activeElement: { tagName: 'TEXTAREA', value: '', selectionStart: 0, selectionEnd: 0 },
+    activeElement: {
+      tagName: 'TEXTAREA',
+      value: '',
+      selectionStart: 0,
+      selectionEnd: 0,
+    },
     execCommand: (command: string) => {
       if (command.toLowerCase() !== 'copy' || !legacySucceeds)
         return false
@@ -28,15 +36,26 @@ export function createClipboardPageFixture() {
       return true
     },
   }
-  const realm = { navigator, document, window: { getSelection: () => null }, __clipboardArgument: undefined as unknown }
+  const realm = {
+    navigator,
+    document,
+    window: {
+      getSelection: () => null,
+    },
+    __clipboardArgument: undefined as unknown,
+  }
   const page = {
-    context: () => ({ grantPermissions: async (permissions: string[]) => { events.push(`grant:${permissions.join(',')}`) } }),
+    context: () => ({
+      grantPermissions: async (permissions: string[]) => { events.push(`grant:${permissions.join(',')}`) },
+    }),
     isClosed: () => closed,
     evaluate: async (operation: ((argument: unknown) => unknown) | string, argument?: unknown) => {
       if (closed)
         throw new Error('Page is closed.')
       realm.__clipboardArgument = argument
-      const source = typeof operation === 'string' ? operation : `(${operation.toString()})(__clipboardArgument)`
+      const source = typeof operation === 'string'
+        ? operation
+        : `(${operation.toString()})(__clipboardArgument)`
       return runInNewContext(source, realm, { timeout: 1000 })
     },
   } as unknown as Page
@@ -56,7 +75,12 @@ export function createClipboardPageFixture() {
     },
     overwriteFromAnotherPage: originalWriteText,
     selectLegacyText: (text: string, start = 0, end = text.length) => {
-      document.activeElement = { tagName: 'TEXTAREA', value: text, selectionStart: start, selectionEnd: end }
+      document.activeElement = {
+        tagName: 'TEXTAREA',
+        value: text,
+        selectionStart: start,
+        selectionEnd: end,
+      }
     },
     failWrites: (error?: Error) => { writeFailure = error },
     allowLegacyCopy: (allow: boolean) => { legacySucceeds = allow },

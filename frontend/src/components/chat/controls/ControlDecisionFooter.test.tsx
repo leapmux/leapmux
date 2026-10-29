@@ -15,10 +15,34 @@ describe('ControlDecisionFooter', () => {
       <ControlDecisionFooter
         hasEditorContent={false}
         onSendFeedback={vi.fn()}
-        positiveAction={{ label: 'Allow', testId: 'allow', onSelect: select, disabled: disabled() }}
-        negativeAction={{ label: 'Deny', testId: 'deny', onSelect: select, disabled: disabled() }}
-        additionalActions={() => [{ label: 'Cancel', testId: 'cancel', onSelect: select, disabled: disabled() }]}
-        independentActions={() => [{ label: 'Choose', testId: 'choose', onSelect: select, disabled: disabled() }]}
+        positiveAction={{
+          label: 'Allow',
+          testId: 'allow',
+          onSelect: select,
+          disabled: disabled(),
+        }}
+        negativeAction={{
+          label: 'Deny',
+          testId: 'deny',
+          onSelect: select,
+          disabled: disabled(),
+        }}
+        additionalActions={() => [
+          {
+            label: 'Cancel',
+            testId: 'cancel',
+            onSelect: select,
+            disabled: disabled(),
+          },
+        ]}
+        independentActions={() => [
+          {
+            label: 'Choose',
+            testId: 'choose',
+            onSelect: select,
+            disabled: disabled(),
+          },
+        ]}
       />
     ))
     for (const id of ['allow', 'deny', 'choose']) {
@@ -47,8 +71,14 @@ describe('ControlDecisionFooter', () => {
       <ControlDecisionFooter
         hasEditorContent={false}
         onSendFeedback={vi.fn()}
-        positiveAction={{ label: 'Approve', testId: 'approve', onSelect: vi.fn() }}
-        additionalActions={() => [{ label: 'Export plan', testId: 'export-plan', onSelect }]}
+        positiveAction={{
+          label: 'Approve',
+          testId: 'approve',
+          onSelect: vi.fn(),
+        }}
+        additionalActions={() => [
+          { label: 'Export plan', testId: 'export-plan', onSelect },
+        ]}
       />
     ))
     const trigger = screen.getByRole('button', { name: 'More actions' })
@@ -66,14 +96,24 @@ describe('ControlDecisionFooter', () => {
       <ControlDecisionFooter
         hasEditorContent={false}
         onSendFeedback={vi.fn()}
-        negativeAction={{ label: 'Deny', testId: 'deny', onSelect: vi.fn() }}
-        positiveAction={{ label: 'Allow', testId: 'allow', onSelect: vi.fn() }}
-        switches={() => [{
-          id: 'clear-context',
-          label: 'Clear Context',
-          checked: checked(),
-          onChange: setChecked,
-        }]}
+        negativeAction={{
+          label: 'Deny',
+          testId: 'deny',
+          onSelect: vi.fn(),
+        }}
+        positiveAction={{
+          label: 'Allow',
+          testId: 'allow',
+          onSelect: vi.fn(),
+        }}
+        switches={() => [
+          {
+            id: 'clear-context',
+            label: 'Clear Context',
+            checked: checked(),
+            onChange: setChecked,
+          },
+        ]}
       />
     ))
 
@@ -92,9 +132,23 @@ describe('ControlDecisionFooter', () => {
       <ControlDecisionFooter
         hasEditorContent={false}
         onSendFeedback={vi.fn()}
-        negativeAction={{ label: 'Deny', testId: 'deny', onSelect: vi.fn() }}
-        positiveAction={{ label: 'Allow', testId: 'allow', onSelect: vi.fn() }}
-        additionalActions={() => [{ label: 'Allow all', testId: 'allow-all', onSelect: vi.fn() }]}
+        negativeAction={{
+          label: 'Deny',
+          testId: 'deny',
+          onSelect: vi.fn(),
+        }}
+        positiveAction={{
+          label: 'Allow',
+          testId: 'allow',
+          onSelect: vi.fn(),
+        }}
+        additionalActions={() => [
+          {
+            label: 'Allow all',
+            testId: 'allow-all',
+            onSelect: vi.fn(),
+          },
+        ]}
       />
     ))
 
@@ -114,8 +168,16 @@ describe('ControlDecisionFooter', () => {
       <ControlDecisionFooter
         hasEditorContent
         onSendFeedback={vi.fn()}
-        negativeAction={{ label: 'Deny', testId: 'deny', onSelect: vi.fn() }}
-        positiveAction={{ label: 'Allow', testId: 'allow', onSelect: vi.fn() }}
+        negativeAction={{
+          label: 'Deny',
+          testId: 'deny',
+          onSelect: vi.fn(),
+        }}
+        positiveAction={{
+          label: 'Allow',
+          testId: 'allow',
+          onSelect: vi.fn(),
+        }}
       />
     ))
 
@@ -129,8 +191,16 @@ describe('ControlDecisionFooter', () => {
         <ControlDecisionFooter
           hasEditorContent={false}
           onSendFeedback={vi.fn()}
-          negativeAction={{ label: 'Deny', testId: 'deny', onSelect: vi.fn() }}
-          positiveAction={{ label: 'Allow', testId: 'allow', onSelect: vi.fn() }}
+          negativeAction={{
+            label: 'Deny',
+            testId: 'deny',
+            onSelect: vi.fn(),
+          }}
+          positiveAction={{
+            label: 'Allow',
+            testId: 'allow',
+            onSelect: vi.fn(),
+          }}
           permissionPill={() => ({
             options: [
               { key: 'unspecified', label: 'Unchanged', icon: Minus },
@@ -160,8 +230,16 @@ describe('ControlDecisionFooter', () => {
       <ControlDecisionFooter
         hasEditorContent={false}
         onSendFeedback={vi.fn()}
-        negativeAction={{ label: 'Deny', testId: 'deny', onSelect: vi.fn() }}
-        positiveAction={{ label: 'Allow', testId: 'allow', onSelect: vi.fn() }}
+        negativeAction={{
+          label: 'Deny',
+          testId: 'deny',
+          onSelect: vi.fn(),
+        }}
+        positiveAction={{
+          label: 'Allow',
+          testId: 'allow',
+          onSelect: vi.fn(),
+        }}
         allowChoicePill={() => ({
           label: 'Allow as',
           options: [
@@ -184,17 +262,38 @@ describe('ControlDecisionFooter', () => {
       <ControlDecisionFooter
         hasEditorContent={false}
         onSendFeedback={vi.fn()}
-        negativeAction={{ label: 'Deny', testId: 'deny', onSelect: vi.fn() }}
-        positiveAction={{ label: 'Allow', testId: 'allow', onSelect: vi.fn() }}
-        switches={() => [{ id: 'clear-context', label: 'Clear Context', checked: false, onChange: vi.fn() }]}
+        negativeAction={{
+          label: 'Deny',
+          testId: 'deny',
+          onSelect: vi.fn(),
+        }}
+        positiveAction={{
+          label: 'Allow',
+          testId: 'allow',
+          onSelect: vi.fn(),
+        }}
+        switches={() => [
+          {
+            id: 'clear-context',
+            label: 'Clear Context',
+            checked: false,
+            onChange: vi.fn(),
+          },
+        ]}
         allowChoicePill={() => ({
           label: 'Allow as',
-          options: [{ key: 'once', label: 'Once' }, { key: 'session', label: 'Session' }],
+          options: [
+            { key: 'once', label: 'Once' },
+            { key: 'session', label: 'Session' },
+          ],
           selected: 'once',
           onSelect: vi.fn(),
         })}
         permissionPill={() => ({
-          options: [{ key: 'unspecified', label: 'Unchanged' }, { key: 'bypass', label: 'Bypass' }],
+          options: [
+            { key: 'unspecified', label: 'Unchanged' },
+            { key: 'bypass', label: 'Bypass' },
+          ],
           selected: 'unspecified',
           onSelect: vi.fn(),
         })}
@@ -217,9 +316,18 @@ describe('ControlDecisionFooter action descriptions', () => {
       <ControlDecisionFooter
         hasEditorContent={false}
         onSendFeedback={vi.fn()}
-        positiveAction={{ label: 'Approve', testId: 'approve', onSelect: vi.fn() }}
+        positiveAction={{
+          label: 'Approve',
+          testId: 'approve',
+          onSelect: vi.fn(),
+        }}
         additionalActions={() => [
-          { label: 'Approve: Option A', testId: 'described', onSelect, description: 'Split the parser first' },
+          {
+            label: 'Approve: Option A',
+            testId: 'described',
+            onSelect,
+            description: 'Split the parser first',
+          },
           { label: 'Request revisions', testId: 'plain', onSelect },
         ]}
       />
@@ -289,10 +397,23 @@ describe('ControlDecisionFooter destructive extras', () => {
       <ControlDecisionFooter
         hasEditorContent={false}
         onSendFeedback={vi.fn()}
-        positiveAction={{ label: 'Allow', testId: 'allow', onSelect: vi.fn() }}
+        positiveAction={{
+          label: 'Allow',
+          testId: 'allow',
+          onSelect: vi.fn(),
+        }}
         additionalActions={() => [
-          { label: 'Reject always', testId: 'reject-always', onSelect: vi.fn(), destructive: true },
-          { label: 'Allow for this workspace', testId: 'allow-workspace', onSelect: vi.fn() },
+          {
+            label: 'Reject always',
+            testId: 'reject-always',
+            onSelect: vi.fn(),
+            destructive: true,
+          },
+          {
+            label: 'Allow for this workspace',
+            testId: 'allow-workspace',
+            onSelect: vi.fn(),
+          },
         ]}
       />
     ))

@@ -33,16 +33,28 @@ describe('agent input enqueue retry', () => {
       agentId: 'agent-1',
       kind: AgentInputKind.USER_MESSAGE,
       text: 'hello',
-      attachments: [attachment('a.txt', [1, 2, 3])],
+      attachments: [
+        attachment('a.txt', [1, 2, 3]),
+      ],
       scheduledAt: '',
     }
 
     expect(retry.inputIdFor(first)).toBe('input-1')
-    expect(retry.inputIdFor({ ...first, attachments: [attachment('a.txt', [1, 2, 3])] })).toBe('input-1')
+    expect(retry.inputIdFor({
+      ...first,
+      attachments: [
+        attachment('a.txt', [1, 2, 3]),
+      ],
+    })).toBe('input-1')
     expect(retry.inputIdFor({ ...first, text: 'changed' })).toBe('input-2')
     expect(retry.inputIdFor({ ...first, agentId: 'agent-2' })).toBe('input-3')
     expect(retry.inputIdFor({ ...first, kind: AgentInputKind.CONTROL_FEEDBACK })).toBe('input-4')
-    expect(retry.inputIdFor({ ...first, attachments: [attachment('a.txt', [1, 2, 4])] })).toBe('input-5')
+    expect(retry.inputIdFor({
+      ...first,
+      attachments: [
+        attachment('a.txt', [1, 2, 4]),
+      ],
+    })).toBe('input-5')
   })
 
   it('mints a new input ID after the Worker accepts an attempt', () => {
@@ -159,12 +171,20 @@ describe('agent input enqueue retry schedule', () => {
   it('reuses the ID for an identical schedule and mints one for each change', () => {
     let sequence = 0
     const retry = createAgentInputEnqueueRetry(() => `input-${++sequence}`)
-    const scheduled = { ...message('later'), scheduledAt: '2030-01-01T09:00:00.000Z' }
+    const scheduled = {
+      ...message('later'),
+      scheduledAt: '2030-01-01T09:00:00.000Z',
+    }
 
     expect(retry.inputIdFor(scheduled)).toBe('input-1')
     expect(retry.inputIdFor({ ...scheduled })).toBe('input-1')
-    expect(retry.inputIdFor({ ...message('later') })).toBe('input-2')
-    expect(retry.inputIdFor({ ...message('later'), scheduledAt: '2031-01-01T09:00:00.000Z' })).toBe('input-3')
+    expect(retry.inputIdFor({
+      ...message('later'),
+    })).toBe('input-2')
+    expect(retry.inputIdFor({
+      ...message('later'),
+      scheduledAt: '2031-01-01T09:00:00.000Z',
+    })).toBe('input-3')
   })
 })
 
@@ -173,7 +193,10 @@ describe('agent input enqueue retry schedule', () => {
 describe('agent input enqueue retry pending attempts', () => {
   it('acquires only an uncertain attempt until the Worker accepts it', () => {
     const retry = createAgentInputEnqueueRetry(() => 'input-1')
-    const scheduled = { ...message('later'), scheduledAt: '2030-01-01T09:00:00.000Z' }
+    const scheduled = {
+      ...message('later'),
+      scheduledAt: '2030-01-01T09:00:00.000Z',
+    }
     expect(retry.inputIdForPendingAttempt(scheduled)).toBeUndefined()
     const id = retry.inputIdFor(scheduled)
     expect(retry.inputIdForPendingAttempt(scheduled)).toBeUndefined()
@@ -185,14 +208,22 @@ describe('agent input enqueue retry pending attempts', () => {
 
   it('does not acquire a pending attempt for a payload that differs in any part', () => {
     const retry = createAgentInputEnqueueRetry(() => 'input-1')
-    const scheduled = { ...message('later'), scheduledAt: '2030-01-01T09:00:00.000Z' }
+    const scheduled = {
+      ...message('later'),
+      scheduledAt: '2030-01-01T09:00:00.000Z',
+    }
     retry.markUncertain(retry.inputIdFor(scheduled))
     for (const changed of [
       message('later'),
       { ...scheduled, text: 'other' },
       { ...scheduled, agentId: 'agent-2' },
       { ...scheduled, kind: AgentInputKind.CONTROL_FEEDBACK },
-      { ...scheduled, attachments: [attachment('a.txt', [1])] },
+      {
+        ...scheduled,
+        attachments: [
+          attachment('a.txt', [1]),
+        ],
+      },
     ])
       expect(retry.inputIdForPendingAttempt(changed)).toBeUndefined()
   })
@@ -219,7 +250,12 @@ describe('agent input enqueue retry pending attempts', () => {
 
   it('detects changed attachment bytes when acquiring a pending attempt', () => {
     const retry = createAgentInputEnqueueRetry()
-    const payload = { ...message('hello'), attachments: [attachment('a.txt', [1, 2])] }
+    const payload = {
+      ...message('hello'),
+      attachments: [
+        attachment('a.txt', [1, 2]),
+      ],
+    }
     retry.markUncertain(retry.inputIdFor(payload))
     payload.attachments[0]!.data[0] = 9
     expect(retry.inputIdForPendingAttempt(payload)).toBeUndefined()

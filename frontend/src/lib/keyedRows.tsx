@@ -32,7 +32,10 @@ export function createKeyedRows<T>(
   items: Accessor<readonly T[]>,
   keyOf: (item: T) => string,
 ): { keys: Accessor<string[]>, byKey: Accessor<Map<string, T>> } {
-  return { keys: createStableKeys(items, keyOf), byKey: createKeyLookup(items, keyOf) }
+  return {
+    keys: createStableKeys(items, keyOf),
+    byKey: createKeyLookup(items, keyOf),
+  }
 }
 
 /**
@@ -74,7 +77,10 @@ export function createKeyLookup<T>(
   items: Accessor<readonly T[]>,
   keyOf: (item: T) => string,
 ): Accessor<Map<string, T>> {
-  const byKey = createMemo(() => new Map(items().map(item => [keyOf(item), item])))
+  const byKey = createMemo(() => new Map(items().map(item => [
+    keyOf(item),
+    item,
+  ])))
   return byKey
 }
 

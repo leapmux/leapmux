@@ -6,6 +6,8 @@
  * which critical-path cut the timing report recommends.
  */
 
+import { isClientEntryChunk } from '~/lib/clientEntryChunk'
+
 export const STARTUP_BUCKETS = [
   'fonts',
   'entry_js',
@@ -42,14 +44,11 @@ export function classifyStartupUrl(url: string): StartupBucket {
 
   const base = decodeURIComponent(path.split('/').pop() ?? '')
 
-  if (
-    (base.startsWith('client-') && base.endsWith('.js'))
-    || base.startsWith('rolldown-runtime')
-  ) {
+  if (isClientEntryChunk(base) || base.startsWith('rolldown-runtime'))
     return 'entry_js'
-  }
 
-  // Vinxi names the authenticated SPA chunk `(app)-….js` (encoded %28app%29).
+  // SolidStart names the authenticated SPA route chunk after its file,
+  // `routes/(app).tsx`: `(app)-….js` (encoded %28app%29).
   if (base.includes('(app)'))
     return 'route_app'
 

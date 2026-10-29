@@ -3,12 +3,18 @@ import { imageBlockToMarkdown, imageRenderInfo, MAX_INLINE_IMAGE_BASE64_LEN, par
 
 describe('parseImageBlock', () => {
   it('parses an embedded MCP image resource for every provider', () => {
-    expect(parseImageBlock({ type: 'resource', resource: { uri: 'probe://image', mimeType: 'image/png', blob: 'AAAA' } }))
+    expect(parseImageBlock({
+      type: 'resource',
+      resource: { uri: 'probe://image', mimeType: 'image/png', blob: 'AAAA' },
+    }))
       .toEqual({ data: 'AAAA', mimeType: 'image/png' })
   })
 
   it('preserves unsupported image resources for the image placeholder', () => {
-    expect(parseImageBlock({ type: 'resource', resource: { uri: 'probe://image', mimeType: 'image/x-custom', blob: 'AAAA' } }))
+    expect(parseImageBlock({
+      type: 'resource',
+      resource: { uri: 'probe://image', mimeType: 'image/x-custom', blob: 'AAAA' },
+    }))
       .toEqual({ data: 'AAAA', mimeType: 'image/x-custom' })
   })
 
@@ -26,37 +32,55 @@ describe('parseImageBlock', () => {
     // MCP states an embedded resource as TextResourceContents or as
     // BlobResourceContents. An SVG server sends its markup as text.
     const svg = '<svg xmlns="http://www.w3.org/2000/svg"/>'
-    expect(parseImageBlock({ type: 'resource', resource: { uri: 'probe://image', mimeType: 'image/svg+xml', text: svg } }))
+    expect(parseImageBlock({
+      type: 'resource',
+      resource: { uri: 'probe://image', mimeType: 'image/svg+xml', text: svg },
+    }))
       .toEqual({ url: `data:image/svg+xml;base64,${btoa(svg)}`, mimeType: 'image/svg+xml' })
   })
 
   it('renders a text image resource inline', () => {
     const svg = '<svg xmlns="http://www.w3.org/2000/svg"/>'
-    const source = parseImageBlock({ type: 'resource', resource: { mimeType: 'image/svg+xml', text: svg } })!
+    const source = parseImageBlock({
+      type: 'resource',
+      resource: { mimeType: 'image/svg+xml', text: svg },
+    })!
     expect(imageRenderInfo(source)).toEqual({ src: `data:image/svg+xml;base64,${btoa(svg)}`, via: 'inline' })
   })
 
   it('prefers the blob of a resource that states both payloads', () => {
-    expect(parseImageBlock({ type: 'resource', resource: { mimeType: 'image/png', blob: 'AAAA', text: 'ignored' } }))
+    expect(parseImageBlock({
+      type: 'resource',
+      resource: { mimeType: 'image/png', blob: 'AAAA', text: 'ignored' },
+    }))
       .toEqual({ data: 'AAAA', mimeType: 'image/png' })
   })
 
   it('keeps an image resource that states no payload and no URI', () => {
     // Every other payload-less image shape answers a placeholder, so the block
     // holds its index in the image list. This one must not be the exception.
-    expect(parseImageBlock({ type: 'resource', resource: { mimeType: 'image/png' } }))
+    expect(parseImageBlock({
+      type: 'resource',
+      resource: { mimeType: 'image/png' },
+    }))
       .toEqual({ mimeType: 'image/png' })
     expect(parseImageBlock({ type: 'resource', mimeType: 'image/png' }))
       .toEqual({ mimeType: 'image/png' })
   })
 
   it('parses the Anthropic base64 shape (Claude Read, MCP bridge, notebook output)', () => {
-    expect(parseImageBlock({ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } }))
+    expect(parseImageBlock({
+      type: 'image',
+      source: { type: 'base64', media_type: 'image/png', data: 'AAAA' },
+    }))
       .toEqual({ data: 'AAAA', mimeType: 'image/png' })
   })
 
   it('parses the Anthropic url shape', () => {
-    expect(parseImageBlock({ type: 'image', source: { type: 'url', url: 'https://example.com/x.png' } }))
+    expect(parseImageBlock({
+      type: 'image',
+      source: { type: 'url', url: 'https://example.com/x.png' },
+    }))
       .toEqual({ url: 'https://example.com/x.png' })
   })
 
@@ -90,12 +114,22 @@ describe('parseImageBlock', () => {
   })
 
   it('reads the ACP file:// uri as the image file path', () => {
-    expect(parseImageBlock({ type: 'image', data: 'AAAA', mimeType: 'image/png', uri: 'file:///repo/a%20b.png' }))
+    expect(parseImageBlock({
+      type: 'image',
+      data: 'AAAA',
+      mimeType: 'image/png',
+      uri: 'file:///repo/a%20b.png',
+    }))
       .toEqual({ data: 'AAAA', mimeType: 'image/png', filePath: '/repo/a b.png' })
   })
 
   it('ignores a non-file uri, which specifies no local file to open', () => {
-    expect(parseImageBlock({ type: 'image', data: 'AAAA', mimeType: 'image/png', uri: 'https://example.com/x.png' }))
+    expect(parseImageBlock({
+      type: 'image',
+      data: 'AAAA',
+      mimeType: 'image/png',
+      uri: 'https://example.com/x.png',
+    }))
       .toEqual({ data: 'AAAA', mimeType: 'image/png' })
   })
 
@@ -103,7 +137,10 @@ describe('parseImageBlock', () => {
     // Anthropic's `source:{type:'file'}` states a file on Anthropic's servers,
     // and an MCP server may state only a MIME type. Dropping either would make
     // the image vanish from the transcript with no trace.
-    expect(parseImageBlock({ type: 'image', source: { type: 'file', file_id: 'f1' } })).toEqual({})
+    expect(parseImageBlock({
+      type: 'image',
+      source: { type: 'file', file_id: 'f1' },
+    })).toEqual({})
     expect(parseImageBlock({ type: 'image', mimeType: 'image/png' })).toEqual({ mimeType: 'image/png' })
   })
 
@@ -214,7 +251,12 @@ describe('parseImageBlock data-URL tolerance', () => {
 
 describe('imageBlockFilePath platform shapes', () => {
   it('preserves a literal percent sign in a provider file URI', () => {
-    expect(parseImageBlock({ type: 'image', data: 'AAAA', mimeType: 'image/png', uri: 'file:///repo/50%off.png' }))
+    expect(parseImageBlock({
+      type: 'image',
+      data: 'AAAA',
+      mimeType: 'image/png',
+      uri: 'file:///repo/50%off.png',
+    }))
       .toMatchObject({ filePath: '/repo/50%off.png' })
   })
   // Windows workers are supported, and `new URL(...).pathname` keeps the slash
@@ -222,19 +264,34 @@ describe('imageBlockFilePath platform shapes', () => {
   // tab this feeds opened nothing while the IMAGE tab that would have worked
   // was skipped.
   it('strips the leading slash from a Windows drive-letter path', () => {
-    expect(parseImageBlock({ type: 'image', data: 'AAAA', mimeType: 'image/png', uri: 'file:///C:/Users/alice/shot.png' }))
+    expect(parseImageBlock({
+      type: 'image',
+      data: 'AAAA',
+      mimeType: 'image/png',
+      uri: 'file:///C:/Users/alice/shot.png',
+    }))
       .toMatchObject({ filePath: 'C:/Users/alice/shot.png' })
   })
 
   // A UNC uri puts the host outside the pathname, so reading the pathname alone
   // silently dropped the server the file lives on.
   it('keeps the host of a UNC uri', () => {
-    expect(parseImageBlock({ type: 'image', data: 'AAAA', mimeType: 'image/png', uri: 'file://server/share/a.png' }))
+    expect(parseImageBlock({
+      type: 'image',
+      data: 'AAAA',
+      mimeType: 'image/png',
+      uri: 'file://server/share/a.png',
+    }))
       .toMatchObject({ filePath: '//server/share/a.png' })
   })
 
   it('leaves a POSIX path alone, percent-decoding it', () => {
-    expect(parseImageBlock({ type: 'image', data: 'AAAA', mimeType: 'image/png', uri: 'file:///home/alice/a%20b.png' }))
+    expect(parseImageBlock({
+      type: 'image',
+      data: 'AAAA',
+      mimeType: 'image/png',
+      uri: 'file:///home/alice/a%20b.png',
+    }))
       .toMatchObject({ filePath: '/home/alice/a b.png' })
   })
 })

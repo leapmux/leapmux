@@ -37,11 +37,19 @@ export function junieModelTurns(request: MockModelRequestRecord): NativeModelTur
     // The anchors keep the pattern on the real blocks: the row's prose names each
     // tag inside backticks first, and only the block itself starts a line.
     const issue = /^<previous_issue>\n([\s\S]*?)\n<\/previous_issue>$/m.exec(message.content)
-    if (issue)
-      turns.push({ role: 'user', text: (issue[1] ?? '').trim() })
+    if (issue) {
+      turns.push({
+        role: 'user',
+        text: (issue[1] ?? '').trim(),
+      })
+    }
     const solution = /^<previous_issue_solution>\n?([\s\S]*?)<\/previous_issue_solution>$/m.exec(message.content)
-    if (solution)
-      turns.push({ role: 'assistant', text: (solution[1] ?? '').trim() })
+    if (solution) {
+      turns.push({
+        role: 'assistant',
+        text: (solution[1] ?? '').trim(),
+      })
+    }
     if (turns.length === 0)
       turns.push({ role: 'user', text: message.content })
     return turns

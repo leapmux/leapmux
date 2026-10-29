@@ -5,5 +5,11 @@ import { exerciseCredentialIsolation } from '../helpers/nativeCredentialIsolatio
 
 grokTest('loads private native configuration and calls only the suite mock', async ({ native, leapmuxServer }) => {
   const environment = leapmuxServer.agentEnv
-  await exerciseCredentialIsolation(native, { configurationFiles: [join(environment.GROK_HOME!, 'config.toml')], privateDirectories: [environment.GROK_HOME!], expectedCredential: MODEL_KEY })
+  await exerciseCredentialIsolation(native, {
+    configurationFiles: [
+      join(environment.GROK_HOME!, 'config.toml'),
+    ],
+    privateDirectories: [environment.GROK_HOME!],
+    expectedCredential: MODEL_KEY,
+  })
 })

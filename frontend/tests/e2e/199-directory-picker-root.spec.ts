@@ -40,7 +40,9 @@ test.describe('Directory picker root', () => {
     // renders as `tmp/<child>`. Match the leading segment, not the whole
     // label.
     const tmpRow = page.locator('[data-testid="tree-row"]:visible')
-      .filter({ has: page.locator('[data-testid="tree-row-name"]', { hasText: /^(private|tmp)(\/|$)/ }) })
+      .filter({
+        has: page.locator('[data-testid="tree-row-name"]', { hasText: /^(private|tmp)(\/|$)/ }),
+      })
       .first()
     await expect(tmpRow).toBeVisible()
     await tmpRow.click()
@@ -64,7 +66,9 @@ test.describe('Directory picker root', () => {
     // The leading segment only, for the merge reason the test above states: a
     // single-user host renders `/home` as `home/<user>` in one row.
     const homeRow = page.locator('[data-testid="tree-row"]:visible')
-      .filter({ has: page.locator('[data-testid="tree-row-name"]', { hasText: /^(home|Users|root)(\/|$)/ }) })
+      .filter({
+        has: page.locator('[data-testid="tree-row-name"]', { hasText: /^(home|Users|root)(\/|$)/ }),
+      })
       .first()
     await expect(homeRow).toBeVisible()
     await expect(page.locator('[data-testid="tree-row"][data-active="true"]:visible')).toHaveCount(0)

@@ -55,7 +55,12 @@ describe('isAgentCreateDisabled for the workspace dialog', () => {
   it('returns true when worktree branch has an error in create-worktree mode', () => {
     expect(isAgentCreateDisabled({
       ...valid,
-      git: { mode: GitMode.CreateWorktree, worktreeBranch: 'feat', worktreeBranchError: 'Invalid branch', worktreeBaseBranch: 'main' },
+      git: {
+        mode: GitMode.CreateWorktree,
+        worktreeBranch: 'feat',
+        worktreeBranchError: 'Invalid branch',
+        worktreeBaseBranch: 'main',
+      },
     })).toBe(true)
   })
 
@@ -63,7 +68,10 @@ describe('isAgentCreateDisabled for the workspace dialog', () => {
     // GitModeIntent's tagged union means a `current` intent literally
     // cannot carry worktree fields, so a stale worktree error from a
     // prior mode toggle cannot leak into the submit gate.
-    expect(isAgentCreateDisabled({ ...valid, git: { mode: GitMode.Current } })).toBe(false)
+    expect(isAgentCreateDisabled({
+      ...valid,
+      git: { mode: GitMode.Current },
+    })).toBe(false)
   })
 
   it('returns true when sessionIdError is set even when everything else is valid', () => {
@@ -142,12 +150,20 @@ describe('isAgentCreateDisabled', () => {
   it('returns true when worktree branch has an error in create-worktree mode', () => {
     expect(isAgentCreateDisabled({
       ...valid,
-      git: { mode: GitMode.CreateWorktree, worktreeBranch: 'feat', worktreeBranchError: 'Invalid branch', worktreeBaseBranch: 'main' },
+      git: {
+        mode: GitMode.CreateWorktree,
+        worktreeBranch: 'feat',
+        worktreeBranchError: 'Invalid branch',
+        worktreeBaseBranch: 'main',
+      },
     })).toBe(true)
   })
 
   it('current mode never blocks submit', () => {
-    expect(isAgentCreateDisabled({ ...valid, git: { mode: GitMode.Current } })).toBe(false)
+    expect(isAgentCreateDisabled({
+      ...valid,
+      git: { mode: GitMode.Current },
+    })).toBe(false)
   })
 
   it('treats a missing git intent as valid (dialog without git options)', () => {
@@ -325,12 +341,20 @@ describe('isTerminalCreateDisabled', () => {
   it('returns true when worktree branch has an error in create-worktree mode', () => {
     expect(isTerminalCreateDisabled({
       ...valid,
-      git: { mode: GitMode.CreateWorktree, worktreeBranch: 'feat', worktreeBranchError: 'err', worktreeBaseBranch: 'main' },
+      git: {
+        mode: GitMode.CreateWorktree,
+        worktreeBranch: 'feat',
+        worktreeBranchError: 'err',
+        worktreeBaseBranch: 'main',
+      },
     })).toBe(true)
   })
 
   it('current mode never blocks submit', () => {
-    expect(isTerminalCreateDisabled({ ...valid, git: { mode: GitMode.Current } })).toBe(false)
+    expect(isTerminalCreateDisabled({
+      ...valid,
+      git: { mode: GitMode.Current },
+    })).toBe(false)
   })
 
   it('treats a missing git intent as valid (dialog without git options)', () => {
@@ -365,8 +389,19 @@ describe('isChangeBranchSubmitDisabled', () => {
   // title error that IS passed always restricts submit, in every mode, exactly
   // as the shared base gate does for every other dialog.
   it.each([
-    ['switch-branch', { mode: GitMode.SwitchBranch, checkoutBranch: 'main', checkoutBranchError: null } as GitModeIntent],
-    ['create-branch', { mode: GitMode.CreateBranch, createBranch: 'feat', createBranchError: null, createBranchBase: 'main' } as GitModeIntent],
+    [
+      'switch-branch',
+      { mode: GitMode.SwitchBranch, checkoutBranch: 'main', checkoutBranchError: null } as GitModeIntent,
+    ],
+    [
+      'create-branch',
+      {
+        mode: GitMode.CreateBranch,
+        createBranch: 'feat',
+        createBranchError: null,
+        createBranchBase: 'main',
+      } as GitModeIntent,
+    ],
   ])('restricts submit by a title error the caller passes in %s mode', (_label, git) => {
     expect(isChangeBranchSubmitDisabled({
       ...switchBranchValid,
@@ -381,17 +416,34 @@ describe('isChangeBranchSubmitDisabled', () => {
   // disables Apply here for the same reason it does everywhere else. Before,
   // an empty gitToplevel fired an RPC the worker refused as permission-denied.
   it.each([
-    ['no worker', { workerId: '' }],
-    ['no working directory', { workingDir: '' }],
-    ['a blank working directory', { workingDir: '   ' }],
+    [
+      'no worker',
+      { workerId: '' },
+    ],
+    [
+      'no working directory',
+      { workingDir: '' },
+    ],
+    [
+      'a blank working directory',
+      { workingDir: '   ' },
+    ],
   ])('disables submit with %s', (_label, patch) => {
-    expect(isChangeBranchSubmitDisabled({ ...switchBranchValid, ...patch })).toBe(true)
+    expect(isChangeBranchSubmitDisabled({
+      ...switchBranchValid,
+      ...patch,
+    })).toBe(true)
   })
 
   it('returns true when a title error is set in create-worktree mode', () => {
     expect(isChangeBranchSubmitDisabled({
       ...switchBranchValid,
-      git: { mode: GitMode.CreateWorktree, worktreeBranch: 'feat', worktreeBranchError: null, worktreeBaseBranch: 'main' } as GitModeIntent,
+      git: {
+        mode: GitMode.CreateWorktree,
+        worktreeBranch: 'feat',
+        worktreeBranchError: null,
+        worktreeBaseBranch: 'main',
+      } as GitModeIntent,
       worktreeTabType: TabType.AGENT,
       titleError: 'Name must not be empty',
     })).toBe(true)
@@ -403,7 +455,12 @@ describe('isChangeBranchSubmitDisabled', () => {
   it('stays disabled for a terminal with a valid title but no shell', () => {
     expect(isChangeBranchSubmitDisabled({
       ...switchBranchValid,
-      git: { mode: GitMode.CreateWorktree, worktreeBranch: 'feat', worktreeBranchError: null, worktreeBaseBranch: 'main' } as GitModeIntent,
+      git: {
+        mode: GitMode.CreateWorktree,
+        worktreeBranch: 'feat',
+        worktreeBranchError: null,
+        worktreeBaseBranch: 'main',
+      } as GitModeIntent,
       worktreeTabType: TabType.TERMINAL,
       shell: '',
       titleError: null,
@@ -416,7 +473,12 @@ describe('isChangeBranchSubmitDisabled', () => {
   it('returns true when a blocked reason is present (worktree mode cannot place its tab)', () => {
     expect(isChangeBranchSubmitDisabled({
       ...switchBranchValid,
-      git: { mode: GitMode.CreateWorktree, worktreeBranch: 'feat', worktreeBranchError: null, worktreeBaseBranch: 'main' },
+      git: {
+        mode: GitMode.CreateWorktree,
+        worktreeBranch: 'feat',
+        worktreeBranchError: null,
+        worktreeBaseBranch: 'main',
+      },
       blockedReason: 'The workspace view is not ready yet.',
     })).toBe(true)
   })
@@ -448,7 +510,12 @@ describe('isChangeBranchSubmitDisabled', () => {
   it('returns true when create-branch is missing fields', () => {
     expect(isChangeBranchSubmitDisabled({
       ...switchBranchValid,
-      git: { mode: GitMode.CreateBranch, createBranch: '', createBranchError: null, createBranchBase: 'main' },
+      git: {
+        mode: GitMode.CreateBranch,
+        createBranch: '',
+        createBranchError: null,
+        createBranchBase: 'main',
+      },
     })).toBe(true)
   })
 
@@ -458,7 +525,12 @@ describe('isChangeBranchSubmitDisabled', () => {
     // git fields are valid.
     expect(isChangeBranchSubmitDisabled({
       ...switchBranchValid,
-      git: { mode: GitMode.CreateBranch, createBranch: 'feat', createBranchError: null, createBranchBase: 'main' },
+      git: {
+        mode: GitMode.CreateBranch,
+        createBranch: 'feat',
+        createBranchError: null,
+        createBranchBase: 'main',
+      },
       noProviders: true,
       shell: '',
     })).toBe(false)

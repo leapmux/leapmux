@@ -61,7 +61,9 @@ describe('htmlFragmentCache', () => {
     // Depends on `flip` but always yields the same string -- the equality
     // guard must keep the exact nodes (text-selection stability relies on
     // unchanged bodies never being re-cloned).
-    const html = () => `<p>stable ${flip() >= 0 ? 'y' : 'n'}</p>`
+    const html = () => `<p>stable ${flip() >= 0
+      ? 'y'
+      : 'n'}</p>`
     const el = document.createElement('div')
     let dispose!: () => void
     createRoot((d) => {

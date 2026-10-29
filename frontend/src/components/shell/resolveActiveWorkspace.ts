@@ -67,8 +67,11 @@ export function resolveActiveWorkspace(args: ResolveActiveWorkspaceArgs): Active
   // Past this point the selection is either absent or names a workspace this
   // user demonstrably does not have -- deleted from another device, archived
   // away, or a saved id that outlived its workspace.
-  if (workspaces.length === 0)
-    return active ? { kind: 'clear' } : { kind: 'keep' }
+  if (workspaces.length === 0) {
+    return active
+      ? { kind: 'clear' }
+      : { kind: 'keep' }
+  }
 
   const saved = args.savedWorkspaceId
   if (saved && has(saved))

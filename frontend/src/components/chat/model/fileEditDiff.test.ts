@@ -1,8 +1,14 @@
 import { describe, expect, it } from 'vitest'
 import { fileEditContent, fileEditDrawsDiff, fileEditHasDiff } from './fileEditDiff'
 
-const noChange = { filePath: '/repo/a.ts', ...fileEditContent(null, 'same', 'same') }
-const changed = { filePath: '/repo/a.ts', ...fileEditContent(null, 'before', 'after') }
+const noChange = {
+  filePath: '/repo/a.ts',
+  ...fileEditContent(null, 'same', 'same'),
+}
+const changed = {
+  filePath: '/repo/a.ts',
+  ...fileEditContent(null, 'before', 'after'),
+}
 
 /**
  * `fileEditHasDiff` narrows, and its FALSE branch narrows the argument away -- to
@@ -22,7 +28,15 @@ describe('fileEditDrawsDiff', () => {
   it('answers true for a non-empty patch whatever the sides say', () => {
     const patched = {
       filePath: '/repo/a.ts',
-      ...fileEditContent([{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-a', '+b'] }], 'same', 'same'),
+      ...fileEditContent([
+        {
+          oldStart: 1,
+          oldLines: 1,
+          newStart: 1,
+          newLines: 1,
+          lines: ['-a', '+b'],
+        },
+      ], 'same', 'same'),
     }
     expect(fileEditDrawsDiff(patched)).toBe(true)
   })

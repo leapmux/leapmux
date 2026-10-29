@@ -32,10 +32,26 @@ function state(): UserCrdtState {
     maxHlc: HLC,
     compactionWatermark: { physical: 3n, logical: 0n, clientId: 'c' },
     opRetentionWatermark: { physical: 1n, logical: 0n, clientId: 'c' },
-    nodes: { n1: { nodeId: 'n1', parentId: 'root', position: { value: 'a', hlc: HLC } } },
-    tabs: { t1: { tabId: 't1', tabType: 1, position: { value: 'b', hlc: HLC } } },
-    floatingWindows: { w1: { windowId: 'w1', rootNodeId: 'n1' } },
-    workspaces: { ws1: { workspaceId: 'ws1', rootNodeId: 'n1' } },
+    nodes: {
+      n1: {
+        nodeId: 'n1',
+        parentId: 'root',
+        position: { value: 'a', hlc: HLC },
+      },
+    },
+    tabs: {
+      t1: {
+        tabId: 't1',
+        tabType: 1,
+        position: { value: 'b', hlc: HLC },
+      },
+    },
+    floatingWindows: {
+      w1: { windowId: 'w1', rootNodeId: 'n1' },
+    },
+    workspaces: {
+      ws1: { workspaceId: 'ws1', rootNodeId: 'n1' },
+    },
   })
 }
 
@@ -146,8 +162,14 @@ describe('serializeEntity', () => {
 
   it('serializes each kind with its own record schema', () => {
     const s = state()
-    for (const kind of CHUNK_KINDS)
-      expect(serializeEntity(s, { kind, entityId: { node: 'n1', tab: 't1', fw: 'w1', ws: 'ws1' }[kind] })).toBeDefined()
+    for (const kind of CHUNK_KINDS) {
+      expect(serializeEntity(s, { kind, entityId: {
+        node: 'n1',
+        tab: 't1',
+        fw: 'w1',
+        ws: 'ws1',
+      }[kind] })).toBeDefined()
+    }
   })
 })
 
@@ -214,18 +236,82 @@ describe('snapshotEntityKeys and keysRemovedSince', () => {
 describe('framedEntityKeys', () => {
   it('reports the entity a batch\'s ops touch, for every op arm', () => {
     const cases: Array<[Parameters<typeof applyOp>[1]['body'], string]> = [
-      [{ case: 'setNodeRegister', value: { nodeId: 'n' } }, 'node:n'],
-      [{ case: 'tombstoneNode', value: { nodeId: 'n' } }, 'node:n'],
-      [{ case: 'setTabRegister', value: { tabId: 't' } }, 'tab:t'],
-      [{ case: 'tombstoneTab', value: { tabId: 't' } }, 'tab:t'],
-      [{ case: 'setFloatingWindowRegister', value: { windowId: 'w' } }, 'fw:w'],
-      [{ case: 'tombstoneFloatingWindow', value: { windowId: 'w' } }, 'fw:w'],
-      [{ case: 'setWorkspaceRootNode', value: { workspaceId: 'ws' } }, 'ws:ws'],
-      [{ case: 'setWorkspaceRegister', value: { workspaceId: 'ws' } }, 'ws:ws'],
-      [{ case: 'tombstoneWorkspace', value: { workspaceId: 'ws' } }, 'ws:ws'],
+      [
+        {
+          case: 'setNodeRegister',
+          value: { nodeId: 'n' },
+        },
+        'node:n',
+      ],
+      [
+        {
+          case: 'tombstoneNode',
+          value: { nodeId: 'n' },
+        },
+        'node:n',
+      ],
+      [
+        {
+          case: 'setTabRegister',
+          value: { tabId: 't' },
+        },
+        'tab:t',
+      ],
+      [
+        {
+          case: 'tombstoneTab',
+          value: { tabId: 't' },
+        },
+        'tab:t',
+      ],
+      [
+        {
+          case: 'setFloatingWindowRegister',
+          value: { windowId: 'w' },
+        },
+        'fw:w',
+      ],
+      [
+        {
+          case: 'tombstoneFloatingWindow',
+          value: { windowId: 'w' },
+        },
+        'fw:w',
+      ],
+      [
+        {
+          case: 'setWorkspaceRootNode',
+          value: { workspaceId: 'ws' },
+        },
+        'ws:ws',
+      ],
+      [
+        {
+          case: 'setWorkspaceRegister',
+          value: { workspaceId: 'ws' },
+        },
+        'ws:ws',
+      ],
+      [
+        {
+          case: 'tombstoneWorkspace',
+          value: { workspaceId: 'ws' },
+        },
+        'ws:ws',
+      ],
     ] as never
     for (const [body, expected] of cases) {
-      const f = frame({ event: { case: 'batch', value: { batchId: 'b', ops: [{ body }] } } } as never)
+      const f = frame({
+        event: {
+          case: 'batch',
+          value: {
+            batchId: 'b',
+            ops: [
+              { body },
+            ],
+          },
+        },
+      } as never)
       expect(framedEntityKeys(f), `${(body as { case: string }).case}`).toEqual(new Set([expected]))
     }
   })
@@ -237,9 +323,24 @@ describe('framedEntityKeys', () => {
         value: {
           batchId: 'b',
           ops: [
-            { body: { case: 'setNodeRegister', value: { nodeId: 'n1' } } },
-            { body: { case: 'setTabRegister', value: { tabId: 't1' } } },
-            { body: { case: 'setNodeRegister', value: { nodeId: 'n1' } } },
+            {
+              body: {
+                case: 'setNodeRegister',
+                value: { nodeId: 'n1' },
+              },
+            },
+            {
+              body: {
+                case: 'setTabRegister',
+                value: { tabId: 't1' },
+              },
+            },
+            {
+              body: {
+                case: 'setNodeRegister',
+                value: { nodeId: 'n1' },
+              },
+            },
           ],
         },
       },
@@ -249,40 +350,97 @@ describe('framedEntityKeys', () => {
 
   it('reports the entity an entityMaterialized frame installs', () => {
     expect(framedEntityKeys(frame({
-      event: { case: 'entityMaterialized', value: { entity: { case: 'tab', value: { tabId: 't9' } } } },
+      event: {
+        case: 'entityMaterialized',
+        value: {
+          entity: {
+            case: 'tab',
+            value: { tabId: 't9' },
+          },
+        },
+      },
     } as never))).toEqual(new Set(['tab:t9']))
     expect(framedEntityKeys(frame({
-      event: { case: 'entityMaterialized', value: { entity: { case: 'node', value: { nodeId: 'n9' } } } },
+      event: {
+        case: 'entityMaterialized',
+        value: {
+          entity: {
+            case: 'node',
+            value: { nodeId: 'n9' },
+          },
+        },
+      },
     } as never))).toEqual(new Set(['node:n9']))
     expect(framedEntityKeys(frame({
-      event: { case: 'entityMaterialized', value: { entity: { case: 'floatingWindow', value: { windowId: 'w9' } } } },
+      event: {
+        case: 'entityMaterialized',
+        value: {
+          entity: {
+            case: 'floatingWindow',
+            value: { windowId: 'w9' },
+          },
+        },
+      },
     } as never))).toEqual(new Set(['fw:w9']))
   })
 
   it('reports the entity an entityRemoved frame evicts', () => {
     expect(framedEntityKeys(frame({
-      event: { case: 'entityRemoved', value: { entity: { case: 'tab', value: { tabId: 't9' } } } },
+      event: {
+        case: 'entityRemoved',
+        value: {
+          entity: {
+            case: 'tab',
+            value: { tabId: 't9' },
+          },
+        },
+      },
     } as never))).toEqual(new Set(['tab:t9']))
     expect(framedEntityKeys(frame({
-      event: { case: 'entityRemoved', value: { entity: { case: 'nodeId', value: 'n9' } } },
+      event: {
+        case: 'entityRemoved',
+        value: {
+          entity: { case: 'nodeId', value: 'n9' },
+        },
+      },
     } as never))).toEqual(new Set(['node:n9']))
     expect(framedEntityKeys(frame({
-      event: { case: 'entityRemoved', value: { entity: { case: 'windowId', value: 'w9' } } },
+      event: {
+        case: 'entityRemoved',
+        value: {
+          entity: { case: 'windowId', value: 'w9' },
+        },
+      },
     } as never))).toEqual(new Set(['fw:w9']))
   })
 
   it('reports nothing for a batchEnd, which only moves the watermark', () => {
     // The watermark rides in the header, and every rewrite re-serializes that.
-    expect(framedEntityKeys(frame({ event: { case: 'batchEnd', value: { atHlc: HLC } } } as never)))
+    expect(framedEntityKeys(frame({
+      event: {
+        case: 'batchEnd',
+        value: { atHlc: HLC },
+      },
+    } as never)))
       .toEqual(new Set())
   })
 
   it('reports nothing for an op or entity oneof that is EMPTY', () => {
     // applyOp / applyMaterializedCore fall through their switches and install
     // nothing, so nothing is dirtied.
-    expect(framedEntityKeys(frame({ event: { case: 'batch', value: { batchId: 'b', ops: [{}] } } } as never)))
+    expect(framedEntityKeys(frame({
+      event: {
+        case: 'batch',
+        value: {
+          batchId: 'b',
+          ops: [{}],
+        },
+      },
+    } as never)))
       .toEqual(new Set())
-    expect(framedEntityKeys(frame({ event: { case: 'entityRemoved', value: {} } } as never)))
+    expect(framedEntityKeys(frame({
+      event: { case: 'entityRemoved', value: {} },
+    } as never)))
       .toEqual(new Set())
   })
 
@@ -291,9 +449,13 @@ describe('framedEntityKeys', () => {
     // unrecoverable direction: an entity whose chunk is stale on disk but
     // absent from the dirty set is never rewritten, so the next cold start
     // silently resurrects the pre-change record.
-    expect(framedEntityKeys(frame({ event: { case: 'presence', value: {} } } as never))).toBeNull()
+    expect(framedEntityKeys(frame({
+      event: { case: 'presence', value: {} },
+    } as never))).toBeNull()
     expect(framedEntityKeys(frame({}))).toBeNull()
-    expect(framedEntityKeys({ event: { case: 'somethingNew', value: {} } } as never)).toBeNull()
+    expect(framedEntityKeys({
+      event: { case: 'somethingNew', value: {} },
+    } as never)).toBeNull()
   })
 
   it('refuses to guess when ONE op of a batch is unrecognized', () => {
@@ -305,8 +467,18 @@ describe('framedEntityKeys', () => {
         value: {
           batchId: 'b',
           ops: [
-            { body: { case: 'setNodeRegister', value: { nodeId: 'n1' } } },
-            { body: { case: 'setTabRegister', value: { tabId: 't1' } } },
+            {
+              body: {
+                case: 'setNodeRegister',
+                value: { nodeId: 'n1' },
+              },
+            },
+            {
+              body: {
+                case: 'setTabRegister',
+                value: { tabId: 't1' },
+              },
+            },
           ],
         },
       },

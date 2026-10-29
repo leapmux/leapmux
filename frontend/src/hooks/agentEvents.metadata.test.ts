@@ -16,9 +16,18 @@ describe('stored supplemental usage', () => {
     createRoot((dispose) => {
       installTestBridge({ workspaceId: 'supplemental-usage' })
       const tabs = createTestTabStores('supplemental-usage')
-      const stores = { ...tabs, agentSessionStore: createAgentSessionStore(), chatStore: createChatStore(), getActiveWorkspaceId: () => 'supplemental-usage' }
+      const stores = {
+        ...tabs,
+        agentSessionStore: createAgentSessionStore(),
+        chatStore: createChatStore(),
+        getActiveWorkspaceId: () => 'supplemental-usage',
+      }
       const id = `supplemental-usage-${provider}`
-      const type = provider === AgentProvider.PI ? 'agent_end' : provider === AgentProvider.MIMO_CODE ? MIMO_EVENT.SessionStatus : 'turn.completed'
+      const type = provider === AgentProvider.PI
+        ? 'agent_end'
+        : provider === AgentProvider.MIMO_CODE
+          ? MIMO_EVENT.SessionStatus
+          : 'turn.completed'
       const original = ` {"type":"${type}","payload":{},"messages":[],"total_cost_usd":"provider value"} `
       const message = create(AgentChatMessageSchema, {
         id,
@@ -26,7 +35,12 @@ describe('stored supplemental usage', () => {
         source: MessageSource.AGENT,
         content: new TextEncoder().encode(original),
         contentCompression: ContentCompression.NONE,
-        supplementalContent: new TextEncoder().encode(JSON.stringify({ metadata: { total_cost_usd: 0, context_usage: { input_tokens: 12, context_window: 1000 } } })),
+        supplementalContent: new TextEncoder().encode(JSON.stringify({
+          metadata: {
+            total_cost_usd: 0,
+            context_usage: { input_tokens: 12, context_window: 1000 },
+          },
+        })),
         supplementalContentCompression: ContentCompression.NONE,
       })
       const parsed = parseMessageContent(message)

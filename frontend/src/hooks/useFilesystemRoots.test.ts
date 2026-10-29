@@ -18,7 +18,9 @@ function tick() {
 
 describe('useFilesystemRoots', () => {
   it('exposes the roots the worker reported', async () => {
-    listFilesystemRoots.mockResolvedValue({ roots: ['C:\\', 'D:\\'] })
+    listFilesystemRoots.mockResolvedValue({
+      roots: ['C:\\', 'D:\\'],
+    })
 
     await createRoot(async (dispose) => {
       const { roots } = useFilesystemRoots(() => 'w1', () => true)
@@ -67,7 +69,9 @@ describe('useFilesystemRoots', () => {
   })
 
   it('fetches once the gate opens', async () => {
-    listFilesystemRoots.mockResolvedValue({ roots: ['C:\\'] })
+    listFilesystemRoots.mockResolvedValue({
+      roots: ['C:\\'],
+    })
 
     await createRoot(async (dispose) => {
       const [open, setOpen] = createSignal(false)
@@ -93,7 +97,9 @@ describe('useFilesystemRoots', () => {
    * then set the working directory to a path that does not exist there.
    */
   it('clears the previous worker drives when the new worker shuts the gate', async () => {
-    listFilesystemRoots.mockResolvedValue({ roots: ['C:\\', 'D:\\'] })
+    listFilesystemRoots.mockResolvedValue({
+      roots: ['C:\\', 'D:\\'],
+    })
 
     await createRoot(async (dispose) => {
       const [workerId, setWorkerId] = createSignal('win-1')
@@ -112,8 +118,12 @@ describe('useFilesystemRoots', () => {
 
   it('clears and re-fetches when the worker changes with the gate open', async () => {
     listFilesystemRoots
-      .mockResolvedValueOnce({ roots: ['C:\\'] })
-      .mockResolvedValueOnce({ roots: ['E:\\', 'F:\\'] })
+      .mockResolvedValueOnce({
+        roots: ['C:\\'],
+      })
+      .mockResolvedValueOnce({
+        roots: ['E:\\', 'F:\\'],
+      })
 
     await createRoot(async (dispose) => {
       const [workerId, setWorkerId] = createSignal('w1')
@@ -136,7 +146,9 @@ describe('useFilesystemRoots', () => {
   it('re-fetches on refresh and replaces the list', async () => {
     listFilesystemRoots
       .mockRejectedValueOnce(new Error('offline'))
-      .mockResolvedValueOnce({ roots: ['C:\\', 'D:\\'] })
+      .mockResolvedValueOnce({
+        roots: ['C:\\', 'D:\\'],
+      })
 
     await createRoot(async (dispose) => {
       const { roots, refresh } = useFilesystemRoots(() => 'w1', () => true)
@@ -163,7 +175,9 @@ describe('useFilesystemRoots', () => {
       await tick()
       expect(loading()).toBe(true)
 
-      resolveFetch?.({ roots: ['C:\\'] })
+      resolveFetch?.({
+        roots: ['C:\\'],
+      })
       await tick()
 
       expect(loading()).toBe(false)

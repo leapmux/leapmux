@@ -13,5 +13,7 @@ export function readGeminiStoredToolRecord(message: AgentChatMessage): Record<st
     return null
   const supplement = acpToolSupplement(original, parsed.supplementalContent)
   const record = geminiStoredToolRecord(pickObject(acpSupplementRawOutput(supplement), GEMINI_SUPPLEMENT.StoredToolRecord))
-  return record && pickString(record, 'id') === pickString(original, 'toolCallId') ? record : null
+  return record && pickString(record, 'id') === pickString(original, 'toolCallId')
+    ? record
+    : null
 }

@@ -22,14 +22,18 @@ describe('createDraftSwapper', () => {
     const applied: Draft[] = []
     await createDraftSwapper()('agent-a', draft => applied.push(draft))
 
-    expect(applied).toEqual([{ content: 'the first document', cursor: 4 }])
+    expect(applied).toEqual([
+      { content: 'the first document', cursor: 4 },
+    ])
   })
 
   it('applies an empty document for a key that has no saved draft', async () => {
     const applied: Draft[] = []
     await createDraftSwapper()('agent-never-typed-in', draft => applied.push(draft))
 
-    expect(applied).toEqual([{ content: '', cursor: -1 }])
+    expect(applied).toEqual([
+      { content: '', cursor: -1 },
+    ])
   })
 
   // A null key is "no draft to restore" -- a control request with no draft
@@ -39,7 +43,9 @@ describe('createDraftSwapper', () => {
     const applied: Draft[] = []
     await createDraftSwapper()(null, draft => applied.push(draft))
 
-    expect(applied).toEqual([{ content: '', cursor: -1 }])
+    expect(applied).toEqual([
+      { content: '', cursor: -1 },
+    ])
   })
 
   // THE GUARD. Two swaps in flight at once is the ordinary case for a user who
@@ -103,16 +109,35 @@ describe('createDraftSwapper', () => {
 
 describe('readDraftFromEditor', () => {
   it('treats multiple empty paragraphs as empty instead of a serialized HTML break', () => {
-    const schema = new Schema({ nodes: { doc: { content: 'block*' }, paragraph: { content: 'inline*', group: 'block' }, text: { group: 'inline' } } })
-    const doc = schema.node('doc', null, [schema.node('paragraph'), schema.node('paragraph')])
-    const ctx = { get: (key: unknown) => {
-      if (key === editorViewCtx)
-        return { state: { doc, selection: { from: 1 } } }
-      if (key === serializerCtx)
-        return () => '<br />'
-      throw new Error('The draft regression requested an unexpected editor value.')
-    } } as unknown as Ctx
-    const editor = { action: (run: (ctx: Ctx) => unknown) => run(ctx) } as unknown as Editor
+    const schema = new Schema({
+      nodes: {
+        doc: { content: 'block*' },
+        paragraph: { content: 'inline*', group: 'block' },
+        text: { group: 'inline' },
+      },
+    })
+    const doc = schema.node('doc', null, [
+      schema.node('paragraph'),
+      schema.node('paragraph'),
+    ])
+    const ctx = {
+      get: (key: unknown) => {
+        if (key === editorViewCtx) {
+          return {
+            state: {
+              doc,
+              selection: { from: 1 },
+            },
+          }
+        }
+        if (key === serializerCtx)
+          return () => '<br />'
+        throw new Error('The draft regression requested an unexpected editor value.')
+      },
+    } as unknown as Ctx
+    const editor = {
+      action: (run: (ctx: Ctx) => unknown) => run(ctx),
+    } as unknown as Editor
     expect(readDraftFromEditor(editor)).toEqual({ content: '', cursor: 1 })
   })
 })

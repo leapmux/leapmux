@@ -13,15 +13,33 @@ export function deepseekHarnessNotificationEntry(payload: Record<string, unknown
     case DEEPSEEK_HARNESS_EVENT.CompactionEnd: {
       const error = pickString(data, 'error')
       return error
-        ? [{ kind: 'compaction', phase: 'end', outcome: 'failed', error }]
-        : [{ kind: 'compaction', phase: 'end', outcome: 'completed', detail: {} }]
+        ? [
+            {
+              kind: 'compaction',
+              phase: 'end',
+              outcome: 'failed',
+              error,
+            },
+          ]
+        : [
+            {
+              kind: 'compaction',
+              phase: 'end',
+              outcome: 'completed',
+              detail: {},
+            },
+          ]
     }
     case DEEPSEEK_HARNESS_EVENT.LlmRetry: {
-      const facts: RetryFacts = { error: pickString(pickObject(data, 'failure'), 'message') }
+      const facts: RetryFacts = {
+        error: pickString(pickObject(data, 'failure'), 'message'),
+      }
       assignDefined(facts, 'attempt', pickNumber(data, 'retry', undefined))
       assignDefined(facts, 'maxAttempts', pickNumber(data, 'maxRetries', undefined))
       assignDefined(facts, 'delayMs', pickNumber(data, 'delayMs', undefined))
-      return [retryEntry('api', facts)]
+      return [
+        retryEntry('api', facts),
+      ]
     }
     case DEEPSEEK_HARNESS_EVENT.HookResult:
       return hookEntries(data)
@@ -30,10 +48,23 @@ export function deepseekHarnessNotificationEntry(payload: Record<string, unknown
         ? data.files.filter(isObject).flatMap((file) => {
             const path = pickString(file, 'path')
             const description = pickString(file, 'description')
-            return path ? [description ? `${path} (${description})` : path] : []
+            return path
+              ? [
+                  description
+                    ? `${path} (${description})`
+                    : path,
+                ]
+              : []
           })
         : []
-      return [{ kind: 'text', text: files.length ? `Presented files:\n${files.join('\n')}` : 'Deliverables presented' }]
+      return [
+        {
+          kind: 'text',
+          text: files.length
+            ? `Presented files:\n${files.join('\n')}`
+            : 'Deliverables presented',
+        },
+      ]
     }
     default:
       return []
@@ -45,11 +76,16 @@ function hookEntries(data: Record<string, unknown>): NotificationEntry[] {
     || data.decision === DEEPSEEK_HARNESS_HOOK_DECISION.Deny
     || data.decision === DEEPSEEK_HARNESS_HOOK_DECISION.Stop
   const code = pickNumber(data, 'exitCode', undefined)
-  const exitCode = code !== undefined && Number.isSafeInteger(code) ? code : undefined
+  const exitCode = code !== undefined && Number.isSafeInteger(code)
+    ? code
+    : undefined
   const detail = pickString(data, 'stderrSummary').trim()
   if (!blocked && (exitCode === 0 || (exitCode === undefined && !detail)))
     return []
-  const entry: Extract<NotificationEntry, { kind: 'hook' }> = { kind: 'hook', outcome: blocked ? 'blocked' : 'failed' }
+  const entry: Extract<NotificationEntry, { kind: 'hook' }> = {
+    kind: 'hook',
+    outcome: blocked ? 'blocked' : 'failed',
+  }
   assignDefined(entry, 'event', pickString(data, 'point') || undefined)
   assignDefined(entry, 'name', pickString(data, 'handlerId') || undefined)
   assignDefined(entry, 'exitCode', exitCode)
@@ -59,7 +95,9 @@ function hookEntries(data: Record<string, unknown>): NotificationEntry[] {
 
 export function deepseekHarnessCompactionBoundary(parsed: ParsedMessageContent): CompactionDetails | null {
   const data = deepseekHarnessEventData(parsed.parentObject, DEEPSEEK_HARNESS_EVENT.CompactionEnd)
-  return data && data.error === undefined ? {} : null
+  return data && data.error === undefined
+    ? {}
+    : null
 }
 
 /** Identify a stored start for the history filter without changing its category. */

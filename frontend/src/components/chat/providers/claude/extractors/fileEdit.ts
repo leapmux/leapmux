@@ -62,7 +62,9 @@ export function claudeFileEditFromToolUseResult(
   // absent rather than present-and-undefined.
   return {
     filePath,
-    ...(originalFile !== undefined ? { originalFile } : {}),
+    ...(originalFile !== undefined
+      ? { originalFile }
+      : {}),
     ...fileEditContent(structuredPatch, oldStr, newStr),
   }
 }
@@ -82,7 +84,9 @@ export function claudeCreateResultDiff(
   if (isError || !toolUseResult || toolUseResult.type !== 'create')
     return null
   const content = pickString(toolUseResult, 'content')
-  return content ? fileEditDiffFromWholeFile(pickString(toolUseResult, 'filePath'), content, 'add') : null
+  return content
+    ? fileEditDiffFromWholeFile(pickString(toolUseResult, 'filePath'), content, 'add')
+    : null
 }
 
 /**
@@ -114,7 +118,15 @@ export function claudeFileChangeResult(args: ClaudeToolRow, result: ClaudeToolRo
     claudeFileEditFromToolUseResult(result.toolUseResult),
     claudeFileEditFromToolUseInput(args.toolName, args.input),
   ) ?? claudeCreateResultDiff(result.toolUseResult, false)
-  return diff ? { result: { changes: [diff] } } : { result: unparsedResult(result.resultContent) }
+  return diff
+    ? {
+        result: {
+          changes: [diff],
+        },
+      }
+    : {
+        result: unparsedResult(result.resultContent),
+      }
 }
 
 /**
@@ -139,23 +151,40 @@ export function claudeFileEditChanges(input: Record<string, unknown>, toolName: 
   const fromResult = result
     ? claudeFileEditFromToolUseResult(result.toolUseResult) ?? claudeCreateResultDiff(result.toolUseResult, false)
     : null
-  return fromResult ? [fromResult] : fromInput
+  return fromResult
+    ? [fromResult]
+    : fromInput
 }
 
 function claudeFileEditChangesFromInput(input: Record<string, unknown>, toolName: string): FileEditDiff[] {
   if (toolName === CLAUDE_TOOL_NAMES.MULTI_EDIT) {
     // One entry per substitution: no single pair describes a list of them.
-    const edits = Array.isArray(input.edits) ? input.edits.filter(isObject) : []
+    const edits = Array.isArray(input.edits)
+      ? input.edits.filter(isObject)
+      : []
     return edits.map((edit) => {
-      const single = claudeFileEditFromToolUseInput(CLAUDE_TOOL_NAMES.EDIT, { file_path: pickString(input, 'file_path'), old_string: pickString(edit, 'old_string'), new_string: pickString(edit, 'new_string') })
+      const single = claudeFileEditFromToolUseInput(CLAUDE_TOOL_NAMES.EDIT, {
+        file_path: pickString(input, 'file_path'),
+        old_string: pickString(edit, 'old_string'),
+        new_string: pickString(edit, 'new_string'),
+      })
       return single
     }).filter((source): source is FileEditDiff => source !== null)
   }
   if (toolName === CLAUDE_TOOL_NAMES.NOTEBOOK_EDIT) {
     // The notebook carries its file under `notebook_path`; the change reads like an edit.
     const path = pickString(input, 'notebook_path')
-    return [{ filePath: path, structuredPatch: null, oldStr: pickString(input, 'old_source'), newStr: pickString(input, 'new_source') }]
+    return [
+      {
+        filePath: path,
+        structuredPatch: null,
+        oldStr: pickString(input, 'old_source'),
+        newStr: pickString(input, 'new_source'),
+      },
+    ]
   }
   const single = claudeFileEditFromToolUseInput(toolName, input)
-  return single ? [single] : []
+  return single
+    ? [single]
+    : []
 }

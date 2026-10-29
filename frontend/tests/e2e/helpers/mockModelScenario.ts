@@ -66,7 +66,10 @@ export const HOUSEKEEPING_RULES: readonly MockModelRule[] = [
   {
     name: 'codex-memory-consolidation',
     priority: 'high',
-    when: { protocol: 'openai-responses', user: escapeRegExp('Memory Writing Agent: Phase 2 (Consolidation)') },
+    when: {
+      protocol: 'openai-responses',
+      user: escapeRegExp('Memory Writing Agent: Phase 2 (Consolidation)'),
+    },
     respond: { text: 'No memories to consolidate.' },
   },
   {
@@ -82,22 +85,46 @@ export const HOUSEKEEPING_RULES: readonly MockModelRule[] = [
   {
     name: 'title-json',
     priority: 'high',
-    when: { system: [TITLE_REQUEST, JSON_TITLE_FORM] },
-    respond: { text: JSON.stringify({ title: MOCK_SESSION_TITLE }) },
+    when: {
+      system: [TITLE_REQUEST, JSON_TITLE_FORM],
+    },
+    respond: {
+      text: JSON.stringify({ title: MOCK_SESSION_TITLE }),
+    },
   },
-  { name: 'title-system', priority: 'high', when: { system: TITLE_REQUEST }, respond: { text: MOCK_SESSION_TITLE } },
-  { name: 'title-user', priority: 'high', when: { user: TITLE_REQUEST }, respond: { text: MOCK_SESSION_TITLE } },
+  {
+    name: 'title-system',
+    priority: 'high',
+    when: { system: TITLE_REQUEST },
+    respond: { text: MOCK_SESSION_TITLE },
+  },
+  {
+    name: 'title-user',
+    priority: 'high',
+    when: { user: TITLE_REQUEST },
+    respond: { text: MOCK_SESSION_TITLE },
+  },
   {
     name: 'title-grok',
     priority: 'high',
     when: { system: GROK_TITLE_REQUEST },
-    respond: { toolCalls: [{ id: 'grok-session-title', name: GROK_TITLE_TOOL, arguments: { [GROK_TITLE_TOOL]: MOCK_SESSION_TITLE } }] },
+    respond: {
+      toolCalls: [
+        {
+          id: 'grok-session-title',
+          name: GROK_TITLE_TOOL,
+          arguments: { [GROK_TITLE_TOOL]: MOCK_SESSION_TITLE },
+        },
+      ],
+    },
   },
   {
     name: 'intent-kiro',
     priority: 'high',
     when: { protocol: 'aws-event-stream', body: KIRO_INTENT_CLASSIFICATION },
-    respond: { text: JSON.stringify({ specGeneration: 0.9, taskExecution: 0.1 }) },
+    respond: {
+      text: JSON.stringify({ specGeneration: 0.9, taskExecution: 0.1 }),
+    },
   },
 ]
 
@@ -158,14 +185,18 @@ export async function registerMockModelScenario(serverURL: string, id: string, s
  * Registration installs the default housekeeping rules first.
  */
 export async function extendMockModelScenario(serverURL: string, id: string, script: ScriptInput): Promise<void> {
-  const declared: MockModelScenarioInput = Array.isArray(script) ? { steps: script } : script
+  const declared: MockModelScenarioInput = Array.isArray(script)
+    ? { steps: script }
+    : script
   const response = await fetch(scenarioEndpoint(serverURL, id), {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       steps: declared.steps ?? [],
       rules: declared.rules ?? [],
-      ...(declared.fallback ? { fallback: declared.fallback } : {}),
+      ...(declared.fallback
+        ? { fallback: declared.fallback }
+        : {}),
     }),
   })
   if (response.status !== 200)
@@ -250,7 +281,11 @@ export async function readMockModelDiagnostics(serverURL: string): Promise<Recor
 }
 
 function asFailure(error: unknown): Record<string, string> {
-  return { error: error instanceof Error ? error.message : String(error) }
+  return {
+    error: error instanceof Error
+      ? error.message
+      : String(error),
+  }
 }
 
 /**
@@ -265,15 +300,22 @@ export async function registerAmbientScenario(serverURL: string): Promise<void> 
 }
 
 function resolveScript(script: ScriptInput): { steps: MockModelStep[], rules: MockModelRule[] } {
-  const declared: MockModelScenarioInput = Array.isArray(script) ? { steps: script } : script
+  const declared: MockModelScenarioInput = Array.isArray(script)
+    ? { steps: script }
+    : script
   const housekeeping = declared.housekeeping ?? HOUSEKEEPING_RULES
   return {
     steps: declared.steps ?? [],
     // A test rule of a priority precedes the housekeeping rules of that priority. The housekeeping rules are high, so
     // only a high test rule precedes them: one that overrides a housekeeping answer, or a native preflight rule that
     // must precede a broad child matcher.
-    rules: [...declared.rules ?? [], ...housekeeping],
-    ...(declared.fallback ? { fallback: declared.fallback } : {}),
+    rules: [
+      ...declared.rules ?? [],
+      ...housekeeping,
+    ],
+    ...(declared.fallback
+      ? { fallback: declared.fallback }
+      : {}),
   }
 }
 

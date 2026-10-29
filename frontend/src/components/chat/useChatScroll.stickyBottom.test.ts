@@ -56,7 +56,9 @@ describe('useChatScroll auto-scroll signature', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -67,7 +69,10 @@ describe('useChatScroll auto-scroll signature', () => {
       div.setScrollHeight(500)
       div.setClientHeight(500) // content fits -> at the bottom
       const [messages] = createSignal<AgentChatMessage[]>([])
-      const hook = useChatScroll({ virtualizer: makeStubVirtualizer(), messages })
+      const hook = useChatScroll({
+        virtualizer: makeStubVirtualizer(),
+        messages,
+      })
       hook.attachListRef(div.el)
       hook.handlers.onScroll()
       const state = hook.getScrollState()
@@ -90,7 +95,10 @@ describe('useChatScroll scroll-to-bottom animation', () => {
           div.setScrollHeight(scrollHeight)
           div.setScrollTop(0)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const hook = useChatScroll({ virtualizer: makeStubVirtualizer(), messages })
+          const hook = useChatScroll({
+            virtualizer: makeStubVirtualizer(),
+            messages,
+          })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -123,7 +131,9 @@ describe('useChatScroll scroll-to-bottom animation', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -137,7 +147,10 @@ describe('useChatScroll scroll-to-bottom animation', () => {
           div.setScrollHeight(10000)
           div.setScrollTop(0)
           const [messages] = createSignal<AgentChatMessage[]>([])
-          const hook = useChatScroll({ virtualizer: makeStubVirtualizer(), messages })
+          const hook = useChatScroll({
+            virtualizer: makeStubVirtualizer(),
+            messages,
+          })
           hook.attachListRef(div.el)
           await Promise.resolve()
           await Promise.resolve()
@@ -166,7 +179,9 @@ describe('useChatScroll scroll-to-bottom animation', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))

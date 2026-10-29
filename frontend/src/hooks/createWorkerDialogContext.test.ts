@@ -140,7 +140,9 @@ describe('createWorkerDialogContext worker auto-selection', () => {
   // No preselect means the caller named no machine, so a default directory is
   // not a claim about one and survives.
   it('keeps a default directory when no worker was preselected', async () => {
-    mockWorkers([{ id: 'w-1', online: true }])
+    mockWorkers([
+      { id: 'w-1', online: true },
+    ])
     await createRoot(async (dispose) => {
       const state = createWorkerDialogContext({ defaultWorkingDir: '/home/me/repo' })
       await flush()
@@ -586,7 +588,11 @@ describe('createWorkerDialogContext getHomeDir accessor', () => {
         // Dispose BEFORE the listWorkers promise resolves.
         dispose()
         try {
-          resolveList({ workers: [{ id: 'w-1', online: true }] })
+          resolveList({
+            workers: [
+              { id: 'w-1', online: true },
+            ],
+          })
           // Drain microtasks so the post-await writes (would) run.
           await flush()
           workerIdAfter = state.workerId()
@@ -623,7 +629,11 @@ describe('createWorkerDialogContext getHomeDir accessor', () => {
       .mockReturnValueOnce(slowP as never)
       // Call 2: refreshWorkers' fetchWorkers gets fresh-1 (resolves
       // immediately on the next microtask).
-      .mockResolvedValueOnce({ workers: [{ id: 'fresh-1', online: true }] } as never)
+      .mockResolvedValueOnce({
+        workers: [
+          { id: 'fresh-1', online: true },
+        ],
+      } as never)
 
     await createRoot(async (dispose) => {
       const state = createWorkerDialogContext()
@@ -678,7 +688,9 @@ describe('createWorkerDialogContext getHomeDir accessor', () => {
     vi.mocked(workerClient.listWorkers).mockResolvedValue({
       // If this runs, the lock failed. Sentinel id so the assertion
       // below would catch the leak.
-      workers: [{ id: 'leaked', online: true } as never],
+      workers: [
+        { id: 'leaked', online: true } as never,
+      ],
     } as never)
     await new Promise<void>((done) => {
       createRoot((dispose) => {

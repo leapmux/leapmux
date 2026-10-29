@@ -18,7 +18,9 @@ async function expectNativeCodexCompletion(context: Pick<ManagedNativeScenarioCo
     const results = snapshot.messages.flatMap((message) => {
       const body = nativeMessageBody(message)
       return message.source === MessageSource.AGENT && isObject(body) && isObject(body.turn) && body.turn.status === 'completed'
-        ? [{ message, body, turn: body.turn }]
+        ? [
+            { message, body, turn: body.turn },
+          ]
         : []
     })
     return { snapshot, results }
@@ -48,7 +50,9 @@ async function expectNativeCodexCompletion(context: Pick<ManagedNativeScenarioCo
 codexTest.describe('codex subagent lifecycle', () => {
   codexTest('shows a child prompt while its own model request waits', async ({ native }) => {
     await exerciseLiveChildTranscript(native, {
-      childWhen: { body: ['NEW_TASK', 'answer_the_live_child_task'] },
+      childWhen: {
+        body: ['NEW_TASK', 'answer_the_live_child_task'],
+      },
       childTask: 'Report the live child marker.',
       parentTask: 'Spawn one child to report the live child marker.',
       afterComplete: () => expectNativeCodexCompletion(native),
@@ -60,10 +64,14 @@ codexTest.describe('codex subagent lifecycle', () => {
     if (!workingDir)
       throw new Error('The live child file proof requires a working directory.')
     await exerciseLiveChildTranscript(native, {
-      childWhen: { body: ['NEW_TASK', 'answer_the_live_child_task'] },
+      childWhen: {
+        body: ['NEW_TASK', 'answer_the_live_child_task'],
+      },
       childTask: 'Read the assigned file in the live child task.',
       parentTask: 'Start one child to read the assigned file.',
-      toolProof: { read: { workingDir } },
+      toolProof: {
+        read: { workingDir },
+      },
       afterComplete: () => expectNativeCodexCompletion(native),
     })
   })

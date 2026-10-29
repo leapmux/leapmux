@@ -60,7 +60,9 @@ function eventElement(event: Event): Element | null {
   const target = event.target
   if (target instanceof Element)
     return target
-  return target instanceof Node ? target.parentElement : null
+  return target instanceof Node
+    ? target.parentElement
+    : null
 }
 
 /**
@@ -82,7 +84,12 @@ export function attachDismissSoftKeyboardOnTap(root: EventTarget = document): ()
     if (!(event instanceof PointerEvent) || !event.isPrimary)
       return
     swallowEditorFocus = false
-    tapStart = { pointerId: event.pointerId, x: event.clientX, y: event.clientY, at: monotonicNow() }
+    tapStart = {
+      pointerId: event.pointerId,
+      x: event.clientX,
+      y: event.clientY,
+      at: monotonicNow(),
+    }
   }
 
   const onPointerUp = (event: Event) => {

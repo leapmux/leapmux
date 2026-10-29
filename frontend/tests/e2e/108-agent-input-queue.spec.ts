@@ -444,7 +444,9 @@ test.describe('scheduled input', () => {
         await expect(page.getByTestId('schedule-send-trigger')).not.toHaveAttribute('data-scheduled')
       await page.getByTestId('schedule-send-trigger').click()
       await expect(page.getByTestId('schedule-send-popover')).toBeVisible()
-      const expected = clear ? '' : await page.getByTestId('schedule-send-field').inputValue()
+      const expected = clear
+        ? ''
+        : await page.getByTestId('schedule-send-field').inputValue()
       await page.getByTestId('schedule-send-cancel').click()
       const text = `unsaved ${clear ? 'cleared' : 'replacement'} edit`
       await composerEditor(page).fill(text)
@@ -475,7 +477,9 @@ test.describe('scheduled input', () => {
     // The first date segment is incomplete after Backspace. Its native value
     // is empty, but badInput distinguishes that state from deliberate clearing.
     const box = (await field.boundingBox())!
-    await field.click({ position: { x: 8, y: box.height / 2 } })
+    await field.click({
+      position: { x: 8, y: box.height / 2 },
+    })
     await field.press('Backspace')
     await expect(field).toHaveAttribute('data-native-bad-input', 'true')
     await expect(page.getByTestId('schedule-send-apply')).toBeDisabled()

@@ -32,8 +32,18 @@ codexTest.describe('codex tool execution', () => {
     // it in a tool row. The scripted reply states it, so the reply check below
     // proves that the reply is drawn, before and after the reload.
     await modelScript.queue(
-      { reasoning: 'First I check the working directory.', toolCalls: [bashToolCall(AgentProvider.CODEX, 'pwd-call', 'pwd')] },
-      { reasoning: 'Now the arithmetic, in its own call.', toolCalls: [bashToolCall(AgentProvider.CODEX, 'echo-call', 'echo "codex-$((40 + 2))"')] },
+      {
+        reasoning: 'First I check the working directory.',
+        toolCalls: [
+          bashToolCall(AgentProvider.CODEX, 'pwd-call', 'pwd'),
+        ],
+      },
+      {
+        reasoning: 'Now the arithmetic, in its own call.',
+        toolCalls: [
+          bashToolCall(AgentProvider.CODEX, 'echo-call', 'echo "codex-$((40 + 2))"'),
+        ],
+      },
       { text: 'The first call printed the working directory and the second printed codex-42.' },
     )
     await sendMessage(page, modelScript.prompt('First run pwd. Then, in a separate shell call, run the arithmetic command. Compare the two results and report both. Do not modify files.'))

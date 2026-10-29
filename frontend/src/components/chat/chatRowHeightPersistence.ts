@@ -171,7 +171,12 @@ export function createRowHeightPersistence(deps: RowHeightPersistenceDeps): void
           continue
         attemptedAdoptions.delete(adoptionAttemptKey(item.id, entry.digest))
       }
-      adoptable.push({ id: item.id, heightKey: item.heightKey, height: entry.height, digest: entry.digest })
+      adoptable.push({
+        id: item.id,
+        heightKey: item.heightKey,
+        height: entry.height,
+        digest: entry.digest,
+      })
     }
     if (adoptable.length === 0)
       return
@@ -208,7 +213,11 @@ export function createRowHeightPersistence(deps: RowHeightPersistenceDeps): void
       // pending insertion position, which the over-cap slice below would shed
       // BEFORE older measurements -- dropping the newest real geometry.
       merged.delete(row.id)
-      merged.set(row.id, [row.id, fnv1a32Hex(row.heightKey ?? ''), Math.round(row.height * 100) / 100])
+      merged.set(row.id, [
+        row.id,
+        fnv1a32Hex(row.heightKey ?? ''),
+        Math.round(row.height * 100) / 100,
+      ])
     }
     if (merged.size === 0)
       return // never replace stored data with nothing
@@ -217,7 +226,12 @@ export function createRowHeightPersistence(deps: RowHeightPersistenceDeps): void
     // rows (snapshotHeights is LRU-ordered, oldest first), keeping the most recent
     // measurements -- and the eviction limit matches the render and token caches.
     capMapInsertionOrder(merged, PERSISTED_ROW_HEIGHTS_MAX)
-    localStorageStore(storageKey(id), { v: STORED_ROW_HEIGHTS_VERSION, rows: [...merged.values()] } satisfies StoredRowHeights)
+    localStorageStore(storageKey(id), {
+      v: STORED_ROW_HEIGHTS_VERSION,
+      rows: [
+        ...merged.values(),
+      ],
+    } satisfies StoredRowHeights)
   }
 
   // Load once, as soon as the storage identity is available.

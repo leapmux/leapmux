@@ -21,7 +21,9 @@ export async function exerciseCopilotPlanAndEffort(
     mode: { groupId: COPILOT_OPTION.SessionMode, value: COPILOT_MODE.Plan },
     effort: { groupId: 'effort', value: 'low' },
     restore,
-    ...(afterModeSelected ? { afterModeSelected } : {}),
+    ...(afterModeSelected
+      ? { afterModeSelected }
+      : {}),
     nativeBuildProof: (request) => {
       expect(request.protocol).toBe('openai-chat-completions')
       expect(nativeModelToolNames(request)).not.toContain(COPILOT_TOOL.ExitPlanMode)

@@ -10,7 +10,13 @@ import { GROK_TOOL_RESULTS } from './toolResults.fixtures'
 import '~/components/chat/providers'
 
 const KINDS: ToolVocabularyCheck = {
-  names: [...Object.keys(GROK_TOOL_KINDS), GROK_TOOL.SpawnSubagent, GROK_TOOL_NAME.TodoWrite, GROK_TOOL_NAME.UseTool, GROK_TOOL_NAME.Workflow],
+  names: [
+    ...Object.keys(GROK_TOOL_KINDS),
+    GROK_TOOL.SpawnSubagent,
+    GROK_TOOL_NAME.TodoWrite,
+    GROK_TOOL_NAME.UseTool,
+    GROK_TOOL_NAME.Workflow,
+  ],
   kindOf: () => 'other',
   generic: {},
   fallback: 'other',
@@ -19,15 +25,21 @@ const KINDS: ToolVocabularyCheck = {
 // Each name comes from the fixture table's own keys, so the lookup misses for the type alone.
 function callOf(name: string) {
   const fixture = GROK_TOOL_RESULTS.fixtures[name]
-  return fixture === undefined ? null : providerToolCall(AgentProvider.GROK_BUILD, fixture.payload, fixture.options)
+  return fixture === undefined
+    ? null
+    : providerToolCall(AgentProvider.GROK_BUILD, fixture.payload, fixture.options)
 }
 const failureCallOf = (fixture: ToolFailureFixture) => providerToolCall(AgentProvider.GROK_BUILD, fixture.payload, fixture.options)
 
 /** The `tool_call` request that each fixture pairs with, read alone as a call still in flight. */
 function requestCallOf(name: string) {
   const fixture = GROK_TOOL_RESULTS.fixtures[name]
-  const frame = fixture === undefined ? null : openingFrameOf(fixture)
-  return frame === null ? null : providerToolCall(AgentProvider.GROK_BUILD, frame)
+  const frame = fixture === undefined
+    ? null
+    : openingFrameOf(fixture)
+  return frame === null
+    ? null
+    : providerToolCall(AgentProvider.GROK_BUILD, frame)
 }
 
 describe('grok tool results', () => {

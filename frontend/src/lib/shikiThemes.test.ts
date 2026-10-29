@@ -77,7 +77,10 @@ describe('dualThemeTokenOptions', () => {
     // --shiki-dark variables instead of one baked colour. Every CSS rule that
     // themes highlighted code keys off exactly those, so a pair that turned it
     // on would render code in one fixed variant.
-    for (const pair of [DEFAULT_PAIR, { light: 'nord-light', dark: 'nord' }]) {
+    for (const pair of [
+      DEFAULT_PAIR,
+      { light: 'nord-light', dark: 'nord' },
+    ]) {
       setSyntaxThemePair(pair)
       expect(dualThemeTokenOptions().defaultColor).toBe(false)
     }

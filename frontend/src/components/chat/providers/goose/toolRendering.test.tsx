@@ -20,13 +20,38 @@ describe('goose native tools', () => {
       kind: 'other',
       title: 'execute javascript',
       rawInput: { code: 'async function run() { throw new Error("NATIVE_SCRIPT" + (70 + 7)); }' },
-      _meta: { goose: { toolCall: { toolName: 'execute_javascript', extensionName: 'code_execution' } } },
+      _meta: {
+        goose: {
+          toolCall: { toolName: 'execute_javascript', extensionName: 'code_execution' },
+        },
+      },
     }
-    const result = { ...request, sessionUpdate: 'tool_call_update', status: 'failed', content: acpTextContent(report) }
-    const scenario = createTranscriptScenario({ archive: [
-      makeTranscriptMessage({ id: 'native-script-request', provider: AgentProvider.GOOSE, spanId: 'native-script', spanType: 'other', agentSessionId: 'native-session', content: request }, 1n),
-      makeTranscriptMessage({ id: 'native-script-result', provider: AgentProvider.GOOSE, spanId: 'native-script', spanType: 'other', agentSessionId: 'native-session', content: result }, 2n),
-    ] })
+    const result = {
+      ...request,
+      sessionUpdate: 'tool_call_update',
+      status: 'failed',
+      content: acpTextContent(report),
+    }
+    const scenario = createTranscriptScenario({
+      archive: [
+        makeTranscriptMessage({
+          id: 'native-script-request',
+          provider: AgentProvider.GOOSE,
+          spanId: 'native-script',
+          spanType: 'other',
+          agentSessionId: 'native-session',
+          content: request,
+        }, 1n),
+        makeTranscriptMessage({
+          id: 'native-script-result',
+          provider: AgentProvider.GOOSE,
+          spanId: 'native-script',
+          spanType: 'other',
+          agentSessionId: 'native-session',
+          content: result,
+        }, 2n),
+      ],
+    })
     const { container } = scenario.renderBubble('native-script-result')
     expect(scenario.toolRow('native-script-result').call.status).toBe('failed')
     await waitFor(() => expect(container.textContent).toContain('NATIVE_SCRIPT77'))
@@ -39,8 +64,14 @@ describe('goose native tools', () => {
       kind: 'other',
       title: 'delegate',
       rawInput: { source: 'explore', instructions: 'Inspect the project' },
-      _meta: { goose: { toolCall: { toolName: 'delegate', extensionName: 'summon' } } },
-    }, { content: acpTextContent('**Findings**\n\nThe entry points exist.') })
+      _meta: {
+        goose: {
+          toolCall: { toolName: 'delegate', extensionName: 'summon' },
+        },
+      },
+    }, {
+      content: acpTextContent('**Findings**\n\nThe entry points exist.'),
+    })
     expect(container.textContent).toContain('Inspect the project (explore)')
     expect(container.textContent).toContain('Agent "Inspect the project" completed')
     expect(container.querySelector('strong')?.textContent).toBe('Findings')
@@ -51,8 +82,14 @@ describe('goose native tools', () => {
     const { container } = renderACPToolPair(AgentProvider.GOOSE, {
       kind: 'other',
       rawInput: { instructions: 'Inspect the project', async: true },
-      _meta: { goose: { toolCall: { toolName: 'delegate', extensionName: 'summon' } } },
-    }, { content: acpTextContent('Task 20260911_1 started in background: "Inspect the project"\nContinue with other work. When you need the result, use load(source: "20260911_1").') })
+      _meta: {
+        goose: {
+          toolCall: { toolName: 'delegate', extensionName: 'summon' },
+        },
+      },
+    }, {
+      content: acpTextContent('Task 20260911_1 started in background: "Inspect the project"\nContinue with other work. When you need the result, use load(source: "20260911_1").'),
+    })
     expect(container.textContent).toContain('launched asynchronously')
     expect(container.textContent).toContain('Agent ID:20260911_1')
     expect(container.textContent).toContain('Inspect the project')
@@ -61,7 +98,21 @@ describe('goose native tools', () => {
   it('renders a subagent shell request with its actual command', () => {
     const { container } = renderACPToolPair(AgentProvider.GOOSE, {}, {
       status: 'in_progress',
-      _meta: { toolNotification: { type: 'message', params: { data: { type: 'subagent_tool_request', subagent_id: 'child', tool_call: { name: 'developer__shell', arguments: { command: 'printf request-marker' } } } } } },
+      _meta: {
+        toolNotification: {
+          type: 'message',
+          params: {
+            data: {
+              type: 'subagent_tool_request',
+              subagent_id: 'child',
+              tool_call: {
+                name: 'developer__shell',
+                arguments: { command: 'printf request-marker' },
+              },
+            },
+          },
+        },
+      },
     })
     expect(container.textContent).toContain('printf request-marker')
     expect(container.textContent).not.toContain('exit')
@@ -70,7 +121,21 @@ describe('goose native tools', () => {
   it('shows a subagent edit request without claiming an applied diff', () => {
     const { container } = renderACPToolPair(AgentProvider.GOOSE, {}, {
       status: 'in_progress',
-      _meta: { toolNotification: { type: 'message', params: { data: { type: 'subagent_tool_request', subagent_id: 'child', tool_call: { name: 'developer__edit', arguments: { path: 'sample.ts', before: 'before', after: 'after' } } } } } },
+      _meta: {
+        toolNotification: {
+          type: 'message',
+          params: {
+            data: {
+              type: 'subagent_tool_request',
+              subagent_id: 'child',
+              tool_call: {
+                name: 'developer__edit',
+                arguments: { path: 'sample.ts', before: 'before', after: 'after' },
+              },
+            },
+          },
+        },
+      },
     })
     expect(container.textContent).toContain('sample.ts')
     expect(container.textContent).toContain('Requested changes')
@@ -81,8 +146,14 @@ describe('goose native tools', () => {
 
   it('does not claim that the task list was cleared when the input is missing', () => {
     const { container } = renderACPToolPair(AgentProvider.GOOSE, {
-      _meta: { goose: { toolCall: { toolName: 'todo__todo_write', extensionName: 'todo' } } },
-    }, { content: acpTextContent('Tool outcome') })
+      _meta: {
+        goose: {
+          toolCall: { toolName: 'todo__todo_write', extensionName: 'todo' },
+        },
+      },
+    }, {
+      content: acpTextContent('Tool outcome'),
+    })
     expect(container.textContent).not.toContain('cleared')
     expect(container.textContent).toContain('Tool outcome')
   })
@@ -91,8 +162,14 @@ describe('goose native tools', () => {
     const { container } = renderACPToolPair(AgentProvider.GOOSE, {
       title: 'todo: todo write',
       rawInput: { content: '- [x] Completed task\n- [ ] Pending task' },
-      _meta: { goose: { toolCall: { toolName: 'todo__todo_write', extensionName: 'todo' } } },
-    }, { content: acpTextContent('Updated') })
+      _meta: {
+        goose: {
+          toolCall: { toolName: 'todo__todo_write', extensionName: 'todo' },
+        },
+      },
+    }, {
+      content: acpTextContent('Updated'),
+    })
     expect(container.querySelector(`.${todoList}`)?.textContent).toContain('Completed task')
     expect(container.querySelector(`.${todoList}`)?.textContent).toContain('Pending task')
   })
@@ -100,8 +177,14 @@ describe('goose native tools', () => {
   it('preserves headings and nested Markdown in a complex task list', () => {
     const { container } = renderACPToolPair(AgentProvider.GOOSE, {
       rawInput: { content: '## Tasks\n\n- [ ] **Inspect** files\n  - Keep this detail' },
-      _meta: { goose: { toolCall: { toolName: 'todo__todo_write', extensionName: 'todo' } } },
-    }, { content: acpTextContent('Updated') })
+      _meta: {
+        goose: {
+          toolCall: { toolName: 'todo__todo_write', extensionName: 'todo' },
+        },
+      },
+    }, {
+      content: acpTextContent('Updated'),
+    })
     expect(container.querySelector('h2')?.textContent).toBe('Tasks')
     expect(container.querySelector('strong')?.textContent).toBe('Inspect')
     expect(container.querySelector('li li')?.textContent).toContain('Keep this detail')
@@ -110,8 +193,14 @@ describe('goose native tools', () => {
     const { container } = renderACPToolPair(AgentProvider.GOOSE, {
       title: 'edit · sample.py',
       rawInput: { path: 'sample.py', before: 'answer = 41', after: 'answer = 42' },
-      _meta: { goose: { toolCall: { toolName: 'edit', extensionName: 'developer' } } },
-    }, { content: acpTextContent('Edited sample.py (1 lines -> 1 lines)') })
+      _meta: {
+        goose: {
+          toolCall: { toolName: 'edit', extensionName: 'developer' },
+        },
+      },
+    }, {
+      content: acpTextContent('Edited sample.py (1 lines -> 1 lines)'),
+    })
     expect(container.querySelector(`.${diffRemoved}`)?.textContent).toContain('answer = 41')
     expect(container.querySelector(`.${diffAdded}`)?.textContent).toContain('answer = 42')
     expect(container.textContent).toContain('Edited sample.py (1 lines -> 1 lines)')
@@ -122,8 +211,14 @@ describe('goose native tools', () => {
   it('renders a pure deletion with an empty after field', () => {
     const { container } = renderACPToolPair(AgentProvider.GOOSE, {
       rawInput: { path: 'sample.py', before: 'remove_this()', after: '' },
-      _meta: { goose: { toolCall: { toolName: 'developer__edit', extensionName: 'developer' } } },
-    }, { content: acpTextContent('Edited sample.py') })
+      _meta: {
+        goose: {
+          toolCall: { toolName: 'developer__edit', extensionName: 'developer' },
+        },
+      },
+    }, {
+      content: acpTextContent('Edited sample.py'),
+    })
     expect(container.querySelector(`.${diffRemoved}`)?.textContent).toContain('remove_this()')
     expect(container.querySelector(`.${diffAdded}`)).toBeNull()
   })
@@ -131,8 +226,15 @@ describe('goose native tools', () => {
   it('draws no requested diff for a failed write', () => {
     const { container } = renderACPToolPair(AgentProvider.GOOSE, {
       rawInput: { path: 'sample.py', content: 'unwritten()' },
-      _meta: { goose: { toolCall: { toolName: 'write', extensionName: 'developer' } } },
-    }, { status: 'failed', content: acpTextContent('Permission denied') })
+      _meta: {
+        goose: {
+          toolCall: { toolName: 'write', extensionName: 'developer' },
+        },
+      },
+    }, {
+      status: 'failed',
+      content: acpTextContent('Permission denied'),
+    })
     expect(container.textContent).toContain('Permission denied')
     expect(container.textContent).toContain('Error')
     // The file took nothing, so the attempted content draws nowhere.
@@ -150,12 +252,22 @@ describe('goose shell exit code', () => {
     kind: 'execute',
     title: 'List a missing directory',
     rawInput: { command: 'ls no-such/', description: 'List a missing directory' },
-    _meta: { goose: { toolCall: { toolName: 'developer__shell', extensionName: 'developer' } } },
+    _meta: {
+      goose: {
+        toolCall: { toolName: 'developer__shell', extensionName: 'developer' },
+      },
+    },
   }
   /** The two blocks Goose actually sends: the code, then the output. */
   const failureContent = [
-    { type: 'content', content: { type: 'text', text: 'exit code: 1' } },
-    { type: 'content', content: { type: 'text', text: 'ls: no-such/: No such file or directory\n' } },
+    {
+      type: 'content',
+      content: { type: 'text', text: 'exit code: 1' },
+    },
+    {
+      type: 'content',
+      content: { type: 'text', text: 'ls: no-such/: No such file or directory\n' },
+    },
   ]
 
   it('reads the code from the block Goose puts ahead of the output', () => {
@@ -186,7 +298,12 @@ describe('goose shell exit code', () => {
   it('leaves a successful command with no exit code in its body', () => {
     const { container } = renderACPToolPair(AgentProvider.GOOSE, shell, {
       status: 'completed',
-      content: [{ type: 'content', content: { type: 'text', text: 'hello\n' } }],
+      content: [
+        {
+          type: 'content',
+          content: { type: 'text', text: 'hello\n' },
+        },
+      ],
     })
     expect(container.textContent).toContain('hello')
     expect(container.textContent).not.toContain('exit code')

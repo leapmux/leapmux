@@ -113,9 +113,13 @@ export function classifyCopilotMessage(input: ClassificationInput): MessageCateg
 
   switch (event.type) {
     case COPILOT_EVENT.AssistantMessage:
-      return pickString(event.data, 'content').trim() ? { kind: 'assistant_text' } : { kind: 'hidden' }
+      return pickString(event.data, 'content').trim()
+        ? { kind: 'assistant_text' }
+        : { kind: 'hidden' }
     case COPILOT_EVENT.AssistantReasoning:
-      return pickString(event.data, 'content').trim() ? { kind: 'assistant_thinking' } : { kind: 'hidden' }
+      return pickString(event.data, 'content').trim()
+        ? { kind: 'assistant_thinking' }
+        : { kind: 'hidden' }
     case COPILOT_EVENT.ToolStarted:
       // An interrupted call can have no native completion. The Worker closes it with a copy of its start frame.
       // Read that retained copy as the result. See copilotSpanRole.
@@ -146,5 +150,9 @@ export function copilotResultDivider(parsed: unknown): { label: string, isError?
   const data = copilotEvent(parsed)?.data
   if (!data)
     return null
-  return { label: turnEndLabel(data.aborted === true ? 'interrupted' : 'ended') }
+  return {
+    label: turnEndLabel(data.aborted === true
+      ? 'interrupted'
+      : 'ended'),
+  }
 }

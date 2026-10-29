@@ -34,7 +34,9 @@ export function withoutCodebuddyClassifierSentinelMemory(protocol: MockModelProt
   if (!isObject(system) || system.role !== 'system' || typeof system.content !== 'string' || !system.content.startsWith(CODEBUDDY_CLASSIFIER_SYSTEM_OPENING))
     return body
   const messages = body.messages.filter(message => !quotesOnlySentinelMemory(message))
-  return messages.length === body.messages.length ? body : { ...body, messages }
+  return messages.length === body.messages.length
+    ? body
+    : { ...body, messages }
 }
 
 /** Whether `message` is the classifier's memory message, and its memory holds only sentinel documents. */

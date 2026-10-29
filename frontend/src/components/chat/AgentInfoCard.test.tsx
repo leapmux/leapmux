@@ -50,7 +50,9 @@ describe('agent info card session ID row', () => {
   beforeEach(() => {
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
-      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+      value: {
+        writeText: vi.fn().mockResolvedValue(undefined),
+      },
     })
   })
 
@@ -86,7 +88,9 @@ describe('agent info card path rows', () => {
   beforeEach(() => {
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
-      value: { writeText: vi.fn().mockResolvedValue(undefined) },
+      value: {
+        writeText: vi.fn().mockResolvedValue(undefined),
+      },
     })
   })
 
@@ -197,7 +201,14 @@ describe('agent info card rate-limit rows', () => {
   })
 
   it('shows a native plan label and calendar reset without an invented countdown', () => {
-    const rateLimits = { credit: { label: 'Native Probe Plan — Credits', resetsOn: '2026-11-25', utilization: 0.255, status: 'allowed' } }
+    const rateLimits = {
+      credit: {
+        label: 'Native Probe Plan — Credits',
+        resetsOn: '2026-11-25',
+        utilization: 0.255,
+        status: 'allowed',
+      },
+    }
     const { container } = render(() => <InfoCardWithInfo agent={agent(AgentProvider.KIRO, 's')} agentSessionInfo={{ rateLimits }} />)
     expect(container).toHaveTextContent('Native Probe Plan — Credits')
     expect(container).toHaveTextContent('Allowed, 26% used, resets on 2026-11-25')
@@ -210,7 +221,12 @@ describe('agent info card rate-limit rows', () => {
         agent={agent(AgentProvider.CODEX, 's')}
         agentSessionInfo={{
           rateLimits: {
-            five_hour: { rateLimitType: 'five_hour', status: 'allowed_warning', utilization: 0.85, resetsAt: future(3600) },
+            five_hour: {
+              rateLimitType: 'five_hour',
+              status: 'allowed_warning',
+              utilization: 0.85,
+              resetsAt: future(3600),
+            },
           },
         }}
       />
@@ -228,7 +244,12 @@ describe('agent info card rate-limit rows', () => {
         agent={agent(AgentProvider.CLAUDE_CODE, 's')}
         agentSessionInfo={{
           rateLimits: {
-            seven_day: { rateLimitType: 'seven_day', status: 'rejected', utilization: 1, resetsAt: future(7200) },
+            seven_day: {
+              rateLimitType: 'seven_day',
+              status: 'rejected',
+              utilization: 1,
+              resetsAt: future(7200),
+            },
           },
         }}
       />
@@ -383,7 +404,9 @@ describe('agent info card context row', () => {
     render(() => (
       <InfoCardContent
         agent={agent(AgentProvider.KIRO, 'sid')}
-        agentSessionInfo={{ contextUsage: { ...usage, inputTokens: 50_000, contextWindow: 200_000 } }}
+        agentSessionInfo={{
+          contextUsage: { ...usage, inputTokens: 50_000, contextWindow: 200_000 },
+        }}
       />
     ))
     expect(screen.getByText('50.0k / 200.0k (25%)')).toBeInTheDocument()
@@ -396,7 +419,14 @@ describe('agent info card context row', () => {
     render(() => (
       <InfoCardContent
         agent={agent(AgentProvider.KIRO, 'sid')}
-        agentSessionInfo={{ contextUsage: { inputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, contextTokens: 0 } }}
+        agentSessionInfo={{
+          contextUsage: {
+            inputTokens: 0,
+            cacheCreationInputTokens: 0,
+            cacheReadInputTokens: 0,
+            contextTokens: 0,
+          },
+        }}
       />
     ))
     expect(screen.getByText('0 / 200.0k')).toBeInTheDocument()
@@ -406,7 +436,14 @@ describe('agent info card context row', () => {
     render(() => (
       <InfoCardContent
         agent={agent(AgentProvider.KIRO, 'sid')}
-        agentSessionInfo={{ contextUsage: { inputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, usagePercent: 0 } }}
+        agentSessionInfo={{
+          contextUsage: {
+            inputTokens: 0,
+            cacheCreationInputTokens: 0,
+            cacheReadInputTokens: 0,
+            usagePercent: 0,
+          },
+        }}
       />
     ))
     expect(screen.getByText('0% of the context window')).toBeInTheDocument()
@@ -416,7 +453,14 @@ describe('agent info card context row', () => {
     render(() => (
       <InfoCardContent
         agent={agent(AgentProvider.CLAUDE_CODE, 'sid')}
-        agentSessionInfo={{ contextUsage: { inputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, usagePercent: 40 } }}
+        agentSessionInfo={{
+          contextUsage: {
+            inputTokens: 0,
+            cacheCreationInputTokens: 0,
+            cacheReadInputTokens: 0,
+            usagePercent: 40,
+          },
+        }}
       />
     ))
     // Claude reserves 16.5%, so 40% of the window is ~48% of what it can use. The row
@@ -428,7 +472,14 @@ describe('agent info card context row', () => {
     render(() => (
       <InfoCardContent
         agent={agent(AgentProvider.KIRO, 'sid')}
-        agentSessionInfo={{ contextUsage: { inputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, usagePercent: 40 } }}
+        agentSessionInfo={{
+          contextUsage: {
+            inputTokens: 0,
+            cacheCreationInputTokens: 0,
+            cacheReadInputTokens: 0,
+            usagePercent: 40,
+          },
+        }}
       />
     ))
     expect(screen.getByText('40% of the context window')).toBeInTheDocument()
@@ -438,7 +489,9 @@ describe('agent info card context row', () => {
     render(() => (
       <InfoCardContent
         agent={agent(AgentProvider.CLAUDE_CODE, 'sid')}
-        agentSessionInfo={{ contextUsage: { ...usage, inputTokens: 83_500, contextWindow: 200_000 } }}
+        agentSessionInfo={{
+          contextUsage: { ...usage, inputTokens: 83_500, contextWindow: 200_000 },
+        }}
       />
     ))
     expect(screen.getByText(/\(50% with 16\.5% headroom\)$/)).toBeInTheDocument()

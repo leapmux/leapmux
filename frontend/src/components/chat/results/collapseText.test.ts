@@ -25,6 +25,8 @@ describe('countLines', () => {
   ])('counts %j as %i lines', (text, expected) => {
     expect(countLines(text)).toBe(expected)
     // The expression it replaced, as the oracle.
-    expect(countLines(text)).toBe(text === '' ? 0 : text.replace(/\n$/, '').split('\n').length)
+    expect(countLines(text)).toBe(text === ''
+      ? 0
+      : text.replace(/\n$/, '').split('\n').length)
   })
 })

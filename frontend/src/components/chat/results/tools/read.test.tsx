@@ -21,7 +21,12 @@ describe('read renderer', () => {
     request: { path: '/p/a.ts', offset: 5, limit: 10 },
     minimalTitlePart: 'a.ts',
     titlePart: 'a.ts',
-    result: { lines: [{ num: 5, text: 'alpha' }], fallbackContent: '' },
+    result: {
+      lines: [
+        { num: 5, text: 'alpha' },
+      ],
+      fallbackContent: '',
+    },
     resultPart: 'alpha',
   })
 
@@ -44,10 +49,25 @@ describe('read renderer', () => {
    * screen at all: the row answered `collapsible: false` and drew no chevron.
    */
   it('offers Expand for a reminder that sits above a short body', () => {
-    const short = { lines: [{ num: 1, text: 'alpha' }], fallbackContent: '' }
+    const short = {
+      lines: [
+        { num: 1, text: 'alpha' },
+      ],
+      fallbackContent: '',
+    }
     expect(collapsibleOf(short)).toBe(false)
-    expect(collapsibleOf({ ...short, leading: [{ label: 'System Reminder', text: 'PARTIAL view' }] })).toBe(true)
-    expect(collapsibleOf({ ...short, trailing: [{ label: 'System Reminder', text: 'usage' }] })).toBe(true)
+    expect(collapsibleOf({
+      ...short,
+      leading: [
+        { label: 'System Reminder', text: 'PARTIAL view' },
+      ],
+    })).toBe(true)
+    expect(collapsibleOf({
+      ...short,
+      trailing: [
+        { label: 'System Reminder', text: 'usage' },
+      ],
+    })).toBe(true)
   })
 
   it('still offers Expand for a body longer than the collapsed rows', () => {

@@ -30,7 +30,9 @@ export function isMirroredMessageRow(kind: MessageCategory['kind'], source: Mess
 export function messageRowClass(kind: MessageCategory['kind'], source: MessageSource): string {
   if (kind === 'notification')
     return chatStyles.messageRowCenter
-  return isMirroredMessageRow(kind, source) ? chatStyles.messageRowEnd : chatStyles.messageRow
+  return isMirroredMessageRow(kind, source)
+    ? chatStyles.messageRowEnd
+    : chatStyles.messageRow
 }
 
 export function messageBubbleClass(kind: MessageCategory['kind'], source: MessageSource): string {
@@ -51,9 +53,14 @@ export function rowIsWidened(kind: MessageCategory['kind'], source: MessageSourc
 
 export function messageRowChromeClass(kind: MessageCategory['kind'], source: MessageSource): string {
   const band = messageBandKind(kind)
-  if (band)
-    return band === 'thought' ? `${chatStyles.bandRow} ${chatStyles.bandRowThought}` : chatStyles.bandRow
-  return rowIsWidened(kind, source) ? chatStyles.bleedRow : ''
+  if (band) {
+    return band === 'thought'
+      ? `${chatStyles.bandRow} ${chatStyles.bandRowThought}`
+      : chatStyles.bandRow
+  }
+  return rowIsWidened(kind, source)
+    ? chatStyles.bleedRow
+    : ''
 }
 
 export function bubbleRunsToRightEdge(kind: MessageCategory['kind'], source: MessageSource): boolean {
@@ -67,7 +74,10 @@ export interface MessageRowChrome {
 
 export function messageRowChrome(baseClass: string, kind: MessageCategory['kind'], source: MessageSource): MessageRowChrome {
   return {
-    class: [baseClass, messageRowChromeClass(kind, source)].filter(Boolean).join(' '),
+    class: [
+      baseClass,
+      messageRowChromeClass(kind, source),
+    ].filter(Boolean).join(' '),
     band: messageBandKind(kind),
   }
 }

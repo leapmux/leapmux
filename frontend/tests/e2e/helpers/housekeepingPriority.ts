@@ -48,10 +48,16 @@ export async function answerHousekeepingBesideContentRule(
       // The server refuses an extension that adds nothing.
       if (rules.length > 0)
         await script.rule(...rules)
-      await script.rule({ name: 'content-rule', when: { user: CONTENT_TASK }, respond: { text: CONTENT_RULE_ANSWER } })
+      await script.rule({
+        name: 'content-rule',
+        when: { user: CONTENT_TASK },
+        respond: { text: CONTENT_RULE_ANSWER },
+      })
       const prompt = script.prompt(`${CONTENT_TASK}.`)
       const housekeeping = await chat(server.url, housekeepingRequest(prompt))
-      const content = await chat(server.url, [{ role: 'user', content: prompt }])
+      const content = await chat(server.url, [
+        { role: 'user', content: prompt },
+      ])
       const { ruleMatches } = await script.status()
       answered = true
       return { housekeeping, content, ruleMatches }

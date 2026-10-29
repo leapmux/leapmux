@@ -23,12 +23,16 @@ export function deepseekHarnessCompletedReport(request: MockModelRequestRecord, 
     throw new Error(`The native parent report response failed with status ${request.response.status}.`)
   if (request.protocol !== 'anthropic-messages' || !parentSessionId)
     throw new Error('The native parent report requires its exact Session and model protocol.')
-  const body = isObject(request.body) ? request.body : undefined
+  const body = isObject(request.body)
+    ? request.body
+    : undefined
   const log = pickObject(body, 'dsh_session_log')
   if (pickObject(log, 'session')?.id !== parentSessionId || !Array.isArray(log?.events))
     throw new Error('The native parent report request does not belong to the stored parent Session.')
   const start = log.events.findLast((event: unknown) => isObject(event) && event.type === DEEPSEEK_HARNESS_EVENT.TurnStart)
-  const turn = isObject(start) ? pickObject(start, 'data')?.turn : undefined
+  const turn = isObject(start)
+    ? pickObject(start, 'data')?.turn
+    : undefined
   if (typeof turn !== 'number' || !Number.isSafeInteger(turn) || turn < 1)
     throw new Error('The native parent report has no exact native turn identity.')
   const endings = frames.map(frame => deepseekHarnessEventData(frame, DEEPSEEK_HARNESS_EVENT.TurnEnd)).filter(data => data?.turn === turn)
@@ -46,7 +50,10 @@ export function deepseekHarnessCompletedReport(request: MockModelRequestRecord, 
 export async function waitForDeepseekHarnessChildReport(context: ManagedNativeScenarioContext, childAgentId: string, parentAgentId: string, reportNumber = 1): Promise<void> {
   if (!childAgentId || !parentAgentId || childAgentId === parentAgentId || !Number.isSafeInteger(reportNumber) || reportNumber < 1)
     throw new Error('The native child report requires distinct stored owners and a positive report count.')
-  const [child, parent] = await Promise.all([nativeAgentById(context, childAgentId), nativeAgentById(context, parentAgentId)])
+  const [child, parent] = await Promise.all([
+    nativeAgentById(context, childAgentId),
+    nativeAgentById(context, parentAgentId),
+  ])
   if (!child?.agentSessionId || !parent?.agentSessionId || child.parentAgentId !== parentAgentId)
     throw new Error('The native child report has no exact stored parent and child Session owners.')
   const rule = deepseekHarnessChildReportRule(child.agentSessionId)

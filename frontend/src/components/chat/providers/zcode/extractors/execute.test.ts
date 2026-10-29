@@ -5,24 +5,39 @@ import { extractZCodeBash, zcodeBashToCommandResult } from './execute'
 import { zcodeRow } from './toolCommon'
 
 function toolEvent(kind: string, payload: Record<string, unknown>): Record<string, unknown> {
-  return { type: ZCODE_EVENT.ToolUpdated, payload: { kind, toolCallId: 'call-1', ...payload } }
+  return {
+    type: ZCODE_EVENT.ToolUpdated,
+    payload: { kind, toolCallId: 'call-1', ...payload },
+  }
 }
 
 /** The scheduled row, which is the ONLY place the command itself lives. */
 function scheduled(input: Record<string, unknown>, toolName: string = ZCODE_TOOL.Bash): ParsedMessageContent {
   const parent = toolEvent(ZCODE_TOOL_KIND.Scheduled, { toolName, input })
-  return { rawText: '', topLevel: parent, parentObject: parent, wrapper: null }
+  return {
+    rawText: '',
+    topLevel: parent,
+    parentObject: parent,
+    wrapper: null,
+  }
 }
 
 function commandResult(result: Record<string, unknown>, extra: Record<string, unknown> = {}) {
   return toolEvent(ZCODE_TOOL_KIND.Result, { result, ...extra })
 }
 
-const perf = (command: Record<string, unknown>) => ({ detail: { kind: 'command', command } })
+function perf(command: Record<string, unknown>) {
+  return {
+    detail: { kind: 'command', command },
+  }
+}
 
 describe('extractZCodeBash', () => {
   it('reads the command from the scheduled row and the output from the result', () => {
-    expect(extractZCodeBash(zcodeRow(commandResult({ content: 'total 48\nfile1\n', perf: perf({ exitCode: 0 }) }, { duration: 120 }), undefined, scheduled({ command: 'ls -la', description: 'list files' })))).toEqual({
+    expect(extractZCodeBash(zcodeRow(commandResult({
+      content: 'total 48\nfile1\n',
+      perf: perf({ exitCode: 0 }),
+    }, { duration: 120 }), undefined, scheduled({ command: 'ls -la', description: 'list files' })))).toEqual({
       command: 'ls -la',
       description: 'list files',
       output: 'total 48\nfile1\n',
@@ -45,29 +60,50 @@ describe('extractZCodeBash', () => {
   // null, and only the second contradicts a leading `Exit code N` line -- so the two
   // cases need a field of their own to tell them apart.
   it('reports the telemetry block separately from the exit code it may omit', () => {
-    const withoutCode = extractZCodeBash(zcodeRow(commandResult({ content: 'out', perf: perf({ timedOut: false }) }), ZCODE_TOOL.Bash, undefined))
+    const withoutCode = extractZCodeBash(zcodeRow(commandResult({
+      content: 'out',
+      perf: perf({ timedOut: false }),
+    }), ZCODE_TOOL.Bash, undefined))
     expect(withoutCode).toMatchObject({ exitCode: null, hasCommandTelemetry: true })
     expect(extractZCodeBash(zcodeRow(commandResult({ content: 'out' }), ZCODE_TOOL.Bash, undefined))?.hasCommandTelemetry).toBe(false)
-    expect(extractZCodeBash(zcodeRow(commandResult({ content: 'out', perf: perf({}) }), ZCODE_TOOL.Bash, undefined))?.hasCommandTelemetry).toBe(false)
+    expect(extractZCodeBash(zcodeRow(commandResult({
+      content: 'out',
+      perf: perf({}),
+    }), ZCODE_TOOL.Bash, undefined))?.hasCommandTelemetry).toBe(false)
   })
 
   // The detail block is per-kind. Reading `command` off a patch detail would pick up
   // an unrelated shape, so the kind is checked before the block is trusted.
   it('ignores a perf detail whose kind is not command', () => {
-    expect(extractZCodeBash(zcodeRow(commandResult({ content: 'out', perf: { detail: { kind: 'patch', command: { exitCode: 3 } } } }), ZCODE_TOOL.Bash, undefined))?.exitCode).toBeNull()
+    expect(extractZCodeBash(zcodeRow(commandResult({
+      content: 'out',
+      perf: {
+        detail: {
+          kind: 'patch',
+          command: { exitCode: 3 },
+        },
+      },
+    }), ZCODE_TOOL.Bash, undefined))?.exitCode).toBeNull()
   })
 
   it('carries a non-zero exit code and the timedOut flag through', () => {
-    const bash = extractZCodeBash(zcodeRow(commandResult({ content: 'boom', perf: perf({ exitCode: 137, timedOut: true }) }), ZCODE_TOOL.Bash, undefined))
+    const bash = extractZCodeBash(zcodeRow(commandResult({
+      content: 'boom',
+      perf: perf({ exitCode: 137, timedOut: true }),
+    }), ZCODE_TOOL.Bash, undefined))
     expect(bash).toMatchObject({ exitCode: 137, timedOut: true })
   })
 
   it('reports the error text of a failed call as the output', () => {
-    expect(extractZCodeBash(zcodeRow(toolEvent(ZCODE_TOOL_KIND.Error, { error: { message: 'permission denied' } }), ZCODE_TOOL.Bash, undefined))).toMatchObject({ output: 'permission denied', isError: true })
+    expect(extractZCodeBash(zcodeRow(toolEvent(ZCODE_TOOL_KIND.Error, {
+      error: { message: 'permission denied' },
+    }), ZCODE_TOOL.Bash, undefined))).toMatchObject({ output: 'permission denied', isError: true })
   })
 
   it('falls back to the result content when a failed call carries no error message', () => {
-    expect(extractZCodeBash(zcodeRow(toolEvent(ZCODE_TOOL_KIND.Error, { result: { content: 'the shell said no' } }), ZCODE_TOOL.Bash, undefined))).toMatchObject({ output: 'the shell said no', isError: true })
+    expect(extractZCodeBash(zcodeRow(toolEvent(ZCODE_TOOL_KIND.Error, {
+      result: { content: 'the shell said no' },
+    }), ZCODE_TOOL.Bash, undefined))).toMatchObject({ output: 'the shell said no', isError: true })
   })
 
   it('marks a result the app-server declared unsuccessful as an error', () => {
@@ -79,7 +115,10 @@ describe('extractZCodeBash', () => {
   })
 
   it('reads the command off its own scheduled row, with no sibling', () => {
-    expect(extractZCodeBash(zcodeRow(toolEvent(ZCODE_TOOL_KIND.Scheduled, { toolName: ZCODE_TOOL.Bash, input: { command: 'pwd' } }), undefined, undefined))).toMatchObject({ command: 'pwd', output: '' })
+    expect(extractZCodeBash(zcodeRow(toolEvent(ZCODE_TOOL_KIND.Scheduled, {
+      toolName: ZCODE_TOOL.Bash,
+      input: { command: 'pwd' },
+    }), undefined, undefined))).toMatchObject({ command: 'pwd', output: '' })
   })
 
   it('reports an empty command when neither the row nor the sibling has one', () => {
@@ -98,7 +137,10 @@ describe('extractZCodeBash', () => {
   // A tool.updated with no toolCallId identifies no call, so it cannot be paired with
   // a span and is not treated as one.
   it('returns null for a tool.updated carrying no toolCallId', () => {
-    expect(extractZCodeBash(zcodeRow({ type: ZCODE_EVENT.ToolUpdated, payload: { kind: ZCODE_TOOL_KIND.Result, toolName: ZCODE_TOOL.Bash } }, ZCODE_TOOL.Bash, undefined))).toBeNull()
+    expect(extractZCodeBash(zcodeRow({
+      type: ZCODE_EVENT.ToolUpdated,
+      payload: { kind: ZCODE_TOOL_KIND.Result, toolName: ZCODE_TOOL.Bash },
+    }, ZCODE_TOOL.Bash, undefined))).toBeNull()
   })
 })
 
@@ -171,7 +213,12 @@ describe('zcodeBashToCommandResult exit-code line', () => {
   // A disagreement is worth showing, so the line survives it and the structured
   // field -- the one the app-server computed rather than formatted -- wins the label.
   it('keeps the line when it disagrees with the structured code', () => {
-    const source = zcodeBashToCommandResult({ ...base, output: 'Exit code 3\nboom', exitCode: 1, hasCommandTelemetry: true })
+    const source = zcodeBashToCommandResult({
+      ...base,
+      output: 'Exit code 3\nboom',
+      exitCode: 1,
+      hasCommandTelemetry: true,
+    })
     expect(source.output).toBe('Exit code 3\nboom')
     expect(source.exitCode).toBe(1)
   })
@@ -184,7 +231,12 @@ describe('zcodeBashToCommandResult exit-code line', () => {
   })
 
   it('leaves output without the line untouched', () => {
-    const source = zcodeBashToCommandResult({ ...base, output: 'plain output', exitCode: 0, hasCommandTelemetry: true })
+    const source = zcodeBashToCommandResult({
+      ...base,
+      output: 'plain output',
+      exitCode: 0,
+      hasCommandTelemetry: true,
+    })
     expect(source.output).toBe('plain output')
     expect(source.exitCode).toBe(0)
   })
@@ -201,13 +253,23 @@ describe('zcodeBashToCommandResult exit-code line', () => {
   // a command whose OWN output begins with those words reaches the same test. With no
   // structured code there is nothing to compare, so another field has to contradict it.
   it('keeps the line when telemetry arrived without an exit code', () => {
-    const source = zcodeBashToCommandResult({ ...base, output: 'Exit code 2\nnope', exitCode: null, hasCommandTelemetry: true })
+    const source = zcodeBashToCommandResult({
+      ...base,
+      output: 'Exit code 2\nnope',
+      exitCode: null,
+      hasCommandTelemetry: true,
+    })
     expect(source.output).toBe('Exit code 2\nnope')
     expect(source.exitCode).toBeUndefined()
   })
 
   it('keeps a line claiming exit 0 on a call the app-server marked an error', () => {
-    const source = zcodeBashToCommandResult({ ...base, output: 'Exit code 0\nstill broken', exitCode: null, isError: true })
+    const source = zcodeBashToCommandResult({
+      ...base,
+      output: 'Exit code 0\nstill broken',
+      exitCode: null,
+      isError: true,
+    })
     expect(source.output).toBe('Exit code 0\nstill broken')
     expect(source.exitCode).toBeUndefined()
   })
@@ -223,7 +285,12 @@ describe('zcodeBashToCommandResult exit-code line', () => {
   // An error row's own text is the app-server's words, so a non-zero line there states
   // the code the same way.
   it('takes a non-zero code from the line on an error row', () => {
-    const source = zcodeBashToCommandResult({ ...base, output: 'Exit code 7\nboom', exitCode: null, isError: true })
+    const source = zcodeBashToCommandResult({
+      ...base,
+      output: 'Exit code 7\nboom',
+      exitCode: null,
+      isError: true,
+    })
     expect(source.output).toBe('boom')
     expect(source.exitCode).toBe(7)
   })

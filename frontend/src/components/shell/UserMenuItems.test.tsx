@@ -50,7 +50,9 @@ vi.mock('~/components/common/DropdownMenu', () => ({
   DropdownMenuItemContent: (props: { label: string, detail?: string }) => (
     <span>
       <span>{props.label}</span>
-      {props.detail ? <span>{props.detail}</span> : null}
+      {props.detail
+        ? <span>{props.detail}</span>
+        : null}
     </span>
   ),
 }))

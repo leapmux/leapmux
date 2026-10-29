@@ -108,7 +108,9 @@ export const DialogFormFooter: Component<DialogFormFooterProps> = (props) => {
         <Show when={props.submitting}>
           <Spinner />
         </Show>
-        {props.submitting ? submittingLabel() : props.submitLabel}
+        {props.submitting
+          ? submittingLabel()
+          : props.submitLabel}
       </button>
     </>
   )

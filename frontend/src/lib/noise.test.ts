@@ -136,8 +136,14 @@ function responderHandshake(staticPrivateKey: Uint8Array, staticPublicKey: Uint8
   // Initiator: send=cs2 (tempK2), receive=cs1 (tempK1)
   return {
     message2,
-    send: { k: tempK1.slice(0, 32), n: 0 },
-    receive: { k: tempK2.slice(0, 32), n: 0 },
+    send: {
+      k: tempK1.slice(0, 32),
+      n: 0,
+    },
+    receive: {
+      k: tempK2.slice(0, 32),
+      n: 0,
+    },
   }
 }
 

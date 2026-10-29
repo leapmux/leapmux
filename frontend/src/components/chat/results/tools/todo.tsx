@@ -22,7 +22,10 @@ export const TODO_PARTIAL_LIST_NOTICE = 'The turn stopped, so this list is parti
 
 /** One checklist and the note under it, as the markdown the toolbar copies and quotes. */
 function todoCopyable(items: TodoItem[], note: string | undefined): string | null {
-  return [todosToMarkdown(items), note].filter(Boolean).join('\n\n') || null
+  return [
+    todosToMarkdown(items),
+    note,
+  ].filter(Boolean).join('\n\n') || null
 }
 
 export const todoRenderer: ToolKindRenderer<'todo'> = {
@@ -37,7 +40,9 @@ export const todoRenderer: ToolKindRenderer<'todo'> = {
     // 'To-do list', not 'To-do list cleared': the BODY one line below already states
     // that the list is empty, in `emptyText`, and a header that said it too printed
     // the same sentence twice on the same row.
-    return items.length ? pluralize(items.length, 'task') : 'To-do list'
+    return items.length
+      ? pluralize(items.length, 'task')
+      : 'To-do list'
   },
   request(call, view) {
     // A result row draws the saved list in its own result slot; a request or
@@ -52,7 +57,16 @@ export const todoRenderer: ToolKindRenderer<'todo'> = {
       <Show when={view.role !== 'result' && !view.hasResultRow && call.result === undefined}>
         <TodoListBody todos={call.request.items} />
         <Show when={call.request.note}>
-          {note => <CollapsibleContent kind="markdown-tool-result" text={note()} isCollapsed={false} {...(view.context !== undefined ? { context: view.context } : {})} />}
+          {note => (
+            <CollapsibleContent
+              kind="markdown-tool-result"
+              text={note()}
+              isCollapsed={false}
+              {...(view.context !== undefined
+                ? { context: view.context }
+                : {})}
+            />
+          )}
         </Show>
       </Show>
     )
@@ -63,11 +77,28 @@ export const todoRenderer: ToolKindRenderer<'todo'> = {
     // marker needs no producer to carry a second copy of it.
     return (
       <>
-        <TodoListBody todos={call.result.items} {...(call.result.emptyText !== undefined ? { emptyText: call.result.emptyText } : {})} />
+        <TodoListBody
+          todos={call.result.items}
+          {...(call.result.emptyText !== undefined
+            ? { emptyText: call.result.emptyText }
+            : {})}
+        />
         <Show when={toolCallStatusOutcome(call.status) === 'interrupted'}>
           <div class={toolInputSummary}>{TODO_PARTIAL_LIST_NOTICE}</div>
         </Show>
-        {call.result.note ? <CollapsibleContent outputPreview kind="markdown-tool-result" text={call.result.note} isCollapsed={false} {...(view.context !== undefined ? { context: view.context } : {})} /> : null}
+        {call.result.note
+          ? (
+              <CollapsibleContent
+                outputPreview
+                kind="markdown-tool-result"
+                text={call.result.note}
+                isCollapsed={false}
+                {...(view.context !== undefined
+                  ? { context: view.context }
+                  : {})}
+              />
+            )
+          : null}
       </>
     )
   },
@@ -83,7 +114,9 @@ export const todoRenderer: ToolKindRenderer<'todo'> = {
     return {
       collapsible: false,
       hasDiff: false,
-      copyableContent: () => hasResult ? null : todoCopyable(call.request.items, call.request.note),
+      copyableContent: () => hasResult
+        ? null
+        : todoCopyable(call.request.items, call.request.note),
     }
   },
   resultMeta(call) {

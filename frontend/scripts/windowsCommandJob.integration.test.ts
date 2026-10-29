@@ -71,8 +71,14 @@ createServer((request, response) => response.end('private child')).listen(0, '12
 
 afterEach(() => {
   // A Windows job directory stays locked briefly after its owner exits, so the cleanup retries.
-  for (const directory of directories)
-    rmSync(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+  for (const directory of directories) {
+    rmSync(directory, {
+      recursive: true,
+      force: true,
+      maxRetries: 10,
+      retryDelay: 100,
+    })
+  }
   directories.clear()
 })
 
@@ -148,9 +154,31 @@ function requireEnded(captured: { pid: number, creationTime: string }[]): void {
 windowsOnly('Windows command job native integration', () => {
   it('preserves quoted arguments, stdin, environment, and the working directory', async () => {
     const data = fixture()
-    const args = ['', 'two words', 'a"b', 'trailing slash\\', '日本語', '$literal;&']
-    const environment = { ...process.env, LEAPMUX_JOB_VALUE: 'value-保留', LEAPMUX_JOB_EMPTY: '', LEAPMUX_JOB_OMIT: undefined }
-    const resource = spawnCommandProcess(process.execPath, [data.program, 'stdio', data.receipt, ...args], { cwd: data.directory, env: environment, stdio: ['pipe', 'pipe', 'pipe'], argv0: 'private argv0' }, { ownTree: true })
+    const args = [
+      '',
+      'two words',
+      'a"b',
+      'trailing slash\\',
+      '日本語',
+      '$literal;&',
+    ]
+    const environment = {
+      ...process.env,
+      LEAPMUX_JOB_VALUE: 'value-保留',
+      LEAPMUX_JOB_EMPTY: '',
+      LEAPMUX_JOB_OMIT: undefined,
+    }
+    const resource = spawnCommandProcess(process.execPath, [
+      data.program,
+      'stdio',
+      data.receipt,
+      ...args,
+    ], {
+      cwd: data.directory,
+      env: environment,
+      stdio: ['pipe', 'pipe', 'pipe'],
+      argv0: 'private argv0',
+    }, { ownTree: true })
     const completion = closed(resource.child)
     let stdout = ''
     let stderr = ''
@@ -161,7 +189,14 @@ windowsOnly('Windows command job native integration', () => {
         throw new Error('The native owner has no stdin pipe.')
       resource.child.stdin.end('先頭\nfinal42')
       expect(await completion).toEqual({ code: 0, signal: null })
-      expect(readReceipt(data.receipt)).toEqual({ args, argv0: 'private argv0', input: '先頭\nfinal42', cwd: data.directory, value: 'value-保留', empty: '' })
+      expect(readReceipt(data.receipt)).toEqual({
+        args,
+        argv0: 'private argv0',
+        input: '先頭\nfinal42',
+        cwd: data.directory,
+        value: 'value-保留',
+        empty: '',
+      })
       expect(stdout).toBe('stdout:先頭\nfinal42')
       expect(stderr).toBe('stderr:complete')
     }
@@ -245,7 +280,15 @@ windowsOnly('Windows command job native integration', () => {
       const payload = readReceipt(originalPayloadPath)
       const statePath = join(data.directory, 'different-identity.json')
       const payloadPath = join(data.directory, 'verify-payload.json')
-      writeFileSync(statePath, JSON.stringify({ version: 1, ownerPid: resource.child.pid, rootPid: captured[0]!.pid, complete: false, members: [{ pid: captured[0]!.pid, creationTime: '1' }] }))
+      writeFileSync(statePath, JSON.stringify({
+        version: 1,
+        ownerPid: resource.child.pid,
+        rootPid: captured[0]!.pid,
+        complete: false,
+        members: [
+          { pid: captured[0]!.pid, creationTime: '1' },
+        ],
+      }))
       writeFileSync(payloadPath, JSON.stringify({ ...payload, statePath }))
       await new Promise<void>((accept, reject) => {
         execFile('powershell.exe', windowsJobArguments('Verify', payloadPath), { windowsHide: true }, (error) => {
@@ -271,7 +314,10 @@ windowsOnly('Windows command job native integration', () => {
     const resources = [first, second].map(data => spawnCommandProcess(process.execPath, [data.program, 'hold', data.receipt], { cwd: data.directory, stdio: 'ignore' }, { ownTree: true }))
     const completions = resources.map(resource => closed(resource.child))
     try {
-      await Promise.all([receiptReady(first.receipt, completions[0]!), receiptReady(second.receipt, completions[1]!)])
+      await Promise.all([
+        receiptReady(first.receipt, completions[0]!),
+        receiptReady(second.receipt, completions[1]!),
+      ])
       const firstIds = identities(readReceipt(first.receipt))
       const secondIds = identities(readReceipt(second.receipt))
       await resources[0]!.stop()

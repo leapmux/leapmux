@@ -162,7 +162,9 @@ function isTargetClipped(target: Element): boolean {
   // `<input>` and `<textarea>` always clip overflowing value/text regardless
   // of their computed overflow (which browsers typically report as `visible`).
   const intrinsicallyClips = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement
-  const csTarget = intrinsicallyClips ? null : getComputedStyle(target)
+  const csTarget = intrinsicallyClips
+    ? null
+    : getComputedStyle(target)
   const clipsSelfX = intrinsicallyClips || csTarget!.overflowX !== 'visible'
   const clipsSelfY = intrinsicallyClips || csTarget!.overflowY !== 'visible'
   if (clipsSelfX && target.scrollWidth - target.clientWidth > CLIP_TOLERANCE_PX)
@@ -213,13 +215,13 @@ function isTargetClipped(target: Element): boolean {
 /**
  * Portal-based tooltip that escapes overflow:hidden containers.
  *
- * Oat UI's built-in tooltips (`[data-tooltip]`) use CSS-only `::before`/`::after`
- * pseudo-elements with `position: absolute`. Because pseudo-elements cannot escape
- * a containing block's overflow clipping, tooltips inside any ancestor with
- * `overflow: hidden` (sidebars, tiles, tab bars, etc.) are clipped or invisible.
+ * It renders tooltip content into document.body via a SolidJS Portal and
+ * positions it with getBoundingClientRect(), so no ancestor with
+ * `overflow: hidden` (sidebars, tiles, tab bars, etc.) clips it.
  *
- * This component solves the problem by rendering tooltip content into document.body
- * via a SolidJS Portal and positioning it with getBoundingClientRect().
+ * Oat UI's built-in tooltip (`[data-tooltip]`) renders a popover, so it escapes
+ * clipping too, but its script also copies a `title` into `aria-label`, which
+ * is the harm that the next section describes. The app sets neither attribute.
  *
  * ## A DISABLED child
  *
@@ -273,7 +275,9 @@ export function Tooltip(props: TooltipProps) {
   /** Whether this component renders the offscreen copy itself. */
   const ownsDescription = () => !props.describedBy
   /** The accessible name this tooltip writes onto the target, if any. */
-  const effectiveAriaLabel = () => (props.ariaLabel === true ? props.text : props.ariaLabel)
+  const effectiveAriaLabel = () => (props.ariaLabel === true
+    ? props.text
+    : props.ariaLabel)
   /**
    * Whether the offscreen description says anything the NAME does not.
    *
@@ -322,7 +326,9 @@ export function Tooltip(props: TooltipProps) {
    * read free and holds one instance. A content factory stays dormant until
    * `visible` becomes true, so an unopened tooltip creates no rich subtree.
    */
-  const contentEl = createMemo(() => visible() ? (props.contentFactory?.() ?? props.content) : undefined)
+  const contentEl = createMemo(() => visible()
+    ? (props.contentFactory?.() ?? props.content)
+    : undefined)
 
   /** Whether this tooltip has anything to show. */
   const hasTooltipContent = () => Boolean(props.text || props.content !== undefined || props.contentFactory !== undefined)
@@ -388,14 +394,21 @@ export function Tooltip(props: TooltipProps) {
     }
     sync()
     const observer = new MutationObserver(sync)
-    observer.observe(target, { attributes: true, attributeFilter: ['disabled', 'aria-disabled'] })
+    observer.observe(target, {
+      attributes: true,
+      attributeFilter: ['disabled', 'aria-disabled'],
+    })
     // The ENCLOSING control too, when the target is not one itself: a label
     // inside a button is disabled by that button, so watching only the label
     // would leave the description missing for as long as the control stays
     // disabled -- exactly the window the description exists to cover.
     const host = disablingHost(target)
-    if (host && host !== target)
-      observer.observe(host, { attributes: true, attributeFilter: ['disabled', 'aria-disabled'] })
+    if (host && host !== target) {
+      observer.observe(host, {
+        attributes: true,
+        attributeFilter: ['disabled', 'aria-disabled'],
+      })
+    }
     onCleanup(() => observer.disconnect())
   })
 
@@ -514,7 +527,9 @@ export function Tooltip(props: TooltipProps) {
     //
     // The RECT still comes from the target either way, so the tooltip points at
     // the control rather than at the box around it.
-    const listenEls: Element[] = triggerWrapperEl ? [triggerWrapperEl, target] : [target]
+    const listenEls: Element[] = triggerWrapperEl
+      ? [triggerWrapperEl, target]
+      : [target]
 
     // Re-establish the Tooltip's reactive owner inside the event listener
     // callbacks. Without this, reading `props.content` (a lazy JSX getter)
@@ -523,7 +538,9 @@ export function Tooltip(props: TooltipProps) {
     // across every tooltip-show. See the corresponding comment near the
     // owner capture at the top of this component.
     const wrapInOwner = (fn: () => void): (() => void) =>
-      tooltipOwner ? () => { runWithOwner(tooltipOwner, fn) } : fn
+      tooltipOwner
+        ? () => { runWithOwner(tooltipOwner, fn) }
+        : fn
     // A long-press menu is up, or its release just fired a compatibility
     // mouseenter. Presenting now would stack the tooltip above the menu.
     //
@@ -641,14 +658,20 @@ export function Tooltip(props: TooltipProps) {
         // would never see the pointer that the child itself refuses.
         // `inline-flex` hugs the child and stays one item of whatever row it
         // sits in.
-        style={{ display: wrapperTakesBox() ? 'inline-flex' : 'contents' }}
+        style={{
+          display: wrapperTakesBox()
+            ? 'inline-flex'
+            : 'contents',
+        }}
         // The wrapper is the HIT-TEST TARGET whenever it takes a box, because
         // the child that forced the box dispatches no pointer event of its own.
         // A pointer guard that decides "this press belongs to an embedded
         // control" by walking up from `event.target` therefore lands on this
         // span and finds no control above it. The attribute is what those
         // guards match; see EMBEDDED_UI_SELECTOR in `~/lib/dragActivators.ts`.
-        data-tooltip-box={wrapperTakesBox() ? '' : undefined}
+        data-tooltip-box={wrapperTakesBox()
+          ? ''
+          : undefined}
       >
         {props.children}
       </span>

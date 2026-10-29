@@ -47,7 +47,9 @@ export function parseMiMoRead(output: string): MiMoReadBody | null {
   const type = TYPE_LINE.exec(rows[1] ?? '')?.[1]
   if (path === undefined || type === undefined)
     return null
-  return type === 'file' ? parseFileBody(path, rows.slice(2)) : parseDirectoryBody(path, rows.slice(2))
+  return type === 'file'
+    ? parseFileBody(path, rows.slice(2))
+    : parseDirectoryBody(path, rows.slice(2))
 }
 
 function parseFileBody(path: string, rows: string[]): MiMoReadBody | null {
@@ -74,12 +76,23 @@ function parseFileBody(path: string, rows: string[]): MiMoReadBody | null {
     const match = NUMBERED_LINE.exec(row)
     if (!match)
       return null
-    lines.push({ num: Number(match[1]), text: match[2] ?? '' })
+    lines.push({
+      num: Number(match[1]),
+      text: match[2] ?? '',
+    })
   }
   const trailing = parseReminders(rows.slice(close + 1))
   if (trailing === null)
     return null
-  return { type: 'file', path, lines, ...(notice !== undefined ? { notice } : {}), trailing }
+  return {
+    type: 'file',
+    path,
+    lines,
+    ...(notice !== undefined
+      ? { notice }
+      : {}),
+    trailing,
+  }
 }
 
 function parseDirectoryBody(path: string, rows: string[]): MiMoReadBody | null {
@@ -100,13 +113,20 @@ function parseDirectoryBody(path: string, rows: string[]): MiMoReadBody | null {
       path,
       entries: body,
       totalEntries: total,
-      ...(beyond - shown > 1 ? { offset: beyond - shown } : {}),
+      ...(beyond - shown > 1
+        ? { offset: beyond - shown }
+        : {}),
       truncated: true,
     }
   }
   if (!ALL_ENTRIES.test(summary))
     return null
-  return { type: 'directory', path, entries: body, truncated: false }
+  return {
+    type: 'directory',
+    path,
+    entries: body,
+    truncated: false,
+  }
 }
 
 /**
@@ -130,7 +150,10 @@ function parseReminders(rows: string[]): ReadReminder[] | null {
     const closeAt = rows.indexOf(`</${tag}>`, index + 1)
     if (closeAt < 0)
       return null
-    reminders.push({ label: reminderLabel(tag), text: rows.slice(index + 1, closeAt).join('\n').trim() })
+    reminders.push({
+      label: reminderLabel(tag),
+      text: rows.slice(index + 1, closeAt).join('\n').trim(),
+    })
     index = closeAt + 1
   }
   return reminders

@@ -97,13 +97,21 @@ describe('reassembler', () => {
     expect(r.get(2)?.poisoned).toBe(true)
   })
 
-  it.each([{ bytes: [] }, { bytes: [7] }])('preserves empty first and final chunks around $bytes', ({ bytes }) => {
+  it.each([
+    { bytes: [] },
+    {
+      bytes: [7],
+    },
+  ])('preserves empty first and final chunks around $bytes', ({ bytes }) => {
     const r = new Reassembler(100)
     expect(r.accept(1, new Uint8Array(), true, () => true).kind).toBe('buffered')
     expect(r.get(1)?.parts).toEqual([])
     expect(r.accept(1, new Uint8Array(bytes), true, () => true).kind).toBe('buffered')
     expect(r.accept(1, new Uint8Array(), false, () => true))
-      .toEqual({ kind: 'deliver', plaintext: new Uint8Array(bytes) })
+      .toEqual({
+        kind: 'deliver',
+        plaintext: new Uint8Array(bytes),
+      })
     expect(r.size()).toBe(0)
     r.poison(2)
     expect(r.accept(2, new Uint8Array(), true, () => true).kind).toBe('drop-poisoned')
@@ -141,7 +149,10 @@ describe('reassembler', () => {
       expect(r.accept(1, empty, true, () => true).kind).toBe('buffered')
     expect(buf.parts).toHaveLength(1)
     expect(r.accept(1, new Uint8Array([3, 4]), false, () => true))
-      .toEqual({ kind: 'deliver', plaintext: new Uint8Array([1, 2, 3, 4]) })
+      .toEqual({
+        kind: 'deliver',
+        plaintext: new Uint8Array([1, 2, 3, 4]),
+      })
     expect(r.size()).toBe(0)
   })
 
@@ -157,7 +168,10 @@ describe('reassembler', () => {
   it('accept delivers a single non-chunked message without taking a slot', () => {
     const r = new Reassembler(100, 4)
     const out = r.accept(1, chunk(5), TERMINAL, alwaysHandled)
-    expect(out).toEqual({ kind: 'deliver', plaintext: expect.any(Uint8Array) })
+    expect(out).toEqual({
+      kind: 'deliver',
+      plaintext: expect.any(Uint8Array),
+    })
     expect((out as { plaintext: Uint8Array }).plaintext.length).toBe(5)
     expect(r.size()).toBe(0)
   })

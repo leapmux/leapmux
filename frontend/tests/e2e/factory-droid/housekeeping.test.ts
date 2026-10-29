@@ -11,6 +11,10 @@ describe('DROID_TITLE_RULE', () => {
       { role: 'system', content: 'You are the helper that names session titles for a session picker.' },
       { role: 'user', content: prompt },
     ])
-    expect(answers).toEqual({ housekeeping: MOCK_SESSION_TITLE, content: CONTENT_RULE_ANSWER, ruleMatches: { 'title-droid': 1, 'content-rule': 1 } })
+    expect(answers).toEqual({
+      housekeeping: MOCK_SESSION_TITLE,
+      content: CONTENT_RULE_ANSWER,
+      ruleMatches: { 'title-droid': 1, 'content-rule': 1 },
+    })
   })
 })

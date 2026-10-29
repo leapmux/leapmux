@@ -70,7 +70,9 @@ export function emitSplitTile(
     const tabs = liveTabsOnTile(state, parentTileId)
     const childA = generateId()
     const childB = generateId()
-    const dir = direction === 'horizontal' ? SplitDirection.HORIZONTAL : SplitDirection.VERTICAL
+    const dir = direction === 'horizontal'
+      ? SplitDirection.HORIZONTAL
+      : SplitDirection.VERTICAL
     const posA = first()
     const posB = after(posA)
     const ops: CrdtOp[] = [
@@ -166,7 +168,9 @@ export function emitCloseTile(bridge: CRDTBridge, tileId: string): void {
  */
 export function emitUpdateRatios(bridge: CRDTBridge, splitId: string, ratios: number[]): boolean {
   const ctx = ctxFromBridge(bridge)
-  bridge.enqueue(newBatch([setNodeRatios(ctx, splitId, ratios)]))
+  bridge.enqueue(newBatch([
+    setNodeRatios(ctx, splitId, ratios),
+  ]))
   return true
 }
 

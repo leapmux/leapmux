@@ -17,7 +17,9 @@ qwenTest.describe('Qwen Code follow-up suggestions', () => {
     // in the order, so a rule answers it.
     await modelScript.rule({
       name: 'the follow-up suggestion',
-      when: { user: escapeRegExp(QWEN_SUGGESTION_REQUEST) },
+      when: {
+        user: escapeRegExp(QWEN_SUGGESTION_REQUEST),
+      },
       // The suggestion must hold 2 to 12 words with no sentence boundary or
       // formatting: Qwen filters one-word and meta-shaped replies instead of
       // offering them (see generatePromptSuggestion's filter).

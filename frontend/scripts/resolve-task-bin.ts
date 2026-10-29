@@ -8,7 +8,12 @@ export function resolveTaskBin(): string {
   // name can also reach cmd's own `task` resolution order. The suffixed
   // probe answers the same binary the shell would run.
   const names = process.platform === 'win32'
-    ? ['task.exe', 'go-task.exe', 'task', 'go-task']
+    ? [
+        'task.exe',
+        'go-task.exe',
+        'task',
+        'go-task',
+      ]
     : ['task', 'go-task']
   for (const name of names) {
     try {

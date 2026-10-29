@@ -48,13 +48,17 @@ describe('recover page', () => {
   it('keeps Send recovery link disabled until an identifier is entered', async () => {
     renderRecoverPage()
     expect(await screen.findByRole('button', { name: 'Send recovery link' })).toBeDisabled()
-    fireEvent.input(screen.getByLabelText('Email or username'), { target: { value: 'alice' } })
+    fireEvent.input(screen.getByLabelText('Email or username'), {
+      target: { value: 'alice' },
+    })
     expect(screen.getByRole('button', { name: 'Send recovery link' })).toBeEnabled()
   })
 
   it('shows the generic success copy and does not re-enable submit after a successful request', async () => {
     renderRecoverPage()
-    fireEvent.input(await screen.findByLabelText('Email or username'), { target: { value: 'alice' } })
+    fireEvent.input(await screen.findByLabelText('Email or username'), {
+      target: { value: 'alice' },
+    })
     fireEvent.click(screen.getByRole('button', { name: 'Send recovery link' }))
     await vi.waitFor(() => {
       expect(mockRequestAccountRecovery).toHaveBeenCalledWith(expect.objectContaining({
@@ -76,7 +80,9 @@ describe('recover page', () => {
   it('re-enables Send recovery link after a failed attempt and refreshes captcha info on PermissionDenied', async () => {
     mockRequestAccountRecovery.mockRejectedValue(new ConnectError('denied', Code.PermissionDenied))
     renderRecoverPage()
-    fireEvent.input(await screen.findByLabelText('Email or username'), { target: { value: 'alice' } })
+    fireEvent.input(await screen.findByLabelText('Email or username'), {
+      target: { value: 'alice' },
+    })
     fireEvent.click(screen.getByRole('button', { name: 'Send recovery link' }))
     await vi.waitFor(() => {
       expect(mockRequestAccountRecovery).toHaveBeenCalledOnce()

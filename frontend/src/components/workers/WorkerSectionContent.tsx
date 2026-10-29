@@ -88,7 +88,9 @@ export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props
                 >
                   <ChevronRight
                     size={14}
-                    class={`${shared.chevron} ${isExpanded(worker.id) ? shared.chevronExpanded : ''}`}
+                    class={`${shared.chevron} ${isExpanded(worker.id)
+                      ? shared.chevronExpanded
+                      : ''}`}
                   />
                   <ClippedText
                     text={workerName()}
@@ -121,7 +123,10 @@ export const WorkerSectionContent: Component<WorkerSectionContentProps> = (props
                   </div>
                 </div>
                 <Show when={tunnel}>
-                  <div class={`${shared.childrenWrapper} ${isExpanded(worker.id) ? shared.childrenWrapperExpanded : ''}`}>
+                  <div class={`${shared.childrenWrapper} ${isExpanded(worker.id)
+                    ? shared.childrenWrapperExpanded
+                    : ''}`}
+                  >
                     <div class={shared.childrenInner}>
                       <For each={workerTunnels()}>
                         {(t) => {

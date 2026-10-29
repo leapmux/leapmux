@@ -13,7 +13,9 @@ const command = `bun ${JSON.stringify(path.join(trusted, 'scripts/renovate-post-
 const { prHeader, prBodyTemplate } = configureDetailsCapture(trusted, config.prBodyTemplate)
 module.exports = {
   platform: 'github',
-  repositories: process.env.RENOVATE_PLATFORM === 'local' ? [] : ['leapmux/leapmux'],
+  repositories: process.env.RENOVATE_PLATFORM === 'local'
+    ? []
+    : ['leapmux/leapmux'],
   autodiscover: false,
   onboarding: false,
   requireConfig: 'ignored',
@@ -31,8 +33,13 @@ module.exports = {
   prHeader,
   prBodyTemplate,
   // Filter additive manager defaults before security overrides can enable an update.
-  ...(prepared.ignorePaths ? { ignorePaths: prepared.ignorePaths } : {}),
-  packageRules: [...config.packageRules, ...prepared.packageRules],
+  ...(prepared.ignorePaths
+    ? { ignorePaths: prepared.ignorePaths }
+    : {}),
+  packageRules: [
+    ...config.packageRules,
+    ...prepared.packageRules,
+  ],
   postUpgradeTasks: {
     commands: [command],
     executionMode: 'branch',

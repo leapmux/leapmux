@@ -47,7 +47,9 @@ export const PasswordSetupGate: Component = () => {
     setBusy(true)
     setMessage(null)
     try {
-      const response = await authClient.setInitialSoloPassword({ password: password() })
+      const response = await authClient.setInitialSoloPassword({
+        password: password(),
+      })
       if (!response.user)
         throw new Error('The hub returned no solo user')
       // The elevation travels WITH the reply. The transaction that stored the
@@ -58,7 +60,10 @@ export const PasswordSetupGate: Component = () => {
       await auth.setAuth(response.user, response.elevationExpiresAt)
     }
     catch (e) {
-      setMessage({ type: 'error', text: formatErrorMessage(e, 'Failed to set the password') })
+      setMessage({
+        type: 'error',
+        text: formatErrorMessage(e, 'Failed to set the password'),
+      })
       setBusy(false)
       return
     }
@@ -133,7 +138,9 @@ export const PasswordSetupGate: Component = () => {
               onClick={() => void submit()}
               disabled={busy() || !passwordCanSubmit(pwProps)}
             >
-              {busy() ? 'Setting...' : 'Set Password'}
+              {busy()
+                ? 'Setting...'
+                : 'Set Password'}
             </button>
           </div>
         </div>

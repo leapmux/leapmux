@@ -18,9 +18,13 @@ export function openCodeQuestionAnswersText(
   if (result?.rejected === true)
     return 'Reject'
 
-  const answers = Array.isArray(result?.answers) ? result.answers : []
+  const answers = Array.isArray(result?.answers)
+    ? result.answers
+    : []
   const properties = pickObject(request, 'properties', undefined)
-  const questions = Array.isArray(properties?.questions) ? properties.questions : []
+  const questions = Array.isArray(properties?.questions)
+    ? properties.questions
+    : []
 
   const lines: string[] = []
   for (let i = 0; i < answers.length; i++) {

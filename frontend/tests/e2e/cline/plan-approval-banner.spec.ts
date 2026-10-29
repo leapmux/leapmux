@@ -30,7 +30,11 @@ clineTest.describe('Cline control requests', () => {
     await waitForAgentIdle(page)
 
     const start = await modelScript.queue(
-      { toolCalls: [exitPlanModeToolCall(PROVIDER, 'cline-plan', '')] },
+      {
+        toolCalls: [
+          exitPlanModeToolCall(PROVIDER, 'cline-plan', ''),
+        ],
+      },
       // The continuation prompt that the worker sends after the switch, in Act mode.
       { text: 'Starting the approved plan.' },
     )
@@ -61,7 +65,11 @@ clineTest.describe('Cline control requests', () => {
   clineTest('keeps Plan mode when the reader rejects the plan with feedback', async ({ planningClineWorkspace, page, modelScript }) => {
     void planningClineWorkspace
     const start = await modelScript.queue(
-      { toolCalls: [exitPlanModeToolCall(PROVIDER, 'cline-plan-rejected', '')] },
+      {
+        toolCalls: [
+          exitPlanModeToolCall(PROVIDER, 'cline-plan-rejected', ''),
+        ],
+      },
       { text: 'I will split the plan.' },
     )
     await sendMessage(page, modelScript.prompt('The plan is fine, switch to act mode.'))

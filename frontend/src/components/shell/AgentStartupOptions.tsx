@@ -15,7 +15,9 @@ export function AgentStartupOptions(props: {
   const selected = () => resolveStartupOptionValues(props.groups, props.selected)
   const pills = (group: StartupOptionGroup) => {
     const options = group.options.map(option => ({ key: option.value, label: option.label }))
-    return isPillOptions(options) ? options : undefined
+    return isPillOptions(options)
+      ? options
+      : undefined
   }
   return (
     <For each={props.groups}>

@@ -159,7 +159,10 @@ test.describe('tap to select text (phone)', () => {
     const point = await aimAt(page, row, 'brown')
 
     await touchTap(page, point)
-    await touchSwipe(page, { from: point, to: { x: point.x, y: point.y - 120 } })
+    await touchSwipe(page, {
+      from: point,
+      to: { x: point.x, y: point.y - 120 },
+    })
 
     // The recognizer decides at each pointer event, and the protocol answers each
     // touch only after the page handled it. A pan synthesizes no mouse event, so
@@ -236,7 +239,10 @@ test.describe('tap to select text (phone)', () => {
     // this test fail from a band starting at 20% of the viewport. The case the
     // guard documents is a drag ALONG the selection, where widening it and
     // swiping share the same shape.
-    const band = { from: { x: point.x, y: point.y }, to: { x: width * 0.9, y: point.y } }
+    const band = {
+      from: { x: point.x, y: point.y },
+      to: { x: width * 0.9, y: point.y },
+    }
     // The precondition, so a drawer that was already out fails as that rather
     // than as "the guard did not hold".
     await expect(drawer).not.toBeInViewport()

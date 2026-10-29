@@ -68,7 +68,10 @@ globalThis.onmessage = async (e: MessageEvent<TokenizeRequest>) => {
       respondPlain()
       return
     }
-    const result = hl.getHighlighter()!.codeToTokens(msg.code, { lang, ...dualThemeTokenOptions(msg.syntax) })
+    const result = hl.getHighlighter()!.codeToTokens(msg.code, {
+      lang,
+      ...dualThemeTokenOptions(msg.syntax),
+    })
     // Merge whitespace-only and same-style neighbors BEFORE interning: Shiki
     // only applies these merges on its codeToHast path, so the raw codeToTokens
     // output carries one extra span per indented line (see mergeLineTokens).

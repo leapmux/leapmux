@@ -121,7 +121,9 @@ export function providerFor(provider: AgentProvider): ProviderPlugin | undefined
  */
 export function openAgentRequestOptions(provider: AgentProvider): { options?: Record<string, string> } {
   const options = providerFor(provider)?.configuration?.defaultProviderOptions
-  return options ? { options } : {}
+  return options
+    ? { options }
+    : {}
 }
 
 /**
@@ -135,7 +137,9 @@ export function openAgentRequestOptions(provider: AgentProvider): { options?: Re
  * call site.
  */
 export function pluginFor(provider: AgentProvider | undefined): ProviderPlugin | undefined {
-  return provider != null ? providerFor(provider) : undefined
+  return provider != null
+    ? providerFor(provider)
+    : undefined
 }
 
 /**
@@ -193,8 +197,12 @@ export function resolveMessageForRendering(parsed: ParsedMessageContent, provide
   if (cached !== undefined)
     return cached
   const providerData = providerFor(provider)?.transcript.resolveMessage?.(parsed) ?? parsed.parentObject
-  const parentObject = providerData && isObject(parsed.messageMetadata) ? applyMessageMetadata(providerData, parsed.messageMetadata) : providerData
-  const resolved = (parentObject === parsed.parentObject ? parsed : { ...parsed, parentObject }) as ResolvedMessageContent
+  const parentObject = providerData && isObject(parsed.messageMetadata)
+    ? applyMessageMetadata(providerData, parsed.messageMetadata)
+    : providerData
+  const resolved = (parentObject === parsed.parentObject
+    ? parsed
+    : { ...parsed, parentObject }) as ResolvedMessageContent
   byProvider.set(provider, resolved)
   // The resolved object answers for itself: a second resolution of it -- a caller
   // that held the merged parse and passed it back -- returns the same reference

@@ -16,9 +16,15 @@ museTest('background-tasks-sidebar: a native workflow shows a live row and its f
   const childTask = modelScript.prompt('Reply with the single word SIDEBARWORD.')
   await modelScript.rule({
     name: 'the sidebar child submits its result',
-    when: { body: ['Workflow child completion protocol'] },
+    when: {
+      body: ['Workflow child completion protocol'],
+    },
     once: true,
-    respond: { toolCalls: [museSubmitResultToolCall('sidebar-child-submit', 'SIDEBARWORD')] },
+    respond: {
+      toolCalls: [
+        museSubmitResultToolCall('sidebar-child-submit', 'SIDEBARWORD'),
+      ],
+    },
   })
   const script = [
     'export default async function workflow(host) {',
@@ -28,7 +34,11 @@ museTest('background-tasks-sidebar: a native workflow shows a live row and its f
     '}',
   ].join('\n')
   const start = await modelScript.queue(
-    { toolCalls: [codeExecutionToolCall(native.provider, 'muse-sidebar-workflow', script)] },
+    {
+      toolCalls: [
+        codeExecutionToolCall(native.provider, 'muse-sidebar-workflow', script),
+      ],
+    },
     { text: 'The native workflow completed.' },
   )
   await sendMessage(page, modelScript.prompt('Run the sidebar workflow and report its word.'))

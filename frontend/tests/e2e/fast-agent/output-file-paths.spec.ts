@@ -31,11 +31,22 @@ fastAgentTest('records the native client terminal output limit and retains its e
     proof: async (capture) => {
       const command = capture.call.arguments?.command
       if (typeof command !== 'string')
-        throw new Error('The native Fast Agent output scenario has no exact command.')
+        throw new TypeError('The native Fast Agent output scenario has no exact command.')
       const frames = capture.snapshot.messages.filter(message => message.agentSessionId === capture.agent.agentSessionId).map(nativeMessageBody)
       const modelText = nativeToolResult(capture.request, capture.call.id)
       const limit = fastAgentTerminalOutputFileLimit(frames, command, modelText)
-      await testInfo.attach('fast-agent-native-client-terminal-limit', { body: JSON.stringify({ callId: limit.callId, modelCallId: capture.call.id, sessionId: capture.agent.agentSessionId, byteLimit: limit.byteLimit, previewText: limit.previewText, text: limit.text, modelText }), contentType: 'application/json' })
+      await testInfo.attach('fast-agent-native-client-terminal-limit', {
+        body: JSON.stringify({
+          callId: limit.callId,
+          modelCallId: capture.call.id,
+          sessionId: capture.agent.agentSessionId,
+          byteLimit: limit.byteLimit,
+          previewText: limit.previewText,
+          text: limit.text,
+          modelText,
+        }),
+        contentType: 'application/json',
+      })
       expect(limit.text).not.toContain(output.firstMarker)
       expect(limit.text).not.toContain(output.omittedMarker)
       expect(limit.text).toContain(output.lastMarker)
@@ -67,7 +78,11 @@ for (const exitCode of [0, 7]) {
       call: (output, id) => fastAgentNativeBashToolCall(id, nativeOutputFileCommand(output, { exitCode })),
       proof: async (capture) => {
         const readReceipt = (snapshot: NativeMessageSnapshot) => {
-          const sources = snapshot.messages.filter(message => message.agentSessionId === capture.agent.agentSessionId).map(message => ({ message, parsed: parseMessageContent(message), source: fastAgentArchiveSource(parseMessageContent(message)) }))
+          const sources = snapshot.messages.filter(message => message.agentSessionId === capture.agent.agentSessionId).map(message => ({
+            message,
+            parsed: parseMessageContent(message),
+            source: fastAgentArchiveSource(parseMessageContent(message)),
+          }))
           const results = sources.filter(entry => entry.source?.kind === 'result' && entry.source.callId === capture.call.id)
           expect(results).toHaveLength(1)
           const result = results[0]
@@ -82,7 +97,9 @@ for (const exitCode of [0, 7]) {
           const metadata = pickObject(frame, '_meta')
           expect(pickObject(metadata, FAST_AGENT_SHELL.Metadata)?.[FAST_AGENT_SHELL.ExitCode]).toBe(exitCode)
           const blocks = frame.content
-          const first = Array.isArray(blocks) ? blocks[0] : undefined
+          const first = Array.isArray(blocks)
+            ? blocks[0]
+            : undefined
           if (!isObject(first) || first.type !== 'text' || typeof first.text !== 'string')
             throw new Error('The native Fast Agent result has no original text block.')
           const previewText = first.text
@@ -93,10 +110,19 @@ for (const exitCode of [0, 7]) {
           expect(previewText).toContain(output.firstMarker)
           expect(previewText).toContain(output.lastMarker)
           expect(previewText).not.toContain(output.omittedMarker)
-          return { frame, source, callId: source.spanId, previewText, paths: [path] }
+          return {
+            frame,
+            source,
+            callId: source.spanId,
+            previewText,
+            paths: [path],
+          }
         }
         const receipt = readReceipt(capture.snapshot)
-        await testInfo.attach('fast-agent-native-root-archive-result', { body: JSON.stringify(receipt), contentType: 'application/json' })
+        await testInfo.attach('fast-agent-native-root-archive-result', {
+          body: JSON.stringify(receipt),
+          contentType: 'application/json',
+        })
         await proveNativeToolOutputFilePaths({
           context: native,
           callId: receipt.callId,
@@ -104,7 +130,9 @@ for (const exitCode of [0, 7]) {
           previewMarkers: [output.firstMarker, output.lastMarker],
           absentMarkers: [output.omittedMarker],
           paths: receipt.paths,
-          status: exitCode === 0 ? 'completed' : 'failed',
+          status: exitCode === 0
+            ? 'completed'
+            : 'failed',
           prepareView: expandNativeResultView,
           workerProof: () => expectUnchangedNativeRecord(native, capture.agent, readReceipt, receipt),
         })
@@ -119,7 +147,11 @@ fastAgentTest('keeps interrupted native output with its original turn', async ({
   const control = createToolOutputControl(owner.workingDir)
   const callId = 'native-fast-agent-interrupted-archive'
   await withCleanup(async () => {
-    const start = await native.modelScript.queue({ toolCalls: [fastAgentNativeBashToolCall(callId, control.command)] })
+    const start = await native.modelScript.queue({
+      toolCalls: [
+        fastAgentNativeBashToolCall(callId, control.command),
+      ],
+    })
     await sendMessage(native.page, native.modelScript.prompt('Run the native command until interruption.'))
     await native.modelScript.waitForSteps(start + 1)
     await control.waitForFirstOutput()
@@ -127,7 +159,10 @@ fastAgentTest('keeps interrupted native output with its original turn', async ({
     await waitForAgentIdle(native.page)
     const readReceipt = (snapshot: NativeMessageSnapshot) => {
       const rows = snapshot.messages.filter(message => message.agentSessionId === owner.agentSessionId)
-      const sources = rows.map(message => ({ message, source: fastAgentArchiveSource(parseMessageContent(message)) }))
+      const sources = rows.map(message => ({
+        message,
+        source: fastAgentArchiveSource(parseMessageContent(message)),
+      }))
       const results = sources.filter(entry => entry.source?.kind === 'result' && entry.source.callId === callId)
       expect(results).toHaveLength(1)
       const result = results[0]
@@ -137,13 +172,21 @@ fastAgentTest('keeps interrupted native output with its original turn', async ({
       const requests = sources.filter(entry => entry.source?.kind === 'request' && sameFastAgentArchiveCall(entry.source, source))
       expect(requests).toHaveLength(1)
       expect(source.request.args.command).toBe(control.command)
-      expect(source.result).toMatchObject({ isError: true, content: [{ type: 'text', text: '**The user interrupted this tool call**' }] })
+      expect(source.result).toMatchObject({
+        isError: true,
+        content: [
+          { type: 'text', text: '**The user interrupted this tool call**' },
+        ],
+      })
       expect(result.message.spanId).toBe(source.spanId)
       return { frame: source.result, callId: source.spanId, previewText: '**The user interrupted this tool call**' }
     }
     const receipt = readReceipt(await readNativeMessageSnapshot(native, owner.id))
     await expect(userBubbles(native.page)).toHaveCount(1)
-    await testInfo.attach('fast-agent-interrupted-native-archive', { body: JSON.stringify(receipt), contentType: 'application/json' })
+    await testInfo.attach('fast-agent-interrupted-native-archive', {
+      body: JSON.stringify(receipt),
+      contentType: 'application/json',
+    })
     await proveNativeToolOutputFilePaths({
       context: native,
       callId: receipt.callId,

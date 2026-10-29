@@ -17,7 +17,12 @@ droidTest.describe('Factory Droid control requests', () => {
   droidTest('runs a command after the reader allows it', async ({ askingDroidWorkspace, page, modelScript, leapmuxServer }) => {
     const note = join(askingDroidWorkspace.workingDir, 'notes.txt')
     writeFileSync(note, 'a')
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingDroidWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: askingDroidWorkspace.workspaceId,
+    })
     // Normal autonomy asks before the native Edit tool.
     // It permits the native Execute tool. Use Edit to test an actual approval.
     await exerciseNativePermissionDecision(context, {
@@ -46,7 +51,11 @@ droidTest.describe('Factory Droid control requests', () => {
     // Cancellation ends this turn without another model request.
     // This script needs only the initial tool step.
     const start = await modelScript.queue(
-      { toolCalls: [editToolCall(PROVIDER, 'deny-call', { path: 'notes.txt', before: 'a', after: 'b' })] },
+      {
+        toolCalls: [
+          editToolCall(PROVIDER, 'deny-call', { path: 'notes.txt', before: 'a', after: 'b' }),
+        ],
+      },
     )
     await sendMessage(page, modelScript.prompt('Edit the note.'))
     await modelScript.waitForSteps(start + 1)
@@ -73,7 +82,11 @@ droidTest.describe('Factory Droid control requests', () => {
     // Cancellation ends the first turn without another model request. The reason
     // opens the second turn, which answers it.
     const start = await modelScript.queue(
-      { toolCalls: [editToolCall(PROVIDER, 'reason-call', { path: 'notes.txt', before: 'a', after: 'b' })] },
+      {
+        toolCalls: [
+          editToolCall(PROVIDER, 'reason-call', { path: 'notes.txt', before: 'a', after: 'b' }),
+        ],
+      },
       { text: 'I will leave the note as it is.' },
     )
     await sendMessage(page, modelScript.prompt('Edit the note.'))
@@ -109,7 +122,12 @@ droidTest.describe('Factory Droid control requests', () => {
   // needs restoring. The same file edit in the next turn must raise no banner at
   // any time.
   droidTest('an always allow covers the same edit in the next turn', async ({ askingDroidWorkspace, page, modelScript, leapmuxServer }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingDroidWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: askingDroidWorkspace.workspaceId,
+    })
     const note = join(askingDroidWorkspace.workingDir, 'always-note.txt')
     writeFileSync(note, 'a\n')
     await exerciseRememberedAllow(context, {

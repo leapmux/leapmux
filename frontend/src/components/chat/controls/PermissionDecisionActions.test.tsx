@@ -33,12 +33,20 @@ function renderDecisions(
   render(() => (
     <ControlRequestActions
       agentProvider={provider}
-      request={{ agentId: 'agent1', requestId, payload: { params: { options } } }}
+      request={{
+        agentId: 'agent1',
+        requestId,
+        payload: {
+          params: { options },
+        },
+      }}
       answerState={createControlAnswerState()}
       onRespond={onRespond}
       hasEditorContent={false}
       onTriggerSend={vi.fn()}
-      {...(presets === undefined ? {} : { presets })}
+      {...(presets === undefined
+        ? {}
+        : { presets })}
     />
   ))
   return { onRespond }
@@ -80,12 +88,29 @@ describe('PermissionDecisionActions', () => {
     render(() => (
       <ControlRequestActions
         agentProvider={AgentProvider.GITHUB_COPILOT}
-        request={{ agentId: 'agent1', requestId: 'switch', payload: { method: 'session.event', params: { event: { type: 'auto_mode_switch.requested', data: { requestId: 'switch', errorCode: 'user_model_rate_limited' } } } } }}
+        request={{
+          agentId: 'agent1',
+          requestId: 'switch',
+          payload: {
+            method: 'session.event',
+            params: {
+              event: {
+                type: 'auto_mode_switch.requested',
+                data: { requestId: 'switch', errorCode: 'user_model_rate_limited' },
+              },
+            },
+          },
+        }}
         answerState={answerState}
         onRespond={onRespond}
         hasEditorContent={false}
         onTriggerSend={vi.fn()}
-        presets={{ bypass: { sets: { permissionMode: 'allow_all' } }, apply }}
+        presets={{
+          bypass: {
+            sets: { permissionMode: 'allow_all' },
+          },
+          apply,
+        }}
       />
     ))
     expect(screen.getAllByRole('button').map(button => button.textContent)).toEqual(['Switch this turn', 'Always switch', 'Decline'])
@@ -107,8 +132,12 @@ describe('PermissionDecisionActions', () => {
       { optionId: 'reject_once', kind: 'reject_once', name: 'reject_once' },
       { optionId: 'reject_always', kind: 'reject_always', name: 'reject_always' },
     ], {
-      smart: { sets: { permissionMode: 'smart_approve' } },
-      bypass: { sets: { permissionMode: 'auto' } },
+      smart: {
+        sets: { permissionMode: 'smart_approve' },
+      },
+      bypass: {
+        sets: { permissionMode: 'auto' },
+      },
       apply,
     })
     return { onRespond, apply }
@@ -207,8 +236,18 @@ describe('PermissionDecisionActions', () => {
     renderDecisions(
       AgentProvider.GOOSE,
       '10',
-      [{ optionId: 'reject', kind: 'reject_once', name: 'Reject' }],
-      { smart: { sets: { permissionMode: 'smart_approve' } }, bypass: { sets: { permissionMode: 'auto' } }, apply: vi.fn() },
+      [
+        { optionId: 'reject', kind: 'reject_once', name: 'Reject' },
+      ],
+      {
+        smart: {
+          sets: { permissionMode: 'smart_approve' },
+        },
+        bypass: {
+          sets: { permissionMode: 'auto' },
+        },
+        apply: vi.fn(),
+      },
     )
 
     expect(screen.queryByTestId('control-permissions-pill-group')).not.toBeInTheDocument()
@@ -235,7 +274,9 @@ describe('PermissionDecisionActions', () => {
     fireEvent.click(permissionPillGroup().getByRole('radio', { name: 'Bypass' }))
     await fireEvent.click(screen.getByTestId('control-allow-btn'))
     expect(onRespond).toHaveBeenCalledTimes(1)
-    expect(apply).toHaveBeenCalledWith({ sets: { permissionMode: 'auto' } })
+    expect(apply).toHaveBeenCalledWith({
+      sets: { permissionMode: 'auto' },
+    })
 
     await fireEvent.click(screen.getByTestId('control-deny-btn'))
     expect(onRespond).toHaveBeenCalledTimes(2)
@@ -251,7 +292,12 @@ describe('PermissionDecisionActions', () => {
       { optionId: 'once', kind: 'allow_once', name: 'Allow' },
       { optionId: 'reject', kind: 'reject_once', name: 'Reject' },
       { optionId: 'ask', kind: 'ask_user', name: 'Ask the user' },
-    ], { bypass: { sets: { permissionMode: 'yolo' } }, apply })
+    ], {
+      bypass: {
+        sets: { permissionMode: 'yolo' },
+      },
+      apply,
+    })
 
     fireEvent.click(permissionPillGroup().getByRole('radio', { name: 'Bypass' }))
     await fireEvent.click(screen.getByTestId('control-decision-ask'))

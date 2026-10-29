@@ -21,7 +21,9 @@ function caseAttachments(testCase: FixtureCase): Record<string, unknown>[] {
 
 function retainedPath(run: FixtureRun, attachment: Record<string, unknown>): string {
   const path = fixtureStringField(attachment, 'path')
-  return isAbsolute(path) ? path : resolve(run.root, 'frontend', path)
+  return isAbsolute(path)
+    ? path
+    : resolve(run.root, 'frontend', path)
 }
 
 function requireTransientCleanup(run: FixtureRun): void {
@@ -57,12 +59,24 @@ test.describe('isolated browser shard full tool output', () => {
     const root = createLauncherFixtureProject({ browserTrace: true })
     const callerState = { nonce: process.env.LEAPMUX_E2E_NONCE, statePath: process.env.E2E_STATE_PATH, outputFileDir: process.env.LEAPMUX_E2E_OUTPUT_FILE_DIR }
     try {
-      const run = await runLauncherFixtureProject(root, { workers: 2, failCases: ['beta'], browserTrace: true })
-      await testInfo.attach('fixture-browser-shard-report', { body: JSON.stringify(run.report, null, 2), contentType: 'application/json' })
+      const run = await runLauncherFixtureProject(root, {
+        workers: 2,
+        failCases: ['beta'],
+        browserTrace: true,
+      })
+      await testInfo.attach('fixture-browser-shard-report', {
+        body: JSON.stringify(run.report, null, 2),
+        contentType: 'application/json',
+      })
       expect(run.code).not.toBe(0)
       expect(run.parallelRelease).toBe(true)
       expect(run.report.errors).toEqual([])
-      expect(run.report.stats).toMatchObject({ expected: 1, unexpected: 1, skipped: 0, flaky: 0 })
+      expect(run.report.stats).toMatchObject({
+        expected: 1,
+        unexpected: 1,
+        skipped: 0,
+        flaky: 0,
+      })
       requireTransientCleanup(run)
       const failed = run.cases.find(testCase => testCase.title === 'executes beta')
       const passed = run.cases.find(testCase => testCase.title === 'executes alpha')
@@ -70,7 +84,12 @@ test.describe('isolated browser shard full tool output', () => {
         throw new Error('The fixture browser report omits one selected case.')
       expect(failed.status).toBe('unexpected')
       expect(passed.status).toBe('expected')
-      expect(failed.results[0]).toMatchObject({ status: 'failed', error: { message: expect.stringContaining('intentional fixture failure') } })
+      expect(failed.results[0]).toMatchObject({
+        status: 'failed',
+        error: {
+          message: expect.stringContaining('intentional fixture failure'),
+        },
+      })
       expect(caseAttachments(passed).filter(attachment => attachment.name === 'trace')).toEqual([])
       const traces = caseAttachments(failed).filter(attachment => attachment.name === 'trace')
       expect(traces).toHaveLength(1)
@@ -78,8 +97,12 @@ test.describe('isolated browser shard full tool output', () => {
       expect(existsSync(archivePath)).toBe(true)
       await testInfo.attach('failed-shard-fixture-trace', { path: archivePath, contentType: 'application/zip' })
       const entries = await readPlaywrightZipEntries(archivePath)
-      expect([...entries.keys()].some(name => name.endsWith('.trace'))).toBe(true)
-      expect([...entries.keys()].some(name => name.endsWith('.network'))).toBe(true)
+      expect([
+        ...entries.keys(),
+      ].some(name => name.endsWith('.trace'))).toBe(true)
+      expect([
+        ...entries.keys(),
+      ].some(name => name.endsWith('.network'))).toBe(true)
       const trace = traceRecords(entries, '.trace')
       const network = traceRecords(entries, '.network')
       const beta = readFixtureRecord(join(run.records, 'entry-beta.json'))
@@ -103,7 +126,12 @@ test.describe('isolated browser shard full tool output', () => {
       const run = await runLauncherFixtureProject(root, { workers: 2, browserTrace: true })
       expect(run.code).toBe(0)
       expect(run.parallelRelease).toBe(true)
-      expect(run.report.stats).toMatchObject({ expected: 2, unexpected: 0, skipped: 0, flaky: 0 })
+      expect(run.report.stats).toMatchObject({
+        expected: 2,
+        unexpected: 0,
+        skipped: 0,
+        flaky: 0,
+      })
       expect(run.cases.map(testCase => testCase.status)).toEqual(['expected', 'expected'])
       requireTransientCleanup(run)
       for (const testCase of run.cases)

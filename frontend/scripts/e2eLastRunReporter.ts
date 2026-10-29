@@ -28,7 +28,9 @@ export function writePlaywrightLastRunState(path: string, state: PlaywrightLastR
  */
 export function lastRunStatePath(lastFailedFile: string | undefined, env: NodeJS.ProcessEnv, cwd: string, parentLastRun: string): string {
   const explicit = lastFailedFile ?? (env.PLAYWRIGHT_LAST_RUN_OUTPUT_FILE || undefined)
-  return explicit === undefined ? parentLastRun : resolve(cwd, explicit)
+  return explicit === undefined
+    ? parentLastRun
+    : resolve(cwd, explicit)
 }
 
 export interface LastFailedState {

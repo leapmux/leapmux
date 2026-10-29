@@ -51,7 +51,10 @@ export interface TestTabStores {
 export function projectionMemo() {
   const bridge = getCRDTBridge()
   const state = createMemo(() => bridge?.speculativeState() ?? null, undefined, { equals: false })
-  return { state, projection: createProjectionMemo(state) }
+  return {
+    state,
+    projection: createProjectionMemo(state),
+  }
 }
 
 export function createTestTabStores(
@@ -69,11 +72,19 @@ export function createTestTabStores(
     projection,
     state,
     metadata,
-    ...(detachedTerminals !== undefined ? { detachedTerminals } : {}),
+    ...(detachedTerminals !== undefined
+      ? { detachedTerminals }
+      : {}),
   })
   const selection = createTabSelectionStore(view, metadata)
-  const layoutStore = createLayoutStore({ getWorkspaceId: () => workspaceId, projection })
-  const floatingWindowStore = createFloatingWindowStore({ getWorkspaceId: () => workspaceId, projection })
+  const layoutStore = createLayoutStore({
+    getWorkspaceId: () => workspaceId,
+    projection,
+  })
+  const floatingWindowStore = createFloatingWindowStore({
+    getWorkspaceId: () => workspaceId,
+    projection,
+  })
   // Part of the production wiring, and easy to leave out because it returns
   // nothing: `layout.store` deliberately does NOT enforce the focus invariant
   // itself (see its own note), so without this the double is the one
@@ -81,7 +92,14 @@ export function createTestTabStores(
   // that closes a tile, merges into an heir, or drops a floating window would
   // then assert on a focus value the real shell repairs.
   useFocusInvariant({ layoutStore, floatingWindowStore })
-  return { view, metadata, selection, layoutStore, floatingWindowStore, projection }
+  return {
+    view,
+    metadata,
+    selection,
+    layoutStore,
+    floatingWindowStore,
+    projection,
+  }
 }
 
 /**
@@ -94,7 +112,10 @@ export function createTestTabStores(
  */
 export function createTestLayoutStore(workspaceId = 'ws-test') {
   const { projection } = projectionMemo()
-  return createLayoutStore({ getWorkspaceId: () => workspaceId, projection })
+  return createLayoutStore({
+    getWorkspaceId: () => workspaceId,
+    projection,
+  })
 }
 
 /**

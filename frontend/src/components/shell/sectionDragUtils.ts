@@ -77,7 +77,9 @@ export function findClosestSectionDroppable(
       // (within the resize handle gap) but within the section's X bounds.
       // Track the section whose edge is closest.
       if (ref.x >= l.left - X_TOLERANCE && ref.x <= l.right + X_TOLERANCE) {
-        const edgeDist = ref.y < l.top ? l.top - ref.y : ref.y - l.bottom
+        const edgeDist = ref.y < l.top
+          ? l.top - ref.y
+          : ref.y - l.bottom
         if (edgeDist <= INTER_SECTION_GAP && edgeDist < gapEdgeDist) {
           gapSection = d
           gapEdgeDist = edgeDist
@@ -138,7 +140,9 @@ export function computeInsertPosition(
       .sort((a, b) => a.position.localeCompare(b.position))
     const dragIdx = sidebarSections.findIndex(s => s.id === sectionId)
     const dropIdx = sidebarSections.findIndex(s => s.id === targetSectionId)
-    return dragIdx < dropIdx ? 'after' : 'before'
+    return dragIdx < dropIdx
+      ? 'after'
+      : 'before'
   }
 
   // Cross-sidebar: compare the drag reference point (top of dragged element)
@@ -146,7 +150,9 @@ export function computeInsertPosition(
   if (draggable && droppable) {
     const refY = draggable.transformed.center.y - (draggable.layout.height / 2)
     const headerMidY = droppable.layout.top + headerHeightPx / 2
-    return refY < headerMidY ? 'before' : 'after'
+    return refY < headerMidY
+      ? 'before'
+      : 'after'
   }
 
   return 'before'

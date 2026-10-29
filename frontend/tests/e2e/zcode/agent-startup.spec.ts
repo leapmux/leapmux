@@ -19,7 +19,10 @@ import { zcodeScriptCandidatePaths } from '../zcode-install'
  * would take it, and the wrapper would then refuse the real app server, which
  * exits with 125. So the storage query runs at once.
  */
-const APP_SERVER_LAUNCH = { holdWhen: ['app-server', '--stdio'], passThroughWhen: ['--prepare-storage'] }
+const APP_SERVER_LAUNCH = {
+  holdWhen: ['app-server', '--stdio'],
+  passThroughWhen: ['--prepare-storage'],
+}
 
 zcodeTest.describe('zcode agent startup', () => {
   for (const failed of [false, true]) {
@@ -43,7 +46,12 @@ zcodeTest.describe('zcode agent startup', () => {
       await exerciseAgentStartup(native, {
         launch: { binaryName: 'node', executable, ...APP_SERVER_LAUNCH },
         failed,
-        workerEnvironment: wrapper => ({ LEAPMUX_ZCODE_SCRIPT: script, LEAPMUX_ZCODE_NODE: join(wrapper.directory, process.platform === 'win32' ? 'node.cmd' : 'node') }),
+        workerEnvironment: wrapper => ({
+          LEAPMUX_ZCODE_SCRIPT: script,
+          LEAPMUX_ZCODE_NODE: join(wrapper.directory, process.platform === 'win32'
+            ? 'node.cmd'
+            : 'node'),
+        }),
       })
     })
   }

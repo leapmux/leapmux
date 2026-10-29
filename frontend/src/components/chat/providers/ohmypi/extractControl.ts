@@ -31,7 +31,9 @@ function commandStart(body: string): number {
   if (body.startsWith(COMMAND_LABEL))
     return 0
   const index = body.indexOf(`\n${COMMAND_LABEL}`)
-  return index < 0 ? -1 : index + 1
+  return index < 0
+    ? -1
+    : index + 1
 }
 
 /**
@@ -47,8 +49,15 @@ function splitCommand(body: string): { command?: string, rest: string } {
     return { rest: body }
   const after = body.slice(start + COMMAND_LABEL.length)
   const end = after.indexOf(SAFETY_CHECKS)
-  const command = end < 0 ? after : after.slice(0, end)
-  const rest = [body.slice(0, start), end < 0 ? '' : after.slice(end)].join('').trim()
+  const command = end < 0
+    ? after
+    : after.slice(0, end)
+  const rest = [
+    body.slice(0, start),
+    end < 0
+      ? ''
+      : after.slice(end),
+  ].join('').trim()
   return { command, rest }
 }
 
@@ -69,7 +78,9 @@ function ohMyPiDialog(payload: Record<string, unknown>): DialogPrompt | null {
   if (payload.type !== OH_MY_PI_EVENT.ExtensionUIRequest)
     return null
   const method = pickString(payload, 'method')
-  const shape = Object.hasOwn(DIALOG_VARIANTS, method) ? DIALOG_VARIANTS[method] : undefined
+  const shape = Object.hasOwn(DIALOG_VARIANTS, method)
+    ? DIALOG_VARIANTS[method]
+    : undefined
   if (!shape)
     return null
   const message = pickString(payload, 'message', undefined)
@@ -78,12 +89,20 @@ function ohMyPiDialog(payload: Record<string, unknown>): DialogPrompt | null {
   const timeout = pickNumber(payload, 'timeout')
   return {
     title: pickString(payload, 'title') || shape.defaultTitle,
-    ...(message !== undefined ? { message } : {}),
-    ...(placeholder !== undefined ? { placeholder } : {}),
-    ...(prefill !== undefined ? { prefill } : {}),
+    ...(message !== undefined
+      ? { message }
+      : {}),
+    ...(placeholder !== undefined
+      ? { placeholder }
+      : {}),
+    ...(prefill !== undefined
+      ? { prefill }
+      : {}),
     variant: shape.variant,
     // Zero and below state no deadline: omp then waits with no limit.
-    ...(timeout != null && timeout > 0 ? { timeoutMs: timeout } : {}),
+    ...(timeout != null && timeout > 0
+      ? { timeoutMs: timeout }
+      : {}),
   }
 }
 
@@ -101,12 +120,18 @@ export function ohMyPiExtractControl(input: ControlExtractionInput): ExtractedCo
   const payload = input.payload
   if (!isOhMyPiApproval(payload)) {
     const dialog = ohMyPiDialog(payload)
-    return dialog ? { kind: 'dialog', dialog } : null
+    return dialog
+      ? { kind: 'dialog', dialog }
+      : null
   }
   const title = pickString(payload, 'title')
   const newline = title.indexOf('\n')
-  const first = newline < 0 ? title : title.slice(0, newline)
-  const body = newline < 0 ? '' : title.slice(newline + 1)
+  const first = newline < 0
+    ? title
+    : title.slice(0, newline)
+  const body = newline < 0
+    ? ''
+    : title.slice(newline + 1)
   const toolName = first.slice(OH_MY_PI_APPROVAL_DIALOG.TitlePrefix.length).trim()
   const args = sourceArgs(input, toolName)
   const fromTitle = splitCommand(body)
@@ -115,10 +140,18 @@ export function ohMyPiExtractControl(input: ControlExtractionInput): ExtractedCo
   return {
     kind: 'permission',
     permission: {
-      ...(toolName ? { title: toolName } : {}),
-      ...(reason ? { reason } : {}),
-      ...(command ? { command } : {}),
-      ...(args ? { input: args } : {}),
+      ...(toolName
+        ? { title: toolName }
+        : {}),
+      ...(reason
+        ? { reason }
+        : {}),
+      ...(command
+        ? { command }
+        : {}),
+      ...(args
+        ? { input: args }
+        : {}),
       options: [
         { optionId: OH_MY_PI_APPROVAL_DIALOG.Approve, kind: ACP_PERMISSION_KIND.AllowOnce, name: OH_MY_PI_APPROVAL_DIALOG.Approve },
         { optionId: OH_MY_PI_APPROVAL_DIALOG.Deny, kind: KIND_REJECT_ONCE, name: OH_MY_PI_APPROVAL_DIALOG.Deny },

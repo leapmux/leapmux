@@ -72,7 +72,9 @@ export const RecoverPage: Component = () => {
             <div class={actionsFooter}>
               <button type="submit" disabled={submitting() || !identifier().trim() || captcha.blocksSubmit()}>
                 <Show when={submitting()}><Spinner /></Show>
-                {submitting() ? 'Sending…' : 'Send recovery link'}
+                {submitting()
+                  ? 'Sending…'
+                  : 'Send recovery link'}
               </button>
             </div>
           </form>

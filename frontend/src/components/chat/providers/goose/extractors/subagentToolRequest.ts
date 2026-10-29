@@ -7,7 +7,9 @@ function subagentRequestData(parent: Record<string, unknown>): Record<string, un
   if (notification?.type !== 'message')
     return undefined
   const data = pickObject(pickObject(notification, 'params'), 'data')
-  return data?.type === 'subagent_tool_request' ? data : undefined
+  return data?.type === 'subagent_tool_request'
+    ? data
+    : undefined
 }
 
 export function isGooseSubagentToolRequest(parent: Record<string, unknown>): boolean {

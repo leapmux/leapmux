@@ -3,15 +3,42 @@ import { describe, expect, it } from 'vitest'
 import { matchesRequest } from '../helpers/mockModelScript'
 import { piChildLaunch, piChildNoticeRule, piWorkflowNoticeRule } from './childNoticeRule'
 
-const options = { name: 'the actual Pi child completed', spawnCallId: 'native-pi-spawn', description: 'Read "A&B<file>"', report: 'REPORT & <native>\nThe report ends here.', reply: 'The actual Pi report arrived.' }
-const launch = { spawnCallId: options.spawnCallId, description: options.description, childId: '12345678-abcd-123', outputFile: '/private/A&B/12345678-abcd-123.output' }
+const options = {
+  name: 'the actual Pi child completed',
+  spawnCallId: 'native-pi-spawn',
+  description: 'Read "A&B<file>"',
+  report: 'REPORT & <native>\nThe report ends here.',
+  reply: 'The actual Pi report arrived.',
+}
+const launch = {
+  spawnCallId: options.spawnCallId,
+  description: options.description,
+  childId: '12345678-abcd-123',
+  outputFile: '/private/A&B/12345678-abcd-123.output',
+}
 const xml = (text: string) => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;')
 
 function receipt(text = `Agent started in background.\nAgent ID: ${launch.childId}\nOutput file: ${launch.outputFile}\n`, callName = 'Agent'): MockModelRequestRecord {
   return {
     protocol: 'openai-chat-completions',
     path: '/v1/chat/completions',
-    body: { messages: [{ role: 'assistant', tool_calls: [{ id: options.spawnCallId, function: { name: callName, arguments: JSON.stringify({ description: options.description, prompt: 'Perform the actual child task.', subagent_type: 'general-purpose' }) } }] }, { role: 'tool', tool_call_id: options.spawnCallId, content: text }] },
+    body: {
+      messages: [
+        {
+          role: 'assistant',
+          tool_calls: [
+            {
+              id: options.spawnCallId,
+              function: {
+                name: callName,
+                arguments: JSON.stringify({ description: options.description, prompt: 'Perform the actual child task.', subagent_type: 'general-purpose' }),
+              },
+            },
+          ],
+        },
+        { role: 'tool', tool_call_id: options.spawnCallId, content: text },
+      ],
+    },
   }
 }
 
@@ -20,7 +47,21 @@ function notice() {
 }
 
 function accepts(rule: MockModelRule, text: string, lastRole = 'user') {
-  return matchesRequest(rule.when, { protocol: 'openai-chat-completions', systemText: '', userText: text, body: { messages: [{ role: 'user', content: text }, ...(lastRole === 'user' ? [] : [{ role: lastRole, content: 'A later native message.' }])] } })
+  return matchesRequest(rule.when, {
+    protocol: 'openai-chat-completions',
+    systemText: '',
+    userText: text,
+    body: {
+      messages: [
+        { role: 'user', content: text },
+        ...(lastRole === 'user'
+          ? []
+          : [
+              { role: lastRole, content: 'A later native message.' },
+            ]),
+      ],
+    },
+  })
 }
 
 describe('piChildLaunch', () => {
@@ -35,10 +76,23 @@ describe('piChildLaunch', () => {
   })
 
   it('ignores a request before its actual tool result arrives', () => {
-    expect(piChildLaunch({ protocol: 'openai-chat-completions', path: '/', body: { messages: [{ role: 'user', content: 'Agent ID: guessed-id' }] } }, options.spawnCallId)).toBeNull()
+    expect(piChildLaunch({
+      protocol: 'openai-chat-completions',
+      path: '/',
+      body: {
+        messages: [
+          { role: 'user', content: 'Agent ID: guessed-id' },
+        ],
+      },
+    }, options.spawnCallId)).toBeNull()
   })
 
-  it.each(['Agent failed.\n', `Agent started in background.\nAgent ID: ${launch.childId}\nAgent ID: ${launch.childId}\n`, 'Agent started in background.\nAgent ID: foreign-id\n', `Agent started in background.\nAgent ID: ${launch.childId}\nOutput file: /first\nOutput file: /second\n`])('rejects an invalid native launch receipt: %j', (text) => {
+  it.each([
+    'Agent failed.\n',
+    `Agent started in background.\nAgent ID: ${launch.childId}\nAgent ID: ${launch.childId}\n`,
+    'Agent started in background.\nAgent ID: foreign-id\n',
+    `Agent started in background.\nAgent ID: ${launch.childId}\nOutput file: /first\nOutput file: /second\n`,
+  ])('rejects an invalid native launch receipt: %j', (text) => {
     expect(() => piChildLaunch(receipt(text), options.spawnCallId)).toThrow(/Pi child receipt/)
   })
 
@@ -63,8 +117,16 @@ describe('piChildNoticeRule', () => {
   it.each([
     ['the native task ID', launch.childId, '87654321-abcd-123'],
     ['the actual call ID', options.spawnCallId, 'foreign-spawn'],
-    ['the summary', xml(options.description), 'A foreign task'],
-    ['the actual report', xml(options.report), 'A foreign report'],
+    [
+      'the summary',
+      xml(options.description),
+      'A foreign task',
+    ],
+    [
+      'the actual report',
+      xml(options.report),
+      'A foreign report',
+    ],
     ['the completion status', '<status>Done</status>', '<status>Stopped</status>'],
     ['the output footer', `Full transcript available at: ${launch.outputFile}`, 'Full transcript available at: /foreign/output'],
     ['a required metric', '<tool_uses>1</tool_uses>', ''],
@@ -72,7 +134,13 @@ describe('piChildNoticeRule', () => {
     expect(accepts(piChildNoticeRule(launch, options), notice().replaceAll(from, to))).toBe(false)
   })
 
-  it.each(['prefix', 'quoted', 'nested', 'duplicated', 'workflow'])('rejects an unrelated or malformed %s envelope', (kind) => {
+  it.each([
+    'prefix',
+    'quoted',
+    'nested',
+    'duplicated',
+    'workflow',
+  ])('rejects an unrelated or malformed %s envelope', (kind) => {
     const text = kind === 'prefix'
       ? `An unrelated user message.\n${notice()}`
       : kind === 'quoted'
@@ -100,11 +168,27 @@ describe('piChildNoticeRule', () => {
 describe('piWorkflowNoticeRule', () => {
   it('accepts the captured native workflow total of ten raw progress records', () => {
     const captured = '<task-notification>\n<task-id>wf_d03cd0d8ba09</task-id>\n<tool-use-id>native-pi-workflow</tool-use-id>\n<script>/var/folders/ph/0qx1sm5d2w3dmmgckzz91wqr0000gn/T/pi-subagents-501/Users-trustin-Workspaces-leapmux-.tmp-e2e-28KS3u-pi-e2e-wd-kp9RnT/01a0f667-32dd-7716-8e91-2b9df1949d01/tasks/wf_d03cd0d8ba09.workflow.js</script>\n<status>Done</status>\n<summary>Workflow "Native two-stage workflow" completed — 2/10 agents</summary>\n<result>{\n  "first": "ACTUAL_FIRST_WORKFLOW_ANSWER_c6c2155c73d04bc697a8b1ae274045c7",\n  "second": "ACTUAL_SECOND_WORKFLOW_ANSWER_c6c2155c73d04bc697a8b1ae274045c7"\n}</result>\n<usage><total_tokens>4</total_tokens><tool_uses>0</tool_uses><duration_ms>933</duration_ms></usage>\n</task-notification>'
-    const rule = piWorkflowNoticeRule({ name: 'the captured native workflow completed', taskId: 'wf_d03cd0d8ba09', callId: 'native-pi-workflow', workflowName: 'Native two-stage workflow', scriptPath: '/var/folders/ph/0qx1sm5d2w3dmmgckzz91wqr0000gn/T/pi-subagents-501/Users-trustin-Workspaces-leapmux-.tmp-e2e-28KS3u-pi-e2e-wd-kp9RnT/01a0f667-32dd-7716-8e91-2b9df1949d01/tasks/wf_d03cd0d8ba09.workflow.js', reports: ['ACTUAL_FIRST_WORKFLOW_ANSWER_c6c2155c73d04bc697a8b1ae274045c7', 'ACTUAL_SECOND_WORKFLOW_ANSWER_c6c2155c73d04bc697a8b1ae274045c7'], reply: 'The captured native workflow result arrived.' })
+    const rule = piWorkflowNoticeRule({
+      name: 'the captured native workflow completed',
+      taskId: 'wf_d03cd0d8ba09',
+      callId: 'native-pi-workflow',
+      workflowName: 'Native two-stage workflow',
+      scriptPath: '/var/folders/ph/0qx1sm5d2w3dmmgckzz91wqr0000gn/T/pi-subagents-501/Users-trustin-Workspaces-leapmux-.tmp-e2e-28KS3u-pi-e2e-wd-kp9RnT/01a0f667-32dd-7716-8e91-2b9df1949d01/tasks/wf_d03cd0d8ba09.workflow.js',
+      reports: ['ACTUAL_FIRST_WORKFLOW_ANSWER_c6c2155c73d04bc697a8b1ae274045c7', 'ACTUAL_SECOND_WORKFLOW_ANSWER_c6c2155c73d04bc697a8b1ae274045c7'],
+      reply: 'The captured native workflow result arrived.',
+    })
     expect(accepts(rule, captured)).toBe(true)
     expect(accepts(rule, captured.replace('completed — 2/10 agents', 'completed — 1/10 agents'))).toBe(false)
   })
-  const workflow = { name: 'the actual workflow completes', taskId: 'wf_123-native', callId: 'actual-workflow', workflowName: 'Native two-stage workflow', scriptPath: '/private/workflow.js', reports: ['FIRST_NATIVE_REPORT', 'SECOND_NATIVE_REPORT'], reply: 'The workflow completed.' }
+  const workflow = {
+    name: 'the actual workflow completes',
+    taskId: 'wf_123-native',
+    callId: 'actual-workflow',
+    workflowName: 'Native two-stage workflow',
+    scriptPath: '/private/workflow.js',
+    reports: ['FIRST_NATIVE_REPORT', 'SECOND_NATIVE_REPORT'],
+    reply: 'The workflow completed.',
+  }
   const text = `<task-notification>\n<task-id>${workflow.taskId}</task-id>\n<tool-use-id>${workflow.callId}</tool-use-id>\n<script>${workflow.scriptPath}</script>\n<status>Done</status>\n<summary>Workflow "${workflow.workflowName}" completed — 2/2 agents</summary>\n<result>{"first":"FIRST_NATIVE_REPORT","second":"SECOND_NATIVE_REPORT"}</result>\n<usage><total_tokens>0</total_tokens><tool_uses>0</tool_uses><duration_ms>0</duration_ms></usage>\n</task-notification>`
 
   it('requires the actual workflow identity and both native stage reports', () => {

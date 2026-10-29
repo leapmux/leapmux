@@ -22,7 +22,9 @@ function fakeInstance(overrides: Partial<TerminalInstance> = {}): TerminalInstan
     webglAllowed: true,
     fontsReady: Promise.resolve(),
     webglAddon: undefined,
-    terminal: { element: { isConnected: true } },
+    terminal: {
+      element: { isConnected: true },
+    },
     ...overrides,
   } as unknown as TerminalInstance
 }
@@ -125,7 +127,11 @@ describe('createWebglTerminalPool', () => {
 
   it('does not attach a terminal whose element is detached', async () => {
     const pool = makePool(4)
-    pool.acquire('a', fakeInstance({ terminal: { element: { isConnected: false } } as any }))
+    pool.acquire('a', fakeInstance({
+      terminal: {
+        element: { isConnected: false },
+      } as any,
+    }))
     await flush()
     expect(pool.has('a')).toBe(false)
     expect(attach).not.toHaveBeenCalled()
@@ -181,7 +187,12 @@ describe('createWebglTerminalPool', () => {
     // WebGL after transient GPU pressure eases -- otherwise its lifetime loss
     // count, which release would normally reset, pins it to DOM forever.
     let clock = 0
-    const pool = createWebglTerminalPool({ capacity: 2, attach, detach, now: () => clock })
+    const pool = createWebglTerminalPool({
+      capacity: 2,
+      attach,
+      detach,
+      now: () => clock,
+    })
     pool.acquire('a', fakeInstance())
     await flush()
     expect(attach).toHaveBeenCalledTimes(1)
@@ -216,7 +227,12 @@ describe('createWebglTerminalPool', () => {
     // The decay reset must not weaken the anti-thrash bound: losses that all
     // land inside the window keep accumulating and still exhaust the budget.
     let clock = 0
-    const pool = createWebglTerminalPool({ capacity: 2, attach, detach, now: () => clock })
+    const pool = createWebglTerminalPool({
+      capacity: 2,
+      attach,
+      detach,
+      now: () => clock,
+    })
     pool.acquire('a', fakeInstance())
     await flush()
 

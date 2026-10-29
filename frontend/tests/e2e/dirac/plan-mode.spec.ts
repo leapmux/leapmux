@@ -21,15 +21,25 @@ diracTest.describe('Dirac plan mode', () => {
     // takes the Node.js runtime from that path.
     const nodePath = requireBinary('node', 'The Dirac plan readiness probe requires the Node.js runtime', hubSpawnEnv(leapmuxServer.agentEnv))
     await withDiracPlanReadiness({ home, nodePath, runDir: getGlobalState().tmpDir }, async (readiness) => {
-      const { agentId } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, DIRAC_AGENT, { optionValues: { permissionMode: 'plan' } })
+      const { agentId } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, DIRAC_AGENT, {
+        optionValues: { permissionMode: 'plan' },
+      })
       await withCleanup(async () => {
         await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
         await waitForSettingsHydrated(page)
         await expectSettingsChip(page, 'Plan')
 
         const start = await modelScript.queue(
-          { toolCalls: [diracRespondToolCall('dirac-plan', 'plan', '1. Write the parser.\n2. Test it.')] },
-          { toolCalls: [diracRespondToolCall('dirac-plan-revised', 'plan', '1. Write the parser.\n2. Test it.\n3. Review the parser.')] },
+          {
+            toolCalls: [
+              diracRespondToolCall('dirac-plan', 'plan', '1. Write the parser.\n2. Test it.'),
+            ],
+          },
+          {
+            toolCalls: [
+              diracRespondToolCall('dirac-plan-revised', 'plan', '1. Write the parser.\n2. Test it.\n3. Review the parser.'),
+            ],
+          },
         )
         await sendMessage(page, modelScript.prompt('Plan the work.'))
         await modelScript.waitForSteps(start + 1)

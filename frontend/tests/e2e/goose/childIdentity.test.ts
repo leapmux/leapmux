@@ -5,7 +5,12 @@ import { gooseChildTaskId, gooseChildTaskMatcher } from './childIdentity'
 
 describe('gooseChildTaskMatcher', () => {
   const task = 'NATIVECHILDTASK1 report one word.'
-  const selects = (userText: string, matched = task) => matchesRequest(gooseChildTaskMatcher(matched), { protocol: 'openai-chat-completions', userText, systemText: '', body: {} })
+  const selects = (userText: string, matched = task) => matchesRequest(gooseChildTaskMatcher(matched), {
+    protocol: 'openai-chat-completions',
+    userText,
+    systemText: '',
+    body: {},
+  })
 
   it('selects the child turn with and without the Subagent ID line of Goose', () => {
     expect(selects(`${task}\n\nSCENARIO_MARK`)).toBe(true)
@@ -30,16 +35,37 @@ const encoder = new TextEncoder()
 const prompt = 'ACTUAL_CHILD_TASK\n\nLEAPMUXE2ESCENARIO:current-task'
 const childSession = 'native-child-session'
 function event(id = 'spawn', instructions = prompt) {
-  return { sessionUpdate: 'tool_call', toolCallId: id, title: 'delegate', rawInput: { instructions }, _meta: { goose: { toolCall: { toolName: 'delegate', extensionName: 'summon' } } } }
+  return {
+    sessionUpdate: 'tool_call',
+    toolCallId: id,
+    title: 'delegate',
+    rawInput: { instructions },
+    _meta: {
+      goose: {
+        toolCall: { toolName: 'delegate', extensionName: 'summon' },
+      },
+    },
+  }
 }
 /** The ack that completes the delegate call before the child runs. */
 function ack(id = 'spawn', session = childSession) {
-  return { sessionUpdate: 'tool_call_update', toolCallId: id, content: [{ content: { type: 'text', text: `Delegated to subagent ${session}` } }] }
+  return {
+    sessionUpdate: 'tool_call_update',
+    toolCallId: id,
+    content: [
+      {
+        content: { type: 'text', text: `Delegated to subagent ${session}` },
+      },
+    ],
+  }
 }
 
 describe('gooseChildTaskId', () => {
   it('uses the actual delegate call and prompt independently of its display title', () => {
-    expect(gooseChildTaskId(nativeFrameSnapshot(event('other'), { ...event(), title: 'Another native label' }, ack()), 'spawn', prompt)).toBe(childSession)
+    expect(gooseChildTaskId(nativeFrameSnapshot(event('other'), {
+      ...event(),
+      title: 'Another native label',
+    }, ack()), 'spawn', prompt)).toBe(childSession)
   })
 
   it.each(['', ' '])('refuses an invalid native session before decoding a matching delegate frame: "%s"', (session) => {
@@ -70,8 +96,23 @@ describe('gooseChildTaskId', () => {
     expect(() => gooseChildTaskId(stale, 'spawn', prompt)).toThrow('no native parent receipt')
   })
 
-  it.each([null, {}, { goose: [] }, { goose: { toolCall: null } }, { goose: { toolCall: { toolName: 'shell', extensionName: 'developer' } } }])('refuses missing or unrelated native delegate metadata: %j', (_meta) => {
-    expect(() => gooseChildTaskId(nativeFrameSnapshot({ ...event(), _meta }), 'spawn', prompt)).toThrow('not a native summon delegate')
+  it.each([
+    null,
+    {},
+    { goose: [] },
+    {
+      goose: { toolCall: null },
+    },
+    {
+      goose: {
+        toolCall: { toolName: 'shell', extensionName: 'developer' },
+      },
+    },
+  ])('refuses missing or unrelated native delegate metadata: %j', (_meta) => {
+    expect(() => gooseChildTaskId(nativeFrameSnapshot({
+      ...event(),
+      _meta,
+    }), 'spawn', prompt)).toThrow('not a native summon delegate')
   })
 
   it('refuses conflicting receipts and invalid native bytes', () => {

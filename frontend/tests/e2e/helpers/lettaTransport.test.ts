@@ -30,7 +30,12 @@ describe('lettaTransportSource', () => {
     const compressed = zstdCompressSync(Buffer.from(body))
     await redirectedFetch('https://chatgpt.com/backend-api/codex/responses?trace=1', {
       method: 'POST',
-      headers: { 'content-encoding': 'zstd', 'content-length': String(compressed.byteLength), 'authorization': 'Bearer mock', 'chatgpt-account-id': 'account' },
+      headers: {
+        'content-encoding': 'zstd',
+        'content-length': String(compressed.byteLength),
+        'authorization': 'Bearer mock',
+        'chatgpt-account-id': 'account',
+      },
       body: compressed,
       signal: controller.signal,
     })
@@ -49,7 +54,11 @@ describe('lettaTransportSource', () => {
 
   it('preserves a Request input and its uncompressed body', async () => {
     const { nativeFetch, redirectedFetch } = transport()
-    await redirectedFetch(new Request('https://chatgpt.com/backend-api/codex/responses', { method: 'POST', body: 'native body', headers: { 'x-probe': 'kept' } }))
+    await redirectedFetch(new Request('https://chatgpt.com/backend-api/codex/responses', {
+      method: 'POST',
+      body: 'native body',
+      headers: { 'x-probe': 'kept' },
+    }))
     const [input, init] = nativeFetch.mock.calls[0]!
     const forwarded = new Request(input, init)
     expect(forwarded.method).toBe('POST')
@@ -78,7 +87,11 @@ describe('lettaTransportSource', () => {
     const controller = new AbortController()
     controller.abort()
     await expect(redirectedFetch('https://chatgpt.com/backend-api/wham/usage', { signal: controller.signal })).rejects.toMatchObject({ name: 'AbortError' })
-    await expect(redirectedFetch('https://chatgpt.com/backend-api/codex/responses', { method: 'POST', headers: { 'content-encoding': 'zstd' }, body: 'not compressed' })).rejects.toMatchObject({ code: 'ZSTD_error_prefix_unknown' })
+    await expect(redirectedFetch('https://chatgpt.com/backend-api/codex/responses', {
+      method: 'POST',
+      headers: { 'content-encoding': 'zstd' },
+      body: 'not compressed',
+    })).rejects.toMatchObject({ code: 'ZSTD_error_prefix_unknown' })
     expect(nativeFetch).not.toHaveBeenCalled()
   })
 

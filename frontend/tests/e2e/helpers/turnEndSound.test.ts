@@ -7,8 +7,13 @@ import { bashToolCall } from './providerToolCalls'
 import { parseSettledReceipt, selectIdleReceipt, sendToolUsingTurn, TOOL_USING_PROMPT } from './turnEndSound'
 import { sendMessage } from './ui'
 
-vi.mock('./nativeScenario', () => ({ selectedAgentTabId: vi.fn() }))
-vi.mock('./ui', () => ({ sendMessage: vi.fn(async () => {}), setInitialBrowserPref: vi.fn() }))
+vi.mock('./nativeScenario', () => ({
+  selectedAgentTabId: vi.fn(),
+}))
+vi.mock('./ui', () => ({
+  sendMessage: vi.fn(async () => {}),
+  setInitialBrowserPref: vi.fn(),
+}))
 
 describe('parseSettledReceipt', () => {
   it('preserves explicit zero and the absence of a count', () => {
@@ -20,10 +25,22 @@ describe('parseSettledReceipt', () => {
   })
 
   it('rejects malformed counts and missing agent or settled state', () => {
-    for (const value of [null, {}, { agentId: '', state: AgentActivityState.IDLE }])
+    for (const value of [
+      null,
+      {},
+      { agentId: '', state: AgentActivityState.IDLE },
+    ])
       expect(() => parseSettledReceipt(value)).toThrow('The settled receipt needs an agent ID.')
     expect(() => parseSettledReceipt({ agentId: 'a1', state: AgentActivityState.WORKING })).toThrow('The settled receipt needs an idle or waiting state.')
-    for (const count of [-1, 0.5, null, undefined, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1])
+    for (const count of [
+      -1,
+      0.5,
+      null,
+      undefined,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.MAX_SAFE_INTEGER + 1,
+    ])
       expect(() => parseSettledReceipt({ agentId: 'a1', state: AgentActivityState.IDLE, numToolUses: count })).toThrow('tool count')
   })
 })
@@ -50,7 +67,9 @@ describe('selectIdleReceipt', () => {
 describe('sendToolUsingTurn', () => {
   /** A page whose sound probe already holds `settled` receipts. */
   function probedPage(settled: unknown[]): Page {
-    return { evaluate: vi.fn(async () => ({ plays: [], settled })) } as unknown as Page
+    return {
+      evaluate: vi.fn(async () => ({ plays: [], settled })),
+    } as unknown as Page
   }
 
   /** A script that already holds `queued` steps, with each call in `log`. */
@@ -78,7 +97,14 @@ describe('sendToolUsingTurn', () => {
     const boundary = await sendToolUsingTurn(probedPage([{}, {}]), recordingScript(log, 3))
     expect(boundary).toEqual({ agentId: 'agent-1', after: 2 })
     expect(log).toEqual([
-      `queue ${JSON.stringify([{ toolCalls: [bashToolCall(AgentProvider.CLAUDE_CODE, 'pwd-call', 'pwd')] }, { text: 'The working directory is above.' }])}`,
+      `queue ${JSON.stringify([
+        {
+          toolCalls: [
+            bashToolCall(AgentProvider.CLAUDE_CODE, 'pwd-call', 'pwd'),
+          ],
+        },
+        { text: 'The working directory is above.' },
+      ])}`,
       'wait 5',
     ])
     expect(vi.mocked(sendMessage).mock.calls[0]?.[1]).toBe(`[marked] ${TOOL_USING_PROMPT}`)
@@ -101,15 +127,31 @@ describe('sendToolUsingTurn', () => {
     const log: string[] = []
     await sendToolUsingTurn(probedPage([]), recordingScript(log, 4), { answerGate: 'presence-a' })
     expect(log).toEqual([
-      `queue ${JSON.stringify([{ toolCalls: [bashToolCall(AgentProvider.CLAUDE_CODE, 'pwd-call', 'pwd')] }, { text: 'The working directory is above.', gate: 'presence-a' }])}`,
+      `queue ${JSON.stringify([
+        {
+          toolCalls: [
+            bashToolCall(AgentProvider.CLAUDE_CODE, 'pwd-call', 'pwd'),
+          ],
+        },
+        { text: 'The working directory is above.', gate: 'presence-a' },
+      ])}`,
       'wait 6',
     ])
   })
 
   it.each([
-    [{ answerGate: '' }, 'needs the name of its gate'],
-    [{ answerGate: ' ' }, 'needs the name of its gate'],
-    [{ answerGate: 'gate', holdAnswerMs: 10 }, 'not both'],
+    [
+      { answerGate: '' },
+      'needs the name of its gate',
+    ],
+    [
+      { answerGate: ' ' },
+      'needs the name of its gate',
+    ],
+    [
+      { answerGate: 'gate', holdAnswerMs: 10 },
+      'not both',
+    ],
   ])('refuses the options %j before it reads the page', async (options, message) => {
     const page = probedPage([])
     await expect(sendToolUsingTurn(page, recordingScript([], 0), options)).rejects.toThrow(message)

@@ -23,7 +23,9 @@ vi.mock('~/api/clients', () => ({
     // The dialog context filters the fleet to ONLINE workers before it
     // applies the preselection, so the one mock worker must be online.
     listWorkers: vi.fn(async () => ({
-      workers: [create(WorkerSchema, { id: 'w-1', online: true })],
+      workers: [
+        create(WorkerSchema, { id: 'w-1', online: true }),
+      ],
     })),
   },
 }))
@@ -36,7 +38,16 @@ vi.mock('~/api/workerRpc', () => ({
   getGitInfo: vi.fn(async () => ({})),
   getWorkerSystemInfo: vi.fn(async () => ({})),
   statFile: vi.fn(async () => ({})),
-  listDirectory: vi.fn(async () => ({ listings: [{ path: '', entries: [], truncated: false, totalEntries: 0 }] })),
+  listDirectory: vi.fn(async () => ({
+    listings: [
+      {
+        path: '',
+        entries: [],
+        truncated: false,
+        totalEntries: 0,
+      },
+    ],
+  })),
   openAgent: vi.fn(async () => ({})),
 }))
 
@@ -47,7 +58,9 @@ function renderDialog(blockedReason?: () => string | undefined) {
     <NewAgentDialog
       defaultWorkerId="w-1"
       defaultWorkingDir="/tmp"
-      {...(blockedReason !== undefined ? { blockedReason } : {})}
+      {...(blockedReason !== undefined
+        ? { blockedReason }
+        : {})}
       onCreated={() => {}}
       onClose={() => {}}
       repoGitStore={createRepoGitStore()}
@@ -226,7 +239,9 @@ describe('NewAgentDialog title', () => {
 
     const createButton = await findCreateButton()
     await waitFor(() => expect(createButton).not.toBeDisabled())
-    fireEvent.input(screen.getByTestId('title-input'), { target: { value: '' } })
+    fireEvent.input(screen.getByTestId('title-input'), {
+      target: { value: '' },
+    })
 
     await waitFor(() => expect(createButton).toBeDisabled())
     expect(screen.getByText('Name must not be empty')).toBeInTheDocument()

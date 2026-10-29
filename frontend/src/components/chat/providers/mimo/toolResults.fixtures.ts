@@ -17,8 +17,19 @@ const INPUTS = new Map<string, Record<string, unknown>>()
 function done(tool: string, input: Record<string, unknown>, output: string, metadata: Record<string, unknown> = {}, title = ''): ToolResultFixture {
   INPUTS.set(tool, input)
   return {
-    payload: toolFrame(tool, { status: MIMO_TOOL_STATUS.Completed, input, output, metadata, ...(title ? { title } : {}) }),
-    options: { spanType: tool, request: parsedFrame(openingFrame(tool, input)) },
+    payload: toolFrame(tool, {
+      status: MIMO_TOOL_STATUS.Completed,
+      input,
+      output,
+      metadata,
+      ...(title
+        ? { title }
+        : {}),
+    }),
+    options: {
+      spanType: tool,
+      request: parsedFrame(openingFrame(tool, input)),
+    },
   }
 }
 
@@ -28,26 +39,76 @@ const SPAWN_OUTPUT = 'Background sub-session started. actor_id: general-1\nThe r
 const EDIT_DIFF = 'Index: /p/a.ts\n===================================================================\n--- /p/a.ts\n+++ /p/a.ts\n@@ -1,1 +1,1 @@\n-alpha\n+omega\n'
 
 const FIXTURES: Readonly<Record<string, ToolResultFixture>> = {
-  [MIMO_TOOL.Bash]: done(MIMO_TOOL.Bash, { command: 'echo probe', description: 'Print probe output' }, 'probe\n', { output: 'probe\n', exit: 0, description: 'Print probe output', truncated: false }),
+  [MIMO_TOOL.Bash]: done(MIMO_TOOL.Bash, { command: 'echo probe', description: 'Print probe output' }, 'probe\n', {
+    output: 'probe\n',
+    exit: 0,
+    description: 'Print probe output',
+    truncated: false,
+  }),
   [MIMO_TOOL.Read]: done(MIMO_TOOL.Read, { file_path: '/p/a.ts' }, READ_OUTPUT, { preview: 'alpha\nbeta', truncated: false, loaded: [] }),
   [MIMO_TOOL.Glob]: done(MIMO_TOOL.Glob, { pattern: '*.ts' }, '/p/a.ts\n/p/b.ts', { count: 2, truncated: false }),
   [MIMO_TOOL.Grep]: done(MIMO_TOOL.Grep, { pattern: 'alpha' }, GREP_OUTPUT, { matches: 2, truncated: false }),
-  [MIMO_TOOL.Edit]: done(MIMO_TOOL.Edit, { file_path: '/p/a.ts', old_string: 'alpha', new_string: 'omega' }, 'Edit applied successfully.', { diff: EDIT_DIFF, filediff: { file: '/p/a.ts', patch: EDIT_DIFF, additions: 1, deletions: 1 } }),
-  [MIMO_TOOL.MultiEdit]: done(MIMO_TOOL.MultiEdit, { file_path: '/p/a.ts', edits: [{ old_string: 'alpha', new_string: 'omega' }] }, 'Edit applied successfully.', { results: [{ diff: EDIT_DIFF }] }),
+  [MIMO_TOOL.Edit]: done(MIMO_TOOL.Edit, { file_path: '/p/a.ts', old_string: 'alpha', new_string: 'omega' }, 'Edit applied successfully.', {
+    diff: EDIT_DIFF,
+    filediff: {
+      file: '/p/a.ts',
+      patch: EDIT_DIFF,
+      additions: 1,
+      deletions: 1,
+    },
+  }),
+  [MIMO_TOOL.MultiEdit]: done(MIMO_TOOL.MultiEdit, {
+    file_path: '/p/a.ts',
+    edits: [
+      { old_string: 'alpha', new_string: 'omega' },
+    ],
+  }, 'Edit applied successfully.', {
+    results: [
+      { diff: EDIT_DIFF },
+    ],
+  }),
   [MIMO_TOOL.Write]: done(MIMO_TOOL.Write, { file_path: '/p/new.ts', content: 'fresh\n' }, 'Wrote file successfully.', { filepath: '/p/new.ts', exists: false }),
-  [MIMO_TOOL.NotebookEdit]: done(MIMO_TOOL.NotebookEdit, { notebook_path: '/p/n.ipynb', cell_id: 'c1', new_source: 'print(1)', edit_mode: 'replace' }, 'Notebook updated: replace on n.ipynb.', { edit_mode: 'replace', cell_id: 'c1' }),
-  [MIMO_TOOL.ApplyPatch]: done(MIMO_TOOL.ApplyPatch, { patch_text: '*** Begin Patch\n*** Update File: /p/a.ts\n@@\n-alpha\n+omega\n*** End Patch' }, 'Success. Updated the following files:\nM /p/a.ts', { diff: EDIT_DIFF, files: [{ filePath: '/p/a.ts', type: 'update', patch: EDIT_DIFF }] }),
+  [MIMO_TOOL.NotebookEdit]: done(MIMO_TOOL.NotebookEdit, {
+    notebook_path: '/p/n.ipynb',
+    cell_id: 'c1',
+    new_source: 'print(1)',
+    edit_mode: 'replace',
+  }, 'Notebook updated: replace on n.ipynb.', { edit_mode: 'replace', cell_id: 'c1' }),
+  [MIMO_TOOL.ApplyPatch]: done(MIMO_TOOL.ApplyPatch, { patch_text: '*** Begin Patch\n*** Update File: /p/a.ts\n@@\n-alpha\n+omega\n*** End Patch' }, 'Success. Updated the following files:\nM /p/a.ts', {
+    diff: EDIT_DIFF,
+    files: [
+      { filePath: '/p/a.ts', type: 'update', patch: EDIT_DIFF },
+    ],
+  }),
   [MIMO_TOOL.ViewImage]: {
     payload: toolFrame(MIMO_TOOL.ViewImage, {
       status: MIMO_TOOL_STATUS.Completed,
       input: { path: '/p/dot.png' },
       output: 'Image read successfully',
-      attachments: [{ type: 'file', mime: 'image/png', url: 'data:image/png;base64,iVBORw0KGgo=' }],
+      attachments: [
+        { type: 'file', mime: 'image/png', url: 'data:image/png;base64,iVBORw0KGgo=' },
+      ],
     }),
-    options: { spanType: MIMO_TOOL.ViewImage, request: parsedFrame(openingFrame(MIMO_TOOL.ViewImage, { path: '/p/dot.png' })) },
+    options: {
+      spanType: MIMO_TOOL.ViewImage,
+      request: parsedFrame(openingFrame(MIMO_TOOL.ViewImage, { path: '/p/dot.png' })),
+    },
   },
-  [MIMO_TOOL.Actor]: done(MIMO_TOOL.Actor, { operation: { action: 'spawn', subagent_type: 'general', description: 'Probe helper', prompt: 'Run one command.' } }, SPAWN_OUTPUT, { sessionId: 'ses_test', actorId: 'general-1', model: { providerID: 'mock', modelID: 'alpha' } }, 'Probe helper'),
-  [MIMO_TOOL.Task]: done(MIMO_TOOL.Task, { operation: { action: 'create', summary: 'Probe task' } }, 'Created T1 (open): Probe task', { id: 'T1', status: 'open', truncated: false }, 'Task created: T1'),
+  [MIMO_TOOL.Actor]: done(MIMO_TOOL.Actor, {
+    operation: {
+      action: 'spawn',
+      subagent_type: 'general',
+      description: 'Probe helper',
+      prompt: 'Run one command.',
+    },
+  }, SPAWN_OUTPUT, {
+    sessionId: 'ses_test',
+    actorId: 'general-1',
+    model: { providerID: 'mock', modelID: 'alpha' },
+  }, 'Probe helper'),
+  [MIMO_TOOL.Task]: done(MIMO_TOOL.Task, {
+    operation: { action: 'create', summary: 'Probe task' },
+  }, 'Created T1 (open): Probe task', { id: 'T1', status: 'open', truncated: false }, 'Task created: T1'),
   [MIMO_TOOL.WebFetch]: done(MIMO_TOOL.WebFetch, { url: 'https://example.com', format: 'markdown' }, '# Example Domain', {}),
   [MIMO_TOOL.WebSearch]: done(MIMO_TOOL.WebSearch, { query: 'mimo code' }, 'Title: MiMo\nURL: https://example.com', {}),
   [MIMO_TOOL.CodeSearch]: done(MIMO_TOOL.CodeSearch, { query: 'react hooks' }, 'const [a, setA] = useState(0)', {}),
@@ -56,13 +117,35 @@ const FIXTURES: Readonly<Record<string, ToolResultFixture>> = {
   [MIMO_TOOL.PlanExit]: done(MIMO_TOOL.PlanExit, {}, 'User approved switching to build agent. Wait for further instructions.', { switched: true, feedback: '' }, 'Switching to build agent'),
   [MIMO_TOOL.Memory]: done(MIMO_TOOL.Memory, { operation: 'search', query: 'deploy' }, 'No memories found.', { count: 0 }),
   [MIMO_TOOL.History]: done(MIMO_TOOL.History, { operation: 'search', query: 'deploy' }, 'No matches.', { count: 0, truncated: false }),
-  [MIMO_TOOL.Cron]: done(MIMO_TOOL.Cron, { operation: { action: 'schedule', cron: '0 9 * * 1', prompt: 'Weekly report' } }, 'Scheduled job j1.', { id: 'j1', kind: 'cron' }, 'Scheduled j1'),
+  [MIMO_TOOL.Cron]: done(MIMO_TOOL.Cron, {
+    operation: { action: 'schedule', cron: '0 9 * * 1', prompt: 'Weekly report' },
+  }, 'Scheduled job j1.', { id: 'j1', kind: 'cron' }, 'Scheduled j1'),
   [MIMO_TOOL.Workflow]: done(MIMO_TOOL.Workflow, { operation: 'status', run_id: 'wf_1' }, 'Run wf_1 is running.', { runID: 'wf_1', status: 'running' }, 'Workflow wf_1'),
   [MIMO_TOOL.Session]: done(MIMO_TOOL.Session, { action: 'ask', session_id: 'ses_other', question: 'Status?' }, 'All green.', {}),
   [MIMO_TOOL.Exec]: done(MIMO_TOOL.Exec, { code: 'return 1 + 1' }, '2', {}),
-  [MIMO_TOOL.Lsp]: done(MIMO_TOOL.Lsp, { operation: 'hover', file_path: '/p/a.ts', line: 1, character: 1 }, 'const alpha: number', { result: [] }),
+  [MIMO_TOOL.Lsp]: done(MIMO_TOOL.Lsp, {
+    operation: 'hover',
+    file_path: '/p/a.ts',
+    line: 1,
+    character: 1,
+  }, 'const alpha: number', { result: [] }),
   [MIMO_TOOL.McpToolSearch]: done(MIMO_TOOL.McpToolSearch, { query: 'github' }, 'github_create_issue', {}),
-  [MIMO_TOOL.Question]: done(MIMO_TOOL.Question, { questions: [{ question: 'Which database?', header: 'Database', options: [{ label: 'SQLite' }, { label: 'Postgres' }] }] }, 'User has answered your questions: "Which database?"="SQLite".', { answers: [['SQLite']] }),
+  [MIMO_TOOL.Question]: done(MIMO_TOOL.Question, {
+    questions: [
+      {
+        question: 'Which database?',
+        header: 'Database',
+        options: [
+          { label: 'SQLite' },
+          { label: 'Postgres' },
+        ],
+      },
+    ],
+  }, 'User has answered your questions: "Which database?"="SQLite".', {
+    answers: [
+      ['SQLite'],
+    ],
+  }),
   [MIMO_TOOL.Invalid]: done(MIMO_TOOL.Invalid, { tool: 'reed', error: 'Unknown tool' }, 'The arguments provided to the tool are invalid.', {}),
 }
 
@@ -80,7 +163,9 @@ function failed(kind: ToolKind, name: string, status: ToolFailureFixture['status
   const fixture = FIXTURES[name]
   return {
     payload: toolFrame(name, { status: MIMO_TOOL_STATUS.Error, input: INPUTS.get(name) ?? {}, error }),
-    ...(fixture?.options !== undefined ? { options: fixture.options } : {}),
+    ...(fixture?.options !== undefined
+      ? { options: fixture.options }
+      : {}),
     kind,
     name,
     status,

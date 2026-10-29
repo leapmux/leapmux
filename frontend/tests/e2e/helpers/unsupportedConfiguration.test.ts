@@ -40,7 +40,9 @@ vi.mock('./ui', () => ({
     return {
       locator: () => ({
         evaluateAll: async (read: (rows: Element[]) => unknown) => read(groups.map(group => ({
-          getAttribute: (name: string) => name === 'data-testid' ? `composer-group-${group.id}` : null,
+          getAttribute: (name: string) => name === 'data-testid'
+            ? `composer-group-${group.id}`
+            : null,
           textContent: ` ${group.label} `,
         }) as unknown as Element)),
       }),
@@ -58,10 +60,19 @@ function fakeContext() {
       live.events.push('reload')
     },
   } as unknown as Page
-  return { page, modelScript: {} as never, provider: AgentProvider.PI, providerAgent: { provider: AgentProvider.PI, prefix: 'native-e2e' }, leapmuxServer: { hubUrl: '', adminToken: '', workerId: '' }, workspaceId: 'workspace' }
+  return {
+    page,
+    modelScript: {} as never,
+    provider: AgentProvider.PI,
+    providerAgent: { provider: AgentProvider.PI, prefix: 'native-e2e' },
+    leapmuxServer: { hubUrl: '', adminToken: '', workerId: '' },
+    workspaceId: 'workspace',
+  }
 }
 
-const MODEL_ONLY = [{ id: 'model', label: 'Model' }]
+const MODEL_ONLY = [
+  { id: 'model', label: 'Model' },
+]
 
 beforeEach(() => {
   live.events = []
@@ -100,26 +111,40 @@ describe('SETTING_GROUP_NAMES', () => {
 })
 
 describe('settingNameKey', () => {
-  it.each(['fastMode', 'fast_mode', 'Fast Mode', 'FAST-MODE'])('gives %j the key of every other spelling', (name) => {
+  it.each([
+    'fastMode',
+    'fast_mode',
+    'Fast Mode',
+    'FAST-MODE',
+  ])('gives %j the key of every other spelling', (name) => {
     expect(settingNameKey(name)).toBe('fastmode')
   })
 })
 
 describe('settingGroupMatches', () => {
   it('finds a group whose ID spells a known name in another form', () => {
-    expect(settingGroupMatches('swarm-mode', [{ id: 'swarm_mode', label: 'Agents' }])).toEqual(['swarm_mode ("Agents")'])
+    expect(settingGroupMatches('swarm-mode', [
+      { id: 'swarm_mode', label: 'Agents' },
+    ])).toEqual(['swarm_mode ("Agents")'])
   })
 
   it('finds a group that a native agent passes through with an unknown ID and a known label', () => {
-    expect(settingGroupMatches('fast-mode', [{ id: 'turbo', label: 'Fast Mode' }])).toEqual(['turbo ("Fast Mode")'])
+    expect(settingGroupMatches('fast-mode', [
+      { id: 'turbo', label: 'Fast Mode' },
+    ])).toEqual(['turbo ("Fast Mode")'])
   })
 
   it('finds the contract ID of a provider', () => {
-    expect(settingGroupMatches('fast-mode', [{ id: 'service_tier', label: 'Tier' }])).toEqual(['service_tier ("Tier")'])
+    expect(settingGroupMatches('fast-mode', [
+      { id: 'service_tier', label: 'Tier' },
+    ])).toEqual(['service_tier ("Tier")'])
   })
 
   it('keeps a group whose name only holds a known name as a part', () => {
-    expect(settingGroupMatches('extended-thinking', [{ id: 'effort', label: 'Thinking Level' }, { id: 'thinking_effort', label: 'Thinking Effort' }])).toEqual([])
+    expect(settingGroupMatches('extended-thinking', [
+      { id: 'effort', label: 'Thinking Level' },
+      { id: 'thinking_effort', label: 'Thinking Effort' },
+    ])).toEqual([])
   })
 
   it('finds nothing in an empty catalog', () => {
@@ -136,47 +161,92 @@ describe('expectMissingSetting', () => {
   it('runs the related proof first, then reads the catalog and the menu before and after a reload', async () => {
     live.catalogs = [MODEL_ONLY, MODEL_ONLY]
     live.menus = [MODEL_ONLY, MODEL_ONLY]
-    await expectMissingSetting(fakeContext(), { feature: 'swarm-mode', relatedProof: async () => {
-      live.events.push('proof')
-    } })
-    expect(live.events).toEqual(['proof', 'hydrated', 'catalog', 'menu', 'closed', 'reload', 'hydrated', 'catalog', 'menu', 'closed'])
+    await expectMissingSetting(fakeContext(), {
+      feature: 'swarm-mode',
+      relatedProof: async () => {
+        live.events.push('proof')
+      },
+    })
+    expect(live.events).toEqual([
+      'proof',
+      'hydrated',
+      'catalog',
+      'menu',
+      'closed',
+      'reload',
+      'hydrated',
+      'catalog',
+      'menu',
+      'closed',
+    ])
   })
 
   it('fails for a catalog group that spells the feature in another form', async () => {
-    live.catalogs = [[...MODEL_ONLY, { id: 'fast_mode', label: 'Speed' }]]
+    live.catalogs = [
+      [
+        ...MODEL_ONLY,
+        { id: 'fast_mode', label: 'Speed' },
+      ],
+    ]
     live.menus = [MODEL_ONLY]
-    await expect(expectMissingSetting(fakeContext(), { feature: 'fast-mode', relatedProof: async () => {} }))
+    await expect(expectMissingSetting(fakeContext(), {
+      feature: 'fast-mode',
+      relatedProof: async () => {},
+    }))
       .rejects
       .toThrow('fast_mode ("Speed")')
   })
 
   it('fails for a menu group whose label states the feature', async () => {
     live.catalogs = [MODEL_ONLY]
-    live.menus = [[...MODEL_ONLY, { id: 'style', label: 'Output Style' }]]
-    await expect(expectMissingSetting(fakeContext(), { feature: 'output-style', relatedProof: async () => {} }))
+    live.menus = [
+      [
+        ...MODEL_ONLY,
+        { id: 'style', label: 'Output Style' },
+      ],
+    ]
+    await expect(expectMissingSetting(fakeContext(), {
+      feature: 'output-style',
+      relatedProof: async () => {},
+    }))
       .rejects
       .toThrow('style ("Output Style")')
   })
 
   it('fails for a group that appears only after the reload', async () => {
-    live.catalogs = [MODEL_ONLY, [...MODEL_ONLY, { id: 'alwaysThinkingEnabled', label: 'Extended Thinking' }]]
+    live.catalogs = [
+      MODEL_ONLY,
+      [
+        ...MODEL_ONLY,
+        { id: 'alwaysThinkingEnabled', label: 'Extended Thinking' },
+      ],
+    ]
     live.menus = [MODEL_ONLY, MODEL_ONLY]
-    await expect(expectMissingSetting(fakeContext(), { feature: 'extended-thinking', relatedProof: async () => {} }))
+    await expect(expectMissingSetting(fakeContext(), {
+      feature: 'extended-thinking',
+      relatedProof: async () => {},
+    }))
       .rejects
       .toThrow('after the reload')
   })
 
   it('fails for an empty catalog, which proves no live session', async () => {
     live.catalogs = [[]]
-    await expect(expectMissingSetting(fakeContext(), { feature: 'model', relatedProof: async () => {} }))
+    await expect(expectMissingSetting(fakeContext(), {
+      feature: 'model',
+      relatedProof: async () => {},
+    }))
       .rejects
       .toThrow('option groups before the reload')
   })
 
   it('reads nothing when the related proof fails', async () => {
-    await expect(expectMissingSetting(fakeContext(), { feature: 'mode', relatedProof: async () => {
-      throw new Error('the native operation failed')
-    } })).rejects.toThrow('the native operation failed')
+    await expect(expectMissingSetting(fakeContext(), {
+      feature: 'mode',
+      relatedProof: async () => {
+        throw new Error('the native operation failed')
+      },
+    })).rejects.toThrow('the native operation failed')
     expect(live.events).toEqual([])
   })
 })

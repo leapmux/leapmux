@@ -25,6 +25,11 @@ qoderTest('offers Bypass and runs a native command without a prompt before and a
 
 // Qoder withdraws the pending ask itself (control_cancel_request) when the mode changes to Bypass, and runs the tool.
 qoderTest('approves a pending tool and the next tool when Bypass changes during a turn', async ({ askingQoderWorkspace, page, modelScript, leapmuxServer }) => {
-  const native = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingQoderWorkspace.workspaceId })
+  const native = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: askingQoderWorkspace.workspaceId,
+  })
   await exerciseMidTurnBypass(native)
 })

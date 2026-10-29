@@ -37,7 +37,12 @@ qoderTest.describe('Qoder CLI settings', () => {
   })
 
   qoderTest('asks in Default and denies a write in Don\'t Ask', async ({ askingQoderWorkspace, page, modelScript, leapmuxServer }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingQoderWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: askingQoderWorkspace.workspaceId,
+    })
     const file = join(askingQoderWorkspace.workingDir, 'qoder-mode-write.txt')
     const command = 'printf qoder-mode-write > ./qoder-mode-write.txt'
     await waitForSettingsHydrated(page)
@@ -66,7 +71,11 @@ qoderTest.describe('Qoder CLI settings', () => {
     await expectQoderModeChip(page, 'Don\'t Ask')
     // Don't Ask refuses the write without a banner, so the scenario answers no control.
     const deniedStep = await modelScript.queue(
-      { toolCalls: [bashToolCall(AgentProvider.QODER, 'dont-ask-mode-write', command)] },
+      {
+        toolCalls: [
+          bashToolCall(AgentProvider.QODER, 'dont-ask-mode-write', command),
+        ],
+      },
       { text: 'The Dont Ask decision was recorded.' },
     )
     await sendMessage(page, modelScript.prompt('Try the same write without asking.'))
@@ -82,7 +91,11 @@ qoderTest.describe('Qoder CLI settings', () => {
     await expectQoderModeChip(page, 'Don\'t Ask')
     await expectSettingsOptionChosen(page, `permissionMode-${QODER_MODE.DontAsk}`)
     const restoredStep = await modelScript.queue(
-      { toolCalls: [bashToolCall(AgentProvider.QODER, 'dont-ask-mode-restored', command)] },
+      {
+        toolCalls: [
+          bashToolCall(AgentProvider.QODER, 'dont-ask-mode-restored', command),
+        ],
+      },
       { text: 'The restored Dont Ask decision was recorded.' },
     )
     await sendMessage(page, modelScript.prompt('Try the same write after restoring Dont Ask.'))

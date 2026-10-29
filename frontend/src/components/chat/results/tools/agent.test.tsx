@@ -26,13 +26,17 @@ describe('agent renderer', () => {
     const call = toolCallFixture('agent', {
       request: { description: 'Subagent', prompt: 'Go.', registryKey: 'child-1' },
     })
-    const navigation = subagentsFrom({ backgroundTask: () => ({ title: 'Fix the failing build' }) as never })
+    const navigation = subagentsFrom({
+      backgroundTask: () => ({ title: 'Fix the failing build' }) as never,
+    })
     if (navigation === undefined)
       throw new Error('The subagent test needs navigation capabilities')
     const context: ToolResultRenderContext = { subagents: navigation }
     expect(elementText(agentRenderer.title(parsedCall(call), context))).toContain('Fix the failing build')
     // A key the registry does not answer for leaves the launch's own words.
-    const emptyNavigation = subagentsFrom({ backgroundTask: () => undefined })
+    const emptyNavigation = subagentsFrom({
+      backgroundTask: () => undefined,
+    })
     if (emptyNavigation === undefined)
       throw new Error('The subagent test needs empty navigation capabilities')
     const empty: ToolResultRenderContext = { subagents: emptyNavigation }
@@ -66,7 +70,18 @@ describe('agent renderer', () => {
     kind: 'agent',
     request: { description: 'Fix the build', agentType: 'ci-fix', prompt: 'Run the tests.' },
     titlePart: 'Fix the build',
-    result: { agents: [{ description: 'Fix the build', agentId: 'a1', statusLabel: 'completed', outcome: 'completed', metadata: [], body: 'done' }] },
+    result: {
+      agents: [
+        {
+          description: 'Fix the build',
+          agentId: 'a1',
+          statusLabel: 'completed',
+          outcome: 'completed',
+          metadata: [],
+          body: 'done',
+        },
+      ],
+    },
     resultPart: 'done',
   })
 })

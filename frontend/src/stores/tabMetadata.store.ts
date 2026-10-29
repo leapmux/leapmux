@@ -442,7 +442,10 @@ export function createTabMetadataStore() {
   // behaviour. See the `mru` field doc for why this is persisted at all.
   const { stamps: seedStamps, max: seedMax } = loadMru()
   const seedByTabId: Record<string, TabMetadata> = Object.fromEntries(
-    Object.entries(seedStamps).map(([tabId, mru]) => [tabId, { mru }] satisfies [string, TabMetadata]),
+    Object.entries(seedStamps).map(([tabId, mru]) => [
+      tabId,
+      { mru },
+    ] satisfies [string, TabMetadata]),
   )
   const persistMru = createMruPersister(JSON.stringify(mruSnapshot(seedByTabId)))
 
@@ -452,7 +455,10 @@ export function createTabMetadataStore() {
   // How many live events of each kind every tab applied. Plain data, not store state:
   // no reader renders it, and a counter that sits in a reactive row would turn every
   // repeated status push into a write that `sameStoredValue` could not drop.
-  const liveEpochs: Record<LiveWrite, Map<string, number>> = { status: new Map(), catalog: new Map() }
+  const liveEpochs: Record<LiveWrite, Map<string, number>> = {
+    status: new Map(),
+    catalog: new Map(),
+  }
 
   const patch = (tabId: string, fields: TabMetadata) => {
     setState(produce((s) => {
@@ -716,7 +722,9 @@ export function useMetadataSweep(
   const liveTabIdSet = createMemo<Set<string> | null>(
     () => {
       const state = crdtState()
-      return state ? liveTabIds(state) : null
+      return state
+        ? liveTabIds(state)
+        : null
     },
     null,
     { equals: sameKeys },

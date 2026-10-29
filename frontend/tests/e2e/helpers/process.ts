@@ -41,7 +41,9 @@ export function stopProcess(proc: ChildProcess, killAfterMs = 5000): Promise<voi
         proc.kill(value)
       }
       catch (error) {
-        finish(error instanceof Error ? error : new Error(String(error)))
+        finish(error instanceof Error
+          ? error
+          : new Error(String(error)))
       }
     }
     proc.once('exit', onExit)

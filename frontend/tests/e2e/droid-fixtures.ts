@@ -34,8 +34,12 @@ export const DROID_E2E_SKIP_REASON: string | null = missingBinaryReason('droid',
  * a banner before each call. The control-request spec opens its own workspace in
  * Default.
  */
-const AUTO_HIGH = { optionValues: { permissionMode: DROID_MODE.AutoHigh } }
-const REASONING_AUTO_HIGH = { optionValues: { ...AUTO_HIGH.optionValues, [OPTION_ID_EFFORT]: DROID_EFFORT.High } }
+const AUTO_HIGH = {
+  optionValues: { permissionMode: DROID_MODE.AutoHigh },
+}
+const REASONING_AUTO_HIGH = {
+  optionValues: { ...AUTO_HIGH.optionValues, [OPTION_ID_EFFORT]: DROID_EFFORT.High },
+}
 
 export const droidTest = createProviderTest({
   agent: DROID_AGENT,

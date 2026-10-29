@@ -22,11 +22,33 @@ fastAgentTest('keeps the actual child read out of live rows and restores it from
   const firstGate = `fast-read-first-${suffix}`
   const finalGate = `fast-read-final-${suffix}`
   await modelScript.rule(
-    { name: 'fast-native-child-read', when: { body: task }, respond: { gate: firstGate, toolCalls: [readToolCall(native.provider, 'native-live-read', file.path)] }, once: true },
-    { name: 'fast-native-child-final', when: { body: task }, respond: { gate: finalGate, text: 'The native child read completed.' }, once: true },
+    {
+      name: 'fast-native-child-read',
+      when: { body: task },
+      respond: {
+        gate: firstGate,
+        toolCalls: [
+          readToolCall(native.provider, 'native-live-read', file.path),
+        ],
+      },
+      once: true,
+    },
+    {
+      name: 'fast-native-child-final',
+      when: { body: task },
+      respond: { gate: finalGate, text: 'The native child read completed.' },
+      once: true,
+    },
   )
   const start = await modelScript.queue(
-    { toolCalls: [spawnSubagentToolCall(native.provider, 'fast-live-spawn', { description: 'Native held Read', prompt: modelScript.prompt(task) })] },
+    {
+      toolCalls: [
+        spawnSubagentToolCall(native.provider, 'fast-live-spawn', {
+          description: 'Native held Read',
+          prompt: modelScript.prompt(task),
+        }),
+      ],
+    },
     nativeTextStep(native, 'The native parent completed.'),
   )
   await withCleanup(async () => {
@@ -50,5 +72,8 @@ fastAgentTest('keeps the actual child read out of live rows and restores it from
     await expect(messageContents(page).filter({ hasText: file.marker }).first()).toBeVisible()
     await page.reload()
     await expect(messageContents(page).filter({ hasText: file.marker }).first()).toBeVisible()
-  }, () => finishCleanup([modelScript.releaseGateIfHeld(firstGate), modelScript.releaseGateIfHeld(finalGate)]))
+  }, () => finishCleanup([
+    modelScript.releaseGateIfHeld(firstGate),
+    modelScript.releaseGateIfHeld(finalGate),
+  ]))
 })

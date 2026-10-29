@@ -20,7 +20,13 @@ export function codewhaleOutputFilePaths(input: RowExtractionInput, call: ToolCa
   const detail = item?.[CODEWHALE_ITEM_FIELD.Detail]
   if (typeof detail !== 'string')
     return []
-  const pointers = [...detail.matchAll(/\[Showing lines \d+-\d+ of \d+ \([^\r\n]+ limit\)\. Full output: ([^\]\r\n]+)\]$/gmu)]
-  const footer = pointers.length === 1 ? pointers[0]?.[1] : undefined
-  return isFilesystemPath(footer) ? [footer] : []
+  const pointers = [
+    ...detail.matchAll(/\[Showing lines \d+-\d+ of \d+ \([^\r\n]+ limit\)\. Full output: ([^\]\r\n]+)\]$/gmu),
+  ]
+  const footer = pointers.length === 1
+    ? pointers[0]?.[1]
+    : undefined
+  return isFilesystemPath(footer)
+    ? [footer]
+    : []
 }

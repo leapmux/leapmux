@@ -50,10 +50,12 @@ export async function exerciseReasonixSpawnTranscript(context: ManagedNativeScen
   await modelScript.rule(reasonixSpawnChildRule())
   const start = await modelScript.queue(
     {
-      toolCalls: [spawnSubagentToolCall(context.provider, 'spawn-reasonix', {
-        description: 'Ask the subagent for one word',
-        prompt: modelScript.prompt(REASONIX_SPAWN_TASK),
-      })],
+      toolCalls: [
+        spawnSubagentToolCall(context.provider, 'spawn-reasonix', {
+          description: 'Ask the subagent for one word',
+          prompt: modelScript.prompt(REASONIX_SPAWN_TASK),
+        }),
+      ],
     },
     { text: 'The subagent reported PONG.' },
   )

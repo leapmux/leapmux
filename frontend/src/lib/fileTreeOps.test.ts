@@ -15,8 +15,14 @@ afterEach(() => {
 
 describe('fileTreeOps', () => {
   it('dispatches to the last registered dialog ops', () => {
-    const first = { refresh: vi.fn(), toggleHiddenFiles: vi.fn() }
-    const second = { refresh: vi.fn(), toggleHiddenFiles: vi.fn() }
+    const first = {
+      refresh: vi.fn(),
+      toggleHiddenFiles: vi.fn(),
+    }
+    const second = {
+      refresh: vi.fn(),
+      toggleHiddenFiles: vi.fn(),
+    }
 
     unregisters.push(registerDialogFileTreeOps(first))
     unregisters.push(registerDialogFileTreeOps(second))
@@ -31,8 +37,14 @@ describe('fileTreeOps', () => {
   })
 
   it('falls back to the last registered sidebar ops when dialogs unregister', () => {
-    const sidebar = { refresh: vi.fn(), toggleHiddenFiles: vi.fn() }
-    const dialog = { refresh: vi.fn(), toggleHiddenFiles: vi.fn() }
+    const sidebar = {
+      refresh: vi.fn(),
+      toggleHiddenFiles: vi.fn(),
+    }
+    const dialog = {
+      refresh: vi.fn(),
+      toggleHiddenFiles: vi.fn(),
+    }
 
     const unregisterSidebar = registerSidebarFileTreeOps(sidebar)
     const unregisterDialog = registerDialogFileTreeOps(dialog)
@@ -50,8 +62,14 @@ describe('fileTreeOps', () => {
   })
 
   it('dispatches to the last registered sidebar when no dialog is active', () => {
-    const first = { refresh: vi.fn(), toggleHiddenFiles: vi.fn() }
-    const second = { refresh: vi.fn(), toggleHiddenFiles: vi.fn() }
+    const first = {
+      refresh: vi.fn(),
+      toggleHiddenFiles: vi.fn(),
+    }
+    const second = {
+      refresh: vi.fn(),
+      toggleHiddenFiles: vi.fn(),
+    }
 
     unregisters.push(registerSidebarFileTreeOps(first))
     unregisters.push(registerSidebarFileTreeOps(second))
@@ -66,8 +84,14 @@ describe('fileTreeOps', () => {
   })
 
   it('unregister only removes the owning registration', () => {
-    const first = { refresh: vi.fn(), toggleHiddenFiles: vi.fn() }
-    const second = { refresh: vi.fn(), toggleHiddenFiles: vi.fn() }
+    const first = {
+      refresh: vi.fn(),
+      toggleHiddenFiles: vi.fn(),
+    }
+    const second = {
+      refresh: vi.fn(),
+      toggleHiddenFiles: vi.fn(),
+    }
 
     const unregisterFirst = registerSidebarFileTreeOps(first)
     unregisters.push(unregisterFirst)

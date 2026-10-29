@@ -14,8 +14,14 @@ export function commandCodeOutputFilePaths(input: RowExtractionInput, call: Tool
     || event.toolCallId !== call.id || event.toolName !== COMMAND_CODE_TOOL.ShellCommand || !Array.isArray(event.result)) {
     return []
   }
-  const matches = event.result.filter(isObject).filter(block => block.type === 'text' && typeof block.text === 'string').flatMap(block => typeof block.text === 'string' ? [...block.text.matchAll(OUTPUT_NOTICE)] : [])
-  const match = matches.length === 1 ? matches[0] : undefined
+  const matches = event.result.filter(isObject).filter(block => block.type === 'text' && typeof block.text === 'string').flatMap(block => typeof block.text === 'string'
+    ? [
+        ...block.text.matchAll(OUTPUT_NOTICE),
+      ]
+    : [])
+  const match = matches.length === 1
+    ? matches[0]
+    : undefined
   if (!match)
     return []
   const count = Number(match[1]?.replaceAll(',', ''))

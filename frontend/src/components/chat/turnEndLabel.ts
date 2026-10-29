@@ -39,10 +39,16 @@ export interface TurnEndLabelParts {
  */
 export function turnEndLabel(outcome: TurnOutcome, parts: TurnEndLabelParts = {}): string {
   const inside = [
-    parts.durationMs !== null && parts.durationMs !== undefined ? formatDuration(parts.durationMs) : '',
+    parts.durationMs !== null && parts.durationMs !== undefined
+      ? formatDuration(parts.durationMs)
+      : '',
     ...(parts.qualifiers ?? []),
   ].filter((part): part is string => typeof part === 'string' && part !== '')
-  const head = inside.length > 0 ? `${OUTCOME_WORDS[outcome]} (${inside.join(', ')})` : OUTCOME_WORDS[outcome]
+  const head = inside.length > 0
+    ? `${OUTCOME_WORDS[outcome]} (${inside.join(', ')})`
+    : OUTCOME_WORDS[outcome]
   const reason = parts.reason?.trim()
-  return reason ? `${head} — ${reason}` : head
+  return reason
+    ? `${head} — ${reason}`
+    : head
 }

@@ -19,7 +19,12 @@ function nativeFrame(text: string, status = 'failed'): Record<string, unknown> {
     status,
     kind: 'execute',
     title: 'execute',
-    content: [{ type: 'content', content: { type: 'text', text } }],
+    content: [
+      {
+        type: 'content',
+        content: { type: 'text', text },
+      },
+    ],
     rawInput: { command: 'printf x >&2; exit 7' },
     rawOutput: text,
   }
@@ -57,6 +62,11 @@ describe('the Fast Agent command row', () => {
     const text = 'SHELLERR77\n\n\n[Exit code: 7]'
     const call = providerToolCall(AgentProvider.FAST_AGENT, nativeFrame(text), { spanType: 'execute', role: 'result' })
     expect(call?.status).toBe('failed')
-    expect(call && typedResult(call)).toEqual({ commands: [expect.objectContaining({ output: 'SHELLERR77\n', exitCode: 7 })], unresolvedTerminals: [] })
+    expect(call && typedResult(call)).toEqual({
+      commands: [
+        expect.objectContaining({ output: 'SHELLERR77\n', exitCode: 7 }),
+      ],
+      unresolvedTerminals: [],
+    })
   })
 })

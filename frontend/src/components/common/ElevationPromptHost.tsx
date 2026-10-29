@@ -79,8 +79,12 @@ export const ElevationPromptHost: Component = () => {
    * no element to compare against yet.
    */
   const cover = () => {
-    focusedBefore = document.activeElement instanceof HTMLElement ? document.activeElement : null
-    covered = [...document.querySelectorAll('dialog[open]')]
+    focusedBefore = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null
+    covered = [
+      ...document.querySelectorAll('dialog[open]'),
+    ]
     for (const dialog of covered)
       dialog.setAttribute('inert', '')
   }

@@ -26,6 +26,11 @@ codebuddyTest.describe('CodeBuddy Code settings', () => {
 })
 
 codebuddyTest('approves a pending tool and the next tool when Bypass changes during a turn', async ({ askingCodebuddyWorkspace, page, modelScript, leapmuxServer }) => {
-  const native = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingCodebuddyWorkspace.workspaceId })
+  const native = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: askingCodebuddyWorkspace.workspaceId,
+  })
   await exerciseMidTurnBypass(native)
 })

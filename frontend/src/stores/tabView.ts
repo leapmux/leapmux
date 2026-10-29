@@ -220,7 +220,9 @@ export function createTabView(opts: CreateTabViewOpts) {
     // still the complete set, and the account-wide scan below has nothing left
     // to find: every `lastResolved` entry names a tab that is either in `rows`
     // or in that list.
-    const reuse = lastWalk?.rows === rows ? lastWalk : null
+    const reuse = lastWalk?.rows === rows
+      ? lastWalk
+      : null
     // Re-checking the candidates is still required on every tick, which is why
     // the gate is "no candidates" and not "nothing was held". A candidate whose
     // tile is currently KNOWN is not held, and it starts being held the moment
@@ -341,7 +343,12 @@ export function createTabView(opts: CreateTabViewOpts) {
     // Nothing held: hand back the projection's own array. It is `readonly` and
     // nothing here mutates it, and reusing it means a walk that found no hold
     // allocates nothing at all.
-    return held.length === 0 ? rows : [...rows, ...held]
+    return held.length === 0
+      ? rows
+      : [
+          ...rows,
+          ...held,
+        ]
   }, NO_PLACEMENTS, { equals: samePlacements })
 
   /**
@@ -565,7 +572,9 @@ export function createTabView(opts: CreateTabViewOpts) {
    * The detached terminals as a LIST, memoized so the consumers that sweep them
    * do not each rebuild it by mapping ids back through `getTerminalTab`.
    */
-  const detachedList = createMemo<TerminalTab[]>(() => [...detachedById().values()])
+  const detachedList = createMemo<TerminalTab[]>(() => [
+    ...detachedById().values(),
+  ])
 
   const byTile = createMemo<Map<string, Tab[]>>(() => {
     const m = new Map<string, Tab[]>()
@@ -605,7 +614,9 @@ export function createTabView(opts: CreateTabViewOpts) {
      */
     getAgentTab(id: string): AgentTab | undefined {
       const t = byKey().get(tabKey({ type: TabType.AGENT, id }))
-      return t && t.type === TabType.AGENT ? t : undefined
+      return t && t.type === TabType.AGENT
+        ? t
+        : undefined
     },
     /**
      * A terminal by id, placed or detached. See `detachedTerminals` for why
@@ -626,15 +637,21 @@ export function createTabView(opts: CreateTabViewOpts) {
     },
     getFileTab(id: string): FileTab | undefined {
       const t = byKey().get(tabKey({ type: TabType.FILE, id }))
-      return t && t.type === TabType.FILE ? t : undefined
+      return t && t.type === TabType.FILE
+        ? t
+        : undefined
     },
     getImageTab(id: string): ImageTab | undefined {
       const t = byKey().get(tabKey({ type: TabType.IMAGE, id }))
-      return t && t.type === TabType.IMAGE ? t : undefined
+      return t && t.type === TabType.IMAGE
+        ? t
+        : undefined
     },
     /** Every tab across every workspace — for worker-scoped sweeps. */
     all(): Tab[] {
-      return [...byKey().values()]
+      return [
+        ...byKey().values(),
+      ]
     },
     /**
      * One PLACED tab that works in (workerId, workingDir), most recently
@@ -689,7 +706,9 @@ export function createTabView(opts: CreateTabViewOpts) {
     },
     /** Most-recently-used first, within one workspace. */
     mruOrder(workspaceId: string): Tab[] {
-      return [...this.forWorkspace(workspaceId)].sort((a, b) => (b.mru ?? 0) - (a.mru ?? 0))
+      return [
+        ...this.forWorkspace(workspaceId),
+      ].sort((a, b) => (b.mru ?? 0) - (a.mru ?? 0))
     },
   }
 }

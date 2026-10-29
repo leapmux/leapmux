@@ -21,7 +21,9 @@ describe('keyPinStore', () => {
   })
 
   it('first-use resolve returns a commit that writes the pin', async () => {
-    const store = new KeyPinStore({ confirmKeyPin: async () => 'reject' })
+    const store = new KeyPinStore({
+      confirmKeyPin: async () => 'reject',
+    })
     const commit = await store.resolve('w1', bundle(1))
     expect(localStorageGet(KEY_KEY_PINS) ?? {}).toEqual({})
     commit()
@@ -31,7 +33,9 @@ describe('keyPinStore', () => {
   })
 
   it('matching pin returns a no-op commit', async () => {
-    const store = new KeyPinStore({ confirmKeyPin: async () => 'reject' })
+    const store = new KeyPinStore({
+      confirmKeyPin: async () => 'reject',
+    })
     const commit1 = await store.resolve('w1', bundle(1))
     commit1()
     const confirmKeyPin = vi.fn()
@@ -83,7 +87,9 @@ describe('keyPinStore', () => {
    */
   it('restores the fail-closed default when the registration is disposed', async () => {
     const mounted = vi.fn().mockResolvedValue('accept' as const)
-    const store = new KeyPinStore({ confirmKeyPin: async () => 'reject' })
+    const store = new KeyPinStore({
+      confirmKeyPin: async () => 'reject',
+    })
     const dispose = store.setConfirmKeyPin(mounted)
     ;(await store.resolve('w1', bundle(1)))()
 
@@ -94,7 +100,9 @@ describe('keyPinStore', () => {
   })
 
   it('a stale disposer does not clobber a newer registration', async () => {
-    const store = new KeyPinStore({ confirmKeyPin: async () => 'reject' })
+    const store = new KeyPinStore({
+      confirmKeyPin: async () => 'reject',
+    })
     const first = vi.fn().mockResolvedValue('reject' as const)
     const second = vi.fn().mockResolvedValue('accept' as const)
     const disposeFirst = store.setConfirmKeyPin(first)
@@ -126,7 +134,9 @@ describe('keyPinStore', () => {
   })
 
   it('concurrent commits to different workers do not drop pins', async () => {
-    const store = new KeyPinStore({ confirmKeyPin: async () => 'accept' })
+    const store = new KeyPinStore({
+      confirmKeyPin: async () => 'accept',
+    })
     const c1 = await store.resolve('w1', bundle(1))
     const c2 = await store.resolve('w2', bundle(2))
     // Interleave commits the way openChannel used to: both decisions taken before either write.
@@ -136,7 +146,9 @@ describe('keyPinStore', () => {
   })
 
   it('clearKeyPin and clearAllKeyPins remove stored pins', async () => {
-    const store = new KeyPinStore({ confirmKeyPin: async () => 'accept' })
+    const store = new KeyPinStore({
+      confirmKeyPin: async () => 'accept',
+    })
     ;(await store.resolve('w1', bundle(1)))()
     ;(await store.resolve('w2', bundle(2)))()
     clearKeyPin('w1')
@@ -149,7 +161,9 @@ describe('keyPinStore', () => {
   })
 
   it('setConfirmKeyPin clears the session reject set', async () => {
-    const store = new KeyPinStore({ confirmKeyPin: async () => 'reject' })
+    const store = new KeyPinStore({
+      confirmKeyPin: async () => 'reject',
+    })
     ;(await store.resolve('w1', bundle(1)))()
     await expect(store.resolve('w1', bundle(9))).rejects.toBeInstanceOf(KeyPinRejectedError)
 

@@ -204,7 +204,9 @@ function textCaret(node: Node, offset: number): TextCaret | null {
   const children = node.childNodes
   const child = children[Math.min(offset, children.length - 1)]
   const text = firstTextNode(child ?? node)
-  return text ? { node: text, offset: 0 } : null
+  return text
+    ? { node: text, offset: 0 }
+    : null
 }
 
 function firstTextNode(node: Node): Text | null {
@@ -269,7 +271,9 @@ export function attachTapSelect(root: HTMLElement, opts: TapSelectOptions): () =
    */
   function lift(from: Element) {
     for (let el: Element | null = from; el; el = el.parentElement) {
-      const style = el instanceof HTMLElement ? getComputedStyle(el) : null
+      const style = el instanceof HTMLElement
+        ? getComputedStyle(el)
+        : null
       if (style && (style.userSelect || style.webkitUserSelect) === 'none' && !lifted.some(entry => entry.el === el)) {
         const html = el as HTMLElement
         lifted.push({ el: html, userSelect: html.style.userSelect, webkitUserSelect: html.style.webkitUserSelect })
@@ -366,8 +370,12 @@ export function attachTapSelect(root: HTMLElement, opts: TapSelectOptions): () =
     if (caret.node.parentElement)
       lift(caret.node.parentElement)
 
-    const range = granularity === 'word' ? wordRangeAt(caret, root) : paragraphRangeAt(caret, root)
-    const selection = range ? window.getSelection() : null
+    const range = granularity === 'word'
+      ? wordRangeAt(caret, root)
+      : paragraphRangeAt(caret, root)
+    const selection = range
+      ? window.getSelection()
+      : null
     if (!range || !selection) {
       restoreLift(before)
       return false
@@ -412,7 +420,9 @@ export function attachTapSelect(root: HTMLElement, opts: TapSelectOptions): () =
   const onPointerDown = (e: PointerEvent) => {
     if (e.pointerType !== 'touch' || !e.isPrimary || e.button !== 0)
       return
-    const target = e.target instanceof Element ? e.target : null
+    const target = e.target instanceof Element
+      ? e.target
+      : null
     if (!target || !root.contains(target) || pressBelongsToEmbeddedUi(target, root)) {
       // The press belongs to something else on the surface. It is not a tap of
       // this sequence, and it ends the sequence rather than interrupting it.
@@ -471,7 +481,9 @@ export function attachTapSelect(root: HTMLElement, opts: TapSelectOptions): () =
     if (tapCount < 2)
       return
 
-    const granularity: TapSelectGranularity = tapCount === 2 ? 'word' : 'paragraph'
+    const granularity: TapSelectGranularity = tapCount === 2
+      ? 'word'
+      : 'paragraph'
     if (selectAt(startX, startY, granularity))
       opts.onSelect?.(granularity)
   }

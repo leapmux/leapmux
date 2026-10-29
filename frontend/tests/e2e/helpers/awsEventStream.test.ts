@@ -44,20 +44,32 @@ describe('encodeEventStreamMessage', () => {
   it('writes an empty payload and no header', () => {
     const frame = encodeEventStreamMessage({}, Buffer.alloc(0))
     expect(frame.byteLength).toBe(16)
-    expect(decodeEventStreamMessages(frame)).toEqual([{ headers: {}, payload: Buffer.alloc(0) }])
+    expect(decodeEventStreamMessages(frame)).toEqual([
+      {
+        headers: {},
+        payload: Buffer.alloc(0),
+      },
+    ])
   })
 
   it('refuses a header that the format cannot hold', () => {
     expect(() => encodeEventStreamMessage({ '': 'x' }, Buffer.alloc(0))).toThrow('header name')
     expect(() => encodeEventStreamMessage({ ['n'.repeat(256)]: 'x' }, Buffer.alloc(0))).toThrow('header name')
-    expect(() => encodeEventStreamMessage({ name: 'v'.repeat(0x10000) }, Buffer.alloc(0))).toThrow('more than')
+    expect(() => encodeEventStreamMessage({
+      name: 'v'.repeat(0x10000),
+    }, Buffer.alloc(0))).toThrow('more than')
   })
 
   it('writes a header at each length limit that the format can hold', () => {
     const name = 'n'.repeat(255)
     const value = 'v'.repeat(0xFFFF)
     expect(decodeEventStreamMessages(encodeEventStreamMessage({ [name]: value }, Buffer.alloc(0))))
-      .toEqual([{ headers: { [name]: value }, payload: Buffer.alloc(0) }])
+      .toEqual([
+        {
+          headers: { [name]: value },
+          payload: Buffer.alloc(0),
+        },
+      ])
   })
 
   // The length field counts bytes. A limit on characters would pass a value of
@@ -135,7 +147,10 @@ describe('decodeEventStreamMessages', () => {
     prelude.writeUInt32BE(0, 0)
     prelude.writeUInt32BE(0, 4)
     prelude.writeUInt32BE(crc32(prelude.subarray(0, 8)), 8)
-    expect(() => decodeEventStreamMessages(Buffer.concat([prelude, Buffer.alloc(4)]))).toThrow('states a length of 0')
+    expect(() => decodeEventStreamMessages(Buffer.concat([
+      prelude,
+      Buffer.alloc(4),
+    ]))).toThrow('states a length of 0')
   })
 
   it('refuses a message whose header block is longer than the message', () => {
@@ -143,12 +158,20 @@ describe('decodeEventStreamMessages', () => {
     prelude.writeUInt32BE(16, 0)
     prelude.writeUInt32BE(8, 4)
     prelude.writeUInt32BE(crc32(prelude.subarray(0, 8)), 8)
-    expect(() => decodeEventStreamMessages(Buffer.concat([prelude, Buffer.alloc(12)]))).toThrow('states a length of 16')
+    expect(() => decodeEventStreamMessages(Buffer.concat([
+      prelude,
+      Buffer.alloc(12),
+    ]))).toThrow('states a length of 16')
   })
 
   it('reads a header block that the test writes by hand', () => {
     const block = Buffer.from([1, 0x61, 7, 0x00, 0x02, 0x78, 0x79])
-    expect(decodeEventStreamMessages(frameAround(block))).toEqual([{ headers: { a: 'xy' }, payload: Buffer.alloc(0) }])
+    expect(decodeEventStreamMessages(frameAround(block))).toEqual([
+      {
+        headers: { a: 'xy' },
+        payload: Buffer.alloc(0),
+      },
+    ])
   })
 
   it('refuses a message whose CRCs do not match', () => {

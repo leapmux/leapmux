@@ -13,7 +13,9 @@ copilotTest('shows a child tool before the child finishes', async ({ native }) =
     childWhen: copilotChildTaskMatcher('Run printf copilot-child-live'),
     childTask: 'Run printf copilot-child-live, then report the result.',
     parentTask: 'Spawn one child to run the shell probe.',
-    toolProof: { shell: { command: 'printf copilot-child-live' } },
+    toolProof: {
+      shell: { command: 'printf copilot-child-live' },
+    },
     childResponse: { text: 'COPILOT_CHILD_LIVE_DONE' },
   })
   await waitForAgentIdle(page)

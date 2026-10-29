@@ -108,7 +108,9 @@ afterEach(() => {
 
 describe('RepositoryMenuItems', () => {
   it('offers every row for a local checkout with an origin', async () => {
-    await renderItems(LOCAL, [editorApp('vscode', 'Visual Studio Code')], 'vscode')
+    await renderItems(LOCAL, [
+      editorApp('vscode', 'Visual Studio Code'),
+    ], 'vscode')
 
     expect(items()).toEqual([
       'Copy repository URL',
@@ -137,7 +139,9 @@ describe('RepositoryMenuItems', () => {
   // different directory. The PATH is still worth copying: pasting it into an
   // ssh session on the machine that has it is exactly the use.
   it('hides every local-only row for a remote worker, and keeps the path', async () => {
-    await renderItems({ ...LOCAL, isLocal: false }, [editorApp('vscode', 'VS Code')], 'vscode')
+    await renderItems({ ...LOCAL, isLocal: false }, [
+      editorApp('vscode', 'VS Code'),
+    ], 'vscode')
 
     expect(items()).toEqual(['Copy repository URL', 'Copy repository path'])
     expect(listAppsMock).not.toHaveBeenCalled()
@@ -165,7 +169,9 @@ describe('RepositoryMenuItems', () => {
   })
 
   it('launches the remembered application at the checkout', async () => {
-    await renderItems(LOCAL, [editorApp('zed', 'Zed')], 'zed')
+    await renderItems(LOCAL, [
+      editorApp('zed', 'Zed'),
+    ], 'zed')
 
     fireEvent.click(screen.getByRole('menuitem', { name: 'Open in Zed', hidden: true }))
     expect(openInExternalAppMock).toHaveBeenCalledWith('zed', '/home/me/leapmux')
@@ -175,7 +181,10 @@ describe('RepositoryMenuItems', () => {
   // opens the directory itself. Two different operations, so the row stays --
   // hiding it made an affordance vanish whenever a user picked Finder once.
   it('keeps the Open in ... row when the remembered application is the file manager', async () => {
-    await renderItems(LOCAL, [FINDER, editorApp('zed', 'Zed')], 'file-manager')
+    await renderItems(LOCAL, [
+      FINDER,
+      editorApp('zed', 'Zed'),
+    ], 'file-manager')
 
     expect(items()).toEqual([
       'Copy repository URL',
@@ -187,7 +196,10 @@ describe('RepositoryMenuItems', () => {
   })
 
   it('keeps the Open in ... row for an editor default', async () => {
-    await renderItems(LOCAL, [FINDER, editorApp('zed', 'Zed')], 'zed')
+    await renderItems(LOCAL, [
+      FINDER,
+      editorApp('zed', 'Zed'),
+    ], 'zed')
 
     expect(items()).toContain('Open in Zed')
   })
@@ -195,7 +207,9 @@ describe('RepositoryMenuItems', () => {
   // The row names an explicit choice, never a guess. The submenu below is one
   // hover away, and picking from it is what makes the choice.
   it('offers no Open in ... row when nothing is remembered yet', async () => {
-    await renderItems(LOCAL, [editorApp('zed', 'Zed')])
+    await renderItems(LOCAL, [
+      editorApp('zed', 'Zed'),
+    ])
 
     expect(items()).toEqual([
       'Copy repository URL',
@@ -213,7 +227,10 @@ describe('RepositoryMenuItems', () => {
   })
 
   it('launches the application picked inside the submenu, at this checkout', async () => {
-    await renderItems(LOCAL, [FINDER, editorApp('zed', 'Zed')], 'zed')
+    await renderItems(LOCAL, [
+      FINDER,
+      editorApp('zed', 'Zed'),
+    ], 'zed')
 
     fireEvent.click(screen.getByTestId('repository-open-in'))
     fireEvent.click(screen.getByTestId('repository-item-file-manager'))

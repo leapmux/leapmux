@@ -25,11 +25,33 @@ museTest('runs native workflow source and retains its output and error after rel
   const outputMarker = 'MUSE_WORKFLOW_OUTPUT'
   const failureMarker = 'MUSE_WORKFLOW_FAILURE'
   await modelScript.rule(
-    { name: 'the compute child answers', when: { user: `Compute ${outputMarker}.` }, respond: { toolCalls: [museSubmitResultToolCall('compute-child-submit', 'Computed.')] }, once: true },
-    { name: 'the failure child answers', when: { user: `Fail ${failureMarker}.` }, respond: { toolCalls: [museSubmitResultToolCall('failure-child-submit', 'Failing.')] }, once: true },
+    {
+      name: 'the compute child answers',
+      when: { user: `Compute ${outputMarker}.` },
+      respond: {
+        toolCalls: [
+          museSubmitResultToolCall('compute-child-submit', 'Computed.'),
+        ],
+      },
+      once: true,
+    },
+    {
+      name: 'the failure child answers',
+      when: { user: `Fail ${failureMarker}.` },
+      respond: {
+        toolCalls: [
+          museSubmitResultToolCall('failure-child-submit', 'Failing.'),
+        ],
+      },
+      once: true,
+    },
   )
   const outputStart = await modelScript.queue(
-    { toolCalls: [codeExecutionToolCall(native.provider, 'muse-native-code', outputScript(outputMarker, text => modelScript.prompt(text)))] },
+    {
+      toolCalls: [
+        codeExecutionToolCall(native.provider, 'muse-native-code', outputScript(outputMarker, text => modelScript.prompt(text))),
+      ],
+    },
     { text: 'The native workflow returned its marker.' },
   )
   await sendMessage(page, modelScript.prompt('Run the native output workflow and report its result.'))
@@ -37,7 +59,11 @@ museTest('runs native workflow source and retains its output and error after rel
   await waitForAgentIdle(page)
 
   const failureStart = await modelScript.queue(
-    { toolCalls: [codeExecutionToolCall(native.provider, 'muse-native-code-failure', failureScript(failureMarker, text => modelScript.prompt(text)))] },
+    {
+      toolCalls: [
+        codeExecutionToolCall(native.provider, 'muse-native-code-failure', failureScript(failureMarker, text => modelScript.prompt(text))),
+      ],
+    },
     { text: 'The native workflow threw its marker.' },
   )
   await sendMessage(page, modelScript.prompt('Run the native failure workflow and report its error.'))
@@ -57,12 +83,22 @@ museTest('delivers the native workflow result to the next model request', async 
   const marker = 'MUSE_WORKFLOW_RECEIPT'
   await modelScript.rule({
     name: 'the receipt child submits its result',
-    when: { body: ['Workflow child completion protocol', marker] },
+    when: {
+      body: ['Workflow child completion protocol', marker],
+    },
     once: true,
-    respond: { toolCalls: [museSubmitResultToolCall('receipt-child-submit', 'Computed.')] },
+    respond: {
+      toolCalls: [
+        museSubmitResultToolCall('receipt-child-submit', 'Computed.'),
+      ],
+    },
   })
   const start = await modelScript.queue(
-    { toolCalls: [codeExecutionToolCall(native.provider, 'muse-native-code-receipt', outputScript(marker, text => modelScript.prompt(text)))] },
+    {
+      toolCalls: [
+        codeExecutionToolCall(native.provider, 'muse-native-code-receipt', outputScript(marker, text => modelScript.prompt(text))),
+      ],
+    },
     { text: 'The native workflow launched.' },
   )
   await sendMessage(page, modelScript.prompt('Run the native receipt workflow and report its result.'))

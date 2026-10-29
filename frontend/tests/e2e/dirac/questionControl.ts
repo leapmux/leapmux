@@ -19,7 +19,9 @@ export function diracQuestionControl(controls: readonly NativeControlFrame[], qu
   }
   if (asked.size !== 1)
     throw new Error(`The native Dirac question needs exactly one elicitation request, not ${asked.size}.`)
-  const frame = [...asked.values()][0]!
+  const frame = [
+    ...asked.values(),
+  ][0]!
   if (!JSON.stringify(frame.payload.params ?? null).includes(question))
     throw new Error('The native Dirac elicitation request does not hold the question.')
   return frame

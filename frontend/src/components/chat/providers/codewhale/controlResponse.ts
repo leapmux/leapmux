@@ -48,12 +48,18 @@ function questionAnswerDisplay(cr: PersistedControlResponse): ControlResponseSum
   if (cr.response?.[CODEWHALE_REPLY_FIELD.Declined] === true) {
     // Every question carries the same refusal, so the first one states it.
     const reason = questions.map(question => codewhaleAnswerValues(answers, pickString(question, 'id'))[0]).find(Boolean) ?? ''
-    return label(reason && reason !== CODEWHALE_ANSWER_TEXT.Declined ? `${DECLINED_WORD}\n${reason}` : DECLINED_WORD)
+    return label(reason && reason !== CODEWHALE_ANSWER_TEXT.Declined
+      ? `${DECLINED_WORD}\n${reason}`
+      : DECLINED_WORD)
   }
   const lines = questions.flatMap((question) => {
     const text = codewhaleQuestionText(question)
     const values = codewhaleAnswerValues(answers, pickString(question, 'id'))
-    return text && values.length > 0 ? [`${text}: ${values.join(', ')}`] : []
+    return text && values.length > 0
+      ? [`${text}: ${values.join(', ')}`]
+      : []
   })
-  return lines.length > 0 ? label(lines.join('\n')) : null
+  return lines.length > 0
+    ? label(lines.join('\n'))
+    : null
 }

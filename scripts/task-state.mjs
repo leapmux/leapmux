@@ -33,7 +33,14 @@ export function taskRecipe(root, task) {
       }
     }
   }
-  return [recipe, variables, config.env, config.set, config.shopt, config.method]
+  return [
+    recipe,
+    variables,
+    config.env,
+    config.set,
+    config.shopt,
+    config.method,
+  ]
 }
 
 export function outputState(root, patterns, context = '') {
@@ -56,12 +63,21 @@ export function outputState(root, patterns, context = '') {
   const hash = createHash('sha256')
   hash.update(JSON.stringify([context, patterns]))
   const buffer = Buffer.allocUnsafe(256 * 1024)
-  for (const path of [...files.keys()].sort()) {
+  for (const path of [
+    ...files.keys(),
+  ].sort()) {
     const absolute = join(root, path)
     const stat = files.get(path)
-    hash.update(JSON.stringify([path.replaceAll('\\', '/'), stat.mode & 0o777, stat.size]))
+    hash.update(JSON.stringify([
+      path.replaceAll('\\', '/'),
+      stat.mode & 0o777,
+      stat.size,
+    ]))
     if (stat.isSymbolicLink()) {
-      hash.update(JSON.stringify(['symlink', readlinkSync(absolute)]))
+      hash.update(JSON.stringify([
+        'symlink',
+        readlinkSync(absolute),
+      ]))
       continue
     }
     if (!stat.isFile())
@@ -120,10 +136,17 @@ if (import.meta.main) {
   }
   else {
     const patterns = JSON.parse(encodedPatterns)
-    const recipeContext = JSON.stringify([context, taskRecipe(process.cwd(), task)])
-    if (command === 'check')
-      process.exitCode = checkState(process.cwd(), task, patterns, recipeContext) ? 0 : 1
-    else
+    const recipeContext = JSON.stringify([
+      context,
+      taskRecipe(process.cwd(), task),
+    ])
+    if (command === 'check') {
+      process.exitCode = checkState(process.cwd(), task, patterns, recipeContext)
+        ? 0
+        : 1
+    }
+    else {
       recordState(process.cwd(), task, patterns, recipeContext)
+    }
   }
 }

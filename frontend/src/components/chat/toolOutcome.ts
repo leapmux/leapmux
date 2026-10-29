@@ -14,7 +14,9 @@ export interface ToolOutcome {
 }
 
 export function parseToolOutcome(metadata: unknown): ToolOutcome | null {
-  const note = pickObject(isObject(metadata) ? metadata : undefined, MESSAGE_METADATA_FIELD.ToolOutcome)
+  const note = pickObject(isObject(metadata)
+    ? metadata
+    : undefined, MESSAGE_METADATA_FIELD.ToolOutcome)
   if (!note)
     return null
   const source = pickString(note, TOOL_OUTCOME.FieldSource)

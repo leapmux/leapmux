@@ -43,7 +43,9 @@ function renderSelect(overrides: Partial<Parameters<typeof SessionSelect>[0]> = 
     <SessionSelect
       value=""
       onChange={onChange}
-      sessions={[summary()]}
+      sessions={[
+        summary(),
+      ]}
       loading={false}
       invalid={false}
       isFilePath={false}
@@ -140,7 +142,12 @@ describe('SessionSelect', () => {
         summary({ sessionId: 'ses_b', title: 'Older', updatedAt: '2026-08-30T12:00:00.000Z' }),
       ],
     })
-    expect(menuOptionValues(MENU)).toEqual(['', TYPE_A_HANDLE_VALUE, 'ses_a', 'ses_b'])
+    expect(menuOptionValues(MENU)).toEqual([
+      '',
+      TYPE_A_HANDLE_VALUE,
+      'ses_a',
+      'ses_b',
+    ])
   })
 
   // The list holds only what this worker can enumerate, so a handle from
@@ -148,7 +155,11 @@ describe('SessionSelect', () => {
   // cap are all missing from it. Without this row a directory with a single
   // session would take typing away entirely.
   it('offers a row that hands the field back to its text box, above the sessions', () => {
-    const { onChange } = renderSelect({ sessions: [summary({ sessionId: 'ses_a' })] })
+    const { onChange } = renderSelect({
+      sessions: [
+        summary({ sessionId: 'ses_a' }),
+      ],
+    })
     // Second, beside the other row that is not a session: at the bottom it sat
     // under a list that runs to the worker's cap, so the answer to "my session
     // is not here" was the one row a user had to scroll to find.
@@ -163,7 +174,12 @@ describe('SessionSelect', () => {
   // file, and a row that said "Enter a session ID…" invited the shape the
   // worker then refused with "path must be absolute".
   it('invites a file path too when the provider takes one', () => {
-    renderSelect({ isFilePath: true, sessions: [summary({ sessionId: 'ses_a' })] })
+    renderSelect({
+      isFilePath: true,
+      sessions: [
+        summary({ sessionId: 'ses_a' }),
+      ],
+    })
     expect(menuOptions(MENU)[1]).toBe('Enter a session ID or a file path…')
   })
 
@@ -194,7 +210,11 @@ describe('SessionSelect', () => {
   })
 
   it('passes the raw handle to onChange, not the label', () => {
-    const { onChange } = renderSelect({ sessions: [summary({ sessionId: 'ses_xyz', title: 'Some work' })] })
+    const { onChange } = renderSelect({
+      sessions: [
+        summary({ sessionId: 'ses_xyz', title: 'Some work' }),
+      ],
+    })
     pickMenuValue(MENU, 'ses_xyz')
     expect(onChange).toHaveBeenCalledWith('ses_xyz')
   })
@@ -229,7 +249,9 @@ describe('SessionSelect', () => {
 
     // The two rows that are not sessions survive: they are the ways OUT of the
     // list, and a query is exactly when a user reaches for one. See below.
-    fireEvent.input(filter, { target: { value: 'flaky' } })
+    fireEvent.input(filter, {
+      target: { value: 'flaky' },
+    })
     expect(menuOptionValues(MENU)).toEqual(['', TYPE_A_HANDLE_VALUE, 'ses_b'])
   })
 
@@ -238,12 +260,21 @@ describe('SessionSelect', () => {
   // and needs "Enter a session ID..." right then. Filtered away, the only route
   // back was to clear the query first.
   it('keeps the rows that leave the list, whatever the query matches', () => {
-    renderSelect({ sessions: [summary({ sessionId: 'ses_a', title: 'Refactor the parser' })] })
+    renderSelect({
+      sessions: [
+        summary({ sessionId: 'ses_a', title: 'Refactor the parser' }),
+      ],
+    })
 
-    fireEvent.input(screen.getByTestId('loading-menu-filter'), { target: { value: 'zzz no match' } })
+    fireEvent.input(screen.getByTestId('loading-menu-filter'), {
+      target: { value: 'zzz no match' },
+    })
 
     expect(menuOptionValues(MENU)).toEqual(['', TYPE_A_HANDLE_VALUE])
-    expect(menuOptionLabels(MENU)).toEqual([NEW_SESSION_LABEL, typeAHandleLabel(false)])
+    expect(menuOptionLabels(MENU)).toEqual([
+      NEW_SESSION_LABEL,
+      typeAHandleLabel(false),
+    ])
   })
 
   // The age left the label for a column of its own. The filter reads both, so
@@ -251,11 +282,17 @@ describe('SessionSelect', () => {
   it('filters on the age as well as the title', () => {
     renderSelect({
       sessions: [
-        summary({ sessionId: 'ses_recent', title: 'Recent', updatedAt: new Date().toISOString() }),
+        summary({
+          sessionId: 'ses_recent',
+          title: 'Recent',
+          updatedAt: new Date().toISOString(),
+        }),
         summary({ sessionId: 'ses_ancient', title: 'Ancient', updatedAt: '2020-01-01T00:00:00.000Z' }),
       ],
     })
-    fireEvent.input(screen.getByTestId('loading-menu-filter'), { target: { value: 'y ago' } })
+    fireEvent.input(screen.getByTestId('loading-menu-filter'), {
+      target: { value: 'y ago' },
+    })
     expect(menuOptionValues(MENU)).toEqual(['', TYPE_A_HANDLE_VALUE, 'ses_ancient'])
   })
 
@@ -263,7 +300,11 @@ describe('SessionSelect', () => {
   // must not be able to push the timestamp out of the row.
   it('keeps the age beside a title far too long for the row', () => {
     const title = Array.from({ length: 40 }, (_, i) => `Refactor step ${i}`).join(', ')
-    renderSelect({ sessions: [summary({ sessionId: 'ses_long', title })] })
+    renderSelect({
+      sessions: [
+        summary({ sessionId: 'ses_long', title }),
+      ],
+    })
 
     const row = screen.getByTestId('loading-menu-option-ses_long')
     expect(row.textContent).toContain('ago')
@@ -280,7 +321,11 @@ describe('SessionSelect', () => {
     vi.useFakeTimers()
     try {
       const title = 'Teach the parser to accept a trailing comma in every list'
-      renderSelect({ sessions: [summary({ sessionId: 'ses_long', title })] })
+      renderSelect({
+        sessions: [
+          summary({ sessionId: 'ses_long', title }),
+        ],
+      })
       openMenu(MENU)
 
       const label = screen.getByTestId('loading-menu-option-ses_long-label')
@@ -293,8 +338,16 @@ describe('SessionSelect', () => {
   })
 
   it('shows the title alone in the option labels', () => {
-    renderSelect({ sessions: [summary({ sessionId: 'ses_a', title: 'Newest' })] })
-    expect(menuOptionLabels(MENU)).toEqual([NEW_SESSION_LABEL, typeAHandleLabel(false), 'Newest'])
+    renderSelect({
+      sessions: [
+        summary({ sessionId: 'ses_a', title: 'Newest' }),
+      ],
+    })
+    expect(menuOptionLabels(MENU)).toEqual([
+      NEW_SESSION_LABEL,
+      typeAHandleLabel(false),
+      'Newest',
+    ])
   })
 
   it('names itself for a screen reader with the field label', () => {

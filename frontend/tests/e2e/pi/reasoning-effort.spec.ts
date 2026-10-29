@@ -47,7 +47,10 @@ piTest('keeps one effort menu over a round trip through a model without the chos
     viaEfforts: ['auto', 'off'],
     settled: 'off',
     nativeProof: (request) => {
-      expect(request.body).toMatchObject({ model: MOCK_MODELS.pi, thinking: { type: 'disabled' } })
+      expect(request.body).toMatchObject({
+        model: MOCK_MODELS.pi,
+        thinking: { type: 'disabled' },
+      })
       expect(request.body).not.toHaveProperty('reasoning_effort')
     },
   })

@@ -6,8 +6,27 @@ import { codewhaleEvent } from './toolResults.fixtures'
 // backend/internal/worker/agent/providers/codewhale/control.go).
 
 export const QUESTIONS = [
-  { header: 'Color', id: 'color', question: 'Which color?', options: [{ label: 'Red', description: 'Warm' }, { label: 'Blue', description: 'Cool' }], allow_free_text: true, multi_select: false },
-  { header: 'Sizes', id: 'sizes', question: 'Which sizes?', options: [{ label: 'S' }, { label: 'M' }], multi_select: true },
+  {
+    header: 'Color',
+    id: 'color',
+    question: 'Which color?',
+    options: [
+      { label: 'Red', description: 'Warm' },
+      { label: 'Blue', description: 'Cool' },
+    ],
+    allow_free_text: true,
+    multi_select: false,
+  },
+  {
+    header: 'Sizes',
+    id: 'sizes',
+    question: 'Which sizes?',
+    options: [
+      { label: 'S' },
+      { label: 'M' },
+    ],
+    multi_select: true,
+  },
 ]
 
 /** A stored approval of one tool call. */
@@ -16,7 +35,15 @@ export function approvalPayload(toolName: string, input: Record<string, unknown>
     type: 'control_request',
     request_id: 'approval:ap1',
     request: { tool_name: toolName, tool_use_id: 'call-1', input },
-    event: codewhaleEvent(CODEWHALE_EVENT.ApprovalRequired, { id: 'ap1', approval_id: 'ap1', tool_call_id: 'call-1', tool_name: toolName, description: 'The tool\'s static description.', intent_summary: null, ...fields }),
+    event: codewhaleEvent(CODEWHALE_EVENT.ApprovalRequired, {
+      id: 'ap1',
+      approval_id: 'ap1',
+      tool_call_id: 'call-1',
+      tool_name: toolName,
+      description: 'The tool\'s static description.',
+      intent_summary: null,
+      ...fields,
+    }),
   }
 }
 

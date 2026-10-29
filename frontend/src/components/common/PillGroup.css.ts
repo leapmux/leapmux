@@ -48,31 +48,34 @@ const pillOptionLayout = style({
 export const pillOptionSmall = style(compactControlProperties)
 
 /** Shape and behavior for each real radio. */
-export const pillOption = style([pillOptionLayout, {
-  position: 'relative',
-  zIndex: 1,
-  backgroundColor: 'transparent',
-  color: 'var(--muted-foreground)',
-  opacity: 1,
-  cursor: 'pointer',
-  transitionProperty: 'none',
-  selectors: {
-    '&:hover:not(:disabled):not([aria-disabled="true"]):not([aria-checked="true"])': {
-      backgroundColor: 'var(--accent)',
-      color: 'var(--foreground)',
-    },
-    '&:active:not(:disabled):not([aria-disabled="true"]):not([aria-checked="true"])': {
-      transform: 'none',
-    },
-    '&:focus-visible': {
-      outline: '2px solid var(--ring)',
-      outlineOffset: '-2px',
-    },
-    '&:disabled': {
-      cursor: 'default',
+export const pillOption = style([
+  pillOptionLayout,
+  {
+    position: 'relative',
+    zIndex: 1,
+    backgroundColor: 'transparent',
+    color: 'var(--muted-foreground)',
+    opacity: 1,
+    cursor: 'pointer',
+    transitionProperty: 'none',
+    selectors: {
+      '&:hover:not(:disabled):not([aria-disabled="true"]):not([aria-checked="true"])': {
+        backgroundColor: 'var(--accent)',
+        color: 'var(--foreground)',
+      },
+      '&:active:not(:disabled):not([aria-disabled="true"]):not([aria-checked="true"])': {
+        transform: 'none',
+      },
+      '&:focus-visible': {
+        outline: '2px solid var(--ring)',
+        outlineOffset: '-2px',
+      },
+      '&:disabled': {
+        cursor: 'default',
+      },
     },
   },
-}])
+])
 
 /** Keep each boundary visible between adjacent segments. */
 export const pillOptionSeparated = style({
@@ -151,29 +154,35 @@ const selectionWindow = style({
 })
 
 /** The moving primary background. The real selected button remains outlined. */
-export const selectionFill = style([selectionWindow, {
-  'zIndex': 0,
-  'backgroundColor': 'var(--primary)',
-  '@media': {
-    '(forced-colors: active)': {
-      forcedColorAdjust: 'none',
-      backgroundColor: 'Highlight',
+export const selectionFill = style([
+  selectionWindow,
+  {
+    'zIndex': 0,
+    'backgroundColor': 'var(--primary)',
+    '@media': {
+      '(forced-colors: active)': {
+        forcedColorAdjust: 'none',
+        backgroundColor: 'Highlight',
+      },
     },
   },
-}])
+])
 
 /** Active-color label copies that move with the primary background. */
-export const selectionLabels = style([selectionWindow, {
-  'zIndex': 2,
-  'display': 'flex',
-  'color': 'var(--primary-foreground)',
-  '@media': {
-    '(forced-colors: active)': {
-      forcedColorAdjust: 'none',
-      color: 'HighlightText',
+export const selectionLabels = style([
+  selectionWindow,
+  {
+    'zIndex': 2,
+    'display': 'flex',
+    'color': 'var(--primary-foreground)',
+    '@media': {
+      '(forced-colors: active)': {
+        forcedColorAdjust: 'none',
+        color: 'HighlightText',
+      },
     },
   },
-}])
+])
 
 /**
  * One label copy. It has the exact metrics of its real radio, and renders the
@@ -184,10 +193,13 @@ export const selectionLabels = style([selectionWindow, {
  * no copy at all, and the copy is what paints the label once the fill slides
  * under it.
  */
-export const selectionLabel = style([pillOptionLayout, {
-  backgroundColor: 'transparent',
-  color: 'inherit',
-}])
+export const selectionLabel = style([
+  pillOptionLayout,
+  {
+    backgroundColor: 'transparent',
+    color: 'inherit',
+  },
+])
 
 /** Slide both clipped layers after the first valid measurement. */
 export const selectionWindowMoves = style({

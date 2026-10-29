@@ -14,11 +14,24 @@ import { claudeToolFailureResult } from './failure'
 export function claudeMessageSpec(request: MessageRequest, args: ClaudeToolRow, result: ClaudeToolRow | undefined): ToolCallSpecVariant<'message'> {
   // With no addressee the tool's own name words the header; with one, the header
   // key stays absent rather than present-and-undefined.
-  const header = request.to ? {} : { title: args.toolName }
+  const header = request.to
+    ? {}
+    : { title: args.toolName }
   if (!result)
     return { kind: 'message', request, ...header }
   const failure = claudeToolFailureResult(result)
-  if (failure)
-    return { kind: 'message', request, ...header, result: failure }
-  return { kind: 'message', request, ...header, result: proseResult(result.resultContent) }
+  if (failure) {
+    return {
+      kind: 'message',
+      request,
+      ...header,
+      result: failure,
+    }
+  }
+  return {
+    kind: 'message',
+    request,
+    ...header,
+    result: proseResult(result.resultContent),
+  }
 }

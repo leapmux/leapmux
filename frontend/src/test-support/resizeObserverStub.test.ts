@@ -28,13 +28,21 @@ describe('installControllableResizeObserver', () => {
     triggerResizeObserverForSync(target)
 
     expect(callback).toHaveBeenCalledTimes(1)
-    expect(callback).toHaveBeenCalledWith([{
-      target,
-      contentRect: rectangle,
-      borderBoxSize: [{ inlineSize: 41, blockSize: 29 }],
-      contentBoxSize: [{ inlineSize: 41, blockSize: 29 }],
-      devicePixelContentBoxSize: [{ inlineSize: 41, blockSize: 29 }],
-    }], observer)
+    expect(callback).toHaveBeenCalledWith([
+      {
+        target,
+        contentRect: rectangle,
+        borderBoxSize: [
+          { inlineSize: 41, blockSize: 29 },
+        ],
+        contentBoxSize: [
+          { inlineSize: 41, blockSize: 29 },
+        ],
+        devicePixelContentBoxSize: [
+          { inlineSize: 41, blockSize: 29 },
+        ],
+      },
+    ], observer)
   })
 
   it('preserves zero width and height in every size array', () => {
@@ -47,13 +55,21 @@ describe('installControllableResizeObserver', () => {
 
     triggerResizeObserverForSync(target)
 
-    expect(callback).toHaveBeenCalledWith([{
-      target,
-      contentRect: rectangle,
-      borderBoxSize: [{ inlineSize: 0, blockSize: 0 }],
-      contentBoxSize: [{ inlineSize: 0, blockSize: 0 }],
-      devicePixelContentBoxSize: [{ inlineSize: 0, blockSize: 0 }],
-    }], observer)
+    expect(callback).toHaveBeenCalledWith([
+      {
+        target,
+        contentRect: rectangle,
+        borderBoxSize: [
+          { inlineSize: 0, blockSize: 0 },
+        ],
+        contentBoxSize: [
+          { inlineSize: 0, blockSize: 0 },
+        ],
+        devicePixelContentBoxSize: [
+          { inlineSize: 0, blockSize: 0 },
+        ],
+      },
+    ], observer)
   })
 
   it('reads the current rectangle when the trigger runs', () => {

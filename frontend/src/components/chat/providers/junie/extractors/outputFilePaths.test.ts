@@ -76,9 +76,18 @@ describe('native path ownership and preview preservation', () => {
     expect(pathsFor(frame, { role })).toEqual([])
   })
 
-  it.each(['file:///native/opaque', 'https://example.com/result', 'zcode-artifact://session/id', ' ', 'relative/output', '/native/zero\0byte'])('refuses a non-filesystem pointer: %j', (invalid) => {
+  it.each([
+    'file:///native/opaque',
+    'https://example.com/result',
+    'zcode-artifact://session/id',
+    ' ',
+    'relative/output',
+    '/native/zero\0byte',
+  ])('refuses a non-filesystem pointer: %j', (invalid) => {
     const payload: unknown = JSON.parse(JSON.stringify(frame).replaceAll(JSON.stringify(path).slice(1, -1), JSON.stringify(invalid).slice(1, -1)))
-    const supplemental: unknown = options.supplementalContent === undefined ? undefined : JSON.parse(JSON.stringify(options.supplementalContent).replaceAll(JSON.stringify(path).slice(1, -1), JSON.stringify(invalid).slice(1, -1)))
+    const supplemental: unknown = options.supplementalContent === undefined
+      ? undefined
+      : JSON.parse(JSON.stringify(options.supplementalContent).replaceAll(JSON.stringify(path).slice(1, -1), JSON.stringify(invalid).slice(1, -1)))
     const pathsFor = outputFilePathFixture(AgentProvider.JUNIE, frame, options)
     expect(pathsFor(payload, { supplementalContent: supplemental })).toEqual([])
   })
@@ -91,7 +100,12 @@ describe('native path ownership and preview preservation', () => {
       toolCallId: 'native-call',
       toolName: options.spanType,
       outputFile: { path, text: forged, output: forged },
-      completeOutput: { path, text: forged, sessionId: options.agentSessionId, toolCallId: 'native-call' },
+      completeOutput: {
+        path,
+        text: forged,
+        sessionId: options.agentSessionId,
+        toolCallId: 'native-call',
+      },
     }
     const before = JSON.stringify(frame)
     const meta = providerToolMeta(AgentProvider.JUNIE, frame, { ...options, supplementalContent })
@@ -122,13 +136,24 @@ describe('pointer-only native receipt', () => {
     { exitCode: undefined },
   ])('refuses another receipt owner or an absent exit code: %j', (change) => {
     const pathsFor = outputFilePathFixture(AgentProvider.JUNIE, frame, options)
-    expect(pathsFor(frame, { supplementalContent: { ...options.supplementalContent, outputFilePath: { ...options.supplementalContent.outputFilePath, ...change } } })).toEqual([])
+    expect(pathsFor(frame, {
+      supplementalContent: {
+        ...options.supplementalContent,
+        outputFilePath: {
+          ...options.supplementalContent.outputFilePath,
+          ...change,
+        },
+      },
+    })).toEqual([])
   })
 
   it('preserves empty and Unicode native previews without storing them in the receipt', () => {
     const pathsFor = outputFilePathFixture(AgentProvider.JUNIE, frame, options)
     for (const output of ['', '文😀\nzero:false']) {
-      expect(pathsFor({ ...frame, rawOutput: { output } })).toEqual([path])
+      expect(pathsFor({
+        ...frame,
+        rawOutput: { output },
+      })).toEqual([path])
     }
     expect(options.supplementalContent.outputFilePath).not.toHaveProperty('output')
     expect(options.supplementalContent.outputFilePath).not.toHaveProperty('nativeOutput')
@@ -137,7 +162,10 @@ describe('pointer-only native receipt', () => {
   it('refuses a missing native exit and a conflicting reported raw exit', () => {
     const pathsFor = outputFilePathFixture(AgentProvider.JUNIE, frame, options)
     expect(pathsFor({ ...frame, _meta: {} })).toEqual([])
-    expect(pathsFor({ ...frame, rawOutput: { ...frame.rawOutput, exitCode: 1 } })).toEqual([])
+    expect(pathsFor({
+      ...frame,
+      rawOutput: { ...frame.rawOutput, exitCode: 1 },
+    })).toEqual([])
     expect(pathsFor(frame, { supplementalContent: undefined })).toEqual([])
   })
 })

@@ -7,11 +7,24 @@ import { copilotExtractRow } from './row'
 describe('copilotExtractRow', () => {
   it('closes a retained start span without constructing a native result', () => {
     const frame = copilotToolStart('native-call', 'bash', { command: 'printf native' })
-    const resolved = { ...resolveMessageForRendering({ rawText: JSON.stringify(frame), topLevel: frame, parentObject: frame, wrapper: null }, AgentProvider.GITHUB_COPILOT), completion: MessageCompletion.FINISHED }
+    const resolved = {
+      ...resolveMessageForRendering({
+        rawText: JSON.stringify(frame),
+        topLevel: frame,
+        parentObject: frame,
+        wrapper: null,
+      }, AgentProvider.GITHUB_COPILOT),
+      completion: MessageCompletion.FINISHED,
+    }
     const row = copilotExtractRow({
       resolved,
       category: { kind: 'tool_result' },
-      span: { request: resolved, result: resolved, role: 'result', visibleRows: { request: true, result: true } },
+      span: {
+        request: resolved,
+        result: resolved,
+        role: 'result',
+        visibleRows: { request: true, result: true },
+      },
     })
     expect(row?.kind).toBe('tool')
     if (row?.kind !== 'tool')

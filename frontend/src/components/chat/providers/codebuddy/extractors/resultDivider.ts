@@ -15,12 +15,24 @@ export function codebuddyResultDivider(parsed: unknown, completion?: MessageComp
   if (!isObject(parsed) || pickString(parsed, 'type') !== 'result')
     return null
   const durationMs = pickNumber(parsed, 'duration_ms')
-  if (completion === MessageCompletion.INTERRUPTED)
-    return { label: turnEndLabel('interrupted', { durationMs }) }
-  if (parsed.is_error === true || pickString(parsed, 'subtype') === 'error_during_execution') {
-    const firstError = parsed.is_error === true && Array.isArray(parsed.errors) ? parsed.errors[0] : undefined
-    const reason = typeof firstError === 'string' ? firstError.trim() : ''
-    return { label: turnEndLabel('failed', { durationMs, reason }), isError: true }
+  if (completion === MessageCompletion.INTERRUPTED) {
+    return {
+      label: turnEndLabel('interrupted', { durationMs }),
+    }
   }
-  return { label: turnEndLabel('ended', { durationMs }) }
+  if (parsed.is_error === true || pickString(parsed, 'subtype') === 'error_during_execution') {
+    const firstError = parsed.is_error === true && Array.isArray(parsed.errors)
+      ? parsed.errors[0]
+      : undefined
+    const reason = typeof firstError === 'string'
+      ? firstError.trim()
+      : ''
+    return {
+      label: turnEndLabel('failed', { durationMs, reason }),
+      isError: true,
+    }
+  }
+  return {
+    label: turnEndLabel('ended', { durationMs }),
+  }
 }

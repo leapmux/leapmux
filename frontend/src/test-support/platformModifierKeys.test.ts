@@ -32,7 +32,14 @@ describe('refusedModifierKeys', () => {
   await page.keyboard.press('Meta+Enter')
 }`,
     })
-    expect(findings).toEqual([{ path: '/e2e/helpers/send.ts', line: 2, enclosingFunction: 'send', key: 'Meta' }])
+    expect(findings).toEqual([
+      {
+        path: '/e2e/helpers/send.ts',
+        line: 2,
+        enclosingFunction: 'send',
+        key: 'Meta',
+      },
+    ])
   })
 
   it('finds the refused names in every key method, in a modifiers array, and inside a longer chord', () => {
@@ -65,7 +72,14 @@ await page.keyboard.press(\`\${PLATFORM_MOD}+\${key}\`)`,
 
   it('gives an empty enclosing function to a press in a test callback', () => {
     const findings = analyze({ 'spec.ts': 'test(\'case\', async ({ page }) => { await page.keyboard.press(\'Meta+a\') })' })
-    expect(findings).toEqual([{ path: '/e2e/spec.ts', line: 1, enclosingFunction: '', key: 'Meta' }])
+    expect(findings).toEqual([
+      {
+        path: '/e2e/spec.ts',
+        line: 1,
+        enclosingFunction: '',
+        key: 'Meta',
+      },
+    ])
   })
 
   it('ignores a fixed Control, a key that only contains a refused name, and a name outside a key argument', () => {
@@ -86,7 +100,10 @@ const options = { modifiers: modifierKeys }
 })
 
 describe('e2e platform modifier keys', () => {
-  const files = collectE2EFiles().map(path => ({ path, source: readFileSync(path, 'utf-8') }))
+  const files = collectE2EFiles().map(path => ({
+    path,
+    source: readFileSync(path, 'utf-8'),
+  }))
   const findings = refusedModifierKeys(files)
   const key = (finding: { path: string, enclosingFunction: string }) => siteKey(posixRelative(e2eRoot, finding.path), finding.enclosingFunction)
 

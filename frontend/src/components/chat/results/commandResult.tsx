@@ -64,7 +64,13 @@ export function CommandResultList(props: { entries: CommandResult[], status: Too
       {entry => (
         <>
           <Show when={entry.label}>{label => <ToolHeaderRow icon={Terminal} title={label()} />}</Show>
-          <CommandResultBody source={entry} status={props.status} {...(props.context !== undefined ? { context: props.context } : {})} />
+          <CommandResultBody
+            source={entry}
+            status={props.status}
+            {...(props.context !== undefined
+              ? { context: props.context }
+              : {})}
+          />
         </>
       )}
     </For>
@@ -93,7 +99,11 @@ export function CommandResultBody(props: {
   // The icon and label must read that exit also.
   const exit = () => commandExit(props.source)
   const commandFailed = () => props.status === 'failed' || commandIsError(exit())
-  const statusIcon = () => props.status === 'declined' ? Ban : props.status === 'cancelled' || commandFailed() ? CircleAlert : Check
+  const statusIcon = () => props.status === 'declined'
+    ? Ban
+    : props.status === 'cancelled' || commandFailed()
+      ? CircleAlert
+      : Check
   const statusLabel = () => commandStatusLabel(props.status, exit())
   // Use the shared outcome vocabulary, not a literal.
   // A success word that changed in only one place would hide the header for every failed command.
@@ -114,7 +124,9 @@ export function CommandResultBody(props: {
     return joinMetaParts([
       props.source.outputUnavailable ? '[output unavailable]' : EMPTY_RESULT_NOTICE,
       typeof dur === 'number' && formatDuration(dur),
-      typeof code === 'number' ? `exit ${code}` : props.source.signal,
+      typeof code === 'number'
+        ? `exit ${code}`
+        : props.source.signal,
     ])
   })
 
@@ -124,7 +136,16 @@ export function CommandResultBody(props: {
         when={normalized()}
         fallback={<Show when={emptyOutputHint()}>{hint => <div class={toolInputSummary}>{hint()}</div>}</Show>}
       >
-        <CollapsibleContent outputPreview kind="ansi-or-pre" text={normalized()} display={display()} isCollapsed={isCollapsed()} {...(props.context !== undefined ? { context: props.context } : {})} />
+        <CollapsibleContent
+          outputPreview
+          kind="ansi-or-pre"
+          text={normalized()}
+          display={display()}
+          isCollapsed={isCollapsed()}
+          {...(props.context !== undefined
+            ? { context: props.context }
+            : {})}
+        />
       </Show>
       <Show when={props.source.truncated}>
         <div class={toolInputSummary}>{TRUNCATION_NOTICE}</div>

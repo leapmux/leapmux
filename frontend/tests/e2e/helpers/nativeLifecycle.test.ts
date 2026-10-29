@@ -182,7 +182,9 @@ type ResumePhase = NativeResumeEvidence['phase']
 function options(observe?: (evidence: NativeResumeEvidence) => Promise<void>) {
   return {
     prepare: async () => { resume.events.push('prepare') },
-    ...(observe ? { resumeEvidence: observe } : {}),
+    ...(observe
+      ? { resumeEvidence: observe }
+      : {}),
   }
 }
 
@@ -232,8 +234,16 @@ function scenario(providerAgent: ProviderAgent = CODEX) {
     leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'controlled-token', workerId: prior.workerId },
     get modelScript(): ModelScript { throw new Error('The resume unit fixture must not access a model.') },
   }
-  const originalRequest: MockModelRequestRecord = { protocol: 'openai-responses', path: '/v1/responses', body: { turn: 'original' } }
-  const resumedRequest: MockModelRequestRecord = { protocol: 'openai-responses', path: '/v1/responses', body: { turn: 'resumed', zero: 0, enabled: false } }
+  const originalRequest: MockModelRequestRecord = {
+    protocol: 'openai-responses',
+    path: '/v1/responses',
+    body: { turn: 'original' },
+  }
+  const resumedRequest: MockModelRequestRecord = {
+    protocol: 'openai-responses',
+    path: '/v1/responses',
+    body: { turn: 'resumed', zero: 0, enabled: false },
+  }
   resume.send.mockImplementationOnce(async (_context, prompt, answer) => {
     resume.events.push('answer:original')
     resume.userRows.push(prompt)
@@ -295,7 +305,13 @@ function scenario(providerAgent: ProviderAgent = CODEX) {
     expect(originalAnswerRows).toBe(1)
     resume.events.push('conversation:resumed')
   })
-  return { context, prior, keeper, resumedRequest, reopened }
+  return {
+    context,
+    prior,
+    keeper,
+    resumedRequest,
+    reopened,
+  }
 }
 
 async function holdEvidence(phase: ResumePhase) {
@@ -313,9 +329,17 @@ async function holdEvidence(phase: ResumePhase) {
   }))
   const settled = pending.then(() => 'finished' as const, error => ({ error }))
   try {
-    const first = await Promise.race([entered.promise.then(() => 'entered' as const), settled])
+    const first = await Promise.race([
+      entered.promise.then(() => 'entered' as const),
+      settled,
+    ])
     expect(first).toBe('entered')
-    return { fixture, observations, pending, release }
+    return {
+      fixture,
+      observations,
+      pending,
+      release,
+    }
   }
   catch (error) {
     release.resolve()
@@ -363,9 +387,11 @@ describe('exerciseSessionResume', () => {
   it('does not create a keeper or close the original after a checkpoint failure', async () => {
     const { context } = scenario()
     const failure = new Error('The native checkpoint did not reach disk.')
-    Object.assign(context, { waitForNativeCheckpoint: async () => {
-      throw failure
-    } })
+    Object.assign(context, {
+      waitForNativeCheckpoint: async () => {
+        throw failure
+      },
+    })
     await expect(exerciseSessionResume(context, options())).rejects.toBe(failure)
     expect(resume.open).not.toHaveBeenCalled()
     expect(resume.close).not.toHaveBeenCalled()
@@ -441,7 +467,11 @@ describe('exerciseSessionResume', () => {
   it('returns the request of the original turn beside the resumed request', async () => {
     const { context, resumedRequest } = scenario()
     const result = await exerciseSessionResume(context, options())
-    expect(result.originalRequest).toEqual({ protocol: 'openai-responses', path: '/v1/responses', body: { turn: 'original' } })
+    expect(result.originalRequest).toEqual({
+      protocol: 'openai-responses',
+      path: '/v1/responses',
+      body: { turn: 'original' },
+    })
     expect(result.request).toBe(resumedRequest)
   })
 
@@ -458,7 +488,13 @@ describe('exerciseSessionResume', () => {
       [result.originalPrompt, result.originalAnswer],
       [result.resumedPrompt, result.resumedAnswer],
     ])
-    const texts: NativeResumeTexts = { marker: result.marker, originalPrompt: result.originalPrompt, originalAnswer: result.originalAnswer, resumedPrompt: result.resumedPrompt, resumedAnswer: result.resumedAnswer }
+    const texts: NativeResumeTexts = {
+      marker: result.marker,
+      originalPrompt: result.originalPrompt,
+      originalAnswer: result.originalAnswer,
+      resumedPrompt: result.resumedPrompt,
+      resumedAnswer: result.resumedAnswer,
+    }
     expect(resume.countRows.mock.calls[0]?.[2]).toEqual(texts)
     expect(resume.conversation.mock.calls[0]?.[2]).toEqual(texts)
   })
@@ -644,7 +680,9 @@ describe('exerciseSessionResume', () => {
     const observations: ResumePhase[] = []
     resume.close.mockImplementation(async () => {
       resume.events.push('original:close')
-      const values = kind === 'user' ? resume.userRows : resume.assistantRows
+      const values = kind === 'user'
+        ? resume.userRows
+        : resume.assistantRows
       const original = values[0]
       if (original === undefined)
         throw new Error('The controlled original row is absent.')
@@ -666,7 +704,11 @@ describe('exerciseSessionResume', () => {
     resume.send.mockReset().mockImplementationOnce(async (_context, prompt, answer) => {
       resume.userRows.push(prompt)
       resume.assistantRows.push(answer)
-      return { protocol: 'openai-responses', path: '/v1/responses', body: { prompt } }
+      return {
+        protocol: 'openai-responses',
+        path: '/v1/responses',
+        body: { prompt },
+      }
     }).mockRejectedValueOnce(failure)
     await expect(exerciseSessionResume(context, options(async (evidence) => {
       observations.push(evidence.phase)
@@ -722,8 +764,21 @@ describe('exerciseAgentStartup', () => {
     await expect(exerciseAgentStartup(startupContext(qoder), { launch, failed: true })).rejects.toBe(opened)
     expect(resume.open).toHaveBeenCalledOnce()
     const [server, workspaceId, workingDir, request] = resume.open.mock.calls[0] ?? []
-    expect([server?.hubUrl, server?.adminToken, server?.workerId, workspaceId]).toEqual(['http://unused.invalid', 'controlled-token', 'private-startup-worker', 'startup-unit-workspace'])
-    expect(request).toEqual({ ...agentOpenOptions(AgentProvider.QODER), title: 'Controlled native startup' })
+    expect([
+      server?.hubUrl,
+      server?.adminToken,
+      server?.workerId,
+      workspaceId,
+    ]).toEqual([
+      'http://unused.invalid',
+      'controlled-token',
+      'private-startup-worker',
+      'startup-unit-workspace',
+    ])
+    expect(request).toEqual({
+      ...agentOpenOptions(AgentProvider.QODER),
+      title: 'Controlled native startup',
+    })
     if (workingDir === undefined)
       throw new Error('The startup agent opened in no stated directory.')
     expect(basename(dirname(workingDir))).toMatch(/^native-startup-workspace-/)
@@ -764,7 +819,12 @@ describe('heldToolScript', () => {
     const releaseFile = join(workingDir, `interrupt-release-${marker}`)
     const sandbox = join(workingDir, 'refuse-watch.cjs')
     writeFileSync(sandbox, `require('node:fs').watch = () => { throw Object.assign(new Error('too many open files, watch'), { code: 'EMFILE' }) }\n`)
-    const child = spawn(process.execPath, ['--require', sandbox, '-e', heldToolScript({ startedFile, releaseFile })], { stdio: 'ignore' })
+    const child = spawn(process.execPath, [
+      '--require',
+      sandbox,
+      '-e',
+      heldToolScript({ startedFile, releaseFile }),
+    ], { stdio: 'ignore' })
     try {
       const exited = new Promise<number | null>(resolveExit => child.once('exit', code => resolveExit(code)))
       await expect.poll(() => existsSync(startedFile)).toBe(true)
@@ -783,7 +843,10 @@ describe('heldToolScript', () => {
     const workingDir = mkdtempSync(join(SCRATCH_ROOT, 'held-tool-script-'))
     const startedFile = join(workingDir, `interrupt-started-${marker}`)
     const releaseFile = join(workingDir, `interrupt-release-${marker}`)
-    const child = spawn(process.execPath, ['-e', heldToolScript({ startedFile, releaseFile })], { stdio: 'ignore' })
+    const child = spawn(process.execPath, [
+      '-e',
+      heldToolScript({ startedFile, releaseFile }),
+    ], { stdio: 'ignore' })
     try {
       const exited = new Promise<number | null>(resolveExit => child.once('exit', code => resolveExit(code)))
       await expect.poll(() => existsSync(startedFile)).toBe(true)
@@ -804,7 +867,10 @@ describe('heldToolScript', () => {
     const startedFile = join(workingDir, 'interrupt-started')
     const releaseFile = join(workingDir, 'interrupt-release')
     writeFileSync(releaseFile, '')
-    const child = spawn(process.execPath, ['-e', heldToolScript({ startedFile, releaseFile })], { stdio: 'ignore' })
+    const child = spawn(process.execPath, [
+      '-e',
+      heldToolScript({ startedFile, releaseFile }),
+    ], { stdio: 'ignore' })
     try {
       await expect(new Promise<number | null>(resolveExit => child.once('exit', code => resolveExit(code)))).resolves.toBe(0)
       expect(existsSync(startedFile)).toBe(true)
@@ -893,7 +959,12 @@ describe('exerciseInterruptTurn', () => {
     expect(resume.events).not.toContain('click:interrupt-button')
     release.resolve()
     await rejected
-    expect(resume.events).toEqual(['send:Run the held native interruption probe.', 'actual-hold', 'inspect-held-operation', 'release-hold'])
+    expect(resume.events).toEqual([
+      'send:Run the held native interruption probe.',
+      'actual-hold',
+      'inspect-held-operation',
+      'release-hold',
+    ])
   })
 
   it.each([undefined, 'The completed native thought.'])('keeps the tool script and optional reasoning together: %j', async (reasoning) => {
@@ -915,7 +986,12 @@ describe('exerciseInterruptTurn', () => {
       },
     } as unknown as ManagedNativeScenarioContext
     try {
-      await expect(exerciseInterruptTurn(context, { kind: 'tool', ...(reasoning === undefined ? {} : { reasoning }) })).rejects.toBe(failure)
+      await expect(exerciseInterruptTurn(context, {
+        kind: 'tool',
+        ...(reasoning === undefined
+          ? {}
+          : { reasoning }),
+      })).rejects.toBe(failure)
       expect(queued).toHaveLength(1)
       expect(queued[0]?.toolCalls).toHaveLength(1)
       if (reasoning === undefined)
@@ -966,11 +1042,23 @@ describe('interruptedToolTotals', () => {
     expect(totals).toMatch(interruptedToolTotals(2))
   })
 
-  it.each(['1 tool', '2 tool', '12 tools', '2 tools · $0.042'])('refuses incorrect two-call totals %j', (totals) => {
+  it.each([
+    '1 tool',
+    '2 tool',
+    '12 tools',
+    '2 tools · $0.042',
+  ])('refuses incorrect two-call totals %j', (totals) => {
     expect(totals).not.toMatch(interruptedToolTotals(2))
   })
 
-  it.each([0, -1, 0.5, Number.NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])('refuses an invalid count %j', (count) => {
+  it.each([
+    0,
+    -1,
+    0.5,
+    Number.NaN,
+    Infinity,
+    Number.MAX_SAFE_INTEGER + 1,
+  ])('refuses an invalid count %j', (count) => {
     expect(() => interruptedToolTotals(count)).toThrow('positive safe integer')
   })
 
@@ -1011,7 +1099,9 @@ describe('exerciseInterruptedPartialAnswer', () => {
 
   it.each(['', ' \t\n'])('refuses an empty follow-up answer: %j', async (answer) => {
     const { script } = partialScript(() => {})
-    await expect(exerciseInterruptedPartialAnswer(partialContext(script), { followUp: { answer } })).rejects.toThrow('nonempty answer')
+    await expect(exerciseInterruptedPartialAnswer(partialContext(script), {
+      followUp: { answer },
+    })).rejects.toThrow('nonempty answer')
     expect(script.queue).not.toHaveBeenCalled()
   })
 
@@ -1031,7 +1121,9 @@ describe('exerciseInterruptedPartialAnswer', () => {
     const reply = 'FOLLOWUPANSWER'
     const { script, queued } = partialScript((marker) => {
       const partial = `PARTIALHEAD${marker}\n\n${INTERRUPTION_MARKER}`
-      const texts = reversed ? [reply, partial] : [partial, reply]
+      const texts = reversed
+        ? [reply, partial]
+        : [partial, reply]
       resume.assistantRows.push(...texts)
       resume.contentRows.push(...texts)
     })
@@ -1090,7 +1182,9 @@ describe('exerciseInterruptedPartialAnswer', () => {
       locator: (selector: string) => {
         if (selector !== '[data-testid="thinking-indicator"]:visible [data-animated-count] > :first-child')
           throw new Error(`The scenario read the unexpected locator ${selector}.`)
-        return { allTextContents: async () => [...resume.progressCounts] }
+        return {
+          allTextContents: async () => [...resume.progressCounts],
+        }
       },
       reload: async () => {
         resume.events.push('reload')
@@ -1126,7 +1220,13 @@ describe('exerciseInterruptedPartialAnswer', () => {
     const gate = `native-partial-answer-${marker}`
     expect(step).toEqual({
       text: `PARTIALHEAD${marker} NEVERSTREAMED${marker} ends the answer.`,
-      stream: { chunkChars: `PARTIALHEAD${marker}`.length, delayMs: 0, gates: [{ afterChunk: 1, name: gate }] },
+      stream: {
+        chunkChars: `PARTIALHEAD${marker}`.length,
+        delayMs: 0,
+        gates: [
+          { afterChunk: 1, name: gate },
+        ],
+      },
     })
     // The gate holds after the first chunk, which is the head and nothing else.
     expect(textChunks(step)[0]).toBe(`PARTIALHEAD${marker}`)

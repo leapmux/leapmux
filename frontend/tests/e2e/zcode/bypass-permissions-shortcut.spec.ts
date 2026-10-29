@@ -17,6 +17,9 @@ zcodeTest('bypass-permissions-shortcut: plan mode refuses a native write that Yo
 })
 
 zcodeTest('approves a pending tool and the next tool when Bypass changes during a turn', async ({ native }) => {
-  const operations = await Promise.all([createNativePermissionRemoval(native), createNativePermissionRemoval(native)])
+  const operations = await Promise.all([
+    createNativePermissionRemoval(native),
+    createNativePermissionRemoval(native),
+  ])
   await exerciseMidTurnBypass(native, operations)
 })

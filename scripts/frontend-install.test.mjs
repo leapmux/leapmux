@@ -39,7 +39,13 @@ describe('frontend dependency installation', () => {
       }))
       writeFileSync(join(packageDir, 'binding.gyp'), '{}')
       writeFileSync(join(packageDir, 'install-hook.mjs'), `import { writeFileSync } from 'node:fs'; writeFileSync('install-ran', 'yes')`)
-      const packed = spawnSync(process.execPath, ['pm', 'pack', '--ignore-scripts', '--filename', join(directory, `${name}.tgz`)], {
+      const packed = spawnSync(process.execPath, [
+        'pm',
+        'pack',
+        '--ignore-scripts',
+        '--filename',
+        join(directory, `${name}.tgz`),
+      ], {
         cwd: packageDir,
         encoding: 'utf8',
       })
@@ -70,7 +76,10 @@ describe('frontend dependency installation', () => {
     const lock = spawnSync(process.execPath, ['install', '--lockfile-only'], { cwd: frontend, env, encoding: 'utf8' })
     expect(lock.status, lock.stdout + lock.stderr).toBe(0)
 
-    for (const args of [['install-frontend-deps'], ['--force', 'install-frontend-deps']]) {
+    for (const args of [
+      ['install-frontend-deps'],
+      ['--force', 'install-frontend-deps'],
+    ]) {
       const installed = spawnSync('task', args, { cwd: directory, env, encoding: 'utf8' })
       expect(installed.status, installed.stdout + installed.stderr).toBe(0)
       const native = join(frontend, 'node_modules/macos-alias')

@@ -75,10 +75,20 @@ export function anchorAtOffset(geo: AnchorOffsetGeometry, scrollTop: number): Sc
   // against the CURRENT gap so it stays gap-size-independent. 0 within the body.
   const gap = geo.gapAfter(idx)
   const overflow = within - basisHeight
-  const gapFraction = overflow > 0 && gap > 0 ? Math.min(1, overflow / gap) : 0
+  const gapFraction = overflow > 0 && gap > 0
+    ? Math.min(1, overflow / gap)
+    : 0
   // `idx` came from indexAtOffset (clamped to [0, n-1]) and only walked back, and n > 0 above, so the row is present; `?? { id: '' }` is the type-level guard alone.
   const row: AnchorRow = geo.list[idx] ?? { id: '' }
-  return { id: row.id, offsetWithinRow, basisHeight, gapFraction, ...(row.seq !== undefined ? { seq: row.seq } : {}) }
+  return {
+    id: row.id,
+    offsetWithinRow,
+    basisHeight,
+    gapFraction,
+    ...(row.seq !== undefined
+      ? { seq: row.seq }
+      : {}),
+  }
 }
 
 /**
@@ -127,7 +137,9 @@ export function nearestServerRowIndexBySeq(rows: readonly { seq?: bigint }[], ta
     const s = rows[i]?.seq
     if (s == null)
       continue
-    const delta = s > target ? s - target : target - s
+    const delta = s > target
+      ? s - target
+      : target - s
     if (bestIdx < 0 || delta < bestDelta) {
       bestIdx = i
       bestDelta = delta
@@ -154,5 +166,7 @@ export function resolveNearestAnchorScrollTop(geo: AnchorOffsetGeometry, anchor:
   // list's oldest (anchor older) or newest (anchor newer) row; the general nearest also
   // handles a mid-list drop.
   const bestIdx = nearestServerRowIndexBySeq(geo.list, anchor.seq)
-  return bestIdx < 0 ? null : geo.offsetOfIndex(bestIdx)
+  return bestIdx < 0
+    ? null
+    : geo.offsetOfIndex(bestIdx)
 }

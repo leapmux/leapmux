@@ -8,12 +8,29 @@ import { kimiCompactionBoundary, kimiNotificationEntry } from './notification'
 describe('kimiNotificationEntry', () => {
   it('reads each config warning as a warning line', () => {
     expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.ConfigWarning, {
-      warnings: [{ domain: 'loopControl', message: 'First warning.' }, { domain: 'models', message: 'Second warning.' }],
-    }))).toStrictEqual([{ kind: 'text', text: 'Warning: First warning.' }, { kind: 'text', text: 'Warning: Second warning.' }])
+      warnings: [
+        { domain: 'loopControl', message: 'First warning.' },
+        { domain: 'models', message: 'Second warning.' },
+      ],
+    }))).toStrictEqual([
+      { kind: 'text', text: 'Warning: First warning.' },
+      { kind: 'text', text: 'Warning: Second warning.' },
+    ])
   })
 
   it('ignores malformed or blank config warnings', () => {
-    for (const warnings of [undefined, null, {}, [null, false, 7, { message: 7 }, { message: ' ' }]])
+    for (const warnings of [
+      undefined,
+      null,
+      {},
+      [
+        null,
+        false,
+        7,
+        { message: 7 },
+        { message: ' ' },
+      ],
+    ])
       expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.ConfigWarning, { warnings }))).toStrictEqual([])
   })
 
@@ -22,20 +39,37 @@ describe('kimiNotificationEntry', () => {
       blocked: true,
       hookEvent: 'UserPromptSubmit',
       content: 'The hook blocked this prompt.',
-    }))).toStrictEqual([{ kind: 'hook', outcome: 'blocked', event: 'UserPromptSubmit', detail: 'The hook blocked this prompt.' }])
+    }))).toStrictEqual([
+      {
+        kind: 'hook',
+        outcome: 'blocked',
+        event: 'UserPromptSubmit',
+        detail: 'The hook blocked this prompt.',
+      },
+    ])
   })
 
   it('states why the agent started a turn by itself', () => {
-    const started = (kind: string, name = '') => kimiNotificationEntry(kimiFrame(KIMI_EVENT.TurnStarted, { origin: { kind, name } }))
-    expect(started('system_trigger', 'goal_continuation')).toStrictEqual([{ kind: 'text', text: 'Continuing the goal' }])
-    expect(started('cron_job', 'daily')).toStrictEqual([{ kind: 'text', text: 'Scheduled prompt daily fired' }])
-    expect(started('retry')).toStrictEqual([{ kind: 'text', text: 'Retrying the turn' }])
+    const started = (kind: string, name = '') => kimiNotificationEntry(kimiFrame(KIMI_EVENT.TurnStarted, {
+      origin: { kind, name },
+    }))
+    expect(started('system_trigger', 'goal_continuation')).toStrictEqual([
+      { kind: 'text', text: 'Continuing the goal' },
+    ])
+    expect(started('cron_job', 'daily')).toStrictEqual([
+      { kind: 'text', text: 'Scheduled prompt daily fired' },
+    ])
+    expect(started('retry')).toStrictEqual([
+      { kind: 'text', text: 'Retrying the turn' },
+    ])
     expect(started('user')).toStrictEqual([])
     expect(started('background_task')).toStrictEqual([])
   })
 
   it('words every origin a turn can start from, with its name and without one', () => {
-    const started = (kind: string, name = '') => kimiNotificationEntry(kimiFrame(KIMI_EVENT.TurnStarted, { origin: { kind, name } }))
+    const started = (kind: string, name = '') => kimiNotificationEntry(kimiFrame(KIMI_EVENT.TurnStarted, {
+      origin: { kind, name },
+    }))
     const cases: [string, string, string][] = [
       [KIMI_ORIGIN.SystemTrigger, 'Started by nightly', 'Started by the agent'],
       [KIMI_ORIGIN.CronJob, 'Scheduled prompt nightly fired', 'A scheduled prompt fired'],
@@ -49,8 +83,12 @@ describe('kimiNotificationEntry', () => {
       [KIMI_ORIGIN.CompactionSummary, 'Continuing from the compacted context', 'Continuing from the compacted context'],
     ]
     for (const [kind, named, unnamed] of cases) {
-      expect(started(kind, 'nightly'), kind).toStrictEqual([{ kind: 'text', text: named }])
-      expect(started(kind), kind).toStrictEqual([{ kind: 'text', text: unnamed }])
+      expect(started(kind, 'nightly'), kind).toStrictEqual([
+        { kind: 'text', text: named },
+      ])
+      expect(started(kind), kind).toStrictEqual([
+        { kind: 'text', text: unnamed },
+      ])
     }
     // The user's message, and the task notification, already state why these turns ran.
     for (const kind of [KIMI_ORIGIN.User, KIMI_ORIGIN.Task, KIMI_ORIGIN.BackgroundTask])
@@ -65,58 +103,137 @@ describe('kimiNotificationEntry', () => {
   })
 
   it('reads a retry', () => {
-    expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.TurnStepRetrying, { nextAttempt: 2, maxAttempts: 5, delayMs: 1000, errorName: 'RateLimit', errorMessage: 'Slow down' })))
-      .toStrictEqual([{ kind: 'retry', scope: 'api', attempt: 2, maxAttempts: 5, delayMs: 1000, error: 'Slow down' }])
+    expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.TurnStepRetrying, {
+      nextAttempt: 2,
+      maxAttempts: 5,
+      delayMs: 1000,
+      errorName: 'RateLimit',
+      errorMessage: 'Slow down',
+    })))
+      .toStrictEqual([
+        {
+          kind: 'retry',
+          scope: 'api',
+          attempt: 2,
+          maxAttempts: 5,
+          delayMs: 1000,
+          error: 'Slow down',
+        },
+      ])
   })
 
   it('reads a retry that states only some of its fields', () => {
-    expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.TurnStepRetrying))).toStrictEqual([{ kind: 'retry', scope: 'api' }])
+    expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.TurnStepRetrying))).toStrictEqual([
+      { kind: 'retry', scope: 'api' },
+    ])
     // The error name stands in for a missing message, and a zero delay is a delay.
     expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.TurnStepRetrying, { delayMs: 0, errorName: 'RateLimit' })))
-      .toStrictEqual([{ kind: 'retry', scope: 'api', delayMs: 0, error: 'RateLimit' }])
+      .toStrictEqual([
+        {
+          kind: 'retry',
+          scope: 'api',
+          delayMs: 0,
+          error: 'RateLimit',
+        },
+      ])
   })
 
   it('drops invalid retry counters and keeps zero and fractional delay', () => {
-    for (const count of [-1, 1.5, Infinity, NaN, Number.MAX_SAFE_INTEGER + 1]) {
-      expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.TurnStepRetrying, { nextAttempt: count, maxAttempts: count, delayMs: Infinity, errorMessage: ' ' })))
-        .toStrictEqual([{ kind: 'retry', scope: 'api' }])
+    for (const count of [
+      -1,
+      1.5,
+      Infinity,
+      NaN,
+      Number.MAX_SAFE_INTEGER + 1,
+    ]) {
+      expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.TurnStepRetrying, {
+        nextAttempt: count,
+        maxAttempts: count,
+        delayMs: Infinity,
+        errorMessage: ' ',
+      })))
+        .toStrictEqual([
+          { kind: 'retry', scope: 'api' },
+        ])
     }
     expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.TurnStepRetrying, { nextAttempt: 0, maxAttempts: 0, delayMs: 0.5 })))
-      .toStrictEqual([{ kind: 'retry', scope: 'api', attempt: 0, maxAttempts: 0, delayMs: 0.5 }])
+      .toStrictEqual([
+        {
+          kind: 'retry',
+          scope: 'api',
+          attempt: 0,
+          maxAttempts: 0,
+          delayMs: 0.5,
+        },
+      ])
   })
 
   it('reads the compaction lifecycle', () => {
     expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.CompactionStarted, { trigger: 'manual' }))).toStrictEqual([])
-    expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.CompactionCompleted, { result: { tokensBefore: 9000, tokensAfter: 1200 } })))
-      .toStrictEqual([{ kind: 'compaction', phase: 'end', detail: { pre: 9000, post: 1200 } }])
+    expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.CompactionCompleted, {
+      result: { tokensBefore: 9000, tokensAfter: 1200 },
+    })))
+      .toStrictEqual([
+        {
+          kind: 'compaction',
+          phase: 'end',
+          detail: { pre: 9000, post: 1200 },
+        },
+      ])
     expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.CompactionBlocked))).toStrictEqual([])
-    expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.CompactionCancelled))).toStrictEqual([{ kind: 'compaction', phase: 'end', outcome: 'aborted' }])
+    expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.CompactionCancelled))).toStrictEqual([
+      { kind: 'compaction', phase: 'end', outcome: 'aborted' },
+    ])
   })
 
   it('reads a compaction that states no trigger and no sizes', () => {
     expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.CompactionStarted))).toStrictEqual([])
-    expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.CompactionCompleted))).toStrictEqual([{ kind: 'compaction', phase: 'end', detail: {} }])
+    expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.CompactionCompleted))).toStrictEqual([
+      { kind: 'compaction', phase: 'end', detail: {} },
+    ])
     // A context compacted to nothing states a size of zero, not an absent size.
-    expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.CompactionCompleted, { result: { tokensBefore: 10, tokensAfter: 0 } })))
-      .toStrictEqual([{ kind: 'compaction', phase: 'end', detail: { pre: 10, post: 0 } }])
+    expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.CompactionCompleted, {
+      result: { tokensBefore: 10, tokensAfter: 0 },
+    })))
+      .toStrictEqual([
+        {
+          kind: 'compaction',
+          phase: 'end',
+          detail: { pre: 10, post: 0 },
+        },
+      ])
   })
 
   it('reads a warning, an error and a task notice', () => {
-    expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.Warning, { message: 'Low disk' }))).toStrictEqual([{ kind: 'text', text: 'Warning: Low disk' }])
-    expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.Error, { code: 'x.y', message: 'Broke' }))).toStrictEqual([{ kind: 'text', text: 'Error (x.y): Broke' }])
-    expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.Error, { message: 'Broke' }))).toStrictEqual([{ kind: 'text', text: 'Error: Broke' }])
+    expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.Warning, { message: 'Low disk' }))).toStrictEqual([
+      { kind: 'text', text: 'Warning: Low disk' },
+    ])
+    expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.Error, { code: 'x.y', message: 'Broke' }))).toStrictEqual([
+      { kind: 'text', text: 'Error (x.y): Broke' },
+    ])
+    expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.Error, { message: 'Broke' }))).toStrictEqual([
+      { kind: 'text', text: 'Error: Broke' },
+    ])
     expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.Error, {}))).toStrictEqual([])
     expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.TaskNotified, { title: 'Background agent completed', body: 'Done.' })))
-      .toStrictEqual([{ kind: 'text', text: 'Background agent completed: Done.' }])
+      .toStrictEqual([
+        { kind: 'text', text: 'Background agent completed: Done.' },
+      ])
   })
 
   it('reads an error that states only its code', () => {
-    expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.Error, { code: 'provider.rate_limited' }))).toStrictEqual([{ kind: 'text', text: 'Error: provider.rate_limited' }])
+    expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.Error, { code: 'provider.rate_limited' }))).toStrictEqual([
+      { kind: 'text', text: 'Error: provider.rate_limited' },
+    ])
   })
 
   it('reads a task notice by whichever of its title and body it states', () => {
-    expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.TaskNotified, { title: 'Done' }))).toStrictEqual([{ kind: 'text', text: 'Done' }])
-    expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.TaskNotified, { body: 'It ended.' }))).toStrictEqual([{ kind: 'text', text: 'It ended.' }])
+    expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.TaskNotified, { title: 'Done' }))).toStrictEqual([
+      { kind: 'text', text: 'Done' },
+    ])
+    expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.TaskNotified, { body: 'It ended.' }))).toStrictEqual([
+      { kind: 'text', text: 'It ended.' },
+    ])
     expect(kimiNotificationEntry(kimiFrame(KIMI_EVENT.TaskNotified))).toStrictEqual([])
   })
 
@@ -128,7 +245,9 @@ describe('kimiNotificationEntry', () => {
 
 describe('kimiCompactionBoundary', () => {
   it('reads the size a compaction left', () => {
-    const parsed = input(kimiFrame(KIMI_EVENT.CompactionCompleted, { result: { tokensBefore: 9000, tokensAfter: 1200 } }), undefined, AgentProvider.KIMI_CODE)
+    const parsed = input(kimiFrame(KIMI_EVENT.CompactionCompleted, {
+      result: { tokensBefore: 9000, tokensAfter: 1200 },
+    }), undefined, AgentProvider.KIMI_CODE)
     expect(kimiCompactionBoundary(parsed)).toStrictEqual({ pre: 9000, post: 1200 })
     expect(kimiCompactionBoundary(input(kimiFrame(KIMI_EVENT.CompactionStarted), undefined, AgentProvider.KIMI_CODE))).toBeNull()
   })

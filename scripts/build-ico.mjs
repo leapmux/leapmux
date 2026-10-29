@@ -7,8 +7,12 @@ export function buildIco(pngData, size) {
   header.writeUInt16LE(0, 0) // reserved
   header.writeUInt16LE(1, 2) // type: ICO
   header.writeUInt16LE(1, 4) // image count
-  header[6] = size < 256 ? size : 0 // width (0 = 256)
-  header[7] = size < 256 ? size : 0 // height (0 = 256)
+  header[6] = size < 256
+    ? size
+    : 0 // width (0 = 256)
+  header[7] = size < 256
+    ? size
+    : 0 // height (0 = 256)
   header[8] = 0 // color palette
   header[9] = 0 // reserved
   header.writeUInt16LE(1, 10) // color planes

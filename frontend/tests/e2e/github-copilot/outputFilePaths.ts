@@ -27,15 +27,27 @@ export function copilotNativeOutputPaths(frames: readonly unknown[], callId: str
     && isObject(frame.params) && frame.params.sessionId === sessionId
     && isObject(frame.params.event) && frame.params.event.type === COPILOT_EVENT.ToolCompleted
     && isObject(frame.params.event.data) && frame.params.event.data.toolCallId === callId)
-  const frame = results.length === 1 ? results[0] : undefined
-  const params = isObject(frame?.params) ? frame.params : undefined
-  const event = isObject(params?.event) ? params.event : undefined
-  const data = isObject(event?.data) ? event.data : undefined
-  const result = isObject(data?.result) ? data.result : undefined
+  const frame = results.length === 1
+    ? results[0]
+    : undefined
+  const params = isObject(frame?.params)
+    ? frame.params
+    : undefined
+  const event = isObject(params?.event)
+    ? params.event
+    : undefined
+  const data = isObject(event?.data)
+    ? event.data
+    : undefined
+  const result = isObject(data?.result)
+    ? data.result
+    : undefined
   if ((event?.agentId !== undefined && event.agentId !== '') || data?.success !== true || typeof result?.content !== 'string' || !Array.isArray(result.contents))
     throw new Error('The native Copilot native output requires one successful complete shell event.')
   const exits = result.contents.filter(isObject).filter(block => block.type === 'shell_exit')
-  const exit = exits.length === 1 ? exits[0] : undefined
+  const exit = exits.length === 1
+    ? exits[0]
+    : undefined
   if (exit?.exitCode !== 0 || typeof exit.shellId !== 'string' || !exit.shellId
     || (exit.outputTruncated !== undefined && typeof exit.outputTruncated !== 'boolean')
     || (exit.outputPreview !== undefined && typeof exit.outputPreview !== 'string')
@@ -45,11 +57,19 @@ export function copilotNativeOutputPaths(frames: readonly unknown[], callId: str
   }
   if (result.detailedContent !== undefined && typeof result.detailedContent !== 'string')
     throw new Error('The native Copilot detailed result is not text.')
-  return { path: exit.outputFilePath, excerpt: result.content, preview: exit.outputPreview, retained: result.detailedContent ?? result.content, shellId: exit.shellId }
+  return {
+    path: exit.outputFilePath,
+    excerpt: result.content,
+    preview: exit.outputPreview,
+    retained: result.detailedContent ?? result.content,
+    shellId: exit.shellId,
+  }
 }
 
 /** Keep the original native shell text and remove only its documented exit trailer. */
 export function copilotNativePreview(receipt: CopilotNativeOutputPaths): string {
   const trailer = /(?:\r?\n)?<shellId: [^\r\n>]+ completed with exit code -?\d+>\s*$/.exec(receipt.retained)
-  return trailer ? receipt.retained.slice(0, trailer.index) : receipt.retained
+  return trailer
+    ? receipt.retained.slice(0, trailer.index)
+    : receipt.retained
 }

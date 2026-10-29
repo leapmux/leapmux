@@ -35,7 +35,9 @@ export const LoginPage: Component = () => {
    * Sign in button `canSubmit` never enabled. Reading it here instead re-runs
    * when the answer arrives.
    */
-  const username = () => (isSoloMode() ? USERNAME_SOLO : typedUsername())
+  const username = () => (isSoloMode()
+    ? USERNAME_SOLO
+    : typedUsername())
   const [password, setPassword] = createSignal('')
   const methodSelection = createAuthMethodSelection('login')
   const effectiveMethod = methodSelection.effectiveMethod
@@ -209,7 +211,9 @@ export const LoginPage: Component = () => {
               <Show when={submitting()}><Spinner /></Show>
               {submitting()
                 ? 'Signing in...'
-                : effectiveMethod() === 'passkey' ? 'Sign in with passkey' : 'Sign in'}
+                : effectiveMethod() === 'passkey'
+                  ? 'Sign in with passkey'
+                  : 'Sign in'}
             </button>
           </div>
           {/* Shown for BOTH sign-in methods: recovery verifies the account's

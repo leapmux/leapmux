@@ -25,7 +25,10 @@ for (const mode of ['steer', 'queue'] as const) {
     })
     await withCleanup(async () => {
       const start = await modelScript.queue(
-        { ...nativeTextStep(native, initialAnswer), usage: { inputTokens: 120000, outputTokens: 220 } },
+        {
+          ...nativeTextStep(native, initialAnswer),
+          usage: { inputTokens: 120000, outputTokens: 220 },
+        },
         nativeTextStep(native, answer),
       )
       await sendMessage(page, modelScript.prompt('Use the scripted context window.'))
@@ -33,7 +36,10 @@ for (const mode of ['steer', 'queue'] as const) {
       await expect(compactionIndicator(page)).toBeVisible()
       await expect(page.locator('[data-testid="thinking-indicator"]:visible')).toBeVisible()
       if (mode === 'steer') {
-        await steerQueuedInput(page, { message: modelScript.prompt(guidance), match: guidance })
+        await steerQueuedInput(page, {
+          message: modelScript.prompt(guidance),
+          match: guidance,
+        })
       }
       else {
         await sendMessage(page, modelScript.prompt(guidance))
@@ -44,7 +50,9 @@ for (const mode of ['steer', 'queue'] as const) {
       await waitForAgentIdle(page)
       await expect(assistantBubbles(page).filter({ hasText: answer })).toHaveCount(1)
       await expect(chatScrollContainer(page)).not.toContainText('prompt failed')
-      await expect(chatScrollContainer(page).locator('[data-testid="result-divider"]:visible')).toHaveCount(mode === 'steer' ? 1 : 2)
+      await expect(chatScrollContainer(page).locator('[data-testid="result-divider"]:visible')).toHaveCount(mode === 'steer'
+        ? 1
+        : 2)
       await expectCompactionNoticeAfterReload(page, { count: 1, divider: true })
       await expectNoLiveCompaction(page)
     }, async () => { await modelScript.releaseGateIfHeld(gate) })

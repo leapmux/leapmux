@@ -36,10 +36,16 @@ describe('task output state', () => {
   it.each(['edit', 'delete', 'add', 'hidden'])('rejects an output change: %s', (change) => {
     const dir = fixture()
     recordState(dir, 'build', patterns)
-    if (change === 'delete')
+    if (change === 'delete') {
       rmSync(join(dir, 'output', 'one'))
-    else
-      writeFileSync(join(dir, 'output', change === 'hidden' ? '.hidden' : change === 'edit' ? 'one' : 'new'), 'other')
+    }
+    else {
+      writeFileSync(join(dir, 'output', change === 'hidden'
+        ? '.hidden'
+        : change === 'edit'
+          ? 'one'
+          : 'new'), 'other')
+    }
     expect(checkState(dir, 'build', patterns)).toBe(false)
   })
 
@@ -68,7 +74,10 @@ describe('task output state', () => {
 
   it('ignores excluded cache files', () => {
     const dir = fixture()
-    const selected = [...patterns, { exclude: 'output/.hidden' }]
+    const selected = [
+      ...patterns,
+      { exclude: 'output/.hidden' },
+    ]
     recordState(dir, 'build', selected)
     writeFileSync(join(dir, 'output', '.hidden'), 'cache')
     expect(checkState(dir, 'build', selected)).toBe(true)

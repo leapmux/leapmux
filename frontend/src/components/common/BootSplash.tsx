@@ -64,7 +64,9 @@ export const BootSplashCheck: Component = () => (
 )
 
 function progressRow(phase: { key: string, label: string }, shell: boolean) {
-  const shellClass = shell ? ` ${BOOT_SPLASH_SHELL_ROW_CLASS}` : ''
+  const shellClass = shell
+    ? ` ${BOOT_SPLASH_SHELL_ROW_CLASS}`
+    : ''
   return (
     <li class={`boot-splash-progress-row boot-splash-row-${phase.key}${shellClass}`}>
       <span class="boot-splash-progress-label">{phase.label}</span>

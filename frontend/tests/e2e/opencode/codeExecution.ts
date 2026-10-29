@@ -42,7 +42,11 @@ export async function exerciseOpenCodeFamilyCodeExecution(context: ManagedNative
   const receiptLog = join(directory, 'native-code-mcp-receipt.json')
   const server = writeMcpResultServer(directory, { receiptLog })
   const content = opencodeMcpServerConfiguration(original, server)
-  await withNativeWorker(context.leapmuxServer, { dataDirPrefix: 'native-code-worker', workerName: 'Native code executor', env: { [mode.codeModeVariable]: 'true', [mode.configurationVariable]: content } }, async ({ server: worker }) => {
+  await withNativeWorker(context.leapmuxServer, {
+    dataDirPrefix: 'native-code-worker',
+    workerName: 'Native code executor',
+    env: { [mode.codeModeVariable]: 'true', [mode.configurationVariable]: content },
+  }, async ({ server: worker }) => {
     const privateContext = { ...context, leapmuxServer: worker }
     await openNativeAgent(privateContext, { directoryPrefix: 'native-code-execution-' })
     await exerciseNativeCodeExecution(privateContext, {
@@ -55,7 +59,10 @@ export async function exerciseOpenCodeFamilyCodeExecution(context: ManagedNative
         const calls = readMcpCallArguments(receiptLog)
         if (callId === 'native-code-2') {
           expect(calls).toHaveLength(1)
-          expect(calls[0]).toEqual({ name: 'inspect', arguments: { count: 0, enabled: false, text: 'native-nested-value' } })
+          expect(calls[0]).toEqual({
+            name: 'inspect',
+            arguments: { count: 0, enabled: false, text: 'native-nested-value' },
+          })
         }
         else {
           expect(calls).toHaveLength(2)
@@ -63,15 +70,38 @@ export async function exerciseOpenCodeFamilyCodeExecution(context: ManagedNative
         }
       },
       scripts: marker => [
-        { label: 'output', source: `return ${JSON.stringify(marker)} + (40 + 2);`, expected: `${marker}42`, failed: false },
-        { label: 'failure', source: `throw new Error(${JSON.stringify(marker)} + (70 + 7));`, expected: `${marker}77`, failed: true },
-        { label: 'nested MCP', source: `const value = await tools.${server.name}.inspect({ count: 0, enabled: false, text: "native-nested-value" }); return ${JSON.stringify(marker)} + value.nextCount;`, expected: `${marker}1`, failed: false },
-        { label: 'nested MCP failure', source: `return await tools.${server.name}.fail({});`, expected: 'NATIVE_MCP_FAILED_RESULT', failed: true },
+        {
+          label: 'output',
+          source: `return ${JSON.stringify(marker)} + (40 + 2);`,
+          expected: `${marker}42`,
+          failed: false,
+        },
+        {
+          label: 'failure',
+          source: `throw new Error(${JSON.stringify(marker)} + (70 + 7));`,
+          expected: `${marker}77`,
+          failed: true,
+        },
+        {
+          label: 'nested MCP',
+          source: `const value = await tools.${server.name}.inspect({ count: 0, enabled: false, text: "native-nested-value" }); return ${JSON.stringify(marker)} + value.nextCount;`,
+          expected: `${marker}1`,
+          failed: false,
+        },
+        {
+          label: 'nested MCP failure',
+          source: `return await tools.${server.name}.fail({});`,
+          expected: 'NATIVE_MCP_FAILED_RESULT',
+          failed: true,
+        },
       ],
     })
     // The checks above select their script by its call ID. This check holds whatever the IDs are.
     expect(readMcpCallArguments(receiptLog)).toEqual([
-      { name: 'inspect', arguments: { count: 0, enabled: false, text: 'native-nested-value' } },
+      {
+        name: 'inspect',
+        arguments: { count: 0, enabled: false, text: 'native-nested-value' },
+      },
       { name: 'fail', arguments: {} },
     ])
   })

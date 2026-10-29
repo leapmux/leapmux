@@ -20,7 +20,9 @@ const DEV_NULL = '/dev/null'
 /** A header path without its `a/` or `b/` side prefix, or `''` for `/dev/null`. */
 function headerPath(text: string): string {
   const path = text.trim().split('\t')[0] ?? ''
-  return path === DEV_NULL ? '' : path.replace(DIFF_SIDE_PREFIX, '')
+  return path === DEV_NULL
+    ? ''
+    : path.replace(DIFF_SIDE_PREFIX, '')
 }
 
 /** A path with no leading `./` or `/`, the form two spellings of one path share. */
@@ -102,14 +104,25 @@ export function codewhaleMutationChanges(metadata: Record<string, unknown>): Fil
   const sections = codewhaleDiffSections(pickString(mutation, CODEWHALE_MUTATION.Diff))
   const entries: FileChangeEntry[] = []
   const renames = mutation[CODEWHALE_MUTATION.Renames]
-  for (const rename of Array.isArray(renames) ? renames.filter(isObject) : []) {
+  for (const rename of Array.isArray(renames)
+    ? renames.filter(isObject)
+    : []) {
     const to = pickString(rename, CODEWHALE_MUTATION.To)
     const from = pickString(rename, CODEWHALE_MUTATION.From)
-    if (to)
-      entries.push({ filePath: to, ...(from ? { previousPath: from } : {}), operation: 'move' })
+    if (to) {
+      entries.push({
+        filePath: to,
+        ...(from
+          ? { previousPath: from }
+          : {}),
+        operation: 'move',
+      })
+    }
   }
   const files = mutation[CODEWHALE_MUTATION.Files]
-  for (const file of Array.isArray(files) ? files.filter(isObject) : []) {
+  for (const file of Array.isArray(files)
+    ? files.filter(isObject)
+    : []) {
     const filePath = pickString(file, CODEWHALE_MUTATION.Path)
     if (!filePath)
       continue
@@ -117,7 +130,9 @@ export function codewhaleMutationChanges(metadata: Record<string, unknown>): Fil
     entries.push({
       filePath,
       operation: OUTCOME_OPERATIONS.get(pickString(file, CODEWHALE_MUTATION.Outcome)) ?? 'edit',
-      ...(patch !== undefined ? { patch } : {}),
+      ...(patch !== undefined
+        ? { patch }
+        : {}),
     })
   }
   if (entries.length === 0)
@@ -125,18 +140,27 @@ export function codewhaleMutationChanges(metadata: Record<string, unknown>): Fil
   // A file the record lists with no hunks still states its operation, so the walk keeps
   // an add, a delete and a move. It drops only an `edit` that states no change.
   const changes = fileEditDiffsFromChanges(entries)
-  return changes.length > 0 ? changes : entries.map(entry => ({ ...fileEditDiffFromOldNew(entry.filePath, '', ''), operation: entry.operation }))
+  return changes.length > 0
+    ? changes
+    : entries.map(entry => ({
+        ...fileEditDiffFromOldNew(entry.filePath, '', ''),
+        operation: entry.operation,
+      }))
 }
 
 /** The substitutions an `edit` call lists, one diff for each, in the order it lists them. */
 function editChanges(filePath: string, args: Record<string, unknown>): FileEditDiff[] {
-  const edits = Array.isArray(args.edits) ? args.edits.filter(isObject) : []
+  const edits = Array.isArray(args.edits)
+    ? args.edits.filter(isObject)
+    : []
   if (edits.length > 0)
     return edits.map(edit => fileEditDiffFromOldNew(filePath, pickString(edit, 'oldText'), pickString(edit, 'newText')))
   // The legacy `edit_file` spelling states one substitution at the top level.
   const oldStr = pickFirstString(args, TOOL_OLD_TEXT_KEYS)
   const newStr = pickFirstString(args, TOOL_NEW_TEXT_KEYS)
-  return [fileEditDiffFromOldNew(filePath, oldStr ?? '', newStr ?? '')]
+  return [
+    fileEditDiffFromOldNew(filePath, oldStr ?? '', newStr ?? ''),
+  ]
 }
 
 /**
@@ -148,28 +172,47 @@ function editChanges(filePath: string, args: Record<string, unknown>): FileEditD
  * tool accepts, but a model sends it, and the shared reader states what it asked for.
  */
 function patchChanges(args: Record<string, unknown>): FileEditDiff[] {
-  const replacements = [args.replace, args.changes].flatMap(value => Array.isArray(value) ? value.filter(isObject) : [])
+  const replacements = [args.replace, args.changes].flatMap(value => Array.isArray(value)
+    ? value.filter(isObject)
+    : [])
   const replaced = replacements.flatMap((entry) => {
     const filePath = pickString(entry, 'path')
-    return filePath ? [fileEditDiffFromWholeFile(filePath, pickString(entry, 'content'), 'add')] : []
+    return filePath
+      ? [
+          fileEditDiffFromWholeFile(filePath, pickString(entry, 'content'), 'add'),
+        ]
+      : []
   })
   const patch = pickString(args, 'patch')
   if (!patch)
     return replaced
   const envelope = applyPatchFileChanges(patch)
-  if (envelope)
-    return [...envelope, ...replaced]
+  if (envelope) {
+    return [
+      ...envelope,
+      ...replaced,
+    ]
+  }
   const sections = codewhaleDiffSections(patch)
   if (sections.size > 0) {
     const patched = [...sections].flatMap(([filePath, body]) => {
       const diff = fileEditDiffFromUnifiedPatch(filePath, body)
-      return diff ? [diff] : []
+      return diff
+        ? [diff]
+        : []
     })
-    return [...patched, ...replaced]
+    return [
+      ...patched,
+      ...replaced,
+    ]
   }
   const filePath = pickString(args, 'path')
-  const single = filePath ? fileEditDiffFromUnifiedPatch(filePath, patch) : null
-  return single ? [single, ...replaced] : replaced
+  const single = filePath
+    ? fileEditDiffFromUnifiedPatch(filePath, patch)
+    : null
+  return single
+    ? [single, ...replaced]
+    : replaced
 }
 
 /**
@@ -180,13 +223,18 @@ function patchChanges(args: Record<string, unknown>): FileEditDiff[] {
  * caller reads as "not a file change".
  */
 export function codewhaleRequestedChanges(toolName: string, args: Record<string, unknown>): FileEditDiff[] {
-  const action = toolName === CODEWHALE_TOOL.File ? pickString(args, 'action') : ''
+  const action = toolName === CODEWHALE_TOOL.File
+    ? pickString(args, 'action')
+    : ''
   if (toolName === CODEWHALE_TOOL.ApplyPatch || action === 'patch')
     return patchChanges(args)
   const filePath = pickFirstString(args, TOOL_FILE_PATH_KEYS)
   if (!filePath)
     return []
-  if (toolName === CODEWHALE_TOOL.Write || toolName === CODEWHALE_TOOL.WriteFile || action === 'write')
-    return [fileEditDiffFromWholeFile(filePath, pickString(args, 'content'), 'add')]
+  if (toolName === CODEWHALE_TOOL.Write || toolName === CODEWHALE_TOOL.WriteFile || action === 'write') {
+    return [
+      fileEditDiffFromWholeFile(filePath, pickString(args, 'content'), 'add'),
+    ]
+  }
   return editChanges(filePath, args)
 }

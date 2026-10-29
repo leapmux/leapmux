@@ -16,7 +16,11 @@ codewhaleTest.describe('Codewhale settings', () => {
 
     // The turns approve nothing, so an approval request blocks the turn and fails the test.
     const planned = await modelScript.queue(
-      { toolCalls: [bashToolCall(AgentProvider.CODEWHALE, 'shortcut-plan', 'echo "shortcut-plan-$((40 + 2))"')] },
+      {
+        toolCalls: [
+          bashToolCall(AgentProvider.CODEWHALE, 'shortcut-plan', 'echo "shortcut-plan-$((40 + 2))"'),
+        ],
+      },
       { text: 'The Plan shortcut turn ended.' },
     )
     await sendMessage(page, modelScript.prompt('Check whether the Plan shortcut permits a shell command.'))
@@ -27,7 +31,11 @@ codewhaleTest.describe('Codewhale settings', () => {
 
     await applyPermissionPreset(page, 'bypass')
     const executed = await modelScript.queue(
-      { toolCalls: [bashToolCall(AgentProvider.CODEWHALE, 'shortcut-agent', 'echo "shortcut-agent-$((40 + 2))"')] },
+      {
+        toolCalls: [
+          bashToolCall(AgentProvider.CODEWHALE, 'shortcut-agent', 'echo "shortcut-agent-$((40 + 2))"'),
+        ],
+      },
       { text: 'The Agent shortcut turn ended.' },
     )
     await sendMessage(page, modelScript.prompt('Run the shell command through the Agent shortcut.'))

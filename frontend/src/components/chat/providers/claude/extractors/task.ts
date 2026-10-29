@@ -39,12 +39,24 @@ export function claudeTaskSpec(request: TaskRequest, args: ClaudeToolRow, result
   if (!result)
     return { kind: 'task', request, title }
   const failure = claudeToolFailureResult(result)
-  if (failure)
-    return { kind: 'task', request, title, result: failure }
+  if (failure) {
+    return {
+      kind: 'task',
+      request,
+      title,
+      result: failure,
+    }
+  }
   if (toolName === CLAUDE_TOOL_NAMES.TASK_OUTPUT) {
     const task = pickObject(result.toolUseResult, 'task')
-    if (!task || !isObject(task))
-      return { kind: 'task', request, title, result: unparsedResult(result.resultContent) }
+    if (!task || !isObject(task)) {
+      return {
+        kind: 'task',
+        request,
+        title,
+        result: unparsedResult(result.resultContent),
+      }
+    }
     const status = pickString(task, 'status')
     const exitCode = pickNumber(task, 'exitCode')
     const meta = joinMetaParts([
@@ -53,23 +65,37 @@ export function claudeTaskSpec(request: TaskRequest, args: ClaudeToolRow, result
     ])
     const label = formatTaskStatus(status || undefined)
     const description = pickString(task, 'description')
-    const head = label && description ? `${label}: ${description}` : (label || description || CLAUDE_TOOL_NAMES.TASK_OUTPUT)
+    const head = label && description
+      ? `${label}: ${description}`
+      : (label || description || CLAUDE_TOOL_NAMES.TASK_OUTPUT)
     return {
       kind: 'task',
       request,
       title,
       result: {
-        title: meta ? `${head} (${meta})` : head,
+        title: meta
+          ? `${head} (${meta})`
+          : head,
         outcome: claudeTaskStatus(status),
         output: pickString(task, 'output', result.resultContent),
       },
     }
   }
   const message = pickString(result.toolUseResult, 'message') || result.resultContent
-  if (!message)
-    return { kind: 'task', request, title, result: unparsedResult(result.resultContent) }
+  if (!message) {
+    return {
+      kind: 'task',
+      request,
+      title,
+      result: unparsedResult(result.resultContent),
+    }
+  }
   const taskType = pickString(result.toolUseResult, 'task_type')
-  const metadata: ToolMetadataEntry[] = taskType ? [{ label: 'Task type', value: taskType }] : []
+  const metadata: ToolMetadataEntry[] = taskType
+    ? [
+        { label: 'Task type', value: taskType },
+      ]
+    : []
   const command = pickString(result.toolUseResult, 'command')
   return {
     kind: 'task',
@@ -77,12 +103,16 @@ export function claudeTaskSpec(request: TaskRequest, args: ClaudeToolRow, result
     title,
     metadata,
     result: {
-      title: taskType ? `${message} (${taskType})` : message,
+      title: taskType
+        ? `${message} (${taskType})`
+        : message,
       // A stop that reaches this rung ENDED the task. The failure rung above already
       // answered every call the tool marked failed, so no other outcome is reachable.
       outcome: 'stopped',
       // The command rides only when the record stated one.
-      ...(command ? { command } : {}),
+      ...(command
+        ? { command }
+        : {}),
       output: '',
     },
   }
@@ -94,10 +124,18 @@ function claudeTaskTitle(args: ClaudeToolRow, request: TaskRequest): string {
     const timeout = pickNumber(args.input, 'timeout')
     const inner = joinMetaParts([
       request.taskId && `task ID: ${request.taskId}`,
-      timeout !== null && `timeout: ${timeout >= 1000 ? `${timeout / 1000}s` : `${timeout}ms`}`,
-      args.input.block !== undefined ? `block: ${String(args.input.block)}` : '',
+      timeout !== null && `timeout: ${timeout >= 1000
+        ? `${timeout / 1000}s`
+        : `${timeout}ms`}`,
+      args.input.block !== undefined
+        ? `block: ${String(args.input.block)}`
+        : '',
     ])
-    return inner ? `Waiting for output (${inner})` : 'Waiting for output'
+    return inner
+      ? `Waiting for output (${inner})`
+      : 'Waiting for output'
   }
-  return request.taskId ? `Stop task ${request.taskId}` : 'Stop task'
+  return request.taskId
+    ? `Stop task ${request.taskId}`
+    : 'Stop task'
 }

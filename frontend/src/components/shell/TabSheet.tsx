@@ -104,9 +104,13 @@ export const TabSheet: Component<TabSheetProps> = (props) => {
           aria-label="Switch tab"
           // Hidden from assistive tech once the list is gone: the closed
           // panel is an empty shell sliding above the bar.
-          aria-hidden={listMounted() ? undefined : 'true'}
+          aria-hidden={listMounted()
+            ? undefined
+            : 'true'}
           class={styles.sheetPanel}
-          classList={{ [styles.sheetPanelOpen]: props.open() }}
+          classList={{
+            [styles.sheetPanelOpen]: props.open(),
+          }}
           tabIndex={-1}
           data-testid="tab-sheet"
           onKeyDown={(e) => {
@@ -119,7 +123,9 @@ export const TabSheet: Component<TabSheetProps> = (props) => {
               {props.tabCount()}
               {' '}
               Tab
-              {props.tabCount() === 1 ? '' : 's'}
+              {props.tabCount() === 1
+                ? ''
+                : 's'}
             </span>
           </div>
           <Show when={listMounted()}>

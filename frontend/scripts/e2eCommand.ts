@@ -17,14 +17,22 @@ export interface CommandRuntime {
 export async function runCommand(cmd: string, args: string[], options: SpawnOptions = {}, runtime: CommandRuntime = {}): Promise<number> {
   const ownership = { ...runtime.ownership }
   const ownTree = ownership.ownTree === true
-  const log = runtime.logPath ? openSync(runtime.logPath, 'wx') : undefined
+  const log = runtime.logPath
+    ? openSync(runtime.logPath, 'wx')
+    : undefined
   let command: CommandProcess
   try {
     // A launched command never reads the launcher's stdin -- the driver holds it
   // for signal delivery -- so give it no stdin at all. A shared pipe also lets
   // a grandchild steal the signal bytes on Windows, where the job host
   // duplicates the handle into the whole tree.
-    command = spawnCommandProcess(cmd, args, { ...options, stdio: log === undefined ? ['ignore', 'inherit', 'inherit'] : ['ignore', 'pipe', 'pipe'], env: options.env ?? process.env }, ownership)
+    command = spawnCommandProcess(cmd, args, {
+      ...options,
+      stdio: log === undefined
+        ? ['ignore', 'inherit', 'inherit']
+        : ['ignore', 'pipe', 'pipe'],
+      env: options.env ?? process.env,
+    }, ownership)
   }
   catch (error) {
     if (log !== undefined) {
@@ -42,15 +50,22 @@ export async function runCommand(cmd: string, args: string[], options: SpawnOpti
     let finished = false
     let stopping: Promise<void> | undefined
     const failures: unknown[] = []
-    const decoders = [new StringDecoder('utf8'), new StringDecoder('utf8')]
+    const decoders = [
+      new StringDecoder('utf8'),
+      new StringDecoder('utf8'),
+    ]
     const pending = ['', '']
     const recordFailure = (error: unknown) => {
       if (!failures.includes(error))
         failures.push(error)
     }
     const writeLine = (index: number, line: string) => {
-      const target = index === 0 ? process.stdout : process.stderr
-      target.write(`${runtime.label ? `[${runtime.label}] ` : ''}${line}\n`)
+      const target = index === 0
+        ? process.stdout
+        : process.stderr
+      target.write(`${runtime.label
+        ? `[${runtime.label}] `
+        : ''}${line}\n`)
     }
     const finish = (code: number) => {
       if (finished)

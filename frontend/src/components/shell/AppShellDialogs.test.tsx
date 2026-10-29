@@ -207,7 +207,11 @@ function renderDialogs(
   // answers the way `placementTileId` does, which is what the cases that only
   // exercise the active workspace mean.
   const firstLeafIdFor = vi.fn((workspaceId: string) =>
-    (opts.readyWorkspaceIds ? (opts.readyWorkspaceIds.includes(workspaceId) ? 'tile-1' : null) : (opts.placementTileId || null)))
+    (opts.readyWorkspaceIds
+      ? (opts.readyWorkspaceIds.includes(workspaceId)
+          ? 'tile-1'
+          : null)
+      : (opts.placementTileId || null)))
   // The branch dialogs SELECT their own workspace before they place a tab, so
   // the fixture has to supply this one -- an omitted handler used to throw out
   // of the click handler, which vitest reported as an unhandled error rather
@@ -228,7 +232,10 @@ function renderDialogs(
     tabOps: tabOps as unknown as ReturnType<typeof useTabOperations>,
     // The delete-branch dialog scans its group for running work. Nothing is
     // running in these cases; DeleteBranchDialog's own suite covers the scan.
-    busyProbe: { probe: async () => null, probeMany: async () => [] } as unknown as TabBusyProbe,
+    busyProbe: {
+      probe: async () => null,
+      probeMany: async () => [],
+    } as unknown as TabBusyProbe,
     activeWorkspace,
     onSelectWorkspace,
     isWorkspaceMutatable: () => opts.mutatable ?? true,
@@ -242,7 +249,14 @@ function renderDialogs(
     }),
   } satisfies Partial<ComponentProps<typeof AppShellDialogs>>
   render(() => <AppShellDialogs {...(props as unknown as ComponentProps<typeof AppShellDialogs>)} />)
-  return { dialogs, onBranchChanged, closeWorktreeTabs, placementTileId, firstLeafIdFor, onSelectWorkspace }
+  return {
+    dialogs,
+    onBranchChanged,
+    closeWorktreeTabs,
+    placementTileId,
+    firstLeafIdFor,
+    onSelectWorkspace,
+  }
 }
 
 async function chooseSwitchToAndConfirm(branch: string) {
@@ -282,7 +296,9 @@ describe('AppShellDialogs branch dialogs', () => {
       gitToplevel: '/repo',
       branchName: 'doomed',
       isWorktree: false,
-      tabs: [makeTab()],
+      tabs: [
+        makeTab(),
+      ],
     })
 
     await chooseSwitchToAndConfirm('main')
@@ -309,7 +325,9 @@ describe('AppShellDialogs branch dialogs', () => {
       gitToplevel: '/repo-worktrees/doomed',
       branchName: 'doomed',
       isWorktree: true,
-      tabs: [makeTab()],
+      tabs: [
+        makeTab(),
+      ],
     })
 
     await waitFor(() => expect(screen.getByRole('heading', { name: 'Delete worktree' })).toBeInTheDocument())
@@ -327,7 +345,9 @@ describe('AppShellDialogs branch dialogs', () => {
       gitToplevel: '/repo',
       branchName: 'doomed',
       isWorktree: false,
-      tabs: [makeTab()],
+      tabs: [
+        makeTab(),
+      ],
     })
     await waitFor(() => expect(screen.getByText(/Switch this working directory to:/)).toBeInTheDocument())
     dialogs.deleteBranch.close()
@@ -337,7 +357,9 @@ describe('AppShellDialogs branch dialogs', () => {
       gitToplevel: '/second-repo',
       branchName: 'doomed',
       isWorktree: false,
-      tabs: [makeTab()],
+      tabs: [
+        makeTab(),
+      ],
     })
     await chooseSwitchToAndConfirm('main')
 
@@ -357,7 +379,9 @@ describe('AppShellDialogs branch dialogs', () => {
       gitToplevel: '/repo',
       branchName: 'doomed',
       isWorktree: false,
-      tabs: [makeTab()],
+      tabs: [
+        makeTab(),
+      ],
     })
     await waitFor(() => expect(screen.getByText(/Switch this working directory to:/)).toBeInTheDocument())
 
@@ -367,7 +391,9 @@ describe('AppShellDialogs branch dialogs', () => {
       gitToplevel: '/second-repo',
       branchName: 'doomed',
       isWorktree: false,
-      tabs: [makeTab()],
+      tabs: [
+        makeTab(),
+      ],
     })
     await chooseSwitchToAndConfirm('main')
 
@@ -384,7 +410,9 @@ describe('AppShellDialogs branch dialogs', () => {
       makeInspectResp({ isWorktree: true, worktreePath: '/wt' }),
     )
     const { dialogs, closeWorktreeTabs, onBranchChanged } = renderDialogs()
-    const tabs = [makeTab()]
+    const tabs = [
+      makeTab(),
+    ]
     dialogs.deleteBranch.open({
       workerId: 'w1',
       gitToplevel: '/repo',
@@ -553,7 +581,9 @@ describe('AppShellDialogs branch dialogs', () => {
   // made the agent and its worktree, so what survives is a running process with
   // no tab pointing at it.
   it('change branch: blocks when the dialog\'s OWN workspace has no tree yet', async () => {
-    const { dialogs } = renderDialogs(() => ({ id: 'another-ws' }), { readyWorkspaceIds: ['another-ws'] })
+    const { dialogs } = renderDialogs(() => ({ id: 'another-ws' }), {
+      readyWorkspaceIds: ['another-ws'],
+    })
     dialogs.changeBranch.open({
       workerId: 'w2',
       gitToplevel: '/other',
@@ -567,7 +597,9 @@ describe('AppShellDialogs branch dialogs', () => {
   })
 
   it('change branch: passes no reason once the dialog\'s own workspace is ready', async () => {
-    const { dialogs } = renderDialogs(() => ({ id: 'another-ws' }), { readyWorkspaceIds: ['another-ws', 'ws1'] })
+    const { dialogs } = renderDialogs(() => ({ id: 'another-ws' }), {
+      readyWorkspaceIds: ['another-ws', 'ws1'],
+    })
     dialogs.changeBranch.open({
       workerId: 'w2',
       gitToplevel: '/other',
@@ -689,7 +721,12 @@ describe('AppShellDialogs agent creation', () => {
       }),
     }
     render(() => <AppShellDialogs {...(props as unknown as ComponentProps<typeof AppShellDialogs>)} />)
-    return { dialogs, repoGitStore, ...stores, rootTileId: harness.rootTileId }
+    return {
+      dialogs,
+      repoGitStore,
+      ...stores,
+      rootTileId: harness.rootTileId,
+    }
   }
 
   /**
@@ -816,7 +853,10 @@ describe('AppShellDialogs section and bulk confirms', () => {
 
   it('says "workspace", singular, for one', async () => {
     const dialogs = renderConfirms()
-    dialogs.confirmEmptyArchive.open({ count: 1, resolve: vi.fn() })
+    dialogs.confirmEmptyArchive.open({
+      count: 1,
+      resolve: vi.fn(),
+    })
 
     expect(await screen.findByText(/Delete 1 archived workspace\?/)).toBeInTheDocument()
   })

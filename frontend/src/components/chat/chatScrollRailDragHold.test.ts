@@ -11,7 +11,9 @@ const tick = () => new Promise<void>(resolve => setTimeout(resolve, 0))
 let rafCallbacks: Map<number, () => void>
 let nextRafId: number
 function runFrame() {
-  const cbs = [...rafCallbacks.values()]
+  const cbs = [
+    ...rafCallbacks.values(),
+  ]
   rafCallbacks.clear()
   cbs.forEach(cb => cb())
 }
@@ -40,7 +42,9 @@ function inRoot(body: (dispose: () => void) => Promise<void>): Promise<void> {
       }
       catch (e) {
         dispose()
-        reject(e instanceof Error ? e : new Error(String(e)))
+        reject(e instanceof Error
+          ? e
+          : new Error(String(e)))
       }
     })
   })

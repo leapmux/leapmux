@@ -39,7 +39,11 @@ export interface KiloQuotaWindow {
 
 /** Wrap one procedure result as the Kilo cloud answers it. */
 export function kiloTrpcResult(data: unknown): { result: { data: { json: unknown } } } {
-  return { result: { data: { json: data } } }
+  return {
+    result: {
+      data: { json: data },
+    },
+  }
 }
 
 /** The usage answer of the mocked coding plan, with `windows`. */
@@ -97,12 +101,27 @@ export function createKiloCloudSurface(host: Pick<MockModelScriptHost, 'hasScena
       const planned = usage.active()
       if (procedure === PROCEDURE_SUBSCRIPTIONS) {
         writeMockJSON(response, 200, kiloTrpcResult(planned
-          ? [{ ...KILO_E2E_SUBSCRIPTION, canQueryUsage: true, hasInstalledByokKey: true, status: 'active', cancelAtPeriodEnd: false }]
+          ? [
+              {
+                ...KILO_E2E_SUBSCRIPTION,
+                canQueryUsage: true,
+                hasInstalledByokKey: true,
+                status: 'active',
+                cancelAtPeriodEnd: false,
+              },
+            ]
           : []))
         return true
       }
       writeMockJSON(response, 200, kiloTrpcResult(planned
-        ? [{ id: 'leapmux-e2e-key', provider_id: KILO_E2E_SUBSCRIPTION.providerId, management_source: 'coding_plan', is_enabled: true }]
+        ? [
+            {
+              id: 'leapmux-e2e-key',
+              provider_id: KILO_E2E_SUBSCRIPTION.providerId,
+              management_source: 'coding_plan',
+              is_enabled: true,
+            },
+          ]
         : []))
       return true
     },
@@ -119,7 +138,9 @@ function readInput(url: URL): Record<string, unknown> | undefined {
     return undefined
   try {
     const value: unknown = JSON.parse(raw)
-    return typeof value === 'object' && value !== null && !Array.isArray(value) ? value as Record<string, unknown> : undefined
+    return typeof value === 'object' && value !== null && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : undefined
   }
   catch {
     return undefined

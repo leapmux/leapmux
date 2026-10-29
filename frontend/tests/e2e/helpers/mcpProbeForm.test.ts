@@ -26,7 +26,11 @@ vi.mock('./ui', async importOriginal => ({
   ...await importOriginal<typeof import('./ui')>(),
   sendMessage: async (_page: unknown, text: string) => { trip.events.push(`send ${text}`) },
   waitForAgentIdle: async () => { trip.events.push('idle') },
-  messageBubbles: () => ({ filter: () => ({ first: () => assertingLocator('result bubble') }) }),
+  messageBubbles: () => ({
+    filter: () => ({
+      first: () => assertingLocator('result bubble'),
+    }),
+  }),
 }))
 vi.mock('./providerToolCalls', () => ({
   mcpToolCall: (_provider: unknown, id: string, request: { server: string, tool: string }) => ({ id, name: `${request.server}.${request.tool}`, arguments: {} }),
@@ -118,7 +122,10 @@ describe('mcpProbeFormDraftSaved', () => {
   })
 
   it('accepts a record that also holds an unrelated choice', () => {
-    expect(mcpProbeFormDraftSaved({ choices: { ...saved, 'control-permissions-pill': 'once' }, currentPage: 0 })).toBe(true)
+    expect(mcpProbeFormDraftSaved({
+      choices: { ...saved, 'control-permissions-pill': 'once' },
+      currentPage: 0,
+    })).toBe(true)
   })
 
   it.each(['elicitation:"count"', 'elicitation:"enabled"', 'elicitation:"color"'])('rejects a record that lacks %s', (key) => {
@@ -127,16 +134,47 @@ describe('mcpProbeFormDraftSaved', () => {
   })
 
   it.each([
-    ['the count', { 'elicitation:"count"': '1' }],
-    ['the boolean', { 'elicitation:"enabled"': 'true' }],
-    ['the color', { 'elicitation:"color"': '"r"' }],
-    ['the color as bare text', { 'elicitation:"color"': 'b' }],
-    ['the count as a number', { 'elicitation:"count"': 0 }],
+    [
+      'the count',
+      { 'elicitation:"count"': '1' },
+    ],
+    [
+      'the boolean',
+      { 'elicitation:"enabled"': 'true' },
+    ],
+    [
+      'the color',
+      { 'elicitation:"color"': '"r"' },
+    ],
+    [
+      'the color as bare text',
+      { 'elicitation:"color"': 'b' },
+    ],
+    [
+      'the count as a number',
+      { 'elicitation:"count"': 0 },
+    ],
   ])('rejects a record with a wrong value for %s', (_name, override) => {
-    expect(mcpProbeFormDraftSaved({ choices: { ...saved, ...override } })).toBe(false)
+    expect(mcpProbeFormDraftSaved({
+      choices: {
+        ...saved,
+        ...override,
+      },
+    })).toBe(false)
   })
 
-  it.each([undefined, null, 0, '', 'choices', [], {}, { choices: null }, { choices: [] }, { choices: 'x' }])('rejects the non-record %j', (value) => {
+  it.each([
+    undefined,
+    null,
+    0,
+    '',
+    'choices',
+    [],
+    {},
+    { choices: null },
+    { choices: [] },
+    { choices: 'x' },
+  ])('rejects the non-record %j', (value) => {
     expect(mcpProbeFormDraftSaved(value)).toBe(false)
   })
 })
@@ -155,9 +193,21 @@ describe('the saved answers of the probe form', () => {
           type: 'object',
           required: ['count', 'enabled', 'color'],
           properties: {
-            count: { type: 'integer', title: 'Count', minimum: 0, maximum: 3 },
+            count: {
+              type: 'integer',
+              title: 'Count',
+              minimum: 0,
+              maximum: 3,
+            },
             enabled: { type: 'boolean', title: 'Enabled' },
-            color: { type: 'string', title: 'Color', oneOf: [{ const: 'b', title: 'Blue' }, { const: 'r', title: 'Red' }] },
+            color: {
+              type: 'string',
+              title: 'Color',
+              oneOf: [
+                { const: 'b', title: 'Blue' },
+                { const: 'r', title: 'Red' },
+              ],
+            },
           },
         },
       },
@@ -172,7 +222,11 @@ describe('the saved answers of the probe form', () => {
   async function mountForm() {
     const answerState = createControlAnswerState()
     const view = render(() => {
-      useControlResponseHandling({ agentId: request.agentId, controlRequests: [request], onSendMessage: vi.fn() }, answerState, () => undefined, vi.fn())
+      useControlResponseHandling({
+        agentId: request.agentId,
+        controlRequests: [request],
+        onSendMessage: vi.fn(),
+      }, answerState, () => undefined, vi.fn())
       return createComponent(ControlRequestContent, { request, answerState, agentProvider: AgentProvider.GOOSE })
     })
     await vi.waitFor(() => expect(answerState.ready()).toBe(true))
@@ -180,7 +234,9 @@ describe('the saved answers of the probe form', () => {
   }
 
   function fillCount() {
-    fireEvent.input(screen.getByLabelText('Count *'), { target: { value: '0' } })
+    fireEvent.input(screen.getByLabelText('Count *'), {
+      target: { value: '0' },
+    })
   }
 
   // JSDOM keeps popover children outside its accessibility tree, so the options are found with `hidden`.
@@ -276,7 +332,9 @@ describe('exerciseMcpProbeFormRoundTrip', () => {
   function roundTripContext(adminUserId: string | undefined = TEST_USER_ID): ManagedNativeScenarioContext {
     const form = assertingLocator('form')
     const page = Object.assign({} as Page, {
-      getByTestId: (testId: string) => testId === 'elicitation-form' ? form : assertingLocator(testId),
+      getByTestId: (testId: string) => testId === 'elicitation-form'
+        ? form
+        : assertingLocator(testId),
       getByRole: (_role: string, options: { name: string }) => assertingLocator(`menu ${options.name}`),
       reload: async () => {
         trip.events.push('reload')
@@ -284,7 +342,9 @@ describe('exerciseMcpProbeFormRoundTrip', () => {
       },
       // The fake storage holds the saved answers of the fill. A key read gets two arguments, and an entry read three.
       evaluate: async (_read: unknown, args: readonly unknown[]) => args.length === 3
-        ? { v: { choices: SAVED_FORM_CHOICES } }
+        ? {
+            v: { choices: SAVED_FORM_CHOICES },
+          }
         : [`${accountStorageKey(TEST_USER_ID, PREFIX_CONTROL_STATE)}agent-1`],
     })
     const modelScript = {
@@ -298,10 +358,28 @@ describe('exerciseMcpProbeFormRoundTrip', () => {
         protocol: 'openai-chat-completions',
         path: '/v1/chat/completions',
         stepIndex: index,
-        body: { messages: [{ role: 'tool', tool_call_id: trip.resultCallId, content: trip.body }] },
+        body: {
+          messages: [
+            { role: 'tool', tool_call_id: trip.resultCallId, content: trip.body },
+          ],
+        },
       }),
     } as unknown as ModelScript
-    return { page, modelScript, provider: AgentProvider.GOOSE, providerAgent: { provider: AgentProvider.GOOSE, prefix: 'native-e2e' }, workspaceId: 'workspace', leapmuxServer: { hubUrl: '', adminToken: '', workerId: '', ...(adminUserId === undefined ? {} : { adminUserId }) } }
+    return {
+      page,
+      modelScript,
+      provider: AgentProvider.GOOSE,
+      providerAgent: { provider: AgentProvider.GOOSE, prefix: 'native-e2e' },
+      workspaceId: 'workspace',
+      leapmuxServer: {
+        hubUrl: '',
+        adminToken: '',
+        workerId: '',
+        ...(adminUserId === undefined
+          ? {}
+          : { adminUserId }),
+      },
+    }
   }
 
   it('approves the tool, fills the form, and submits it, and returns the request after the call', async () => {
@@ -310,10 +388,21 @@ describe('exerciseMcpProbeFormRoundTrip', () => {
     }
     const request = await exerciseMcpProbeFormRoundTrip(roundTripContext(), { callId: 'probe-call', reloadBeforeSubmit: false, approveTool })
     expect(request.stepIndex).toBe(4)
-    expect(trip.events.slice(0, 5)).toEqual(['queue', 'send Call the form_probe ask tool exactly once.', 'steps 4', 'approve tool', 'form to.be.visible'])
+    expect(trip.events.slice(0, 5)).toEqual([
+      'queue',
+      'send Call the form_probe ask tool exactly once.',
+      'steps 4',
+      'approve tool',
+      'form to.be.visible',
+    ])
     expect(trip.events).toContain('control-actions > Approve click')
     expect(trip.events).not.toContain('reload')
-    expect(trip.events.slice(-4)).toEqual(['steps 5', 'idle', 'result bubble to.be.visible', 'form to.have.count'])
+    expect(trip.events.slice(-4)).toEqual([
+      'steps 5',
+      'idle',
+      'result bubble to.be.visible',
+      'form to.have.count',
+    ])
   })
 
   it('reloads after the answers land, and requires the restored answers before the submit', async () => {
@@ -345,7 +434,12 @@ describe('exerciseMcpProbeFormRoundTrip', () => {
 
   it('reads the result through the reader of the provider', async () => {
     trip.resultCallId = 'native-probe-call'
-    const context = { ...roundTripContext(), readToolResult: (request: Parameters<typeof nativeToolResult>[0]) => ({ text: nativeToolResult(request, 'native-probe-call') }) }
+    const context = {
+      ...roundTripContext(),
+      readToolResult: (request: Parameters<typeof nativeToolResult>[0]) => ({
+        text: nativeToolResult(request, 'native-probe-call'),
+      }),
+    }
     const request = await exerciseMcpProbeFormRoundTrip(context, { callId: 'probe-call', reloadBeforeSubmit: false })
     expect(request.stepIndex).toBe(4)
   })

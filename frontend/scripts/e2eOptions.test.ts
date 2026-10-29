@@ -25,33 +25,99 @@ describe('parseE2EOptions', () => {
     })
   })
 
-  it.each([{ args: ['--workers=2'] }, { args: ['--workers', '2'] }, { args: ['-j', '2'] }, { args: ['-j2'] }])('consumes the public worker count without forwarding it: %j', ({ args }) => {
+  it.each([
+    {
+      args: ['--workers=2'],
+    },
+    {
+      args: ['--workers', '2'],
+    },
+    {
+      args: ['-j', '2'],
+    },
+    {
+      args: ['-j2'],
+    },
+  ])('consumes the public worker count without forwarding it: %j', ({ args }) => {
     expect(parseE2EOptions([...args, 'provider/spec with spaces.spec.ts'], 10))
-      .toMatchObject({ workers: 2, playwrightArgs: ['provider/spec with spaces.spec.ts'], serial: false })
+      .toMatchObject({
+        workers: 2,
+        playwrightArgs: ['provider/spec with spaces.spec.ts'],
+        serial: false,
+      })
   })
 
   it('selects one serial process with --workers=1', () => {
     expect(parseE2EOptions(['--workers=1'], 10)).toMatchObject({ workers: 1, serial: true })
   })
 
-  it.each([['50%', 5], ['1%', 1], ['100%', 10]])('accepts Playwright\'s percentage syntax %s', (value, expected) => {
+  it.each([
+    ['50%', 5],
+    ['1%', 1],
+    ['100%', 10],
+  ])('accepts Playwright\'s percentage syntax %s', (value, expected) => {
     expect(parseE2EOptions([`--workers=${value}`], 10).workers).toBe(expected)
   })
 
-  it.each(['0', '-1', '1.5', 'NaN', 'Infinity', '01', '0%', '101%', '9007199254740992'])('rejects an invalid count: %j', (value) => {
+  it.each([
+    '0',
+    '-1',
+    '1.5',
+    'NaN',
+    'Infinity',
+    '01',
+    '0%',
+    '101%',
+    '9007199254740992',
+  ])('rejects an invalid count: %j', (value) => {
     expect(() => parseE2EOptions([`--workers=${value}`], 10)).toThrow('worker count')
   })
 
-  it.each([{ args: ['--workers'] }, { args: ['--workers='] }, { args: ['--workers', '--grep'] }, { args: ['--workers=2', '-j', '3'] }])('rejects absent or repeated counts: %j', ({ args }) => {
+  it.each([
+    {
+      args: ['--workers'],
+    },
+    {
+      args: ['--workers='],
+    },
+    {
+      args: ['--workers', '--grep'],
+    },
+    {
+      args: ['--workers=2', '-j', '3'],
+    },
+  ])('rejects absent or repeated counts: %j', ({ args }) => {
     expect(() => parseE2EOptions(args, 10)).toThrow('E2E')
   })
 
-  it.each(['--headed', '--debug', '--ui', '--list', '--shard=1/3', '--config=other.ts', '--max-failures=1', '-x', '--global-timeout=1000'])('keeps interactive and externally selected runs serial: %s', (flag) => {
-    expect(parseE2EOptions(['--workers=4', flag], 10)).toMatchObject({ workers: 1, serial: true, playwrightArgs: [flag] })
+  it.each([
+    '--headed',
+    '--debug',
+    '--ui',
+    '--list',
+    '--shard=1/3',
+    '--config=other.ts',
+    '--max-failures=1',
+    '-x',
+    '--global-timeout=1000',
+  ])('keeps interactive and externally selected runs serial: %s', (flag) => {
+    expect(parseE2EOptions(['--workers=4', flag], 10)).toMatchObject({
+      workers: 1,
+      serial: true,
+      playwrightArgs: [flag],
+    })
   })
 
   it('preserves exact reporter, output, grep, project, and file arguments', () => {
-    const args = ['--reporter', 'json', '--output=folder with spaces', '--grep', 'pattern with spaces', '--project=mock-chromium', 'provider/file.spec.ts']
+    const args = [
+      '--reporter',
+      'json',
+      '--output=folder with spaces',
+      '--grep',
+      'pattern with spaces',
+      '--project=mock-chromium',
+      'provider/file.spec.ts',
+    ]
     expect(parseE2EOptions(args, 10)).toMatchObject({ playwrightArgs: args, reporters: 'json', outputDir: 'folder with spaces' })
   })
 
@@ -62,7 +128,10 @@ describe('parseE2EOptions', () => {
 
   it.each(['--grep', '-g', '--grep-invert', '-G'])('preserves an option-like regular expression after %s', (option) => {
     const args = [option, '--workers=2', '--workers=3']
-    expect(parseE2EOptions(args, 10)).toMatchObject({ workers: 3, playwrightArgs: [option, '--workers=2'] })
+    expect(parseE2EOptions(args, 10)).toMatchObject({
+      workers: 3,
+      playwrightArgs: [option, '--workers=2'],
+    })
   })
 
   it.each(['1', 'inspector'])('keeps an environment debugger serial: %s', (mode) => {
@@ -85,7 +154,11 @@ describe('parseE2EOptions', () => {
   })
 
   it('keeps a compact failure limit and worker count serial', () => {
-    expect(parseE2EOptions(['-xj2'], 10)).toMatchObject({ workers: 1, serial: true, playwrightArgs: ['-x'] })
+    expect(parseE2EOptions(['-xj2'], 10)).toMatchObject({
+      workers: 1,
+      serial: true,
+      playwrightArgs: ['-x'],
+    })
   })
 
   it('preserves an empty Playwright regular expression', () => {
@@ -100,7 +173,20 @@ describe('parseE2EOptions', () => {
     expect(parseE2EOptions([flag], 10)).toMatchObject({ workers: 1, serial: true })
   })
 
-  it.each([{ args: ['--update-snapshots', 'all'] }, { args: ['-u', 'all'] }, { args: ['--debug', 'cli'] }, { args: ['--only-changed', 'main'] }])('keeps an optional Playwright value with its option: %j', ({ args }) => {
+  it.each([
+    {
+      args: ['--update-snapshots', 'all'],
+    },
+    {
+      args: ['-u', 'all'],
+    },
+    {
+      args: ['--debug', 'cli'],
+    },
+    {
+      args: ['--only-changed', 'main'],
+    },
+  ])('keeps an optional Playwright value with its option: %j', ({ args }) => {
     expect(parseE2EOptions(args, 10).playwrightArgs).toEqual(args)
   })
 
@@ -120,7 +206,13 @@ describe('parseE2EOptions', () => {
     expect(() => parseE2EOptions([flag], 10)).toThrow('Use --workers')
   })
 
-  it.each([0, -1, 0.5, Number.NaN, Number.POSITIVE_INFINITY])('rejects an invalid CPU capacity: %j', (capacity) => {
+  it.each([
+    0,
+    -1,
+    0.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+  ])('rejects an invalid CPU capacity: %j', (capacity) => {
     expect(() => parseE2EOptions([], capacity)).toThrow('CPU capacity')
   })
 })
@@ -128,12 +220,30 @@ describe('parseE2EOptions', () => {
 describe('parseE2EOptions last-failed selection', () => {
   it('keeps --last-failed parallel and forwards it for a serial run', () => {
     expect(parseE2EOptions(['--workers=3', '--last-failed', 'provider/file.spec.ts'], 10))
-      .toMatchObject({ workers: 3, serial: false, lastFailed: true, playwrightArgs: ['--last-failed', 'provider/file.spec.ts'] })
+      .toMatchObject({
+        workers: 3,
+        serial: false,
+        lastFailed: true,
+        playwrightArgs: ['--last-failed', 'provider/file.spec.ts'],
+      })
   })
 
-  it.each([{ args: ['--last-failed-file=state dir/last.json'] }, { args: ['--last-failed-file', 'state dir/last.json'] }])('keeps an explicit last-failed file parallel: %j', ({ args }) => {
+  it.each([
+    {
+      args: ['--last-failed-file=state dir/last.json'],
+    },
+    {
+      args: ['--last-failed-file', 'state dir/last.json'],
+    },
+  ])('keeps an explicit last-failed file parallel: %j', ({ args }) => {
     expect(parseE2EOptions(['--workers=3', '--last-failed', ...args], 10))
-      .toMatchObject({ workers: 3, serial: false, lastFailed: true, lastFailedFile: 'state dir/last.json', playwrightArgs: ['--last-failed', ...args] })
+      .toMatchObject({
+        workers: 3,
+        serial: false,
+        lastFailed: true,
+        lastFailedFile: 'state dir/last.json',
+        playwrightArgs: ['--last-failed', ...args],
+      })
   })
 
   it('keeps an explicit environment destination for the last run parallel', () => {
@@ -145,7 +255,14 @@ describe('parseE2EOptions last-failed selection', () => {
     expect(parseE2EOptions(['--last-failed-file=state.json'], 10)).toMatchObject({ lastFailed: false, lastFailedFile: 'state.json' })
   })
 
-  it.each([{ args: ['--last-failed-file='] }, { args: ['--last-failed-file', ''] }])('rejects an empty last-failed file: %j', ({ args }) => {
+  it.each([
+    {
+      args: ['--last-failed-file='],
+    },
+    {
+      args: ['--last-failed-file', ''],
+    },
+  ])('rejects an empty last-failed file: %j', ({ args }) => {
     expect(() => parseE2EOptions(args, 10)).toThrow('--last-failed-file option requires a nonempty path')
   })
 
@@ -158,8 +275,14 @@ describe('parseE2EOptions last-failed selection', () => {
   })
 
   it('reads --pass-with-no-tests only as a flag, never as a regular expression value', () => {
-    expect(parseE2EOptions(['--pass-with-no-tests'], 10)).toMatchObject({ passWithNoTests: true, playwrightArgs: ['--pass-with-no-tests'] })
-    expect(parseE2EOptions(['--grep', '--pass-with-no-tests'], 10)).toMatchObject({ passWithNoTests: false, playwrightArgs: ['--grep', '--pass-with-no-tests'] })
+    expect(parseE2EOptions(['--pass-with-no-tests'], 10)).toMatchObject({
+      passWithNoTests: true,
+      playwrightArgs: ['--pass-with-no-tests'],
+    })
+    expect(parseE2EOptions(['--grep', '--pass-with-no-tests'], 10)).toMatchObject({
+      passWithNoTests: false,
+      playwrightArgs: ['--grep', '--pass-with-no-tests'],
+    })
     expect(parseE2EOptions(['--', '--pass-with-no-tests'], 10).passWithNoTests).toBe(false)
   })
 
@@ -167,7 +290,14 @@ describe('parseE2EOptions last-failed selection', () => {
     expect(parseE2EOptions(['-g', '--last-failed'], 10).lastFailed).toBe(false)
   })
 
-  it.each([{ args: ['--test-list=list.txt'] }, { args: ['--test-list', 'list.txt'] }])('reports a caller test list: %j', ({ args }) => {
+  it.each([
+    {
+      args: ['--test-list=list.txt'],
+    },
+    {
+      args: ['--test-list', 'list.txt'],
+    },
+  ])('reports a caller test list: %j', ({ args }) => {
     expect(parseE2EOptions(args, 10)).toMatchObject({ testList: true, playwrightArgs: args })
   })
 
@@ -177,11 +307,32 @@ describe('parseE2EOptions last-failed selection', () => {
 })
 
 describe('parseE2EOptions balance', () => {
-  it.each([{ args: ['--balance=off'], mode: 'off' }, { args: ['--balance', 'off'], mode: 'off' }, { args: ['--balance=history'], mode: 'history' }])('consumes the balance mode without forwarding it: %j', ({ args, mode }) => {
-    expect(parseE2EOptions([...args, 'provider/file.spec.ts'], 10)).toMatchObject({ balance: mode, playwrightArgs: ['provider/file.spec.ts'] })
+  it.each([
+    {
+      args: ['--balance=off'],
+      mode: 'off',
+    },
+    {
+      args: ['--balance', 'off'],
+      mode: 'off',
+    },
+    {
+      args: ['--balance=history'],
+      mode: 'history',
+    },
+  ])('consumes the balance mode without forwarding it: %j', ({ args, mode }) => {
+    expect(parseE2EOptions([...args, 'provider/file.spec.ts'], 10)).toMatchObject({
+      balance: mode,
+      playwrightArgs: ['provider/file.spec.ts'],
+    })
   })
 
-  it.each(['--balance=', '--balance=on', '--balance=OFF', '--balance=duration'])('rejects an unknown balance mode: %s', (flag) => {
+  it.each([
+    '--balance=',
+    '--balance=on',
+    '--balance=OFF',
+    '--balance=duration',
+  ])('rejects an unknown balance mode: %s', (flag) => {
     expect(() => parseE2EOptions([flag], 10)).toThrow('--balance option must be "history" or "off"')
   })
 
@@ -201,14 +352,35 @@ describe('parseE2EOptions balance', () => {
 describe('parseE2EOptions failed files', () => {
   it('consumes --failed-files without forwarding it', () => {
     expect(parseE2EOptions(['--failed-files', '--timeout', '5000'], 10))
-      .toMatchObject({ failedFiles: true, playwrightArgs: ['--timeout', '5000'], serial: false })
+      .toMatchObject({
+        failedFiles: true,
+        playwrightArgs: ['--timeout', '5000'],
+        serial: false,
+      })
   })
 
-  it.each([{ args: ['--failed-files-from=reports/run.json'] }, { args: ['--failed-files-from', 'reports/run.json'] }, { args: ['--failed-files', '--failed-files-from=reports/run.json'] }])('selects failed files from an explicit report: %j', ({ args }) => {
+  it.each([
+    {
+      args: ['--failed-files-from=reports/run.json'],
+    },
+    {
+      args: ['--failed-files-from', 'reports/run.json'],
+    },
+    {
+      args: ['--failed-files', '--failed-files-from=reports/run.json'],
+    },
+  ])('selects failed files from an explicit report: %j', ({ args }) => {
     expect(parseE2EOptions(args, 10)).toMatchObject({ failedFiles: true, failedFilesFrom: 'reports/run.json', playwrightArgs: [] })
   })
 
-  it.each([{ args: ['--failed-files-from='] }, { args: ['--failed-files-from', ''] }])('rejects an empty report path: %j', ({ args }) => {
+  it.each([
+    {
+      args: ['--failed-files-from='],
+    },
+    {
+      args: ['--failed-files-from', ''],
+    },
+  ])('rejects an empty report path: %j', ({ args }) => {
     expect(() => parseE2EOptions(args, 10)).toThrow('--failed-files-from option requires a nonempty report path')
   })
 
@@ -217,46 +389,135 @@ describe('parseE2EOptions failed files', () => {
   })
 
   it.each([
-    { args: ['--failed-files', 'provider/file.spec.ts'], message: 'Remove the file arguments: provider/file.spec.ts' },
-    { args: ['provider/file.spec.ts', '--failed-files-from=run.json'], message: 'Remove the file arguments: provider/file.spec.ts' },
-    { args: ['--failed-files', '--', '--literal-filter'], message: 'Remove the file arguments: --literal-filter' },
-    { args: ['--failed-files', '--last-failed'], message: 'Use one of the two options' },
-    { args: ['--failed-files', '--test-list=list.txt'], message: 'Remove --test-list' },
-    { args: ['--failed-files', '--only-changed'], message: 'Remove --only-changed' },
-    { args: ['--failed-files', '--only-changed', 'main'], message: 'Remove --only-changed' },
+    {
+      args: ['--failed-files', 'provider/file.spec.ts'],
+      message: 'Remove the file arguments: provider/file.spec.ts',
+    },
+    {
+      args: ['provider/file.spec.ts', '--failed-files-from=run.json'],
+      message: 'Remove the file arguments: provider/file.spec.ts',
+    },
+    {
+      args: ['--failed-files', '--', '--literal-filter'],
+      message: 'Remove the file arguments: --literal-filter',
+    },
+    {
+      args: ['--failed-files', '--last-failed'],
+      message: 'Use one of the two options',
+    },
+    {
+      args: ['--failed-files', '--test-list=list.txt'],
+      message: 'Remove --test-list',
+    },
+    {
+      args: ['--failed-files', '--only-changed'],
+      message: 'Remove --only-changed',
+    },
+    {
+      args: ['--failed-files', '--only-changed', 'main'],
+      message: 'Remove --only-changed',
+    },
   ])('refuses a selection that would not run the complete failed files: $args', ({ args, message }) => {
     expect(() => parseE2EOptions(args, 10)).toThrow(message)
   })
 
   it.each([
-    { args: ['--failed-files', '--reporter', 'provider/file.spec.ts'] },
-    { args: ['--failed-files', '--project', 'mock-chromium'] },
-    { args: ['--failed-files', '--output', 'provider/results'] },
-    { args: ['--failed-files', '--update-snapshots', 'all'] },
-    { args: ['--failed-files', '--last-failed-file', 'state.json'] },
+    {
+      args: ['--failed-files', '--reporter', 'provider/file.spec.ts'],
+    },
+    {
+      args: ['--failed-files', '--project', 'mock-chromium'],
+    },
+    {
+      args: ['--failed-files', '--output', 'provider/results'],
+    },
+    {
+      args: ['--failed-files', '--update-snapshots', 'all'],
+    },
+    {
+      args: ['--failed-files', '--last-failed-file', 'state.json'],
+    },
   ])('accepts an option value that resembles a file argument: $args', ({ args }) => {
-    expect(parseE2EOptions(args, 10)).toMatchObject({ failedFiles: true, playwrightArgs: args.slice(1) })
+    expect(parseE2EOptions(args, 10)).toMatchObject({
+      failedFiles: true,
+      playwrightArgs: args.slice(1),
+    })
   })
 
   it.each([
-    { args: ['--failed-files', '--browser', 'chromium'] },
-    { args: ['--failed-files', '--project', 'one', 'two'] },
-    { args: ['--failed-files', '--project=one', 'two', 'three'] },
-    { args: ['--failed-files', '--project', 'one', 'two', '--browser', 'chromium'] },
+    {
+      args: ['--failed-files', '--browser', 'chromium'],
+    },
+    {
+      args: [
+        '--failed-files',
+        '--project',
+        'one',
+        'two',
+      ],
+    },
+    {
+      args: [
+        '--failed-files',
+        '--project=one',
+        'two',
+        'three',
+      ],
+    },
+    {
+      args: [
+        '--failed-files',
+        '--project',
+        'one',
+        'two',
+        '--browser',
+        'chromium',
+      ],
+    },
   ])('reads every value of a Playwright option as a value, not as a file argument: $args', ({ args }) => {
-    expect(parseE2EOptions(args, 10)).toMatchObject({ failedFiles: true, playwrightArgs: args.slice(1) })
+    expect(parseE2EOptions(args, 10)).toMatchObject({
+      failedFiles: true,
+      playwrightArgs: args.slice(1),
+    })
   })
 
   it.each([
-    { args: ['--failed-files', '--grep', 'title'], option: '--grep' },
-    { args: ['--failed-files', '--grep=title'], option: '--grep' },
-    { args: ['--failed-files', '-g', 'title'], option: '-g' },
-    { args: ['--failed-files', '-gtitle'], option: '-g' },
-    { args: ['--failed-files', '--grep-invert', 'title'], option: '--grep-invert' },
-    { args: ['--failed-files', '-G', 'title'], option: '-G' },
-    { args: ['--failed-files', '--test-list-invert', 'skip.txt'], option: '--test-list-invert' },
-    { args: ['--failed-files', '--shard', '1/2'], option: '--shard' },
-    { args: ['--failed-files-from=run.json', '--grep', 'title'], option: '--grep' },
+    {
+      args: ['--failed-files', '--grep', 'title'],
+      option: '--grep',
+    },
+    {
+      args: ['--failed-files', '--grep=title'],
+      option: '--grep',
+    },
+    {
+      args: ['--failed-files', '-g', 'title'],
+      option: '-g',
+    },
+    {
+      args: ['--failed-files', '-gtitle'],
+      option: '-g',
+    },
+    {
+      args: ['--failed-files', '--grep-invert', 'title'],
+      option: '--grep-invert',
+    },
+    {
+      args: ['--failed-files', '-G', 'title'],
+      option: '-G',
+    },
+    {
+      args: ['--failed-files', '--test-list-invert', 'skip.txt'],
+      option: '--test-list-invert',
+    },
+    {
+      args: ['--failed-files', '--shard', '1/2'],
+      option: '--shard',
+    },
+    {
+      args: ['--failed-files-from=run.json', '--grep', 'title'],
+      option: '--grep',
+    },
   ])('refuses an option that selects fewer tests of the failed files: $args', ({ args, option }) => {
     expect(() => parseE2EOptions(args, 10)).toThrow(`reruns every test of the failed files. Remove ${option}`)
   })
@@ -265,7 +526,17 @@ describe('parseE2EOptions failed files', () => {
     expect(parseE2EOptions(['--failed-files', '--reporter', '--grep'], 10)).toMatchObject({ failedFiles: true, reporters: '--grep' })
   })
 
-  it.each([{ args: ['--grep', 'title'] }, { args: ['--shard=1/2'] }, { args: ['--test-list-invert', 'skip.txt'] }])('keeps a narrowing option valid without --failed-files: %j', ({ args }) => {
+  it.each([
+    {
+      args: ['--grep', 'title'],
+    },
+    {
+      args: ['--shard=1/2'],
+    },
+    {
+      args: ['--test-list-invert', 'skip.txt'],
+    },
+  ])('keeps a narrowing option valid without --failed-files: %j', ({ args }) => {
     expect(parseE2EOptions(args, 10).failedFiles).toBe(false)
   })
 })
@@ -279,27 +550,46 @@ describe('parseE2EOptions Playwright option classification', () => {
   /** Read the options of the installed `playwright test` command, which commander classifies by its own rules. */
   function playwrightTestOptions(): PlaywrightOption[] {
     const loaded: unknown = createRequire(import.meta.url)('playwright/lib/program')
-    const program = isObject(loaded) ? loaded.program : undefined
-    const commands = isObject(program) && Array.isArray(program.commands) ? program.commands : []
+    const program = isObject(loaded)
+      ? loaded.program
+      : undefined
+    const commands = isObject(program) && Array.isArray(program.commands)
+      ? program.commands
+      : []
     const test = commands.find(command => isObject(command) && typeof command.name === 'function' && command.name() === 'test')
     if (!isObject(test) || !Array.isArray(test.options))
       throw new Error('The installed Playwright has no test command with an option list.')
     return test.options.map((option: unknown): PlaywrightOption => {
       if (!isObject(option))
         throw new Error('The installed Playwright holds an option that is not an object.')
-      const name = typeof option.long === 'string' ? option.long : option.short
+      const name = typeof option.long === 'string'
+        ? option.long
+        : option.short
       if (typeof name !== 'string')
-        throw new Error('The installed Playwright holds an option without a name.')
+        throw new TypeError('The installed Playwright holds an option without a name.')
       if (option.variadic === true)
         return { name, kind: 'variadic' }
       if (option.optional === true)
         return { name, kind: 'optional' }
-      return { name, kind: option.required === true ? 'value' : 'flag' }
+      return {
+        name,
+        kind: option.required === true
+          ? 'value'
+          : 'flag',
+      }
     })
   }
 
   /** The launcher refuses these together with --failed-files on purpose. Their own tests state the reason. */
-  const REFUSED_WITH_FAILED_FILES = new Set(['--last-failed', '--test-list', '--test-list-invert', '--only-changed', '--grep', '--grep-invert', '--shard'])
+  const REFUSED_WITH_FAILED_FILES = new Set([
+    '--last-failed',
+    '--test-list',
+    '--test-list-invert',
+    '--only-changed',
+    '--grep',
+    '--grep-invert',
+    '--shard',
+  ])
   /** The launcher refuses these in every run. */
   const REFUSED_ALWAYS = new Set(['--fully-parallel'])
   /** The launcher validates the value of these options. */
@@ -309,8 +599,17 @@ describe('parseE2EOptions Playwright option classification', () => {
 
   it('reads the option list of the installed Playwright', () => {
     const names = playwrightTestOptions().map(option => option.name)
-    expect(names).toEqual(expect.arrayContaining(['--grep', '--project', '--only-changed', '--browser', '--headed']))
-    for (const name of [...REFUSED_WITH_FAILED_FILES, ...REFUSED_ALWAYS])
+    expect(names).toEqual(expect.arrayContaining([
+      '--grep',
+      '--project',
+      '--only-changed',
+      '--browser',
+      '--headed',
+    ]))
+    for (const name of [
+      ...REFUSED_WITH_FAILED_FILES,
+      ...REFUSED_ALWAYS,
+    ])
       expect(names, `${name} must stay a Playwright option`).toContain(name)
   })
 
@@ -338,13 +637,31 @@ describe('parseE2EOptions Playwright option classification', () => {
 
 describe('shardSelectionArgs', () => {
   it.each(['--grep', '-g', '--grep-invert', '-G'])('preserves an output-like expression after %s', (option) => {
-    expect(shardSelectionArgs([option, '--output=literal', '--reporter', 'json']))
+    expect(shardSelectionArgs([
+      option,
+      '--output=literal',
+      '--reporter',
+      'json',
+    ]))
       .toEqual([option, '--output=literal'])
   })
 
   it('removes reporter and output destinations without changing selection filters', () => {
-    const args = ['--grep', 'pattern with spaces', '--reporter=json', '--output', 'a directory', 'provider/spec.ts', '--project=mock-chromium']
-    expect(shardSelectionArgs(args)).toEqual(['--grep', 'pattern with spaces', 'provider/spec.ts', '--project=mock-chromium'])
+    const args = [
+      '--grep',
+      'pattern with spaces',
+      '--reporter=json',
+      '--output',
+      'a directory',
+      'provider/spec.ts',
+      '--project=mock-chromium',
+    ]
+    expect(shardSelectionArgs(args)).toEqual([
+      '--grep',
+      'pattern with spaces',
+      'provider/spec.ts',
+      '--project=mock-chromium',
+    ])
   })
 
   it('preserves a literal output-like filter after the separator', () => {
@@ -352,36 +669,113 @@ describe('shardSelectionArgs', () => {
   })
 
   it('removes the last-run selection and keeps the file filter after the flag', () => {
-    expect(shardSelectionArgs(['--last-failed', 'provider/spec.ts', '--last-failed-file', 'state dir/last.json', '--last-failed-file=other.json', '-g', 'title']))
+    expect(shardSelectionArgs([
+      '--last-failed',
+      'provider/spec.ts',
+      '--last-failed-file',
+      'state dir/last.json',
+      '--last-failed-file=other.json',
+      '-g',
+      'title',
+    ]))
       .toEqual(['provider/spec.ts', '-g', 'title'])
   })
 
   it('preserves a last-failed-like regular expression value', () => {
-    expect(shardSelectionArgs(['--grep', '--last-failed', '-G', '--last-failed-file=x'])).toEqual(['--grep', '--last-failed', '-G', '--last-failed-file=x'])
+    expect(shardSelectionArgs([
+      '--grep',
+      '--last-failed',
+      '-G',
+      '--last-failed-file=x',
+    ])).toEqual([
+      '--grep',
+      '--last-failed',
+      '-G',
+      '--last-failed-file=x',
+    ])
   })
 
   it.each([
-    { args: ['--only-changed', '--last-failed', 'a.spec.ts'], expected: ['a.spec.ts', '--only-changed'] },
-    { args: ['--only-changed', '--reporter=json', 'a.spec.ts'], expected: ['a.spec.ts', '--only-changed'] },
-    { args: ['--only-changed', '--output', 'dir', 'a.spec.ts'], expected: ['a.spec.ts', '--only-changed'] },
-    { args: ['--only-changed', '--last-failed-file=x', '--grep', 'title'], expected: ['--grep', 'title', '--only-changed'] },
-    { args: ['--only-changed', '--last-failed', '--', '--literal'], expected: ['--only-changed', '--', '--literal'] },
-    { args: ['--only-changed'], expected: ['--only-changed'] },
+    {
+      args: ['--only-changed', '--last-failed', 'a.spec.ts'],
+      expected: ['a.spec.ts', '--only-changed'],
+    },
+    {
+      args: ['--only-changed', '--reporter=json', 'a.spec.ts'],
+      expected: ['a.spec.ts', '--only-changed'],
+    },
+    {
+      args: [
+        '--only-changed',
+        '--output',
+        'dir',
+        'a.spec.ts',
+      ],
+      expected: ['a.spec.ts', '--only-changed'],
+    },
+    {
+      args: [
+        '--only-changed',
+        '--last-failed-file=x',
+        '--grep',
+        'title',
+      ],
+      expected: ['--grep', 'title', '--only-changed'],
+    },
+    {
+      args: [
+        '--only-changed',
+        '--last-failed',
+        '--',
+        '--literal',
+      ],
+      expected: ['--only-changed', '--', '--literal'],
+    },
+    {
+      args: ['--only-changed'],
+      expected: ['--only-changed'],
+    },
   ])('keeps a file filter out of the value of a bare --only-changed: $args', ({ args, expected }) => {
     expect(shardSelectionArgs(args)).toEqual(expected)
   })
 
   it.each([
-    { args: ['--only-changed', 'main', '--last-failed', 'a.spec.ts'], expected: ['--only-changed', 'main', 'a.spec.ts'] },
-    { args: ['--only-changed=main', '--last-failed', 'a.spec.ts'], expected: ['--only-changed=main', 'a.spec.ts'] },
+    {
+      args: [
+        '--only-changed',
+        'main',
+        '--last-failed',
+        'a.spec.ts',
+      ],
+      expected: ['--only-changed', 'main', 'a.spec.ts'],
+    },
+    {
+      args: ['--only-changed=main', '--last-failed', 'a.spec.ts'],
+      expected: ['--only-changed=main', 'a.spec.ts'],
+    },
   ])('keeps the value that the caller gave --only-changed: $args', ({ args, expected }) => {
     expect(shardSelectionArgs(args)).toEqual(expected)
   })
 
   it.each([
-    { args: ['--project', 'one', 'two', '--last-failed', 'a.spec.ts'], expected: ['a.spec.ts', '--project', 'one', 'two'] },
-    { args: ['--project=one', '--reporter=json', 'a.spec.ts'], expected: ['a.spec.ts', '--project=one'] },
-    { args: ['--project', 'one', 'two'], expected: ['--project', 'one', 'two'] },
+    {
+      args: [
+        '--project',
+        'one',
+        'two',
+        '--last-failed',
+        'a.spec.ts',
+      ],
+      expected: ['a.spec.ts', '--project', 'one', 'two'],
+    },
+    {
+      args: ['--project=one', '--reporter=json', 'a.spec.ts'],
+      expected: ['a.spec.ts', '--project=one'],
+    },
+    {
+      args: ['--project', 'one', 'two'],
+      expected: ['--project', 'one', 'two'],
+    },
   ])('keeps a file filter out of the project list: $args', ({ args, expected }) => {
     expect(shardSelectionArgs(args)).toEqual(expected)
   })
@@ -389,9 +783,21 @@ describe('shardSelectionArgs', () => {
 
 describe('serialRunArgs', () => {
   it.each(['--output=public output', '--output'])('moves an actual output option into this run: %s', (option) => {
-    const args = option.includes('=') ? [option] : [option, 'public output']
-    expect(serialRunArgs([...args, '--reporter', 'json', 'provider/file.spec.ts'], '/private run/test-results'))
-      .toEqual(['--output=/private run/test-results', '--reporter', 'json', 'provider/file.spec.ts'])
+    const args = option.includes('=')
+      ? [option]
+      : [option, 'public output']
+    expect(serialRunArgs([
+      ...args,
+      '--reporter',
+      'json',
+      'provider/file.spec.ts',
+    ], '/private run/test-results'))
+      .toEqual([
+        '--output=/private run/test-results',
+        '--reporter',
+        'json',
+        'provider/file.spec.ts',
+      ])
   })
 
   it.each(['--grep', '-g', '--grep-invert', '-G'])('preserves an output-like expression after %s', (option) => {
@@ -400,8 +806,21 @@ describe('serialRunArgs', () => {
   })
 
   it('keeps custom configuration and explicit last-failed destinations', () => {
-    expect(serialRunArgs(['-c', 'custom config.ts', '--last-failed-file', 'last run.json', '--last-failed'], '/private/test-results'))
-      .toEqual(['--output=/private/test-results', '-c', 'custom config.ts', '--last-failed-file', 'last run.json', '--last-failed'])
+    expect(serialRunArgs([
+      '-c',
+      'custom config.ts',
+      '--last-failed-file',
+      'last run.json',
+      '--last-failed',
+    ], '/private/test-results'))
+      .toEqual([
+        '--output=/private/test-results',
+        '-c',
+        'custom config.ts',
+        '--last-failed-file',
+        'last run.json',
+        '--last-failed',
+      ])
   })
 
   it('preserves a literal output-like filter after the separator', () => {
@@ -411,14 +830,48 @@ describe('serialRunArgs', () => {
 
   it('puts the launcher test list before the caller filters and their separator', () => {
     expect(serialRunArgs(['--grep', 'title', '--', '--literal'], '/private/test-results', '/private/failed files.txt'))
-      .toEqual(['--output=/private/test-results', '--test-list=/private/failed files.txt', '--grep', 'title', '--', '--literal'])
+      .toEqual([
+        '--output=/private/test-results',
+        '--test-list=/private/failed files.txt',
+        '--grep',
+        'title',
+        '--',
+        '--literal',
+      ])
   })
 
   it.each([
-    { args: ['--debug', '--output=public', 'a.spec.ts'], expected: ['--output=/private/test-results', 'a.spec.ts', '--debug'] },
-    { args: ['-u', '--output', 'public', 'a.spec.ts'], expected: ['--output=/private/test-results', 'a.spec.ts', '-u'] },
-    { args: ['--update-snapshots', '--output=public', 'a.spec.ts'], expected: ['--output=/private/test-results', 'a.spec.ts', '--update-snapshots'] },
-    { args: ['--debug', 'cli', '--output=public', 'a.spec.ts'], expected: ['--output=/private/test-results', '--debug', 'cli', 'a.spec.ts'] },
+    {
+      args: ['--debug', '--output=public', 'a.spec.ts'],
+      expected: ['--output=/private/test-results', 'a.spec.ts', '--debug'],
+    },
+    {
+      args: [
+        '-u',
+        '--output',
+        'public',
+        'a.spec.ts',
+      ],
+      expected: ['--output=/private/test-results', 'a.spec.ts', '-u'],
+    },
+    {
+      args: ['--update-snapshots', '--output=public', 'a.spec.ts'],
+      expected: ['--output=/private/test-results', 'a.spec.ts', '--update-snapshots'],
+    },
+    {
+      args: [
+        '--debug',
+        'cli',
+        '--output=public',
+        'a.spec.ts',
+      ],
+      expected: [
+        '--output=/private/test-results',
+        '--debug',
+        'cli',
+        'a.spec.ts',
+      ],
+    },
   ])('keeps a file filter out of the value of a bare optional option when it removes the output option: $args', ({ args, expected }) => {
     expect(serialRunArgs(args, '/private/test-results')).toEqual(expected)
   })
@@ -426,30 +879,86 @@ describe('serialRunArgs', () => {
 
 describe('discoveryRunArgs', () => {
   it('lists the caller selection with one worker and zero retries', () => {
-    expect(discoveryRunArgs({ filters: ['--grep', 'title', 'provider/'] }))
-      .toEqual(['--list', '--reporter=json', '--pass-with-no-tests', '--workers=1', '--retries=0', '--grep', 'title', 'provider/'])
+    expect(discoveryRunArgs({
+      filters: ['--grep', 'title', 'provider/'],
+    }))
+      .toEqual([
+        '--list',
+        '--reporter=json',
+        '--pass-with-no-tests',
+        '--workers=1',
+        '--retries=0',
+        '--grep',
+        'title',
+        'provider/',
+      ])
   })
 
   it('reads the last-failed snapshot and the test list before the caller filters', () => {
-    expect(discoveryRunArgs({ filters: ['--', '--literal'], lastFailedFile: '/run/last-failed.json', testList: '/run/failed files.txt' }))
-      .toEqual(['--list', '--reporter=json', '--pass-with-no-tests', '--workers=1', '--retries=0', '--test-list=/run/failed files.txt', '--last-failed', '--last-failed-file=/run/last-failed.json', '--', '--literal'])
+    expect(discoveryRunArgs({
+      filters: ['--', '--literal'],
+      lastFailedFile: '/run/last-failed.json',
+      testList: '/run/failed files.txt',
+    }))
+      .toEqual([
+        '--list',
+        '--reporter=json',
+        '--pass-with-no-tests',
+        '--workers=1',
+        '--retries=0',
+        '--test-list=/run/failed files.txt',
+        '--last-failed',
+        '--last-failed-file=/run/last-failed.json',
+        '--',
+        '--literal',
+      ])
   })
 })
 
 describe('shardRunArgs', () => {
   it('selects a static shard with Playwright\'s own split', () => {
-    expect(shardRunArgs({ filters: ['provider/'] }, { index: 2, total: 3 }))
-      .toEqual(['--shard=2/3', '--workers=1', '--retries=0', '--reporter=list,blob,json', '--pass-with-no-tests', 'provider/'])
+    expect(shardRunArgs({
+      filters: ['provider/'],
+    }, { index: 2, total: 3 }))
+      .toEqual([
+        '--shard=2/3',
+        '--workers=1',
+        '--retries=0',
+        '--reporter=list,blob,json',
+        '--pass-with-no-tests',
+        'provider/',
+      ])
   })
 
   it('selects a balanced shard with its exact test list and without Playwright\'s own split', () => {
-    const args = shardRunArgs({ filters: ['-g', 'title'], testList: '/run/shard-1/test-list.txt', lastFailedFile: '/run/shard-1/last-run.json' })
-    expect(args).toEqual(['--workers=1', '--retries=0', '--reporter=list,blob,json', '--pass-with-no-tests', '--test-list=/run/shard-1/test-list.txt', '--last-failed', '--last-failed-file=/run/shard-1/last-run.json', '-g', 'title'])
+    const args = shardRunArgs({
+      filters: ['-g', 'title'],
+      testList: '/run/shard-1/test-list.txt',
+      lastFailedFile: '/run/shard-1/last-run.json',
+    })
+    expect(args).toEqual([
+      '--workers=1',
+      '--retries=0',
+      '--reporter=list,blob,json',
+      '--pass-with-no-tests',
+      '--test-list=/run/shard-1/test-list.txt',
+      '--last-failed',
+      '--last-failed-file=/run/shard-1/last-run.json',
+      '-g',
+      'title',
+    ])
     expect(args.some(argument => argument.startsWith('--shard'))).toBe(false)
   })
 
   it('combines a static shard with the failed-file test list', () => {
     expect(shardRunArgs({ filters: [], testList: '/run/failed-files.txt' }, { index: 1, total: 2 }))
-      .toEqual(['--shard=1/2', '--workers=1', '--retries=0', '--reporter=list,blob,json', '--pass-with-no-tests', '--test-list=/run/failed-files.txt'])
+      .toEqual([
+        '--shard=1/2',
+        '--workers=1',
+        '--retries=0',
+        '--reporter=list,blob,json',
+        '--pass-with-no-tests',
+        '--test-list=/run/failed-files.txt',
+      ])
   })
 })

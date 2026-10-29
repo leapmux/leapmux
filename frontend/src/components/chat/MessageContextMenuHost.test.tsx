@@ -11,11 +11,19 @@ import { MessageContextMenuHostProvider, useMessageContextMenu } from './Message
 afterEach(() => cleanup())
 
 function action(id: MessageAction['id'], run = () => {}): MessageAction {
-  return { id, label: id, icon: () => null, run }
+  return {
+    id,
+    label: id,
+    icon: () => null,
+    run,
+  }
 }
 
 function dangerAction(id: MessageAction['id'], run = () => {}): MessageAction {
-  return { ...action(id, run), danger: true }
+  return {
+    ...action(id, run),
+    danger: true,
+  }
 }
 
 /** Render the provider and hand back the host a descendant row would get. */
@@ -66,7 +74,10 @@ describe('MessageContextMenuHost', () => {
 
     captured.host!.open({
       press: { clientX: 150, clientY: 60 },
-      actions: [action('copy-json'), action('quote')],
+      actions: [
+        action('copy-json'),
+        action('quote'),
+      ],
     })
 
     expect(screen.getByTestId('message-menu-copy-json')).toBeInTheDocument()
@@ -80,14 +91,26 @@ describe('MessageContextMenuHost', () => {
     captured.host!.open({
       press: { clientX: 150, clientY: 60 },
       // The toolbar's own order: broadest copy first, view toggles last.
-      actions: [action('copy-json'), action('copy-markdown'), action('quote'), action('expand')],
+      actions: [
+        action('copy-json'),
+        action('copy-markdown'),
+        action('quote'),
+        action('expand'),
+      ],
     })
 
-    const ids = [...screen.getByTestId('message-context-menu').querySelectorAll('[data-testid^="message-menu-"]')]
+    const ids = [
+      ...screen.getByTestId('message-context-menu').querySelectorAll('[data-testid^="message-menu-"]'),
+    ]
       .map(el => el.getAttribute('data-testid')!.replace('message-menu-', ''))
 
     // Read top-down from the cursor, the narrowest and most-used actions come first.
-    expect(ids).toEqual(['expand', 'quote', 'copy-markdown', 'copy-json'])
+    expect(ids).toEqual([
+      'expand',
+      'quote',
+      'copy-markdown',
+      'copy-json',
+    ])
   })
 
   /**
@@ -99,13 +122,25 @@ describe('MessageContextMenuHost', () => {
 
     captured.host!.open({
       press: { clientX: 150, clientY: 60 },
-      actions: [action('copy-json'), action('quote'), action('diff-view'), dangerAction('expand')],
+      actions: [
+        action('copy-json'),
+        action('quote'),
+        action('diff-view'),
+        dangerAction('expand'),
+      ],
     })
 
-    const ids = [...screen.getByTestId('message-context-menu').querySelectorAll('[data-testid^="message-menu-"]')]
+    const ids = [
+      ...screen.getByTestId('message-context-menu').querySelectorAll('[data-testid^="message-menu-"]'),
+    ]
       .map(el => el.getAttribute('data-testid')!.replace('message-menu-', ''))
 
-    expect(ids).toEqual(['diff-view', 'quote', 'copy-json', 'expand'])
+    expect(ids).toEqual([
+      'diff-view',
+      'quote',
+      'copy-json',
+      'expand',
+    ])
     // And behind a rule, like every other danger item in the app.
     expect(screen.getByTestId('message-context-menu').querySelector('hr')).toBeInTheDocument()
   })
@@ -116,7 +151,10 @@ describe('MessageContextMenuHost', () => {
 
     captured.host!.open({
       press: { clientX: 150, clientY: 60 },
-      actions: [action('quote'), dangerAction('expand', run)],
+      actions: [
+        action('quote'),
+        dangerAction('expand', run),
+      ],
     })
     fireEvent.click(screen.getByTestId('message-menu-expand'))
 
@@ -128,7 +166,9 @@ describe('MessageContextMenuHost', () => {
 
     captured.host!.open({
       press: { clientX: 150, clientY: 60 },
-      actions: [action('quote')],
+      actions: [
+        action('quote'),
+      ],
       createdAt: '2025-01-15T10:00:00.000Z',
     })
 
@@ -142,7 +182,12 @@ describe('MessageContextMenuHost', () => {
   it('omits the info block when the message carries no timestamp', () => {
     const captured = renderHost()
 
-    captured.host!.open({ press: { clientX: 150, clientY: 60 }, actions: [action('quote')] })
+    captured.host!.open({
+      press: { clientX: 150, clientY: 60 },
+      actions: [
+        action('quote'),
+      ],
+    })
 
     expect(screen.queryByTestId('message-menu-info')).not.toBeInTheDocument()
     // And no orphan separator above the first action.
@@ -153,7 +198,12 @@ describe('MessageContextMenuHost', () => {
     const captured = renderHost()
     const run = vi.fn()
 
-    captured.host!.open({ press: { clientX: 150, clientY: 60 }, actions: [action('quote', run)] })
+    captured.host!.open({
+      press: { clientX: 150, clientY: 60 },
+      actions: [
+        action('quote', run),
+      ],
+    })
     fireEvent.click(screen.getByTestId('message-menu-quote'))
 
     expect(run).toHaveBeenCalledTimes(1)
@@ -178,7 +228,12 @@ describe('MessageContextMenuHost', () => {
       })
       const show = vi.spyOn(popover, 'showPopover')
 
-      captured.host!.open({ press: { clientX: 150, clientY: 60 }, actions: [action('quote')] })
+      captured.host!.open({
+        press: { clientX: 150, clientY: 60 },
+        actions: [
+          action('quote'),
+        ],
+      })
 
       expect(show).toHaveBeenCalled()
       // A chat row can be hundreds of pixels tall, so the menu must land on the
@@ -210,10 +265,20 @@ describe('MessageContextMenuHost', () => {
       })
       const hide = vi.spyOn(popover, 'hidePopover')
 
-      captured.host!.open({ press: { clientX: 150, clientY: 60 }, actions: [action('quote')] })
+      captured.host!.open({
+        press: { clientX: 150, clientY: 60 },
+        actions: [
+          action('quote'),
+        ],
+      })
       expect(popover.style.left).toBe('150px')
 
-      captured.host!.open({ press: { clientX: 300, clientY: 90 }, actions: [action('copy-json')] })
+      captured.host!.open({
+        press: { clientX: 300, clientY: 90 },
+        actions: [
+          action('copy-json'),
+        ],
+      })
 
       // No close/reopen pass: the menu stays up, re-anchors to the new press,
       // and swaps content synchronously. DropdownMenu's open effect tracks the
@@ -234,7 +299,9 @@ describe('MessageContextMenuHost', () => {
 
     captured.host!.open({
       press: { clientX: 150, clientY: 60 },
-      actions: [action('quote')],
+      actions: [
+        action('quote'),
+      ],
     })
     expect(screen.getByTestId('message-menu-quote')).toBeInTheDocument()
 

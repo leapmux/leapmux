@@ -41,11 +41,15 @@ describe('callWorker retries an Unavailable reply', () => {
     const { listAvailableProviders } = await import('./workerRpc')
     callWorkerMock
       .mockRejectedValueOnce(unavailable())
-      .mockResolvedValueOnce({ providers: [1] })
+      .mockResolvedValueOnce({
+        providers: [1],
+      })
 
     const p = listAvailableProviders('w-1')
     await vi.advanceTimersByTimeAsync(200)
-    await expect(p).resolves.toEqual({ providers: [1] })
+    await expect(p).resolves.toEqual({
+      providers: [1],
+    })
     expect(callWorkerMock).toHaveBeenCalledTimes(2)
   })
 

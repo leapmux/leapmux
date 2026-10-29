@@ -26,11 +26,15 @@ export function copilotExtractRow(input: RowExtractionInput): ChatRow | null {
   switch (category.kind) {
     case 'assistant_text': {
       const text = copilotEventText(parsed.parentObject)
-      return text ? { kind: 'assistant-text', text } : { kind: 'hidden' }
+      return text
+        ? { kind: 'assistant-text', text }
+        : { kind: 'hidden' }
     }
     case 'assistant_thinking': {
       const text = copilotEventText(parsed.parentObject)
-      return text ? { kind: 'assistant-thinking', text } : { kind: 'hidden' }
+      return text
+        ? { kind: 'assistant-thinking', text }
+        : { kind: 'hidden' }
     }
     case 'tool_use':
     case 'tool_result':

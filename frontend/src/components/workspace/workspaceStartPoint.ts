@@ -117,7 +117,11 @@ export interface WorkspaceStartPointSetup {
 export function startPointDialogSetup(sp: WorkspaceStartPoint): WorkspaceStartPointSetup {
   switch (sp.kind) {
     case 'directory':
-      return { ...(sp.workerId !== undefined ? { workerId: sp.workerId } : {}) }
+      return {
+        ...(sp.workerId !== undefined
+          ? { workerId: sp.workerId }
+          : {}),
+      }
     case 'repo':
       return {
         workerId: sp.workerId,
@@ -131,7 +135,9 @@ export function startPointDialogSetup(sp: WorkspaceStartPoint): WorkspaceStartPo
           isRepoRoot: !sp.isWorktree,
           isWorktreeRoot: sp.isWorktree,
           repoRoot: sp.isWorktree ? '' : sp.gitToplevel,
-          repoDirName: sp.isWorktree ? '' : basename(sp.gitToplevel),
+          repoDirName: sp.isWorktree
+            ? ''
+            : basename(sp.gitToplevel),
           currentBranch: sp.currentBranch ?? '',
         },
         stickyKey: gitModeStickyKey(sp.workerId, sp.gitToplevel),

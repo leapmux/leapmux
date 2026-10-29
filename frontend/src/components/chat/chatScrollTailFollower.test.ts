@@ -35,7 +35,9 @@ function setup(overrides: { hasNewer?: boolean, atBottom?: boolean, anchor?: Scr
     rearmBuffer: calls.rearmBuffer,
     currentAnchorState: () => overrides.anchor === undefined
       ? null
-      : overrides.anchor === null ? null : { anchor: overrides.anchor, viewportOffsetRatio: 0.25 },
+      : overrides.anchor === null
+        ? null
+        : { anchor: overrides.anchor, viewportOffsetRatio: 0.25 },
     followTail: calls.followTail,
     atBottomSnapshot: () => atBottom,
     setAtBottom: calls.setAtBottom,
@@ -52,7 +54,13 @@ function setup(overrides: { hasNewer?: boolean, atBottom?: boolean, anchor?: Scr
   const setAtBottom = (value: boolean) => {
     atBottom = value
   }
-  return { follower, calls, jump, setHasNewer, setAtBottom }
+  return {
+    follower,
+    calls,
+    jump,
+    setHasNewer,
+    setAtBottom,
+  }
 }
 
 describe('createChatTailFollower', () => {
@@ -107,7 +115,10 @@ describe('createChatTailFollower', () => {
   })
 
   it('preserves a mid-flight user scroll when the jump fails', async () => {
-    const harness = setup({ hasNewer: true, anchor: { id: 'before', offsetWithinRow: 8 } })
+    const harness = setup({
+      hasNewer: true,
+      anchor: { id: 'before', offsetWithinRow: 8 },
+    })
 
     harness.follower.forceScrollToBottom()
     harness.setAtBottom(false)
@@ -133,7 +144,10 @@ describe('createChatTailFollower', () => {
       cancelAnimation: vi.fn(),
       retakeControl: vi.fn(),
       rearmBuffer: vi.fn(),
-      currentAnchorState: () => ({ anchor: { id: `before-${jumpIndex}`, offsetWithinRow: 0 }, viewportOffsetRatio: 0 }),
+      currentAnchorState: () => ({
+        anchor: { id: `before-${jumpIndex}`, offsetWithinRow: 0 },
+        viewportOffsetRatio: 0,
+      }),
       followTail: vi.fn(),
       atBottomSnapshot: () => atBottom,
       setAtBottom: (value) => { atBottom = value },

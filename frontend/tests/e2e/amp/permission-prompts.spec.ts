@@ -18,7 +18,12 @@ import { nativeContext } from './scenarios'
  */
 ampTest.describe('Amp permissions', () => {
   ampTest('runs a command after the reader allows it', async ({ askingAmpWorkspace, page, modelScript, leapmuxServer }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingAmpWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: askingAmpWorkspace.workspaceId,
+    })
     await exerciseNativePermissionDecision(context, {
       toolCall: bashToolCall(context.provider, 'allow-call', 'echo "amp-$((40 + 2))"'),
       decision: 'allow',
@@ -38,7 +43,12 @@ ampTest.describe('Amp permissions', () => {
 
   // The Worker's helper refuses with the reason, and Amp hands the reason to the model as the result of the call.
   ampTest('refuses a command with the reader\'s reason, which reaches the model', async ({ askingAmpWorkspace, page, modelScript, leapmuxServer }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingAmpWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: askingAmpWorkspace.workspaceId,
+    })
     await exerciseNativePermissionReason(context, {
       toolCall: bashToolCall(context.provider, 'deny-call', 'echo "amp-$((50 + 5))"'),
       route: 'native-reply',
@@ -71,7 +81,12 @@ ampTest.describe('Amp permissions', () => {
   ampTest('asks before an edit of a file that Amp guards', async ({ askingAmpWorkspace, page, modelScript, leapmuxServer }) => {
     const envFile = join(askingAmpWorkspace.workingDir, '.env')
     writeFileSync(envFile, 'TOKEN=old\n')
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingAmpWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: askingAmpWorkspace.workspaceId,
+    })
     // Amp's own guard would ask through a dialog that stream-JSON mode cannot
     // answer, and the session would end. The banner asks instead.
     await exerciseNativePermissionDecision(context, {

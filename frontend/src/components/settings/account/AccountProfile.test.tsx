@@ -46,13 +46,17 @@ describe('AccountProfile', () => {
     const save = await screen.findByRole('button', { name: 'Save Profile' })
     expect(save).toBeDisabled()
 
-    fireEvent.input(screen.getByLabelText('Display Name'), { target: { value: 'Alice B' } })
+    fireEvent.input(screen.getByLabelText('Display Name'), {
+      target: { value: 'Alice B' },
+    })
     expect(save).toBeEnabled()
   })
 
   it('sends both fields in one write', async () => {
     render(() => <AccountProfile />)
-    fireEvent.input(await screen.findByLabelText('Display Name'), { target: { value: 'Alice B' } })
+    fireEvent.input(await screen.findByLabelText('Display Name'), {
+      target: { value: 'Alice B' },
+    })
     fireEvent.click(screen.getByRole('button', { name: 'Save Profile' }))
 
     await vi.waitFor(() => {
@@ -66,7 +70,11 @@ describe('AccountProfile', () => {
     // Over the 128-byte name limit, which `sanitizeName` refuses. An EMPTY
     // display name is deliberately allowed (it falls back to the username), so
     // the empty string cannot stand in for "invalid".
-    fireEvent.input(await screen.findByLabelText('Display Name'), { target: { value: 'A'.repeat(129) } })
+    fireEvent.input(await screen.findByLabelText('Display Name'), {
+      target: {
+        value: 'A'.repeat(129),
+      },
+    })
 
     expect(await screen.findByText(/at most 128 bytes/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Save Profile' })).toBeDisabled()
@@ -78,7 +86,9 @@ describe('AccountProfile', () => {
   // clear.
   it('allows an empty display name', async () => {
     render(() => <AccountProfile />)
-    fireEvent.input(await screen.findByLabelText('Display Name'), { target: { value: '' } })
+    fireEvent.input(await screen.findByLabelText('Display Name'), {
+      target: { value: '' },
+    })
 
     expect(screen.getByRole('button', { name: 'Save Profile' })).toBeEnabled()
     fireEvent.click(screen.getByRole('button', { name: 'Save Profile' }))
@@ -90,7 +100,9 @@ describe('AccountProfile', () => {
   it('reports a failed write instead of claiming success', async () => {
     mockUpdateProfile.mockRejectedValue(new Error('username is taken'))
     render(() => <AccountProfile />)
-    fireEvent.input(await screen.findByLabelText('Username'), { target: { value: 'bob' } })
+    fireEvent.input(await screen.findByLabelText('Username'), {
+      target: { value: 'bob' },
+    })
     fireEvent.click(screen.getByRole('button', { name: 'Save Profile' }))
 
     expect(await screen.findByText(/username is taken/)).toBeInTheDocument()

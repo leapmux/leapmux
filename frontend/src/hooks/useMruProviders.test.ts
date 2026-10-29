@@ -12,7 +12,10 @@ let mockStored: AgentProvider[] = []
 vi.mock('~/lib/mruAgentProviders', () => ({
   getMruProviders: () => mockStored,
   touchMruProvider: (p: AgentProvider) => {
-    mockStored = [p, ...mockStored.filter(x => x !== p)]
+    mockStored = [
+      p,
+      ...mockStored.filter(x => x !== p),
+    ]
   },
 }))
 

@@ -289,7 +289,9 @@ export const AuthProvider: ParentComponent = (props) => {
   const closePooledChannels = () => {
     channelManager.closeAll()
     platformBridge.resetTunnels().catch((err) => {
-      log.warn('failed to reset sidecar tunnels on identity change', { error: String(err) })
+      log.warn('failed to reset sidecar tunnels on identity change', {
+        error: String(err),
+      })
     })
   }
 
@@ -534,7 +536,9 @@ export const AuthProvider: ParentComponent = (props) => {
   const loginResultFromResponse = (status: EmailVerificationStatus | undefined): AuthLoginResult => ({
     verificationRequired: status?.verificationRequired ?? false,
     verificationEmailSent: status?.verificationEmailSent ?? false,
-    ...(status?.nextResendAvailableAt !== undefined ? { nextResendAvailableAt: status.nextResendAvailableAt } : {}),
+    ...(status?.nextResendAvailableAt !== undefined
+      ? { nextResendAvailableAt: status.nextResendAvailableAt }
+      : {}),
   })
 
   /**

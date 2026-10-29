@@ -48,13 +48,23 @@ export function createServerOutput(): ServerOutput {
     since: (from: number) => {
       const slice = lines.slice(Math.max(0, from - evicted))
       // Keep unfinished output after complete lines. A panic can end before it writes a newline.
-      const tails = [...partials.values()].flatMap(state => [state.stdout.partial(), state.stderr.partial()]
+      const tails = [
+        ...partials.values(),
+      ].flatMap(state => [
+        state.stdout.partial(),
+        state.stderr.partial(),
+      ]
         .filter(line => line !== '')
         .map(line => state.prefix + line))
-      return [...slice, ...tails].join('\n')
+      return [
+        ...slice,
+        ...tails,
+      ].join('\n')
     },
     capture: (proc: ChildProcess, label?: string) => {
-      const prefix = label ? `[${label}] ` : ''
+      const prefix = label
+        ? `[${label}] `
+        : ''
       const state = {
         prefix,
         stdout: createProcessOutputLineDecoder(line => push(prefix + line)),

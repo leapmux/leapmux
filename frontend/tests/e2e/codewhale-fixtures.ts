@@ -26,7 +26,16 @@ function codewhaleInstall(path: string): CodewhaleInstall {
   if (output === null)
     return { installed: false, version: null }
   const match = /(\d+)\.(\d+)\.(\d+)/.exec(output)
-  return { installed: true, version: match ? [Number(match[1]), Number(match[2]), Number(match[3])] : null }
+  return {
+    installed: true,
+    version: match
+      ? [
+          Number(match[1]),
+          Number(match[2]),
+          Number(match[3]),
+        ]
+      : null,
+  }
 }
 
 const CODEWHALE_MISSING_REASON = 'Codewhale E2E requires a codewhale CLI on PATH'
@@ -36,7 +45,9 @@ const CODEWHALE_MISSING_REASON = 'Codewhale E2E requires a codewhale CLI on PATH
 // `--version`, which also gives the version that the specs read.
 const CODEWHALE = lookupBinary('codewhale', CODEWHALE_MISSING_REASON)
 
-const INSTALL: CodewhaleInstall = CODEWHALE.path === null ? { installed: false, version: null } : codewhaleInstall(CODEWHALE.path)
+const INSTALL: CodewhaleInstall = CODEWHALE.path === null
+  ? { installed: false, version: null }
+  : codewhaleInstall(CODEWHALE.path)
 
 export const CODEWHALE_E2E_SKIP_REASON: string | null = CODEWHALE.path === null
   ? CODEWHALE.skipReason

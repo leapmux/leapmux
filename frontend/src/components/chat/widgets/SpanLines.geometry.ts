@@ -91,7 +91,10 @@ export function rowBleedLeftStyle(lineCount: number): Record<string, string> {
  * that width as a flex sibling. It publishes the var alone.
  */
 export function reservedRowContentColumnStyle(lineCount: number): Record<string, string> {
-  return { 'margin-left': `${spanLinesReservedWidth(lineCount)}px`, ...rowBleedLeftStyle(lineCount) }
+  return {
+    'margin-left': `${spanLinesReservedWidth(lineCount)}px`,
+    ...rowBleedLeftStyle(lineCount),
+  }
 }
 
 /**

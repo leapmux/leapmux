@@ -34,14 +34,18 @@ export const DiffStatsBadge: Component<{ stats: DiffStats, class?: string }> = (
             {added()}
           </span>
         </Show>
-        {added() > 0 && deleted() > 0 ? ' ' : ''}
+        {added() > 0 && deleted() > 0
+          ? ' '
+          : ''}
         <Show when={deleted() > 0}>
           <span class={gsStyles.diffStatsDeleted}>
             -
             {deleted()}
           </span>
         </Show>
-        {(added() > 0 || deleted() > 0) && untracked() > 0 ? ' ' : ''}
+        {(added() > 0 || deleted() > 0) && untracked() > 0
+          ? ' '
+          : ''}
         <Show when={untracked() > 0}>
           <span class={gsStyles.diffStatsUntracked}>
             *
@@ -106,7 +110,9 @@ export const RowLabelWithStats: Component<{
   showWhen?: 'always' | 'clipped'
   stats: DiffStats | null | undefined
 }> = (props) => {
-  const tooltipText = () => props.tooltipLabel ?? (typeof props.label === 'string' ? props.label : '')
+  const tooltipText = () => props.tooltipLabel ?? (typeof props.label === 'string'
+    ? props.label
+    : '')
   return (
     <Tooltip
       contentFactory={() => props.tooltipContent ?? <LabelWithDiffStats label={tooltipText()} stats={props.stats} />}

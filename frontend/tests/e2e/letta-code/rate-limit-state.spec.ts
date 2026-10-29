@@ -19,11 +19,21 @@ import { LETTA_AGENT, nativeContext } from './scenarios'
 type Fixtures = Omit<NativeContextFixtures, 'workspaceId'>
 
 function quotaResponse(used: number, resetsAt = Math.floor(Date.now() / 1000) + 3600, weekly?: { used: number, resetsAt: number }): MockQuotaHTTPResponse {
-  return { status: 200, body: { plan_type: 'plus', rate_limit: {
-    limit_reached: false,
-    primary_window: { used_percent: used, limit_window_seconds: 18_000, reset_at: resetsAt },
-    ...(weekly === undefined ? {} : { secondary_window: { used_percent: weekly.used, limit_window_seconds: 604_800, reset_at: weekly.resetsAt } }),
-  } } }
+  return {
+    status: 200,
+    body: {
+      plan_type: 'plus',
+      rate_limit: {
+        limit_reached: false,
+        primary_window: { used_percent: used, limit_window_seconds: 18_000, reset_at: resetsAt },
+        ...(weekly === undefined
+          ? {}
+          : {
+              secondary_window: { used_percent: weekly.used, limit_window_seconds: 604_800, reset_at: weekly.resetsAt },
+            }),
+      },
+    },
+  }
 }
 
 function controlURL(scenarioId: string): URL {
@@ -31,7 +41,11 @@ function controlURL(scenarioId: string): URL {
 }
 
 async function configureQuota(scenarioId: string, profile: MockQuotaHTTPResponse): Promise<void> {
-  const response = await fetch(controlURL(scenarioId), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(profile) })
+  const response = await fetch(controlURL(scenarioId), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(profile),
+  })
   expect(response.status, await response.text()).toBe(200)
 }
 
@@ -58,10 +72,25 @@ lettaTest('shows native subscription windows and retains them after reload', asy
     const request = await sendNativeAnswer(context, 'Complete the native subscription quota check.', 'The native subscription model answered.')
     expect(request.body).toHaveProperty('model', 'gpt-5.5')
     expect(request.mockCredential?.accepted).toBe(true)
-    await expectRateLimitWindow(page, { type: 'five_hour', utilization: 0.92, status: 'allowed_warning', resetsAt })
-    await expectRateLimitWindow(page, { type: 'seven_day', utilization: 0.25, status: 'allowed', resetsAt: resetsAt + 86_400 })
+    await expectRateLimitWindow(page, {
+      type: 'five_hour',
+      utilization: 0.92,
+      status: 'allowed_warning',
+      resetsAt,
+    })
+    await expectRateLimitWindow(page, {
+      type: 'seven_day',
+      utilization: 0.25,
+      status: 'allowed',
+      resetsAt: resetsAt + 86_400,
+    })
     await page.reload()
-    await expectRateLimitWindow(page, { type: 'five_hour', utilization: 0.92, status: 'allowed_warning', resetsAt })
+    await expectRateLimitWindow(page, {
+      type: 'five_hour',
+      utilization: 0.92,
+      status: 'allowed_warning',
+      resetsAt,
+    })
     const receipts = await quotaReceipts(modelScript.id)
     expect(receipts.some(receipt => receipt.status === 200 && receipt.authorized && receipt.accountId === LETTA_CHATGPT_ACCOUNT_ID)).toBe(true)
   })
@@ -72,7 +101,11 @@ lettaTest('retains quota during endpoint throttling and recovers with zero usage
     await sendNativeAnswer(context, 'Complete the first quota turn.', 'The first quota turn completed.')
     await expectRateLimitWindow(page, { type: 'five_hour', utilization: 0.9, status: 'allowed_warning' })
     const baseline = (await quotaReceipts(modelScript.id)).at(-1)?.sequence ?? 0
-    await configureQuota(modelScript.id, { status: 429, body: { error: 'Scripted quota endpoint refusal.' }, retryAfterSeconds: 1 })
+    await configureQuota(modelScript.id, {
+      status: 429,
+      body: { error: 'Scripted quota endpoint refusal.' },
+      retryAfterSeconds: 1,
+    })
     await closeComposerMenus(page)
     await sendNativeAnswer(context, 'Complete a turn while the quota endpoint is unavailable.', 'The model still works while quota is unavailable.')
     await retryUntilPass(async () => {
@@ -112,5 +145,7 @@ lettaTest('keeps an epoch-zero reset in the urgent quota tooltip', async ({ page
 })
 
 lettaTest('does not invent subscription quota from API-key model headers', async ({ native }) => {
-  await expectNoRateLimitState(native, { relatedProof: () => exerciseNativeQuotaHeaders(native) })
+  await expectNoRateLimitState(native, {
+    relatedProof: () => exerciseNativeQuotaHeaders(native),
+  })
 })

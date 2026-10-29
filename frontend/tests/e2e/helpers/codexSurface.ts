@@ -9,8 +9,12 @@ import type { MockModelRateLimits } from './mockModelScript'
  * Write only the window that type selects, so Codex reports one window.
  */
 export function codexRateLimitHeaders(rateLimits: MockModelRateLimits): Record<string, string> {
-  const window = rateLimits.type.startsWith('seven_day') ? 'secondary' : 'primary'
-  const minutes = rateLimits.type.startsWith('seven_day') ? '10080' : '300'
+  const window = rateLimits.type.startsWith('seven_day')
+    ? 'secondary'
+    : 'primary'
+  const minutes = rateLimits.type.startsWith('seven_day')
+    ? '10080'
+    : '300'
   const headers: Record<string, string> = {
     [`x-codex-${window}-window-minutes`]: minutes,
     'x-codex-limit-name': rateLimits.type,

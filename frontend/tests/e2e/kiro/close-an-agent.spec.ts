@@ -15,7 +15,12 @@ kiroTest.describe('kiro process lifetime', () => {
     const beforePids = new Set(listProcesses().map(row => row.pid))
     await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, KIRO_AGENT)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
     let workerPid = 0
 
     await exerciseCloseAgent(context, {

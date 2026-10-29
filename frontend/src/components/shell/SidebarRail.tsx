@@ -24,7 +24,9 @@ export interface SidebarRailProps {
 // ---------------------------------------------------------------------------
 
 export const SidebarRail: Component<SidebarRailProps> = (props) => {
-  const railVariant = () => props.side === 'left' ? styles.sidebarRailLeft : styles.sidebarRailRight
+  const railVariant = () => props.side === 'left'
+    ? styles.sidebarRailLeft
+    : styles.sidebarRailRight
 
   const topSections = () => props.sections.filter(
     s => s.visible !== false && (s.railPosition ?? 'top') === 'top' && !s.railOnly,

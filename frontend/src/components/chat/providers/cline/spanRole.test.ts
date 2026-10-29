@@ -6,7 +6,15 @@ import { clineToolFinishRow, clineToolStartRow } from './toolResults.fixtures'
 import '~/components/chat/providers'
 
 function resolved(parent: Record<string, unknown>, completion?: MessageCompletion) {
-  return resolveMessageForRendering({ rawText: '', topLevel: parent, parentObject: parent, wrapper: null, ...(completion !== undefined ? { completion } : {}) }, AgentProvider.CLINE)
+  return resolveMessageForRendering({
+    rawText: '',
+    topLevel: parent,
+    parentObject: parent,
+    wrapper: null,
+    ...(completion !== undefined
+      ? { completion }
+      : {}),
+  }, AgentProvider.CLINE)
 }
 
 describe('clineSpanRole', () => {
@@ -20,14 +28,30 @@ describe('clineSpanRole', () => {
   })
 
   it('reads every other row as no side', () => {
-    expect(clineSpanRole(resolved({ version: 'v1', event: 'assistant.finished', payload: { text: 'x' } }))).toBe('other')
+    expect(clineSpanRole(resolved({
+      version: 'v1',
+      event: 'assistant.finished',
+      payload: { text: 'x' },
+    }))).toBe('other')
   })
 
   // A row with no call id states no call, so no span can hold it.
   it('reads a tool row with no call id as no side', () => {
-    expect(clineSpanRole(resolved({ version: 'v1', event: 'tool.started', payload: { toolName: 'read_files' } }))).toBe('other')
-    expect(clineSpanRole(resolved({ version: 'v1', event: 'tool.finished', payload: { toolName: 'read_files', output: [] } }))).toBe('other')
-    expect(clineSpanRole(resolved({ version: 'v1', event: 'tool.started', payload: { toolName: 'read_files' } }, MessageCompletion.INTERRUPTED))).toBe('other')
+    expect(clineSpanRole(resolved({
+      version: 'v1',
+      event: 'tool.started',
+      payload: { toolName: 'read_files' },
+    }))).toBe('other')
+    expect(clineSpanRole(resolved({
+      version: 'v1',
+      event: 'tool.finished',
+      payload: { toolName: 'read_files', output: [] },
+    }))).toBe('other')
+    expect(clineSpanRole(resolved({
+      version: 'v1',
+      event: 'tool.started',
+      payload: { toolName: 'read_files' },
+    }, MessageCompletion.INTERRUPTED))).toBe('other')
   })
 })
 

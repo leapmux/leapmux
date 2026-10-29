@@ -45,7 +45,9 @@ function spaRoutePatterns(files: readonly string[]): RegExp[] {
     if (segments.at(-1) === 'index')
       segments.pop()
     const body = segments
-      .map(segment => (DYNAMIC_SEGMENT.test(segment) ? '[^/]+' : escapeRegExp(segment)))
+      .map(segment => (DYNAMIC_SEGMENT.test(segment)
+        ? '[^/]+'
+        : escapeRegExp(segment)))
       .join('/')
     patterns.push(new RegExp(`^/${body}$`))
   }
@@ -63,7 +65,9 @@ const SPA_ROUTE_PATTERNS = spaRoutePatterns(ROUTE_FILES)
 function pathOf(target: string): string {
   const path = target.split(/[?#]/, 1)[0] ?? ''
   const trimmed = path.replace(/\/+$/, '')
-  return trimmed === '' ? '/' : trimmed
+  return trimmed === ''
+    ? '/'
+    : trimmed
 }
 
 /**

@@ -10,7 +10,9 @@ import { COPILOT_TOOL_RESULTS } from './toolResults.fixtures'
 import '~/components/chat/providers'
 
 const KINDS: ToolVocabularyCheck = {
-  names: [...Object.values(COPILOT_TOOL)],
+  names: [
+    ...Object.values(COPILOT_TOOL),
+  ],
   kindOf: copilotToolKind,
   generic: {},
   fallback: 'mcp',
@@ -31,7 +33,9 @@ function requestCallOf(name: string) {
   if (fixture === undefined)
     throw new Error(`No copilot result fixture for ${name}`)
   const frame = openingFrameOf(fixture)
-  return frame === null ? null : providerToolCall(AgentProvider.GITHUB_COPILOT, frame, { spanType: name })
+  return frame === null
+    ? null
+    : providerToolCall(AgentProvider.GITHUB_COPILOT, frame, { spanType: name })
 }
 
 describe('copilot tool results', () => {

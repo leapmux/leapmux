@@ -26,7 +26,9 @@ function fileImageMime(path: string, bytes: Uint8Array): string {
 export async function readWorkerImage(workerId: string, path: string, workingDir: string | undefined, signal: AbortSignal): Promise<ImageResultSource> {
   if (!workerId || !path)
     throw new Error('The image file is unavailable')
-  let filePath = path.startsWith('file:') ? fileUriToPath(path) : path
+  let filePath = path.startsWith('file:')
+    ? fileUriToPath(path)
+    : path
   if (!filePath || (/^[a-z][a-z\d+.-]*:\/\//i.test(filePath) && !/^[a-z]:/i.test(filePath)))
     throw new Error('The image does not have a local file path')
   if (!isAbsolute(filePath)) {
@@ -34,7 +36,12 @@ export async function readWorkerImage(workerId: string, path: string, workingDir
       throw new Error('The image working directory is unavailable')
     filePath = join([workingDir, filePath])
   }
-  const response = await readWorkerFile({ workerId, path: filePath, maxBytes: MAX_FILE_IMAGE_BYTES, signal })
+  const response = await readWorkerFile({
+    workerId,
+    path: filePath,
+    maxBytes: MAX_FILE_IMAGE_BYTES,
+    signal,
+  })
   if (response.totalSize > BigInt(MAX_FILE_IMAGE_BYTES) || response.content.length > MAX_FILE_IMAGE_BYTES)
     throw new Error('The image file is too large to preview')
   if (response.totalSize === 0n)
@@ -45,5 +52,12 @@ export async function readWorkerImage(workerId: string, path: string, workingDir
     throw new Error('The image file format is not supported')
   const data = uint8ArrayToBase64(content)
   const dimensions = sniffImageDimensionsFromBase64(data) ?? undefined
-  return { filePath, data, mimeType, ...(dimensions !== undefined ? { dimensions } : {}) }
+  return {
+    filePath,
+    data,
+    mimeType,
+    ...(dimensions !== undefined
+      ? { dimensions }
+      : {}),
+  }
 }

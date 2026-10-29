@@ -64,7 +64,9 @@ export function createGoalStore() {
       // Applying actions before the guard could restore Pause and Clear from history after the agent process exits.
       actions.set(agentId, goalActionsFromProto(supportedActions))
       const previous = goal.get(agentId)
-      const incoming = next ? protoGoalToStore(next) : undefined
+      const incoming = next
+        ? protoGoalToStore(next)
+        : undefined
       // Clear progress when its goal disappears or receives a different identity or objective.
       // Otherwise, a fresh goal would show the previous goal's counters until its next progress update.
       // Compare native IDs when both goals supply them.
@@ -84,7 +86,10 @@ export function createGoalStore() {
      * A tokens_used update must therefore retain an earlier iteration count.
      */
     setProgress(agentId: string, next: GoalProgress) {
-      progress.set(agentId, { ...progress.get(agentId), ...next })
+      progress.set(agentId, {
+        ...progress.get(agentId),
+        ...next,
+      })
     },
   }
 }

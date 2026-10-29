@@ -16,7 +16,10 @@ import { countGoalTransitionsInMessages } from './goalTransitions'
 function message(body: string, compress: boolean) {
   const raw = new TextEncoder().encode(body)
   return compress
-    ? { content: new Uint8Array(zstdCompressSync(raw)), contentCompression: ContentCompression.ZSTD }
+    ? {
+        content: new Uint8Array(zstdCompressSync(raw)),
+        contentCompression: ContentCompression.ZSTD,
+      }
     : { content: raw, contentCompression: ContentCompression.NONE }
 }
 
@@ -34,14 +37,18 @@ const THREADED = `{"type":"notification_thread","messages":[${GOAL_SET},`
 
 describe('countGoalTransitionsInMessages', () => {
   it('counts one transition in one message', () => {
-    expect(countGoalTransitionsInMessages([message(GOAL_SET, false)])).toBe(1)
+    expect(countGoalTransitionsInMessages([
+      message(GOAL_SET, false),
+    ])).toBe(1)
   })
 
   // Counting ROWS would report these three as one, and the spec's ceiling --
   // its assertion that progress reports never reach the transcript -- would
   // then pass however noisy the transcript got.
   it('counts every entry folded into one notification thread', () => {
-    expect(countGoalTransitionsInMessages([message(THREADED, false)])).toBe(3)
+    expect(countGoalTransitionsInMessages([
+      message(THREADED, false),
+    ])).toBe(3)
   })
 
   /**
@@ -76,7 +83,10 @@ describe('countGoalTransitionsInMessages', () => {
   // rather than reach the regex as null and throw.
   it('reports nothing for a message with empty content', () => {
     expect(countGoalTransitionsInMessages([
-      { content: new Uint8Array(), contentCompression: ContentCompression.NONE },
+      {
+        content: new Uint8Array(),
+        contentCompression: ContentCompression.NONE,
+      },
     ])).toBe(0)
   })
 
@@ -84,7 +94,10 @@ describe('countGoalTransitionsInMessages', () => {
   // a throw there fails the spec with a stack trace instead of retrying.
   it('survives content it cannot decompress', () => {
     expect(countGoalTransitionsInMessages([
-      { content: new Uint8Array([1, 2, 3]), contentCompression: ContentCompression.UNSPECIFIED },
+      {
+        content: new Uint8Array([1, 2, 3]),
+        contentCompression: ContentCompression.UNSPECIFIED,
+      },
     ])).toBe(0)
   })
 
@@ -97,12 +110,18 @@ describe('countGoalTransitionsInMessages', () => {
       message: {
         content: [
           { type: 'text', text: 'grep for "goal_updated" in the worker' },
-          { type: 'tool_use', input: { pattern: '"goal_cleared"' } },
+          {
+            type: 'tool_use',
+            input: { pattern: '"goal_cleared"' },
+          },
         ],
       },
     })
     expect(countGoalTransitionsInMessages([
-      { content: new TextEncoder().encode(body), contentCompression: ContentCompression.NONE },
+      {
+        content: new TextEncoder().encode(body),
+        contentCompression: ContentCompression.NONE,
+      },
     ])).toBe(0)
   })
 
@@ -110,7 +129,10 @@ describe('countGoalTransitionsInMessages', () => {
   it('counts a type field however it is spaced', () => {
     const spaced = '{"type" : "goal_updated","objective":"ship it"}'
     expect(countGoalTransitionsInMessages([
-      { content: new TextEncoder().encode(spaced), contentCompression: ContentCompression.NONE },
+      {
+        content: new TextEncoder().encode(spaced),
+        contentCompression: ContentCompression.NONE,
+      },
     ])).toBe(1)
   })
 })

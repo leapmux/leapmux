@@ -2,7 +2,12 @@ import { describe, expect, it } from 'vitest'
 import { qoderAskUserQuestions, qoderIsAskUserQuestion } from './askUserQuestion'
 
 function payload(questions: unknown, toolName: string = 'AskUserQuestion') {
-  return { request: { tool_name: toolName, input: { questions } } }
+  return {
+    request: {
+      tool_name: toolName,
+      input: { questions },
+    },
+  }
 }
 
 describe('qoderIsAskUserQuestion', () => {
@@ -19,9 +24,23 @@ describe('qoderIsAskUserQuestion', () => {
 describe('qoderAskUserQuestions', () => {
   it('reads each question and its options', () => {
     expect(qoderAskUserQuestions(payload([
-      { question: 'Which one?', header: 'Pick', options: [{ label: 'A', description: 'first' }], multiSelect: true },
+      {
+        question: 'Which one?',
+        header: 'Pick',
+        options: [
+          { label: 'A', description: 'first' },
+        ],
+        multiSelect: true,
+      },
     ]))).toEqual([
-      { question: 'Which one?', header: 'Pick', options: [{ label: 'A', description: 'first' }], multiSelect: true },
+      {
+        question: 'Which one?',
+        header: 'Pick',
+        options: [
+          { label: 'A', description: 'first' },
+        ],
+        multiSelect: true,
+      },
     ])
   })
 
@@ -44,8 +63,15 @@ describe('qoderAskUserQuestions', () => {
   // `<For>` -- so a null or a bare string among them threw the whole banner
   // away.
   it('drops an element the control surface cannot draw', () => {
-    expect(qoderAskUserQuestions(payload([null, 'plain text', 7, { question: 'Which one?', options: [] }])))
-      .toEqual([{ question: 'Which one?', options: [] }])
+    expect(qoderAskUserQuestions(payload([
+      null,
+      'plain text',
+      7,
+      { question: 'Which one?', options: [] },
+    ])))
+      .toEqual([
+        { question: 'Which one?', options: [] },
+      ])
   })
 
   it('answers an empty list for a payload that states no questions', () => {

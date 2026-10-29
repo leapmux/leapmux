@@ -38,7 +38,9 @@ class ControllableIntersectionObserver {
 
   deliver(target: Element) {
     this.callback(
-      [{ target, isIntersecting: true } as IntersectionObserverEntry],
+      [
+        { target, isIntersecting: true } as IntersectionObserverEntry,
+      ],
       this as unknown as IntersectionObserver,
     )
   }

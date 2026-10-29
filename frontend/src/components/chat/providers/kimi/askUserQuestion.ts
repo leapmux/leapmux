@@ -18,7 +18,9 @@ import { questionsFromRecords } from '../questionRecords'
 
 /** The raw question records of a stored question request, in the order it declares. */
 export function kimiQuestionRecords(payload: Record<string, unknown>): Record<string, unknown>[] {
-  return Array.isArray(payload.questions) ? payload.questions.filter(isObject) : []
+  return Array.isArray(payload.questions)
+    ? payload.questions.filter(isObject)
+    : []
 }
 
 /** Whether a stored control payload is a question request. */
@@ -39,7 +41,9 @@ export function kimiQuestionsFromPayload(payload: Record<string, unknown>): Cont
     if (!id || !question)
       return []
     const header = pickString(record, 'header')
-    const options = Array.isArray(record.options) ? record.options.filter(isObject) : []
+    const options = Array.isArray(record.options)
+      ? record.options.filter(isObject)
+      : []
     const built: ControlQuestion = {
       id,
       question,
@@ -49,7 +53,15 @@ export function kimiQuestionsFromPayload(payload: Record<string, unknown>): Cont
         if (!value || !label)
           return []
         const description = pickString(option, 'description')
-        return [{ value, label, ...(description ? { description } : {}) }]
+        return [
+          {
+            value,
+            label,
+            ...(description
+              ? { description }
+              : {}),
+          },
+        ]
       }),
       allowEmpty: true,
     }
@@ -72,14 +84,24 @@ export function kimiQuestionsFromToolInput(input: Record<string, unknown>): Ques
     input.questions,
     (question) => {
       const header = pickString(question, 'header')
-      return { ...(header ? { header } : {}), question: pickString(question, 'question') }
+      return {
+        ...(header
+          ? { header }
+          : {}),
+        question: pickString(question, 'question'),
+      }
     },
     (option) => {
       const label = pickString(option, 'label')
       if (!label)
         return null
       const description = pickString(option, 'description')
-      return { label, ...(description ? { description } : {}) }
+      return {
+        label,
+        ...(description
+          ? { description }
+          : {}),
+      }
     },
   )
 }

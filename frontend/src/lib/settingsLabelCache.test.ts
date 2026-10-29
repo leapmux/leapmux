@@ -20,7 +20,11 @@ describe('settingsLabelCache', () => {
   it('bumps its revision only when display metadata changes', () => {
     clearSettingsLabelCache()
     const before = settingsLabelCacheRevision()
-    const groups = [group('model', 'Model', [['sonnet', 'Sonnet']])]
+    const groups = [
+      group('model', 'Model', [
+        ['sonnet', 'Sonnet'],
+      ]),
+    ]
 
     updateSettingsLabelCache(CLAUDE, groups)
     const changed = settingsLabelCacheRevision()
@@ -31,39 +35,73 @@ describe('settingsLabelCache', () => {
   })
 
   it('changes a dependency revision only for the label group that moved', () => {
-    updateSettingsLabelCache(CLAUDE, [group('model', 'Model', [['sonnet', 'Sonnet']])])
+    updateSettingsLabelCache(CLAUDE, [
+      group('model', 'Model', [
+        ['sonnet', 'Sonnet'],
+      ]),
+    ])
     const collected = collectSettingsLabelDependencies(() => getCachedSettingsLabel(CLAUDE, 'model', 'sonnet'))
     const before = settingsLabelDependencyRevision(collected.dependencies)
 
-    updateSettingsLabelCache(CLAUDE, [group('permissionMode', 'Mode', [['plan', 'Plan']])])
+    updateSettingsLabelCache(CLAUDE, [
+      group('permissionMode', 'Mode', [
+        ['plan', 'Plan'],
+      ]),
+    ])
     expect(settingsLabelDependencyRevision(collected.dependencies)).toBe(before)
 
-    updateSettingsLabelCache(CLAUDE, [group('model', 'Model', [['sonnet', 'Sonnet 4']])])
+    updateSettingsLabelCache(CLAUDE, [
+      group('model', 'Model', [
+        ['sonnet', 'Sonnet 4'],
+      ]),
+    ])
     expect(settingsLabelDependencyRevision(collected.dependencies)).not.toBe(before)
   })
 
   beforeEach(() => clearSettingsLabelCache())
 
   it('caches the group label and each option label by id', () => {
-    updateSettingsLabelCache(CLAUDE, [group('model', 'Model', [['sonnet', 'Sonnet'], ['opus', 'Opus']])])
+    updateSettingsLabelCache(CLAUDE, [
+      group('model', 'Model', [
+        ['sonnet', 'Sonnet'],
+        ['opus', 'Opus'],
+      ]),
+    ])
     expect(getCachedSettingsGroupLabel(CLAUDE, 'model')).toBe('Model')
     expect(getCachedSettingsLabel(CLAUDE, 'model', 'sonnet')).toBe('Sonnet')
     expect(getCachedSettingsLabel(CLAUDE, 'model', 'opus')).toBe('Opus')
   })
 
   it('retains a label for an option no longer in the group (historical notifications still reference it)', () => {
-    updateSettingsLabelCache(CLAUDE, [group('effort', 'Effort', [['xhigh', 'XHigh'], ['ultracode', 'Ultra Code']])])
+    updateSettingsLabelCache(CLAUDE, [
+      group('effort', 'Effort', [
+        ['xhigh', 'XHigh'],
+        ['ultracode', 'Ultra Code'],
+      ]),
+    ])
     // Switching off the model that offered "ultracode" narrows the effort catalog, but a
     // past settings_changed notification that set effort to "ultracode" must still resolve
     // its label on scroll-back -- append-merge keeps it rather than evicting.
-    updateSettingsLabelCache(CLAUDE, [group('effort', 'Effort', [['xhigh', 'XHigh']])])
+    updateSettingsLabelCache(CLAUDE, [
+      group('effort', 'Effort', [
+        ['xhigh', 'XHigh'],
+      ]),
+    ])
     expect(getCachedSettingsLabel(CLAUDE, 'effort', 'xhigh')).toBe('XHigh')
     expect(getCachedSettingsLabel(CLAUDE, 'effort', 'ultracode')).toBe('Ultra Code')
   })
 
   it('picks up a renamed option (id reused for a new display name)', () => {
-    updateSettingsLabelCache(CLAUDE, [group('effort', 'Effort', [['high', 'High']])])
-    updateSettingsLabelCache(CLAUDE, [group('effort', 'Effort', [['high', 'High (xhigh clamp)']])])
+    updateSettingsLabelCache(CLAUDE, [
+      group('effort', 'Effort', [
+        ['high', 'High'],
+      ]),
+    ])
+    updateSettingsLabelCache(CLAUDE, [
+      group('effort', 'Effort', [
+        ['high', 'High (xhigh clamp)'],
+      ]),
+    ])
     expect(getCachedSettingsLabel(CLAUDE, 'effort', 'high')).toBe('High (xhigh clamp)')
   })
 
@@ -71,8 +109,12 @@ describe('settingsLabelCache', () => {
     // A well-formed catalog carries one group per id; a malformed one with two same-id groups
     // must not merge their option sets (or last-writer-wins their labels) under a single id.
     updateSettingsLabelCache(CLAUDE, [
-      group('effort', 'Effort', [['high', 'High']]),
-      group('effort', 'Effort (dupe)', [['low', 'Low']]),
+      group('effort', 'Effort', [
+        ['high', 'High'],
+      ]),
+      group('effort', 'Effort (dupe)', [
+        ['low', 'Low'],
+      ]),
     ])
     expect(getCachedSettingsLabel(CLAUDE, 'effort', 'high')).toBe('High')
     expect(getCachedSettingsLabel(CLAUDE, 'effort', 'low')).toBeUndefined()
@@ -80,9 +122,15 @@ describe('settingsLabelCache', () => {
   })
 
   it('preserves prior labels on a transient empty-options report', () => {
-    updateSettingsLabelCache(CLAUDE, [group('model', 'Model', [['sonnet', 'Sonnet']])])
+    updateSettingsLabelCache(CLAUDE, [
+      group('model', 'Model', [
+        ['sonnet', 'Sonnet'],
+      ]),
+    ])
     // An empty-options push must not wipe the group's labels.
-    updateSettingsLabelCache(CLAUDE, [group('model', 'Model', [])])
+    updateSettingsLabelCache(CLAUDE, [
+      group('model', 'Model', []),
+    ])
     expect(getCachedSettingsLabel(CLAUDE, 'model', 'sonnet')).toBe('Sonnet')
     expect(getCachedSettingsGroupLabel(CLAUDE, 'model')).toBe('Model')
   })
@@ -91,8 +139,18 @@ describe('settingsLabelCache', () => {
     // Cursor and Goose both expose a `permissionMode` group, but with different option
     // sets. A global (provider-blind) cache would let one overwrite the other; per-provider
     // keying keeps each agent's notification resolving against its own provider's labels.
-    updateSettingsLabelCache(CURSOR, [group('permissionMode', 'Mode', [['agent', 'Agent'], ['plan', 'Plan']])])
-    updateSettingsLabelCache(GOOSE, [group('permissionMode', 'Mode', [['auto', 'Auto'], ['approve', 'Approve']])])
+    updateSettingsLabelCache(CURSOR, [
+      group('permissionMode', 'Mode', [
+        ['agent', 'Agent'],
+        ['plan', 'Plan'],
+      ]),
+    ])
+    updateSettingsLabelCache(GOOSE, [
+      group('permissionMode', 'Mode', [
+        ['auto', 'Auto'],
+        ['approve', 'Approve'],
+      ]),
+    ])
 
     expect(getCachedSettingsLabel(CURSOR, 'permissionMode', 'agent')).toBe('Agent')
     expect(getCachedSettingsLabel(GOOSE, 'permissionMode', 'approve')).toBe('Approve')
@@ -102,7 +160,11 @@ describe('settingsLabelCache', () => {
   })
 
   it('returns undefined for an unknown provider (notification without provider context)', () => {
-    updateSettingsLabelCache(CLAUDE, [group('model', 'Model', [['sonnet', 'Sonnet']])])
+    updateSettingsLabelCache(CLAUDE, [
+      group('model', 'Model', [
+        ['sonnet', 'Sonnet'],
+      ]),
+    ])
     expect(getCachedSettingsLabel(undefined, 'model', 'sonnet')).toBeUndefined()
     expect(getCachedSettingsGroupLabel(undefined, 'model')).toBeUndefined()
   })
@@ -110,7 +172,11 @@ describe('settingsLabelCache', () => {
   it('no-ops on undefined groups and clears on demand', () => {
     updateSettingsLabelCache(CLAUDE, undefined)
     expect(getCachedSettingsGroupLabel(CLAUDE, 'model')).toBeUndefined()
-    updateSettingsLabelCache(CLAUDE, [group('model', 'Model', [['sonnet', 'Sonnet']])])
+    updateSettingsLabelCache(CLAUDE, [
+      group('model', 'Model', [
+        ['sonnet', 'Sonnet'],
+      ]),
+    ])
     clearSettingsLabelCache()
     expect(getCachedSettingsLabel(CLAUDE, 'model', 'sonnet')).toBeUndefined()
     expect(getCachedSettingsGroupLabel(CLAUDE, 'model')).toBeUndefined()
@@ -118,8 +184,13 @@ describe('settingsLabelCache', () => {
 
   it('bounds a group\'s label map with LRU eviction, keeping recently-seen ids', () => {
     // Churn far past the per-group cap (256), seeing each id once.
-    for (let i = 0; i < 600; i++)
-      updateSettingsLabelCache(CURSOR, [group('model', 'Model', [[`m${i}`, `Model ${i}`]])])
+    for (let i = 0; i < 600; i++) {
+      updateSettingsLabelCache(CURSOR, [
+        group('model', 'Model', [
+          [`m${i}`, `Model ${i}`],
+        ]),
+      ])
+    }
     // The oldest ids are evicted (fall back to raw value); the most-recent are retained.
     expect(getCachedSettingsLabel(CURSOR, 'model', 'm0')).toBeUndefined()
     expect(getCachedSettingsLabel(CURSOR, 'model', 'm599')).toBe('Model 599')
@@ -127,9 +198,18 @@ describe('settingsLabelCache', () => {
 
     // Re-seeing an old id refreshes it to most-recent, so a further (sub-cap) round of
     // churn evicts older ids before it -- m344 (now the oldest) goes, m400 survives.
-    updateSettingsLabelCache(CURSOR, [group('model', 'Model', [['m400', 'Model 400']])])
-    for (let i = 600; i < 700; i++)
-      updateSettingsLabelCache(CURSOR, [group('model', 'Model', [[`m${i}`, `Model ${i}`]])])
+    updateSettingsLabelCache(CURSOR, [
+      group('model', 'Model', [
+        ['m400', 'Model 400'],
+      ]),
+    ])
+    for (let i = 600; i < 700; i++) {
+      updateSettingsLabelCache(CURSOR, [
+        group('model', 'Model', [
+          [`m${i}`, `Model ${i}`],
+        ]),
+      ])
+    }
     expect(getCachedSettingsLabel(CURSOR, 'model', 'm344')).toBeUndefined()
     expect(getCachedSettingsLabel(CURSOR, 'model', 'm400')).toBe('Model 400')
   })
@@ -137,8 +217,13 @@ describe('settingsLabelCache', () => {
   it('bounds the GROUP-id dimension with LRU eviction (non-conforming server cycling group ids)', () => {
     // A non-conforming server cycling distinct GROUP ids must not grow the outer maps without
     // bound -- the group-id dimension is LRU-capped (64) just like the per-group option-id one.
-    for (let i = 0; i < 200; i++)
-      updateSettingsLabelCache(CURSOR, [group(`g${i}`, `Group ${i}`, [[`opt${i}`, `Option ${i}`]])])
+    for (let i = 0; i < 200; i++) {
+      updateSettingsLabelCache(CURSOR, [
+        group(`g${i}`, `Group ${i}`, [
+          [`opt${i}`, `Option ${i}`],
+        ]),
+      ])
+    }
     // The oldest groups are evicted from BOTH outer maps (label and option sub-map); the most
     // recent are retained.
     expect(getCachedSettingsGroupLabel(CURSOR, 'g0')).toBeUndefined()
@@ -152,13 +237,29 @@ describe('settingsLabelCache', () => {
     // refresh its LRU position in BOTH outer maps -- otherwise it half-evicts (its group label
     // ages out of one map while its option labels stay in the other) under churn from other
     // groups, leaving one of its two lookups to fall back to the raw id even though it is current.
-    updateSettingsLabelCache(GOOSE, [group('pinned', 'Pinned', [['a', 'A']])])
+    updateSettingsLabelCache(GOOSE, [
+      group('pinned', 'Pinned', [
+        ['a', 'A'],
+      ]),
+    ])
 
     // Churn 70 OTHER groups (> the 64 group cap) while re-touching 'pinned' each round with an
     // option-only push (EMPTY label) -- the exact divergence trigger.
     for (let i = 0; i < 70; i++) {
-      updateSettingsLabelCache(GOOSE, [group(`other${i}`, `Other ${i}`, [[`o${i}`, `O ${i}`]])])
-      updateSettingsLabelCache(GOOSE, [{ id: 'pinned', label: '', options: [{ id: 'a', name: 'A' }] } as unknown as AvailableOptionGroup])
+      updateSettingsLabelCache(GOOSE, [
+        group(`other${i}`, `Other ${i}`, [
+          [`o${i}`, `O ${i}`],
+        ]),
+      ])
+      updateSettingsLabelCache(GOOSE, [
+        {
+          id: 'pinned',
+          label: '',
+          options: [
+            { id: 'a', name: 'A' },
+          ],
+        } as unknown as AvailableOptionGroup,
+      ])
     }
 
     // 'pinned' was refreshed every round, so it survives in BOTH maps despite > cap churn: its
@@ -172,13 +273,26 @@ describe('settingsLabelCache', () => {
     // label and option maps had different eviction populations, the old group's option sub-map
     // could evict while its label survived (a half-eviction). With one record per group, a group's
     // label and options evict -- or survive -- together.
-    updateSettingsLabelCache(GOOSE, [group('old', 'Old', [['a', 'A']])])
+    updateSettingsLabelCache(GOOSE, [
+      group('old', 'Old', [
+        ['a', 'A'],
+      ]),
+    ])
     const groups: AvailableOptionGroup[] = []
-    for (let i = 0; i < 63; i++)
-      groups.push(group(`fill${i}`, `Fill ${i}`, [[`f${i}`, `F ${i}`]]))
-    groups.push(group('new', 'New', [['z', 'Z']]))
+    for (let i = 0; i < 63; i++) {
+      groups.push(group(`fill${i}`, `Fill ${i}`, [
+        [`f${i}`, `F ${i}`],
+      ]))
+    }
+    groups.push(group('new', 'New', [
+      ['z', 'Z'],
+    ]))
     updateSettingsLabelCache(GOOSE, groups)
-    updateSettingsLabelCache(GOOSE, [group('newest', 'Newest', [['n', 'N']])])
+    updateSettingsLabelCache(GOOSE, [
+      group('newest', 'Newest', [
+        ['n', 'N'],
+      ]),
+    ])
 
     // 'old' is the least recent of 66 groups, so its WHOLE entry evicts -- both lookups miss.
     expect(getCachedSettingsGroupLabel(GOOSE, 'old')).toBeUndefined()
@@ -197,7 +311,9 @@ describe('settingsLabelCache', () => {
 
     it('keeps the label of every option that the push offers', () => {
       clearSettingsLabelCache()
-      updateSettingsLabelCache(CURSOR, [models(400)])
+      updateSettingsLabelCache(CURSOR, [
+        models(400),
+      ])
       expect(getCachedSettingsLabel(CURSOR, 'model', 'm0')).toBe('Model 0')
       expect(getCachedSettingsLabel(CURSOR, 'model', 'm399')).toBe('Model 399')
     })
@@ -206,15 +322,21 @@ describe('settingsLabelCache', () => {
     // bump it. Each agent status update pushes the whole catalog again.
     it('keeps its revision for an identical push', () => {
       clearSettingsLabelCache()
-      updateSettingsLabelCache(CURSOR, [models(400)])
+      updateSettingsLabelCache(CURSOR, [
+        models(400),
+      ])
       const revision = settingsLabelCacheRevision()
-      updateSettingsLabelCache(CURSOR, [models(400)])
+      updateSettingsLabelCache(CURSOR, [
+        models(400),
+      ])
       expect(settingsLabelCacheRevision()).toBe(revision)
     })
 
     it('keeps every group that the push offers, also past the group cap', () => {
       clearSettingsLabelCache()
-      const groups = Array.from({ length: 70 }, (_, i) => group(`g${i}`, `Group ${i}`, [[`o${i}`, `Option ${i}`]]))
+      const groups = Array.from({ length: 70 }, (_, i) => group(`g${i}`, `Group ${i}`, [
+        [`o${i}`, `Option ${i}`],
+      ]))
       updateSettingsLabelCache(GOOSE, groups)
       expect(getCachedSettingsGroupLabel(GOOSE, 'g0')).toBe('Group 0')
       const revision = settingsLabelCacheRevision()

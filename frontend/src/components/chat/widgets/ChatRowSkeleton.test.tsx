@@ -30,7 +30,9 @@ describe('ChatRowSkeleton', () => {
     expect(uri.startsWith('data:image/svg+xml,')).toBe(true)
     const svg = decodeURIComponent(uri.slice('data:image/svg+xml,'.length))
     // One bar per tile line, at the seeded width and the shared vertical rhythm.
-    const rects = [...svg.matchAll(/<rect x='0' y='(\d+)' width='(\d+)' height='(\d+)'\/>/g)]
+    const rects = [
+      ...svg.matchAll(/<rect x='0' y='(\d+)' width='(\d+)' height='(\d+)'\/>/g),
+    ]
     expect(rects).toHaveLength(SKELETON_TILE_LINES)
     rects.forEach((m, i) => {
       expect(Number(m[1])).toBe(i * SKELETON_LINE_PITCH_PX)
@@ -53,7 +55,9 @@ describe('ChatRowSkeleton', () => {
 
     // A single fill block covers ANY height (the mask tiles the bars), so a
     // very tall row has no line-count cliff below which it goes blank.
-    const fills = [...root.querySelectorAll('.skeleton.line')] as HTMLElement[]
+    const fills = [
+      ...root.querySelectorAll('.skeleton.line'),
+    ] as HTMLElement[]
     expect(fills).toHaveLength(1)
     // LOAD-BEARING: Oat's component selector is `[role=status].skeleton` — a
     // fill without the role renders 0-height and transparent (the

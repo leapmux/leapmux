@@ -17,7 +17,9 @@ export const TOOL_USE_KIND_PREFIX = 'tool_use:'
 
 /** The tool name packed into a `tool_use:${name}` entry kind, or undefined. */
 export function toolNameFromKind(kind: string): string | undefined {
-  return kind.startsWith(TOOL_USE_KIND_PREFIX) ? kind.slice(TOOL_USE_KIND_PREFIX.length) : undefined
+  return kind.startsWith(TOOL_USE_KIND_PREFIX)
+    ? kind.slice(TOOL_USE_KIND_PREFIX.length)
+    : undefined
 }
 
 /**
@@ -139,7 +141,10 @@ export function kindScopedLayoutKey(
 ): string {
   if (kind === 'tool_use' || kind === 'tool_result')
     return `|d:${resolveEffectiveDiffView()}`
-  if (kind === 'assistant_thinking')
-    return `|t:${resolveEffectiveThinkingExpanded() ? 1 : 0}`
+  if (kind === 'assistant_thinking') {
+    return `|t:${resolveEffectiveThinkingExpanded()
+      ? 1
+      : 0}`
+  }
   return ''
 }

@@ -26,7 +26,12 @@ export function isQwenPlanApproval(payload: Record<string, unknown>): boolean {
 export function qwenExtractControl(input: ControlExtractionInput): ExtractedControlRequest | null {
   if (isQwenPlanApproval(input.payload)) {
     const text = pickString(pickObject(acpPermissionToolCall(input.payload), 'rawInput'), 'plan')
-    return { kind: 'plan', ...(text ? { text } : {}) }
+    return {
+      kind: 'plan',
+      ...(text
+        ? { text }
+        : {}),
+    }
   }
   return acpExtractControl(input)
 }

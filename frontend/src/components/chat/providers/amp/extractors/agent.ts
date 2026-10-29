@@ -26,7 +26,9 @@ function firstLine(text: string): string {
  */
 function labeled(label: string, request: string): string {
   const line = firstLine(request)
-  return line ? `${label}: ${line}` : label
+  return line
+    ? `${label}: ${line}`
+    : label
 }
 
 /** The non-blank parts, with a blank line between them. */
@@ -49,16 +51,28 @@ export function ampAgentRequest(toolName: string, args: Record<string, unknown>,
         ...common,
         description: labeled('Oracle', task),
         agentType: toolName,
-        prompt: joinParts(task, pickString(args, 'context'), files.length > 0 ? files.map(file => `- ${file}`).join('\n') : ''),
+        prompt: joinParts(task, pickString(args, 'context'), files.length > 0
+          ? files.map(file => `- ${file}`).join('\n')
+          : ''),
       }
     }
     case AMP_SUBAGENT_TOOL.Librarian: {
       const query = pickString(args, 'query')
-      return { ...common, description: labeled('Librarian', query), agentType: toolName, prompt: joinParts(query, pickString(args, 'context')) }
+      return {
+        ...common,
+        description: labeled('Librarian', query),
+        agentType: toolName,
+        prompt: joinParts(query, pickString(args, 'context')),
+      }
     }
     default: {
       const query = pickString(args, 'query')
-      return { ...common, description: labeled('Finder', query), agentType: toolName, prompt: query }
+      return {
+        ...common,
+        description: labeled('Finder', query),
+        agentType: toolName,
+        prompt: query,
+      }
     }
   }
 }
@@ -66,13 +80,17 @@ export function ampAgentRequest(toolName: string, args: Record<string, unknown>,
 /** The report one finished subagent call returned, as the run it describes. */
 export function ampAgentResult(request: AgentRequest, text: string, failed: boolean): AgentResult {
   return {
-    agents: [{
-      description: request.description,
-      ...(request.registryKey !== undefined ? { registryKey: request.registryKey } : {}),
-      agentId: '',
-      outcome: failed ? 'failed' : 'completed',
-      metadata: [],
-      body: text,
-    }],
+    agents: [
+      {
+        description: request.description,
+        ...(request.registryKey !== undefined
+          ? { registryKey: request.registryKey }
+          : {}),
+        agentId: '',
+        outcome: failed ? 'failed' : 'completed',
+        metadata: [],
+        body: text,
+      },
+    ],
   }
 }

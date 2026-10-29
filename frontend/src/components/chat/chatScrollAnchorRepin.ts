@@ -172,7 +172,9 @@ export function createAnchorRepin(deps: AnchorRepinDeps) {
     //    this stays midpoint there (guarded on hasNewerMessages so it can never fight tail-follow).
     const atTop = scrollTop <= EDGE_INTENT_TOLERANCE_PX
     const atLoadedBottom = deps.hasNewerMessages() && maxScrollTopOf(el) - scrollTop <= EDGE_INTENT_TOLERANCE_PX
-    const ratio = atTop ? 0 : atLoadedBottom ? 1 : VIEWPORT_MIDPOINT_RATIO
+    const ratio = atTop
+      ? 0
+      : atLoadedBottom ? 1 : VIEWPORT_MIDPOINT_RATIO
     const offset = viewportAnchorOffset(el, ratio)
     return {
       anchor: deps.virt.anchorAt(scrollTop + offset),
@@ -228,7 +230,9 @@ export function createAnchorRepin(deps: AnchorRepinDeps) {
   let repinDeferredDuringAnimation = false
 
   /** The pinned row while anchored, or null while following the live tail. */
-  const currentAnchor = (): ScrollAnchor | null => (scrollMode.kind === 'anchored' ? scrollMode.anchor : null)
+  const currentAnchor = (): ScrollAnchor | null => (scrollMode.kind === 'anchored'
+    ? scrollMode.anchor
+    : null)
   /** The pinned row plus where it is held inside the viewport. */
   const currentAnchorState = (): { anchor: ScrollAnchor, viewportOffsetRatio: number } | null =>
     scrollMode.kind === 'anchored'
@@ -269,11 +273,18 @@ export function createAnchorRepin(deps: AnchorRepinDeps) {
     origin: 'viewport' | 'row-top' = 'viewport',
   ) => {
     scrollMode = a
-      ? { kind: 'anchored', anchor: a, viewportOffsetRatio: clamp(viewportOffsetRatio, 0, 1), origin }
+      ? {
+          kind: 'anchored',
+          anchor: a,
+          viewportOffsetRatio: clamp(viewportOffsetRatio, 0, 1),
+          origin,
+        }
       : { kind: 'following' }
     if (a) {
       const el = deps.getEl()
-      anchorCaptureTop = captureTop ?? (el ? readScrollTop(el) : 0)
+      anchorCaptureTop = captureTop ?? (el
+        ? readScrollTop(el)
+        : 0)
     }
   }
 
@@ -517,7 +528,9 @@ export function createAnchorRepin(deps: AnchorRepinDeps) {
             reportDrift('absorbed')
             reanchorAndDropDrift()
           }
-          else if ((deps.isUserScrolling() ? flingLike : activeFling) && delta < flingSuppressPx) {
+          else if ((deps.isUserScrolling()
+            ? flingLike
+            : activeFling) && delta < flingSuppressPx) {
             // A small correction during a FAST scroll (real momentum): defer it, so the
             // write doesn't cancel the fling. Some measurements land just AFTER handleScroll
             // returns, so outside the handler we gate on `activeFling` -- isActivelyFlinging,

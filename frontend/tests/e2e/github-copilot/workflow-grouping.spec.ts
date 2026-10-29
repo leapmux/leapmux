@@ -4,7 +4,10 @@ import { exerciseUngroupedNativeChildren } from '../helpers/workflowGrouping'
 import { COPILOT_CHILD } from './childScenario'
 
 copilotTest('keeps two actual native children outside workflow groups after reload', async ({ native }) => {
-  await exerciseUngroupedNativeChildren(native, { openChild: slot => openProfiledNativeChild(native, COPILOT_CHILD, slot), catalogProof: true })
+  await exerciseUngroupedNativeChildren(native, {
+    openChild: slot => openProfiledNativeChild(native, COPILOT_CHILD, slot),
+    catalogProof: true,
+  })
 })
 
 // Track the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/520.

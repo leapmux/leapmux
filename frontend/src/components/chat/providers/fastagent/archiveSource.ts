@@ -85,7 +85,14 @@ export function fastAgentArchiveSource(input: ArchiveInput): FastAgentArchiveSou
   }
   if (meta[FASTAGENT_ARCHIVE.Timestamp] !== undefined && typeof meta[FASTAGENT_ARCHIVE.Timestamp] !== 'string')
     return undefined
-  const identity: ArchiveIdentity = { captureId, sessionId, actor, historyFile, messageIndex, role }
+  const identity: ArchiveIdentity = {
+    captureId,
+    sessionId,
+    actor,
+    historyFile,
+    messageIndex,
+    role,
+  }
   const raw = input.parentObject
   const field = meta[FASTAGENT_ARCHIVE.Field]
   if (field === FASTAGENT_ARCHIVE.Content || field === FASTAGENT_ARCHIVE.Channels) {
@@ -95,19 +102,43 @@ export function fastAgentArchiveSource(input: ArchiveInput): FastAgentArchiveSou
     if (field === FASTAGENT_ARCHIVE.Content) {
       if (raw.type !== 'text' || typeof raw.text !== 'string')
         return undefined
-      return { ...identity, kind: 'content', index, text: raw.text }
+      return {
+        ...identity,
+        kind: 'content',
+        index,
+        text: raw.text,
+      }
     }
     const channel = meta[FASTAGENT_ARCHIVE.Channel]
     if (!nonempty(channel))
       return undefined
-    if (METADATA_CHANNELS.has(channel))
-      return { ...identity, kind: 'metadata', index, channel, raw }
+    if (METADATA_CHANNELS.has(channel)) {
+      return {
+        ...identity,
+        kind: 'metadata',
+        index,
+        channel,
+        raw,
+      }
+    }
     if (raw.type !== 'text' || typeof raw.text !== 'string')
       return undefined
-    if (channel === FASTAGENT_ARCHIVE.Reasoning && role === FASTAGENT_ARCHIVE.AssistantRole)
-      return { ...identity, kind: 'reasoning', index, text: raw.text }
-    if (channel === FASTAGENT_ARCHIVE.ErrorChannel)
-      return { ...identity, kind: 'error', index, text: raw.text }
+    if (channel === FASTAGENT_ARCHIVE.Reasoning && role === FASTAGENT_ARCHIVE.AssistantRole) {
+      return {
+        ...identity,
+        kind: 'reasoning',
+        index,
+        text: raw.text,
+      }
+    }
+    if (channel === FASTAGENT_ARCHIVE.ErrorChannel) {
+      return {
+        ...identity,
+        kind: 'error',
+        index,
+        text: raw.text,
+      }
+    }
     return undefined
   }
   if (field !== FASTAGENT_ARCHIVE.ToolCalls && field !== FASTAGENT_ARCHIVE.ToolResults)
@@ -117,15 +148,25 @@ export function fastAgentArchiveSource(input: ArchiveInput): FastAgentArchiveSou
   const toolName = meta[FASTAGENT_ARCHIVE.ToolName]
   if (!nonempty(callId) || !nonempty(spanId) || !nonempty(toolName))
     return undefined
-  const request = fastAgentNativeRequest(field === FASTAGENT_ARCHIVE.ToolCalls ? raw : meta[FASTAGENT_ARCHIVE.Request])
+  const request = fastAgentNativeRequest(field === FASTAGENT_ARCHIVE.ToolCalls
+    ? raw
+    : meta[FASTAGENT_ARCHIVE.Request])
   if (!request || request.name !== toolName)
     return undefined
   const tool: ArchiveToolIdentity = { ...identity, callId, spanId, request }
-  if (field === FASTAGENT_ARCHIVE.ToolCalls)
-    return role === FASTAGENT_ARCHIVE.AssistantRole ? { ...tool, kind: 'request' } : undefined
+  if (field === FASTAGENT_ARCHIVE.ToolCalls) {
+    return role === FASTAGENT_ARCHIVE.AssistantRole
+      ? { ...tool, kind: 'request' }
+      : undefined
+  }
   if (role !== FASTAGENT_ARCHIVE.UserRole || !validNativeResult(raw))
     return undefined
-  return { ...tool, kind: 'result', result: raw, failed: raw.isError === true }
+  return {
+    ...tool,
+    kind: 'result',
+    result: raw,
+    failed: raw.isError === true,
+  }
 }
 export function sameFastAgentArchiveCall(left: FastAgentArchiveSource, right: FastAgentArchiveSource): boolean {
   if ((left.kind !== 'request' && left.kind !== 'result') || (right.kind !== 'request' && right.kind !== 'result'))
@@ -140,6 +181,8 @@ export function fastAgentNativeResultText(result: Record<string, unknown>): stri
     return ''
   return result.content.filter(isObject)
     .filter(block => block.type === 'text' && typeof block.text === 'string')
-    .map(block => typeof block.text === 'string' ? block.text : '')
+    .map(block => typeof block.text === 'string'
+      ? block.text
+      : '')
     .join('\n')
 }

@@ -80,8 +80,12 @@ export const ElevatePage: Component = () => {
       return { kind: 'redirect', to: '/' }
     if (!auth.isAuthenticated())
       return { kind: 'redirect', to: `/login?redirect=${encodeURIComponent(elevateHere())}` }
-    if (proven() || isElevationCurrent(auth.elevationExpiresAt()))
-      return { kind: 'redirect', to: returnTo() }
+    if (proven() || isElevationCurrent(auth.elevationExpiresAt())) {
+      return {
+        kind: 'redirect',
+        to: returnTo(),
+      }
+    }
     return { kind: 'prompt' }
     // COMPARED BY VALUE, and the seed is the state the memo answers while the
     // bootstrap runs.

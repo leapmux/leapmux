@@ -9,9 +9,15 @@ export const ThinkingTokenCount: Component<{ tokens: number, paused?: boolean }>
   return (
     <AnimatedCount
       display={display()}
-      unit={display() === '1' ? 'token' : 'tokens'}
-      {...(display() === '777' ? { rootClass: styles.starPower } : {})}
-      {...(props.paused === undefined ? {} : { paused: props.paused })}
+      unit={display() === '1'
+        ? 'token'
+        : 'tokens'}
+      {...(display() === '777'
+        ? { rootClass: styles.starPower }
+        : {})}
+      {...(props.paused === undefined
+        ? {}
+        : { paused: props.paused })}
     />
   )
 }

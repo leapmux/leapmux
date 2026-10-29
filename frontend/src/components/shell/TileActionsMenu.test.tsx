@@ -69,7 +69,9 @@ describe('TileActionsMenu', () => {
   it('hides close item when closeMode is none', () => {
     render(() => (
       <TileActionsMenu
-        actions={makeActions({ closeMode: { kind: 'none' } })}
+        actions={makeActions({
+          closeMode: { kind: 'none' },
+        })}
         onMakeGridClick={() => {}}
         makeGridLabel="Make grid"
       />
@@ -82,7 +84,10 @@ describe('TileActionsMenu', () => {
     const onClose = vi.fn()
     render(() => (
       <TileActionsMenu
-        actions={makeActions({ closeMode: { kind: 'tile' }, onClose })}
+        actions={makeActions({
+          closeMode: { kind: 'tile' },
+          onClose,
+        })}
         onMakeGridClick={() => {}}
         makeGridLabel="Make grid"
       />
@@ -96,7 +101,9 @@ describe('TileActionsMenu', () => {
   it('emits close-grid-menu-item when closeMode is grid', () => {
     render(() => (
       <TileActionsMenu
-        actions={makeActions({ closeMode: { kind: 'grid', gridId: 'g1' } })}
+        actions={makeActions({
+          closeMode: { kind: 'grid', gridId: 'g1' },
+        })}
         onMakeGridClick={() => {}}
         makeGridLabel="Make grid"
       />
@@ -111,7 +118,11 @@ describe('TileActionsMenu', () => {
         actions={makeActions()}
         onMakeGridClick={() => {}}
         makeGridLabel="Make grid"
-        pop={{ label: 'Pop out to floating window', testId: 'pop-out-button', onClick: () => {} }}
+        pop={{
+          label: 'Pop out to floating window',
+          testId: 'pop-out-button',
+          onClick: () => {},
+        }}
       />
     ))
     expect(screen.getByText('Pop out to floating window')).toBeInTheDocument()
@@ -124,7 +135,11 @@ describe('TileActionsMenu', () => {
         actions={makeActions()}
         onMakeGridClick={() => {}}
         makeGridLabel="Make grid"
-        pop={{ label: 'Pop in to main window', testId: 'pop-in-button', onClick: () => {} }}
+        pop={{
+          label: 'Pop in to main window',
+          testId: 'pop-in-button',
+          onClick: () => {},
+        }}
       />
     ))
     expect(screen.getByText('Pop in to main window')).toBeInTheDocument()
@@ -146,7 +161,11 @@ describe('TileActionsMenu', () => {
   it('without withIcons, split / make-grid / close items have no leading <svg> icon', () => {
     render(() => (
       <TileActionsMenu
-        actions={makeActions({ canSplit: true, canMakeGrid: true, closeMode: { kind: 'tile' } })}
+        actions={makeActions({
+          canSplit: true,
+          canMakeGrid: true,
+          closeMode: { kind: 'tile' },
+        })}
         onMakeGridClick={() => {}}
         makeGridLabel="Make grid"
       />
@@ -162,7 +181,11 @@ describe('TileActionsMenu', () => {
   it('with withIcons, split / make-grid / close items have exactly one leading <svg> icon', () => {
     render(() => (
       <TileActionsMenu
-        actions={makeActions({ canSplit: true, canMakeGrid: true, closeMode: { kind: 'tile' } })}
+        actions={makeActions({
+          canSplit: true,
+          canMakeGrid: true,
+          closeMode: { kind: 'tile' },
+        })}
         onMakeGridClick={() => {}}
         makeGridLabel="Make grid"
         withIcons

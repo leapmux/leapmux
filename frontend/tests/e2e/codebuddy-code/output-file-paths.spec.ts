@@ -8,7 +8,12 @@ import { readCodeBuddyNativeOutput } from './outputFilePaths'
 import { CODEBUDDY_AGENT, nativeContext } from './scenarios'
 
 codebuddyTest('keeps the native filesystem path and exact inline preview after reload', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }, testInfo) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+  })
   await openProviderAgent(leapmuxServer, context.workspaceId, CODEBUDDY_AGENT, { directoryPrefix: 'native-output-path-' })
   await openWorkspace(page, context.workspaceId)
   await captureNativeToolOutput(context, testInfo, {

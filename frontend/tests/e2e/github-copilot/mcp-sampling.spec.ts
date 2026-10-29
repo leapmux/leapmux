@@ -13,20 +13,36 @@ import { withCopilotMcpServer } from './mcpScenario'
 
 for (const decision of ['Allow', 'Deny'] as const) {
   copilotTest(`answers a native MCP sampling request with ${decision}`, async ({ authenticatedEmptyWorkspace, leapmuxServer, modelScript, page }, testInfo) => {
-    const fixtures = { page, leapmuxServer, modelScript, workspaceId: authenticatedEmptyWorkspace.workspaceId }
+    const fixtures = {
+      page,
+      leapmuxServer,
+      modelScript,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    }
     const samplingPrompt = 'Reply with the single word SAMPLED.'
     const samplingRule = `copilot-sampling-${decision.toLowerCase()}`
-    await modelScript.rule({ name: samplingRule, when: { user: escapeRegExp(samplingPrompt) }, respond: { text: 'SAMPLED' } })
+    await modelScript.rule({
+      name: samplingRule,
+      when: {
+        user: escapeRegExp(samplingPrompt),
+      },
+      respond: { text: 'SAMPLED' },
+    })
     let receiptLog = ''
     await withCopilotMcpServer(fixtures, (directory) => {
       receiptLog = join(directory, 'sampling-receipt.json')
-      return writeMcpSamplingServer(directory, { prompt: modelScript.prompt(samplingPrompt), receiptLog })
+      return writeMcpSamplingServer(directory, {
+        prompt: modelScript.prompt(samplingPrompt),
+        receiptLog,
+      })
     }, async (native, server) => {
       const catalog = await sendNativeAnswer(native, 'Confirm the local sampling server is ready.', 'The sampling server is ready.')
       const callId = `sampling-tool-${decision.toLowerCase()}`
       const tool = mcpToolCall(native.provider, callId, { server: server.name, tool: 'sample', input: {} })
       expect(nativeModelToolNames(catalog)).toContain(tool.name)
-      const start = await modelScript.queue({ toolCalls: [tool] }, nativeTextStep(native, 'The sampling tool completed.'))
+      const start = await modelScript.queue({
+        toolCalls: [tool],
+      }, nativeTextStep(native, 'The sampling tool completed.'))
       await sendMessage(page, modelScript.prompt('Call the local sampling tool once.'))
       await modelScript.waitForSteps(start + 1)
       const banner = await waitForControlBanner(page)
@@ -35,13 +51,20 @@ for (const decision of ['Allow', 'Deny'] as const) {
       await modelScript.waitForSteps(start + 2)
       await waitForAgentIdle(page)
       const result = nativeToolResult(await modelScript.requestAt(start + 1), callId)
-      const expected = decision === 'Allow' ? 'SAMPLED' : 'MCP_SAMPLING_REFUSED'
+      const expected = decision === 'Allow'
+        ? 'SAMPLED'
+        : 'MCP_SAMPLING_REFUSED'
       expect(result).toContain(expected)
       const receipt = readMcpServerReceipt(receiptLog)
-      await testInfo.attach('mcp-sampling-receipt', { body: JSON.stringify(receipt, null, 2), contentType: 'application/json' })
+      await testInfo.attach('mcp-sampling-receipt', {
+        body: JSON.stringify(receipt, null, 2),
+        contentType: 'application/json',
+      })
       expect(receipt.toolResults).toHaveLength(1)
       expect(receipt.toolResults[0]?.text).toContain(expected)
-      expect((await modelScript.status()).ruleMatches[samplingRule] ?? 0).toBe(decision === 'Allow' ? 1 : 0)
+      expect((await modelScript.status()).ruleMatches[samplingRule] ?? 0).toBe(decision === 'Allow'
+        ? 1
+        : 0)
       await expect(toolCallRow(page, callId).filter({ hasText: expected }).first()).toBeVisible()
       await expectNoControlBanner(page)
       await page.reload()

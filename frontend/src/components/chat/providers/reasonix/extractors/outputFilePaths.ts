@@ -16,15 +16,22 @@ export function reasonixOutputFilePaths(input: RowExtractionInput, call: ToolCal
   }
   const request = parsedACPToolCall(input.span.request?.parentObject)
   const nativeName = pickString(native, 'name') || pickString(native, 'title')
-    || (request?.toolCallId === call.id ? pickString(request, 'name') || pickString(request, 'title') : '') || call.name
+    || (request?.toolCallId === call.id
+      ? pickString(request, 'name') || pickString(request, 'title')
+      : '') || call.name
   const paths = native.content.flatMap((block: unknown) => {
     if (!isObject(block) || block.type !== 'content' || !isObject(block.content) || block.content.type !== 'text')
       return []
     const path = reasonixOutputFilePointer(block.content.text, nativeName, call.id)
-    return path === undefined ? [] : [path]
+    return path === undefined
+      ? []
+      : [path]
   })
-  if (paths.length > 0)
-    return paths.length === 1 ? paths : []
+  if (paths.length > 0) {
+    return paths.length === 1
+      ? paths
+      : []
+  }
   if (native.status !== 'failed')
     return []
   const output = acpSupplementRawOutput(acpToolSupplement(native, input.resolved.supplementalContent))
@@ -35,5 +42,7 @@ export function reasonixOutputFilePaths(input: RowExtractionInput, call: ToolCal
   if (savedName && nativeName && savedName !== nativeName)
     return []
   const path = reasonixAuthenticatedOutputFilePointer(saved[REASONIX_TOOL_RECORD.ContentField], savedName || nativeName, call.id, collectAcpToolText(native), output?.[REASONIX_OUTPUT_RECEIPT.Envelope])
-  return path === undefined ? [] : [path]
+  return path === undefined
+    ? []
+    : [path]
 }

@@ -37,11 +37,15 @@ export interface LettaTodoLists {
  */
 export function lettaTodoLists(toolName: string, args: Record<string, unknown>, answer: unknown): LettaTodoLists | null {
   const requested = lettaRequestedTodos(toolName, args)
-  const answered = answer === undefined ? null : lettaAnsweredTodos(toolName, answer)
+  const answered = answer === undefined
+    ? null
+    : lettaAnsweredTodos(toolName, answer)
   const request = answered ?? requested
   if (!request)
     return null
-  const result = answered ?? (answer !== undefined && toolName === LETTA_TOOL.UpdatePlan ? requested : null)
+  const result = answered ?? (answer !== undefined && toolName === LETTA_TOOL.UpdatePlan
+    ? requested
+    : null)
   return { request, result }
 }
 
@@ -55,7 +59,12 @@ function lettaRequestedTodos(toolName: string, args: Record<string, unknown>): T
       status: pickString(step, 'status'),
     })))
     const note = pickString(args, 'explanation').trim()
-    return { items, ...(note ? { note } : {}) }
+    return {
+      items,
+      ...(note
+        ? { note }
+        : {}),
+    }
   }
   return null
 }
@@ -70,7 +79,9 @@ function lettaAnsweredTodos(toolName: string, answer: unknown): ToolResultByKind
       if (!Array.isArray(record.tasks))
         return null
       const items = record.tasks.map((task, index) => lettaTaskItem(task, index))
-      return items.every(item => item !== null) ? { items } : null
+      return items.every(item => item !== null)
+        ? { items }
+        : null
     }
     case LETTA_TOOL.TaskCreate:
     case LETTA_TOOL.TaskUpdate:
@@ -89,7 +100,12 @@ function lettaSingleTask(item: TodoItem | null): ToolRequestByKind['todo'] | nul
   if (!item)
     return null
   const { description, ...rest } = item
-  return { items: [rest], ...(description !== undefined ? { note: description } : {}) }
+  return {
+    items: [rest],
+    ...(description !== undefined
+      ? { note: description }
+      : {}),
+  }
 }
 
 /** One native task record as a to-do item. Null when it states no subject. */
@@ -102,12 +118,16 @@ function lettaTaskItem(task: unknown, index: number): TodoItem | null {
   const id = pickString(task, 'taskId') || undefined
   const description = pickString(task, 'description')
   return {
-    ...(id !== undefined ? { id } : {}),
+    ...(id !== undefined
+      ? { id }
+      : {}),
     rowKey: todoRowKey(id, index, content),
     content,
     status: normalizeTodoStatus(task.status),
     activeForm: pickString(task, 'activeForm'),
-    ...(description ? { description } : {}),
+    ...(description
+      ? { description }
+      : {}),
   }
 }
 
@@ -119,7 +139,9 @@ function lettaAnswerRecord(answer: unknown): Record<string, unknown> | null {
     return null
   try {
     const parsed: unknown = JSON.parse(answer)
-    return isObject(parsed) ? parsed : null
+    return isObject(parsed)
+      ? parsed
+      : null
   }
   catch {
     return null

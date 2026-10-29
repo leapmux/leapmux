@@ -7,12 +7,23 @@ import { PI_AGENT_TOOL, PI_POWERSHELL_TOOL, PI_SEARCH_TOOL } from './protocol'
 /** A successful Pi `tool_execution_end` frame for every tool the kind table holds. */
 function end(toolName: string, result: Record<string, unknown>, args: Record<string, unknown>): ToolResultFixture {
   return {
-    payload: { type: 'tool_execution_end', toolCallId: 'call', toolName, result, isError: false },
+    payload: {
+      type: 'tool_execution_end',
+      toolCallId: 'call',
+      toolName,
+      result,
+      isError: false,
+    },
     options: {
       request: {
         wrapper: null,
         topLevel: null,
-        parentObject: { type: 'tool_execution_start', toolCallId: 'call', toolName, args },
+        parentObject: {
+          type: 'tool_execution_start',
+          toolCallId: 'call',
+          toolName,
+          args,
+        },
         rawText: '',
         supplementalContent: undefined,
         messageMetadata: undefined,
@@ -21,26 +32,85 @@ function end(toolName: string, result: Record<string, unknown>, args: Record<str
   }
 }
 
-const text = (value: string) => [{ type: 'text', text: value }]
+function text(value: string) {
+  return [
+    { type: 'text', text: value },
+  ]
+}
 
 const FIXTURES: Readonly<Record<string, ToolResultFixture>> = {
-  [PI_TOOL.Codemode]: end(PI_TOOL.Codemode, { content: text('Script completed\nOutput:\ncomplete'), details: { calls: [] } }, { code: 'text("complete")' }),
-  [PI_TOOL.Bash]: end(PI_TOOL.Bash, { content: text('ok') }, { command: 'ls' }),
-  [PI_POWERSHELL_TOOL]: end(PI_POWERSHELL_TOOL, { content: text('ok') }, { command: 'Get-ChildItem' }),
-  [PI_TOOL.Read]: end(PI_TOOL.Read, { content: text('file body') }, { path: '/p/a.ts' }),
-  [PI_TOOL.Write]: end(PI_TOOL.Write, { content: text('Written'), details: { diff: '+new' } }, { path: '/p/a.ts', content: 'new' }),
-  [PI_TOOL.Edit]: end(PI_TOOL.Edit, { content: text('Edited'), details: { diff: '-old\n+new' } }, { path: '/p/a.ts', edits: [{ oldText: 'old', newText: 'new' }] }),
-  [PI_TOOL.Todo]: end(PI_TOOL.Todo, { content: text('Saved'), details: { action: 'list', params: { action: 'list' }, tasks: [{ id: 1, subject: 'One', status: 'pending' }] } }, { action: 'list' }),
-  [PI_TOOL.Agent]: end(PI_TOOL.Agent, { content: text('done'), details: { status: 'completed', agentId: 'child', toolUses: 1, durationMs: 10 } }, { description: 'Probe', prompt: 'Run.' }),
-  [PI_SEARCH_TOOL.Grep]: end(PI_SEARCH_TOOL.Grep, { content: text('a.ts:1:x') }, { pattern: 'x' }),
-  [PI_SEARCH_TOOL.Find]: end(PI_SEARCH_TOOL.Find, { content: text('a.ts') }, { pattern: '*' }),
-  [PI_SEARCH_TOOL.List]: end(PI_SEARCH_TOOL.List, { content: text('a.ts') }, { path: '/p' }),
-  [PI_TOOL.AskUserQuestion]: end(PI_TOOL.AskUserQuestion, { content: text('answered') }, { questions: [] }),
-  [PI_TOOL.PlanQuestion]: end(PI_TOOL.PlanQuestion, { content: text('asked') }, {}),
-  [PI_TOOL.GoalQuestion]: end(PI_TOOL.GoalQuestion, { content: text('asked') }, {}),
-  [PI_TOOL.GoalQuestionnaire]: end(PI_TOOL.GoalQuestionnaire, { content: text('asked') }, {}),
-  [PI_AGENT_TOOL.GetResult]: end(PI_AGENT_TOOL.GetResult, { content: text('report') }, { agent_id: 'child' }),
-  [PI_AGENT_TOOL.Steer]: end(PI_AGENT_TOOL.Steer, { content: text('sent') }, { agent_id: 'child', message: 'hi' }),
+  [PI_TOOL.Codemode]: end(PI_TOOL.Codemode, {
+    content: text('Script completed\nOutput:\ncomplete'),
+    details: { calls: [] },
+  }, { code: 'text("complete")' }),
+  [PI_TOOL.Bash]: end(PI_TOOL.Bash, {
+    content: text('ok'),
+  }, { command: 'ls' }),
+  [PI_POWERSHELL_TOOL]: end(PI_POWERSHELL_TOOL, {
+    content: text('ok'),
+  }, { command: 'Get-ChildItem' }),
+  [PI_TOOL.Read]: end(PI_TOOL.Read, {
+    content: text('file body'),
+  }, { path: '/p/a.ts' }),
+  [PI_TOOL.Write]: end(PI_TOOL.Write, {
+    content: text('Written'),
+    details: { diff: '+new' },
+  }, { path: '/p/a.ts', content: 'new' }),
+  [PI_TOOL.Edit]: end(PI_TOOL.Edit, {
+    content: text('Edited'),
+    details: { diff: '-old\n+new' },
+  }, {
+    path: '/p/a.ts',
+    edits: [
+      { oldText: 'old', newText: 'new' },
+    ],
+  }),
+  [PI_TOOL.Todo]: end(PI_TOOL.Todo, {
+    content: text('Saved'),
+    details: {
+      action: 'list',
+      params: { action: 'list' },
+      tasks: [
+        { id: 1, subject: 'One', status: 'pending' },
+      ],
+    },
+  }, { action: 'list' }),
+  [PI_TOOL.Agent]: end(PI_TOOL.Agent, {
+    content: text('done'),
+    details: {
+      status: 'completed',
+      agentId: 'child',
+      toolUses: 1,
+      durationMs: 10,
+    },
+  }, { description: 'Probe', prompt: 'Run.' }),
+  [PI_SEARCH_TOOL.Grep]: end(PI_SEARCH_TOOL.Grep, {
+    content: text('a.ts:1:x'),
+  }, { pattern: 'x' }),
+  [PI_SEARCH_TOOL.Find]: end(PI_SEARCH_TOOL.Find, {
+    content: text('a.ts'),
+  }, { pattern: '*' }),
+  [PI_SEARCH_TOOL.List]: end(PI_SEARCH_TOOL.List, {
+    content: text('a.ts'),
+  }, { path: '/p' }),
+  [PI_TOOL.AskUserQuestion]: end(PI_TOOL.AskUserQuestion, {
+    content: text('answered'),
+  }, { questions: [] }),
+  [PI_TOOL.PlanQuestion]: end(PI_TOOL.PlanQuestion, {
+    content: text('asked'),
+  }, {}),
+  [PI_TOOL.GoalQuestion]: end(PI_TOOL.GoalQuestion, {
+    content: text('asked'),
+  }, {}),
+  [PI_TOOL.GoalQuestionnaire]: end(PI_TOOL.GoalQuestionnaire, {
+    content: text('asked'),
+  }, {}),
+  [PI_AGENT_TOOL.GetResult]: end(PI_AGENT_TOOL.GetResult, {
+    content: text('report'),
+  }, { agent_id: 'child' }),
+  [PI_AGENT_TOOL.Steer]: end(PI_AGENT_TOOL.Steer, {
+    content: text('sent'),
+  }, { agent_id: 'child', message: 'hi' }),
 }
 
 /**
@@ -62,8 +132,18 @@ function failed(kind: ToolKind, name: string, status: ToolFailureFixture['status
   // Each failed call uses its matching successful fixture.
   const fixture = FIXTURES[name]
   return {
-    payload: { type: 'tool_execution_end', toolCallId: 'call', toolName: name, result: { content: text(ERROR_TEXT) }, isError: true },
-    ...(fixture?.options !== undefined ? { options: fixture.options } : {}),
+    payload: {
+      type: 'tool_execution_end',
+      toolCallId: 'call',
+      toolName: name,
+      result: {
+        content: text(ERROR_TEXT),
+      },
+      isError: true,
+    },
+    ...(fixture?.options !== undefined
+      ? { options: fixture.options }
+      : {}),
     kind,
     name,
     status,

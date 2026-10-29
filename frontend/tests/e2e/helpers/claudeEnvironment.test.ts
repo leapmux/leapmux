@@ -33,7 +33,14 @@ describe('createClaudeEnvironment', () => {
     const env = createClaudeEnvironment({ homeDir, modelURL: 'http://127.0.0.1:4567', modelKey: 'unit-key' })
     const settings = JSON.parse(readFileSync(join(env.CLAUDE_CONFIG_DIR!, 'settings.json'), 'utf8'))
     expect(settings).toEqual({
-      claudeMdExcludes: ['**/CLAUDE.md', '**/CLAUDE.local.md', '**/.claude/CLAUDE.md', '**/.claude/rules/**', '**/AGENTS.md', '**/.claude/AGENTS.md'],
+      claudeMdExcludes: [
+        '**/CLAUDE.md',
+        '**/CLAUDE.local.md',
+        '**/.claude/CLAUDE.md',
+        '**/.claude/rules/**',
+        '**/AGENTS.md',
+        '**/.claude/AGENTS.md',
+      ],
     })
   })
 })

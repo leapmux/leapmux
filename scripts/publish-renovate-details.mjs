@@ -13,24 +13,51 @@ const botLogin = 'leapmux-renovate[bot]'
 
 export async function githubRequest(method, path, body) {
   const readable = /^\/repos\/leapmux\/leapmux\/(?:pulls(?:\?[^\r\n#]*)?|pulls\/[1-9]\d*|issues\/[1-9]\d*\/comments(?:\?[^\r\n#]*)?|issues\/comments\/[1-9]\d*)$/.test(path)
-  const writable = method === 'POST' ? /^\/repos\/leapmux\/leapmux\/issues\/[1-9]\d*\/comments$/.test(path) : /^\/repos\/leapmux\/leapmux\/(?:pulls|issues\/comments)\/[1-9]\d*$/.test(path)
-  if (!['GET', 'POST', 'PATCH'].includes(method) || (method === 'GET' ? !readable || body !== undefined : !writable || typeof body?.body !== 'string' || Object.keys(body).length !== 1))
+  const writable = method === 'POST'
+    ? /^\/repos\/leapmux\/leapmux\/issues\/[1-9]\d*\/comments$/.test(path)
+    : /^\/repos\/leapmux\/leapmux\/(?:pulls|issues\/comments)\/[1-9]\d*$/.test(path)
+  if (!['GET', 'POST', 'PATCH'].includes(method) || (method === 'GET'
+    ? !readable || body !== undefined
+    : !writable || typeof body?.body !== 'string' || Object.keys(body).length !== 1)) {
     throw new Error('PR details can only use the leapmux/leapmux GitHub API.')
-  const args = ['api', '--hostname', 'github.com', '--method', method, '-H', 'X-GitHub-Api-Version: 2022-11-28', '-H', 'Cache-Control: no-cache', path]
+  }
+  const args = [
+    'api',
+    '--hostname',
+    'github.com',
+    '--method',
+    method,
+    '-H',
+    'X-GitHub-Api-Version: 2022-11-28',
+    '-H',
+    'Cache-Control: no-cache',
+    path,
+  ]
   if (body !== undefined)
     args.push('--input', '-')
-  const result = spawnSync('gh', args, { encoding: 'utf8', input: body === undefined ? undefined : JSON.stringify(body), timeout: 30000, maxBuffer: 16 * 1024 * 1024 })
+  const result = spawnSync('gh', args, {
+    encoding: 'utf8',
+    input: body === undefined
+      ? undefined
+      : JSON.stringify(body),
+    timeout: 30000,
+    maxBuffer: 16 * 1024 * 1024,
+  })
   if (result.error || result.status !== 0)
     throw new Error(`GitHub ${method} ${path} failed: ${result.error?.message ?? result.stderr}`)
-  return result.stdout.trim() ? JSON.parse(result.stdout) : null
+  return result.stdout.trim()
+    ? JSON.parse(result.stdout)
+    : null
 }
 
 async function listAll(api, path) {
   const values = []
   for (let page = 1; page <= 100; page++) {
-    const batch = await api('GET', `${path}${path.includes('?') ? '&' : '?'}per_page=100&page=${page}`)
+    const batch = await api('GET', `${path}${path.includes('?')
+      ? '&'
+      : '?'}per_page=100&page=${page}`)
     if (!Array.isArray(batch))
-      throw new Error('GitHub returned an invalid PR detail collection.')
+      throw new TypeError('GitHub returned an invalid PR detail collection.')
     values.push(...batch)
     if (batch.length < 100)
       return values
@@ -90,7 +117,12 @@ export async function publishRecord(record, pr, template, { api = githubRequest,
   requireBotPullRequest(pr, record.branchName)
   const partition = partitionLegacyBody(pr.body, template)
   // The native changelog renderer already suppresses mentions. A second pass corrupts its HTML entities.
-  const clean = { ...record, warnings: restoreNumericEntities(sanitize(record.warnings)), notes: restoreNumericEntities(sanitize(record.notes)), changelogs: restoreNumericEntities(record.changelogs) }
+  const clean = {
+    ...record,
+    warnings: restoreNumericEntities(sanitize(record.warnings)),
+    notes: restoreNumericEntities(sanitize(record.notes)),
+    changelogs: restoreNumericEntities(record.changelogs),
+  }
   // Confirm all comments before removing any details from an existing description.
   const comments = await updateDetailComments(pr.number, renderDetailComments(clean), { api, actorLogin })
   if (pr.body.trim() !== partition.body.trim()) {
@@ -127,7 +159,14 @@ export async function migratePullRequest(pr, template, options = {}) {
   const { details } = partitionLegacyBody(pr.body, template)
   if (!details.trim())
     return { pr: pr.number, skipped: 'The description already contains only the core sections.' }
-  return publishRecord({ version: 1, repository: 'leapmux/leapmux', branchName: pr.head.ref, warnings: '', notes: details, changelogs: '' }, pr, template, options)
+  return publishRecord({
+    version: 1,
+    repository: 'leapmux/leapmux',
+    branchName: pr.head.ref,
+    warnings: '',
+    notes: details,
+    changelogs: '',
+  }, pr, template, options)
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
@@ -155,7 +194,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
       }
       const records = text.split('\n').filter(Boolean).map(line => validateDetailRecord(JSON.parse(line)))
       if (dryRun) {
-        console.log(JSON.stringify(records.map(record => ({ branch: record.branchName, commentBytes: renderDetailComments(record).map(body => Buffer.byteLength(body)) }))))
+        console.log(JSON.stringify(records.map(record => ({
+          branch: record.branchName,
+          commentBytes: renderDetailComments(record).map(body => Buffer.byteLength(body)),
+        }))))
       }
       else {
         if (process.env.GITHUB_ACTIONS !== 'true' || process.env.GITHUB_REPOSITORY !== 'leapmux/leapmux' || process.env.GITHUB_REF !== 'refs/heads/main')

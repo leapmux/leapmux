@@ -29,7 +29,9 @@ export function classifyLettaMessage(input: ClassificationInput): MessageCategor
   // A worker-assembled row carries the worker's own `type` field.
   if (pickString(parent, 'type') === ASSEMBLED_MESSAGE.Type) {
     const text = pickString(parent, 'text')
-    return text ? { kind: 'assistant_text' } : { kind: 'hidden' }
+    return text
+      ? { kind: 'assistant_text' }
+      : { kind: 'hidden' }
   }
 
   // Native frames use type. A kind-only record is not a native turn end.
@@ -52,16 +54,22 @@ export function classifyLettaMessage(input: ClassificationInput): MessageCategor
     case LETTA_DELTA_KIND.ToolCallMessage: {
       const singular = pickObject(source, LETTA_DELTA_FIELD.ToolCall)
       const calls = source[LETTA_DELTA_FIELD.ToolCalls]
-      const first = Array.isArray(calls) ? calls.find(isObject) : null
+      const first = Array.isArray(calls)
+        ? calls.find(isObject)
+        : null
       const call = singular ?? first
       return call && pickString(call, LETTA_DELTA_FIELD.ToolCallID) && pickString(call, LETTA_DELTA_FIELD.Name)
         ? { kind: 'tool_use' }
         : { kind: 'unknown' }
     }
     case LETTA_DELTA_KIND.ToolReturnMessage:
-      return isLettaToolProgress(source) ? { kind: 'hidden' } : { kind: 'tool_result' }
+      return isLettaToolProgress(source)
+        ? { kind: 'hidden' }
+        : { kind: 'tool_result' }
     case LETTA_DELTA_KIND.ClientToolEnd:
-      return lettaReturnedData(source).kind === 'present' ? { kind: 'tool_result' } : { kind: 'hidden' }
+      return lettaReturnedData(source).kind === 'present'
+        ? { kind: 'tool_result' }
+        : { kind: 'hidden' }
     case LETTA_DELTA_KIND.UserMessage:
       return { kind: 'user_content' }
     default:

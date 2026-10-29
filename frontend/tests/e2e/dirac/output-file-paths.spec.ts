@@ -22,7 +22,10 @@ diracTest('keeps the native script limit and its retained preview after reload',
     proof: async (capture) => {
       const frames = diracOutputFileFrames(capture.snapshot)
       const receipt = diracScriptReceipt(frames, source)
-      await testInfo.attach('dirac-native-script-preview', { body: JSON.stringify({ sessionId: capture.agent.agentSessionId, receipt }, null, 2), contentType: 'application/json' })
+      await testInfo.attach('dirac-native-script-preview', {
+        body: JSON.stringify({ sessionId: capture.agent.agentSessionId, receipt }, null, 2),
+        contentType: 'application/json',
+      })
       expect(receipt.exitCode).toBe(0)
       expect(receipt.failed).toBe(false)
       expect(receipt.output).toContain(output.firstMarker)
@@ -37,7 +40,11 @@ diracTest('keeps the native script limit and its retained preview after reload',
       // The script receipt, the output pointer, and the frames that give both.
       const readScript = (snapshot: NativeMessageSnapshot) => {
         const stored = diracOutputFileFrames(snapshot)
-        return { receipt: diracScriptReceipt(stored, source), pointer: diracNativeOutputPaths(stored, source, temporaryDir), frames: stored }
+        return {
+          receipt: diracScriptReceipt(stored, source),
+          pointer: diracNativeOutputPaths(stored, source, temporaryDir),
+          frames: stored,
+        }
       }
       await proveNativeToolOutputFilePaths({
         context: native,
@@ -77,11 +84,22 @@ diracTest('keeps the generated native log path and exact preview Copy after relo
       expect(receipt.previewText).toMatch(/truncated|omitted/i)
       assertPrivateNativePath(receipt.paths[0]!, temporaryDir)
       expect(nativeToolResult(capture.request, capture.call.id)).toContain(receipt.paths[0]!)
-      await testInfo.attach('dirac-native-output-path-receipt', { body: JSON.stringify({ agentId: capture.agent.id, sessionId: capture.agent.agentSessionId, receipt, frames }), contentType: 'application/json' })
+      await testInfo.attach('dirac-native-output-path-receipt', {
+        body: JSON.stringify({
+          agentId: capture.agent.id,
+          sessionId: capture.agent.agentSessionId,
+          receipt,
+          frames,
+        }),
+        contentType: 'application/json',
+      })
       // The output pointer and the frames that give it.
       const readPointer = (snapshot: NativeMessageSnapshot) => {
         const stored = diracOutputFileFrames(snapshot)
-        return { receipt: diracNativeOutputPaths(stored, source, temporaryDir), frames: stored }
+        return {
+          receipt: diracNativeOutputPaths(stored, source, temporaryDir),
+          frames: stored,
+        }
       }
       await proveNativeToolOutputFilePaths({
         context: native,

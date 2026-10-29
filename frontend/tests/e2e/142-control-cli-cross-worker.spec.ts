@@ -42,16 +42,19 @@ interface CrossWorkerEnv {
 const test = base.extend<{ crossWorker: CrossWorkerEnv }, {
   crossWorkerHarness: { harness: MultiWorkerHarness, cli: CLIConfigDir }
 }>({
-  // eslint-disable-next-line no-empty-pattern -- Playwright requires first arg to be a destructuring pattern
-  crossWorkerHarness: [async ({}, use) => {
-    const harness = await startMultiWorkerHarness(2)
-    // A failed mint stops the harness too.
-    await withCleanup(async () => {
+  crossWorkerHarness: [
+    // eslint-disable-next-line no-empty-pattern -- Playwright requires first arg to be a destructuring pattern
+    async ({}, use) => {
+      const harness = await startMultiWorkerHarness(2)
+      // A failed mint stops the harness too.
+      await withCleanup(async () => {
       // The CLI's credential file uses the hub URL as its lookup key.
-      const cli = await mintCLITokenForAdmin(harness)
-      await use({ harness, cli })
-    }, () => harness.stop())
-  }, { scope: 'worker' }],
+        const cli = await mintCLITokenForAdmin(harness)
+        await use({ harness, cli })
+      }, () => harness.stop())
+    },
+    { scope: 'worker' },
+  ],
 
   crossWorker: async ({ crossWorkerHarness }, use) => {
     await use(crossWorkerHarness)
@@ -81,7 +84,10 @@ test.describe('control CLI cross-worker', () => {
           openWorkspace(pageA, workspaceId),
           openWorkspace(pageB, workspaceId),
         ])
-        await Promise.all([expectAgentTabCount(pageA, 1), expectAgentTabCount(pageB, 1)])
+        await Promise.all([
+          expectAgentTabCount(pageA, 1),
+          expectAgentTabCount(pageB, 1),
+        ])
         await Promise.all([
           expect(tabById(pageA, agentA)).toBeVisible(),
           expect(tabById(pageB, agentA)).toBeVisible(),
@@ -127,7 +133,9 @@ test.describe('control CLI cross-worker', () => {
           'agent',
           '--workspace-id',
           workspaceId,
-        ], { env: { LEAPMUX_CONTROL_WORKER_ID: '' } })
+        ], {
+          env: { LEAPMUX_CONTROL_WORKER_ID: '' },
+        })
         throw new Error('expected tab open to fail')
       }
       catch (err) {

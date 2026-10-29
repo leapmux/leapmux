@@ -31,14 +31,18 @@ export const AddTunnelDialog: Component<AddTunnelDialogProps> = (props) => {
       return null
     if (!v)
       return null // will be caught by disabled button
-    return isValidPort(v) ? null : 'Must be 1-65535'
+    return isValidPort(v)
+      ? null
+      : 'Must be 1-65535'
   })
 
   const bindPortError = createMemo(() => {
     const v = bindPort().trim()
     if (!v)
       return null
-    return isValidPort(v) ? null : 'Must be 1-65535'
+    return isValidPort(v)
+      ? null
+      : 'Must be 1-65535'
   })
 
   const targetAddrError = createMemo(() => {
@@ -86,8 +90,12 @@ export const AddTunnelDialog: Component<AddTunnelDialogProps> = (props) => {
       const tunnel = await tunnelStore!.add({
         workerId: props.workerId,
         type: tunnelType(),
-        targetAddr: tunnelType() === 'port_forward' ? targetAddr().trim() : '',
-        targetPort: tunnelType() === 'port_forward' ? Number(targetPort()) : 0,
+        targetAddr: tunnelType() === 'port_forward'
+          ? targetAddr().trim()
+          : '',
+        targetPort: tunnelType() === 'port_forward'
+          ? Number(targetPort())
+          : 0,
         // Normalized, not raw: the validator strips a `[::1]` bracket pair, so the
         // submitted value must too or the sidecar's net.ParseIP rejects what the
         // dialog just called valid.
@@ -177,7 +185,9 @@ export const AddTunnelDialog: Component<AddTunnelDialogProps> = (props) => {
               inputMode="numeric"
               value={bindPort()}
               onInput={e => setBindPort(e.currentTarget.value)}
-              placeholder={tunnelType() === 'socks5' ? '1080' : targetPort() || 'Same as target'}
+              placeholder={tunnelType() === 'socks5'
+                ? '1080'
+                : targetPort() || 'Same as target'}
               data-testid="bind-port"
             />
             <Show when={bindPortError()}>
@@ -196,7 +206,9 @@ export const AddTunnelDialog: Component<AddTunnelDialogProps> = (props) => {
           </button>
           <button type="submit" disabled={isDisabled()} data-testid="tunnel-create">
             <Show when={submitting.loading()}><Spinner /></Show>
-            {submitting.loading() ? 'Creating...' : 'Create'}
+            {submitting.loading()
+              ? 'Creating...'
+              : 'Create'}
           </button>
         </footer>
       </form>

@@ -7,7 +7,12 @@ import { StatusResultBody, taskResultCollapsible } from './statusResult'
 import '../providers/testMocks'
 
 function source(overrides: Partial<TaskResult> = {}): TaskResult {
-  return { title: 'Stopped task task-42', outcome: 'stopped', output: 'The task stopped.', ...overrides }
+  return {
+    title: 'Stopped task task-42',
+    outcome: 'stopped',
+    output: 'The task stopped.',
+    ...overrides,
+  }
 }
 
 describe('StatusResultBody', () => {
@@ -45,7 +50,12 @@ describe('StatusResultBody', () => {
    * The outcome selects an icon. The native title supplies the displayed words.
    * Agent cards can use the outcome word as a fallback. Task cards keep the native title.
    */
-  it.each(['completed', 'failed', 'running', 'stopped'] as const)('never states the %s outcome as words', (outcome) => {
+  it.each([
+    'completed',
+    'failed',
+    'running',
+    'stopped',
+  ] as const)('never states the %s outcome as words', (outcome) => {
     // This note contains no outcome word.
     // An outcome word in the view can come only from its outcome field.
     const { container } = render(() => <StatusResultBody source={source({ outcome, title: 'Background task task-42', output: 'Read 4 files.' })} />)

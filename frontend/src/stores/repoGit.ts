@@ -95,7 +95,10 @@ export type RepoGitLookup = Pick<RepoGitStore, 'get' | 'peek' | 'repos'> & {
 /** Split a repo key into worker id and path. */
 export function repoKeyParts(key: RepoKey): { workerId: string, path: string } {
   const i = key.indexOf('\0')
-  return { workerId: key.slice(0, i), path: key.slice(i + 1) }
+  return {
+    workerId: key.slice(0, i),
+    path: key.slice(i + 1),
+  }
 }
 
 /** Options for {@link RepoGitStore.refresh}. */
@@ -145,14 +148,20 @@ export function isUntrackedDirEntry(path: string): boolean {
 
 /** Strips the trailing slash `isUntrackedDirEntry` matches on. */
 export function untrackedDirBasePath(path: string): string {
-  return isUntrackedDirEntry(path) ? path.slice(0, -1) : path
+  return isUntrackedDirEntry(path)
+    ? path.slice(0, -1)
+    : path
 }
 
 export function fileEntryToDiffStats(entry: GitFileStatusEntry): DiffStats {
   const isUntracked = entry.unstagedStatus === GitFileStatusCode.UNTRACKED
   return {
-    added: isUntracked ? 0 : entry.linesAdded + entry.stagedLinesAdded,
-    deleted: isUntracked ? 0 : entry.linesDeleted + entry.stagedLinesDeleted,
+    added: isUntracked
+      ? 0
+      : entry.linesAdded + entry.stagedLinesAdded,
+    deleted: isUntracked
+      ? 0
+      : entry.linesDeleted + entry.stagedLinesDeleted,
     untracked: isUntracked ? 1 : 0,
   }
 }
@@ -280,7 +289,10 @@ export function findCanonicalRepoKey(
   // touching read would mark them all equally recent -- collapsing the LRU
   // order the cap's eviction depends on (see the store's peek discipline).
   const entries: Iterable<[string, RepoGitState | undefined]> = keys
-    ? keys.map(k => [k, store.peek(k)] as [string, RepoGitState | undefined])
+    ? keys.map(k => [
+        k,
+        store.peek(k),
+      ] as [string, RepoGitState | undefined])
     : Object.entries(store.repos())
 
   for (const [key, state] of entries) {
@@ -475,13 +487,17 @@ export function upsertRepoGitFromProtoStatus(
     // empty Changed filter between status and refresh.
     next = {
       ...next,
-      errorHint: prev?.errorHint && hasHydratedRepoGitFields(prev) ? prev.errorHint : '',
+      errorHint: prev?.errorHint && hasHydratedRepoGitFields(prev)
+        ? prev.errorHint
+        : '',
     }
   }
   else if (prev) {
     // Metadata does not carry diagnostics. Keep a refresh-sourced hint on a
     // hydrated entry; clear everything else (including leftover migrate tips).
-    next.errorHint = hasHydratedRepoGitFields(prev) ? (prev.errorHint || '') : ''
+    next.errorHint = hasHydratedRepoGitFields(prev)
+      ? (prev.errorHint || '')
+      : ''
   }
 
   store.upsert(key, next)

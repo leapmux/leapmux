@@ -17,10 +17,14 @@ async function collect(chunks: AsyncIterable<string>): Promise<string[]> {
 describe('createModelStream', () => {
   it('counts reasoning and text in one ordered stream and holds after the last chunk', async () => {
     const held: string[] = []
-    const stream = createModelStream(response(), { chunkChars: 2, delayMs: 0, gates: [
-      { afterChunk: 1, name: 'thinking' },
-      { afterChunk: 3, name: 'text' },
-    ] }, async (name) => {
+    const stream = createModelStream(response(), {
+      chunkChars: 2,
+      delayMs: 0,
+      gates: [
+        { afterChunk: 1, name: 'thinking' },
+        { afterChunk: 3, name: 'text' },
+      ],
+    }, async (name) => {
       held.push(name)
       return true
     })
@@ -36,7 +40,13 @@ describe('createModelStream', () => {
     let reached!: () => void
     const reachedGate = new Promise<void>(resolve => reached = resolve)
     const heldGate = new Promise<boolean>(resolve => release = resolve)
-    const stream = createModelStream(response(), { chunkChars: 1, delayMs: 0, gates: [{ afterChunk: 1, name: 'hold' }] }, () => {
+    const stream = createModelStream(response(), {
+      chunkChars: 1,
+      delayMs: 0,
+      gates: [
+        { afterChunk: 1, name: 'hold' },
+      ],
+    }, () => {
       reached()
       return heldGate
     })
@@ -55,7 +65,13 @@ describe('createModelStream', () => {
   })
 
   it('stops later fields after a cancelled gate', async () => {
-    const stream = createModelStream(response(), { chunkChars: 1, delayMs: 0, gates: [{ afterChunk: 1, name: 'cancel' }] }, async () => false)
+    const stream = createModelStream(response(), {
+      chunkChars: 1,
+      delayMs: 0,
+      gates: [
+        { afterChunk: 1, name: 'cancel' },
+      ],
+    }, async () => false)
     expect(await collect(stream.chunks('ab'))).toEqual(['a'])
     expect(stream.active).toBe(false)
     expect(await collect(stream.chunks('later'))).toEqual([])
@@ -79,7 +95,13 @@ describe('createModelStream', () => {
   })
 
   it('refuses a release gate without a scenario handler before it emits output', () => {
-    expect(() => createModelStream(response(), { chunkChars: 1, delayMs: 0, gates: [{ afterChunk: 1, name: 'missing' }] })).toThrow('scenario-owned gate handler')
+    expect(() => createModelStream(response(), {
+      chunkChars: 1,
+      delayMs: 0,
+      gates: [
+        { afterChunk: 1, name: 'missing' },
+      ],
+    })).toThrow('scenario-owned gate handler')
   })
 })
 
@@ -87,7 +109,14 @@ describe('createBufferedModelStream', () => {
   it('holds native actor generation at the stated combined reasoning and text chunks', async () => {
     const controller = new AbortController()
     const reached: string[] = []
-    const stream = createBufferedModelStream(controller.signal, { chunkChars: 2, delayMs: 0, gates: [{ afterChunk: 3, name: 'thinking-end' }, { afterChunk: 4, name: 'answer-start' }] }, async (name) => {
+    const stream = createBufferedModelStream(controller.signal, {
+      chunkChars: 2,
+      delayMs: 0,
+      gates: [
+        { afterChunk: 3, name: 'thinking-end' },
+        { afterChunk: 4, name: 'answer-start' },
+      ],
+    }, async (name) => {
       reached.push(name)
       return true
     })

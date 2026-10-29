@@ -8,7 +8,11 @@ afterEach(() => {
 
 describe('command registry', () => {
   it('registers and retrieves a command', () => {
-    registerCommand({ id: 'test.cmd', title: 'Test', handler: () => {} })
+    registerCommand({
+      id: 'test.cmd',
+      title: 'Test',
+      handler: () => {},
+    })
     const cmd = getCommand('test.cmd')
     expect(cmd).toBeDefined()
     expect(cmd!.id).toBe('test.cmd')
@@ -32,13 +36,21 @@ describe('command registry', () => {
   })
 
   it('unregisters a command', () => {
-    registerCommand({ id: 'test.cmd', title: 'Test', handler: () => {} })
+    registerCommand({
+      id: 'test.cmd',
+      title: 'Test',
+      handler: () => {},
+    })
     unregisterCommand('test.cmd')
     expect(getCommand('test.cmd')).toBeUndefined()
   })
 
   it('returns unregister function from registerCommand', () => {
-    const unregister = registerCommand({ id: 'test.cmd', title: 'Test', handler: () => {} })
+    const unregister = registerCommand({
+      id: 'test.cmd',
+      title: 'Test',
+      handler: () => {},
+    })
     expect(getCommand('test.cmd')).toBeDefined()
     unregister()
     expect(getCommand('test.cmd')).toBeUndefined()
@@ -55,8 +67,16 @@ describe('command registry', () => {
   })
 
   it('unregister function only removes its own registration', () => {
-    const unregister1 = registerCommand({ id: 'test.cmd', title: 'Test 1', handler: () => {} })
-    registerCommand({ id: 'test.cmd', title: 'Test 2', handler: () => {} })
+    const unregister1 = registerCommand({
+      id: 'test.cmd',
+      title: 'Test 1',
+      handler: () => {},
+    })
+    registerCommand({
+      id: 'test.cmd',
+      title: 'Test 2',
+      handler: () => {},
+    })
     // unregister1 should NOT remove the second registration
     unregister1()
     expect(getCommand('test.cmd')).toBeDefined()
@@ -64,9 +84,21 @@ describe('command registry', () => {
   })
 
   it('getAllCommands returns all registered commands', () => {
-    registerCommand({ id: 'a', title: 'A', handler: () => {} })
-    registerCommand({ id: 'b', title: 'B', handler: () => {} })
-    registerCommand({ id: 'c', title: 'C', handler: () => {} })
+    registerCommand({
+      id: 'a',
+      title: 'A',
+      handler: () => {},
+    })
+    registerCommand({
+      id: 'b',
+      title: 'B',
+      handler: () => {},
+    })
+    registerCommand({
+      id: 'c',
+      title: 'C',
+      handler: () => {},
+    })
     const all = getAllCommands()
     expect(all).toHaveLength(3)
     expect(all.map(c => c.id).sort()).toEqual(['a', 'b', 'c'])

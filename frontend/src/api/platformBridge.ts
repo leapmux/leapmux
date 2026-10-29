@@ -155,7 +155,9 @@ export function parseDesktopBehaviorRefusals(err: unknown): DesktopBehaviorRefus
       return []
     if (setting !== 'trayEnabled' && setting !== 'startOnLogin')
       return []
-    return [{ setting, message }]
+    return [
+      { setting, message },
+    ]
   })
 }
 
@@ -264,8 +266,18 @@ function decodeTargetKind(n: number): CliPathTargetKind {
 function decodeCliPathStatus(p: CliPathStatusPayload): CliPathStatus {
   switch (p.state) {
     case PathState.OK: return { state: 'ok', bundled: p.bundled }
-    case PathState.MISSING: return { state: 'missing', bundled: p.bundled, target: p.target, targetKind: decodeTargetKind(p.targetKind) }
-    case PathState.MISMATCH: return { state: 'mismatch', bundled: p.bundled, resolved: p.resolved, targetKind: decodeTargetKind(p.targetKind) }
+    case PathState.MISSING: return {
+      state: 'missing',
+      bundled: p.bundled,
+      target: p.target,
+      targetKind: decodeTargetKind(p.targetKind),
+    }
+    case PathState.MISMATCH: return {
+      state: 'mismatch',
+      bundled: p.bundled,
+      resolved: p.resolved,
+      targetKind: decodeTargetKind(p.targetKind),
+    }
     default: return { state: 'unavailable' }
   }
 }
@@ -473,8 +485,13 @@ interface WindowModeQueryable {
  * zoomed, but fullscreen is the state that matters for save/restore).
  */
 async function readWindowMode(win: WindowModeQueryable): Promise<WindowMode> {
-  const [fullscreen, maximized] = await Promise.all([win.isFullscreen(), win.isMaximized()])
-  return fullscreen ? WINDOW_MODE_FULLSCREEN : maximized ? WINDOW_MODE_MAXIMIZED : WINDOW_MODE_NORMAL
+  const [fullscreen, maximized] = await Promise.all([
+    win.isFullscreen(),
+    win.isMaximized(),
+  ])
+  return fullscreen
+    ? WINDOW_MODE_FULLSCREEN
+    : maximized ? WINDOW_MODE_MAXIMIZED : WINDOW_MODE_NORMAL
 }
 
 // Disposes the resize saver installed by the most recent restoreWindowGeometry
@@ -666,7 +683,10 @@ export async function readClipboardImage(): Promise<File | null> {
   if (!image)
     return null
   try {
-    const [rgba, size] = await Promise.all([image.rgba(), image.size()])
+    const [rgba, size] = await Promise.all([
+      image.rgba(),
+      image.size(),
+    ])
     if (size.width === 0 || size.height === 0)
       return null
     const canvas = document.createElement('canvas')
@@ -723,7 +743,9 @@ export interface SaveStreamHandle {
  */
 export async function fileSaveOpen(filename: string): Promise<SaveStreamHandle> {
   return tauriInvoke<SaveStreamHandle>('file_save_open', undefined, {
-    headers: { 'filename-b64': arrayBufferToBase64(filename) },
+    headers: {
+      'filename-b64': arrayBufferToBase64(filename),
+    },
   })
 }
 
@@ -735,7 +757,9 @@ export async function fileSaveOpen(filename: string): Promise<SaveStreamHandle> 
  */
 export async function fileSaveOpenDialog(defaultName: string): Promise<SaveStreamHandle | null> {
   return tauriInvoke<SaveStreamHandle | null>('file_save_open_dialog', undefined, {
-    headers: { 'default-name-b64': arrayBufferToBase64(defaultName) },
+    headers: {
+      'default-name-b64': arrayBufferToBase64(defaultName),
+    },
   })
 }
 
@@ -747,7 +771,9 @@ export async function fileSaveOpenDialog(defaultName: string): Promise<SaveStrea
  */
 export async function fileSaveWrite(id: number, chunk: Uint8Array): Promise<void> {
   await tauriInvoke<void>('file_save_write', chunk, {
-    headers: { 'handle-id': String(id) },
+    headers: {
+      'handle-id': String(id),
+    },
   })
 }
 
@@ -758,7 +784,9 @@ export async function fileSaveWrite(id: number, chunk: Uint8Array): Promise<void
  */
 export async function fileSaveCommit(id: number): Promise<void> {
   await tauriInvoke<void>('file_save_commit', undefined, {
-    headers: { 'handle-id': String(id) },
+    headers: {
+      'handle-id': String(id),
+    },
   })
 }
 
@@ -770,7 +798,9 @@ export async function fileSaveCommit(id: number): Promise<void> {
  */
 export async function fileSaveAbort(id: number): Promise<void> {
   await tauriInvoke<void>('file_save_abort', undefined, {
-    headers: { 'handle-id': String(id) },
+    headers: {
+      'handle-id': String(id),
+    },
   })
 }
 
@@ -1009,7 +1039,9 @@ export const platformBridge = {
       relayId,
       workspaceIds,
       resumeHlc,
-      resumeEpoch: resume ? resume.epoch.toString() : null,
+      resumeEpoch: resume
+        ? resume.epoch.toString()
+        : null,
     })
   },
   async closeUserEventsRelay(relayId: number): Promise<void> {
@@ -1112,8 +1144,12 @@ export interface RelayClosePayload {
 export function parseRelayClosePayload(payload: unknown): RelayClosePayload {
   const close = payload as Partial<RelayClosePayload> | null
   return {
-    code: typeof close?.code === 'number' ? close.code : 1006,
-    reason: typeof close?.reason === 'string' ? close.reason : '',
+    code: typeof close?.code === 'number'
+      ? close.code
+      : 1006,
+    reason: typeof close?.reason === 'string'
+      ? close.reason
+      : '',
     wasClean: close?.wasClean === true,
   }
 }
@@ -1128,10 +1164,14 @@ export function parseRelayClosePayload(payload: unknown): RelayClosePayload {
  * the previous streaming RPC was retired.
  */
 export const desktopFetch: typeof globalThis.fetch = async (input, init) => {
-  const url = typeof input === 'string' ? input : (input as Request).url
+  const url = typeof input === 'string'
+    ? input
+    : (input as Request).url
   const method = init?.method ?? 'POST'
   const headers = Object.fromEntries(new Headers(init?.headers).entries())
-  const body = init?.body ? arrayBufferToBase64(init.body as ArrayBuffer | Uint8Array | string) : ''
+  const body = init?.body
+    ? arrayBufferToBase64(init.body as ArrayBuffer | Uint8Array | string)
+    : ''
   const parsed = new URL(url)
   const path = parsed.pathname + parsed.search
   const resp = await platformBridge.proxyHttp(method, path, headers, body)

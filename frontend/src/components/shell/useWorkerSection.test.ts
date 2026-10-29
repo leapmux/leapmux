@@ -63,9 +63,15 @@ vi.mock('~/stores/workerInfo.store', () => ({
 }))
 
 vi.mock('~/stores/workerChannelStatus.store', () => ({
-  createWorkerChannelStatusStore: () => ({ getStatus: vi.fn() }),
+  createWorkerChannelStatusStore: () => ({
+    getStatus: vi.fn(),
+  }),
 }))
-vi.mock('~/stores/tunnel.store', () => ({ createTunnelStore: () => ({ tunnels: vi.fn() }) }))
+vi.mock('~/stores/tunnel.store', () => ({
+  createTunnelStore: () => ({
+    tunnels: vi.fn(),
+  }),
+}))
 
 const flush = () => new Promise<void>(resolve => setTimeout(resolve, 0))
 
@@ -76,7 +82,11 @@ function worker(id: string, online = true) {
 beforeEach(() => {
   hubControlHandlers.length = 0
   mockListWorkers.mockReset()
-  mockListWorkers.mockResolvedValue({ workers: [worker('w1')] })
+  mockListWorkers.mockResolvedValue({
+    workers: [
+      worker('w1'),
+    ],
+  })
   mockDeregisterWorker.mockReset()
   mockDeregisterWorker.mockResolvedValue({})
   mockFetchWorkerInfo.mockReset()
@@ -91,7 +101,10 @@ beforeEach(() => {
  */
 describe('useWorkerSection', () => {
   function mount(getUserId: () => string = () => 'u1') {
-    return useWorkerSection({ getUserId, keyPinConfirmDialog: createDialogState() })
+    return useWorkerSection({
+      getUserId,
+      keyPinConfirmDialog: createDialogState(),
+    })
   }
 
   it('fetches workers once the user id is known', async () => {
@@ -120,12 +133,18 @@ describe('useWorkerSection', () => {
       // listWorkers deserializes FRESH objects every call, so the mock must
       // too -- `mockResolvedValue` hands back one shared object, which would
       // preserve identity on its own and make this assertion vacuous.
-      mockListWorkers.mockImplementation(async () => ({ workers: [worker('w1')] }))
+      mockListWorkers.mockImplementation(async () => ({
+        workers: [
+          worker('w1'),
+        ],
+      }))
       const s = mount()
       await flush()
       const first = s.workers()[0]
 
-      invokeHubControl({ events: [HubControlEvent.WORKERS_CHANGED] })
+      invokeHubControl({
+        events: [HubControlEvent.WORKERS_CHANGED],
+      })
       await flush()
 
       expect(mockListWorkers).toHaveBeenCalledTimes(2)
@@ -150,7 +169,12 @@ describe('useWorkerSection', () => {
 
   it('warms worker info only for ONLINE workers', async () => {
     await createRoot(async (dispose) => {
-      mockListWorkers.mockResolvedValue({ workers: [worker('up', true), worker('down', false)] })
+      mockListWorkers.mockResolvedValue({
+        workers: [
+          worker('up', true),
+          worker('down', false),
+        ],
+      })
       mount()
       await flush()
 

@@ -73,7 +73,9 @@ describe('kimiNativeOutputPointer', () => {
     expect(() => kimiNativeOutputPointer(text, 'native-call')).toThrow('The native Kimi result has no complete output-file pointer.')
   })
   it('reads the captured native model text-block projection', () => {
-    const projected = JSON.stringify([{ type: 'text', text: pointer }])
+    const projected = JSON.stringify([
+      { type: 'text', text: pointer },
+    ])
     expect(kimiNativeOutputPointer(projected, 'native-call')).toEqual({ path: '/private/native/task-output.txt', chars: 60000, bytes: 60000 })
   })
 
@@ -97,9 +99,18 @@ describe('kimiNativeOutputPointer', () => {
   })
 
   it.each([
-    [pointer.replace('output_size_chars: 60000', 'output_size_chars: 060000'), 'has an invalid full path or complete character count'],
-    [pointer.replace('next_step: Use Read with output_path to page through the saved output, or Grep to search it.', 'next_step: wrong'), 'requires its complete pointer header'],
-    [pointer.replace('\nnext_step:', '\nunknown_field: printed\nnext_step:'), 'has an unknown pointer field'],
+    [
+      pointer.replace('output_size_chars: 60000', 'output_size_chars: 060000'),
+      'has an invalid full path or complete character count',
+    ],
+    [
+      pointer.replace('next_step: Use Read with output_path to page through the saved output, or Grep to search it.', 'next_step: wrong'),
+      'requires its complete pointer header',
+    ],
+    [
+      pointer.replace('\nnext_step:', '\nunknown_field: printed\nnext_step:'),
+      'has an unknown pointer field',
+    ],
   ])('rejects a malformed complete header even when it contains a plausible path: %#', (text, error) => {
     expect(() => kimiNativeOutputPointer(text, 'native-call')).toThrow(error)
   })
@@ -117,7 +128,12 @@ describe('kimiNativeOutputPointer', () => {
     expect(kimiNativeOutputPointer(output, 'native-call')).toEqual({ path: '/private/native/task-output.txt', chars: 60000, bytes: 60000 })
   })
 
-  it.each(['tool_name: Bash', 'tool_call_id: native-call', 'output_size_chars: 60000', 'output_path: /private/native/task-output.txt'])('rejects the absent native field %s', (field) => {
+  it.each([
+    'tool_name: Bash',
+    'tool_call_id: native-call',
+    'output_size_chars: 60000',
+    'output_path: /private/native/task-output.txt',
+  ])('rejects the absent native field %s', (field) => {
     expect(() => kimiNativeOutputPointer(pointer.replace(`${field}\n`, ''), 'native-call')).toThrow('one exact')
   })
 
@@ -129,7 +145,15 @@ describe('kimiNativeOutputPointer', () => {
     expect(() => kimiNativeOutputPointer(pointer.replace('\nnext_step:', `\n${field}\nnext_step:`), 'native-call')).toThrow(error)
   })
 
-  it.each(['0', '-1', '50000', '10000001', 'NaN', '9007199254740992', '60000 (only the first 50000 characters were preserved)'])('rejects an incomplete or invalid character count %s', (size) => {
+  it.each([
+    '0',
+    '-1',
+    '50000',
+    '10000001',
+    'NaN',
+    '9007199254740992',
+    '60000 (only the first 50000 characters were preserved)',
+  ])('rejects an incomplete or invalid character count %s', (size) => {
     expect(() => kimiNativeOutputPointer(pointer.replace('output_size_chars: 60000', `output_size_chars: ${size}`), 'native-call')).toThrow('character count')
   })
 

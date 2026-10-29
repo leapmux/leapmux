@@ -158,7 +158,10 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
             // workspaces NOT in `assignedIds`, and `placed` only ever receives
             // ids drawn from the same `store.state.items` that built it, so the
             // two sets are disjoint by construction.
-            ? [...sectionWorkspaces, ...unassigned]
+            ? [
+                ...sectionWorkspaces,
+                ...unassigned,
+              ]
             : sectionWorkspaces,
         })
       }
@@ -377,7 +380,10 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
 
   /** Re-read the lists a delete invalidated, then hand the caller the next id. */
   const finishDelete = async (workspaceId: string) => {
-    await Promise.all([props.onRefreshWorkspaces(), props.loadSections()])
+    await Promise.all([
+      props.onRefreshWorkspaces(),
+      props.loadSections(),
+    ])
     if (props.onDeleteWorkspace) {
       const nextId = findFirstNonArchivedWorkspaceId()
       props.onDeleteWorkspace(workspaceId, nextId)
@@ -557,12 +563,16 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
       // findIndex proved targetIdx valid and the ternary bounds targetIdx + 1;
       // the '' defaults are the type-level guard alone.
       const prevPos = items[targetIdx]?.position ?? ''
-      const nextPos = targetIdx + 1 < items.length ? items[targetIdx + 1]?.position ?? '' : ''
+      const nextPos = targetIdx + 1 < items.length
+        ? items[targetIdx + 1]?.position ?? ''
+        : ''
       return mid(prevPos, nextPos)
     }
     // findIndex proved targetIdx valid and the ternary bounds targetIdx - 1;
     // the '' defaults are the type-level guard alone.
-    const prevPos = targetIdx > 0 ? items[targetIdx - 1]?.position ?? '' : ''
+    const prevPos = targetIdx > 0
+      ? items[targetIdx - 1]?.position ?? ''
+      : ''
     const nextPos = items[targetIdx]?.position ?? ''
     return mid(prevPos, nextPos)
   }
@@ -597,7 +607,9 @@ export function useWorkspaceOperations(props: UseWorkspaceOperationsProps) {
         const items = store.getItemsForSection(targetSectionId)
         const dragIdx = items.findIndex(i => i.workspaceId === wsId)
         const dropIdx = items.findIndex(i => i.workspaceId === targetWsId)
-        const direction = dragIdx >= 0 && dragIdx < dropIdx ? 'after' : 'before'
+        const direction = dragIdx >= 0 && dragIdx < dropIdx
+          ? 'after'
+          : 'before'
         position = computeDropPosition(wsId, targetWsId, targetSectionId, direction)
       }
       else {

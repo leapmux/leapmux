@@ -8,7 +8,9 @@ import { GROK_AGENT } from './scenarios'
 grokTest.describe('Grok Build session goal', () => {
   grokTest('sets, follows and clears a native goal', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
     // The native fixture opens Grok in its default approval mode. This test needs `always-approve`, so it opens its own agent.
-    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, GROK_AGENT, { optionValues: { approvalMode: 'always-approve' } })
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, GROK_AGENT, {
+      optionValues: { approvalMode: 'always-approve' },
+    })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await waitForSettingsHydrated(page)
     // Every call Grok makes for the goal quotes the objective, which carries

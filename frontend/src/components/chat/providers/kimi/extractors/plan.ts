@@ -18,5 +18,7 @@ export function kimiPlanText(parsed: unknown): string | null {
   if (pickString(display, 'kind') !== KIMI_DISPLAY.PlanReview)
     return null
   const plan = pickString(display, 'plan')
-  return plan.trim() ? plan : null
+  return plan.trim()
+    ? plan
+    : null
 }

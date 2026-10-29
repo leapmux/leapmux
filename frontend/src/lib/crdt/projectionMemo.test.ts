@@ -14,7 +14,10 @@ function seeded(): UserCrdtState {
     canonicalHlc: create(HLCSchema, { physical: 1n, logical: 0n, clientId: 'seed' }),
     body: {
       case: 'setNodeRegister',
-      value: create(SetNodeRegisterOpSchema, { nodeId: 'root', field: { case: 'kind', value: NodeKind.LEAF } }),
+      value: create(SetNodeRegisterOpSchema, {
+        nodeId: 'root',
+        field: { case: 'kind', value: NodeKind.LEAF },
+      }),
     },
   }))
   return state

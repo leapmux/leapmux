@@ -14,5 +14,7 @@ export function toolCallDisplayName(call: ToolCall): string {
   if (call.kind === 'mcp')
     return mcpToolCallDisplayName(call.request)
   const renderer = rendererFor(call)
-  return renderer.nameLeads && call.name ? humanizeWireWord(call.name) : renderer.label
+  return renderer.nameLeads && call.name
+    ? humanizeWireWord(call.name)
+    : renderer.label
 }

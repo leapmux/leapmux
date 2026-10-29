@@ -18,7 +18,9 @@ export function writeNodeLauncher(directory: string, name: string, options: { no
   if (!isAbsolute(directory) || !isAbsolute(options.node) || !isAbsolute(options.script))
     throw new Error('A Node launcher requires an absolute directory, Node executable, and script.')
   const windows = process.platform === 'win32'
-  const path = join(directory, windows ? `${name}.cmd` : name)
+  const path = join(directory, windows
+    ? `${name}.cmd`
+    : name)
   const source = windows
     ? `@"${options.node}" "${options.script}" %*\r\n`
     : `#!/bin/sh\nexec ${quotePosixShellArgument(options.node)} ${quotePosixShellArgument(options.script)} "$@"\n`

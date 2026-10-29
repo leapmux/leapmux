@@ -4,15 +4,24 @@ import { randomUUID } from 'node:crypto'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { exerciseModelError, failedTurnRequests, nativeErrorMarker } from './nativeModelError'
 
-const errorRows = vi.hoisted(() => ({ count: 1, afterReload: 1, checks: [] as number[], events: [] as string[] }))
+const errorRows = vi.hoisted(() => ({
+  count: 1,
+  afterReload: 1,
+  checks: [] as number[],
+  events: [] as string[],
+}))
 vi.mock('./ui', () => ({
   sendMessage: vi.fn(async () => {}),
   waitForAgentIdle: async () => { errorRows.events.push('idle') },
   resumeQueueAfterFailure: vi.fn(async () => {}),
   visibleOnly: (value: unknown) => value,
-  messageContents: () => ({ filter: () => ({ errorRows: true }) }),
+  messageContents: () => ({
+    filter: () => ({ errorRows: true }),
+  }),
 }))
-vi.mock('./nativeConversation', () => ({ sendNativeAnswer: vi.fn(async () => {}) }))
+vi.mock('./nativeConversation', () => ({
+  sendNativeAnswer: vi.fn(async () => {}),
+}))
 vi.mock('@playwright/test', () => ({
   expect: (value: unknown) => value && typeof value === 'object' && 'errorRows' in value
     ? {
@@ -35,7 +44,10 @@ describe('exerciseModelError', () => {
   })
 
   function context(): NativeScenarioContext {
-    const row = { errorRows: true, first: () => row }
+    const row = {
+      errorRows: true,
+      first: () => row,
+    }
     return {
       page: {
         getByText: () => row,
@@ -47,7 +59,11 @@ describe('exerciseModelError', () => {
       modelScript: {
         queue: async () => 0,
         prompt: (text: string) => text,
-        waitForSteps: async () => ({ requests: [record({ stepIndex: 0 })] }),
+        waitForSteps: async () => ({
+          requests: [
+            record({ stepIndex: 0 }),
+          ],
+        }),
       },
     } as unknown as NativeScenarioContext
   }
@@ -68,13 +84,24 @@ describe('exerciseModelError', () => {
 })
 
 function record(fields: Partial<MockModelRequestRecord>): MockModelRequestRecord {
-  return { protocol: 'anthropic-messages', path: '/v1/messages', body: {}, ...fields }
+  return {
+    protocol: 'anthropic-messages',
+    path: '/v1/messages',
+    body: {},
+    ...fields,
+  }
 }
 
 describe('failedTurnRequests', () => {
   it('returns the requests that consumed the failed turn steps, in step order', () => {
-    const retry = record({ stepIndex: 4, body: { attempt: 'retry' } })
-    const first = record({ stepIndex: 3, body: { attempt: 'first' } })
+    const retry = record({
+      stepIndex: 4,
+      body: { attempt: 'retry' },
+    })
+    const first = record({
+      stepIndex: 3,
+      body: { attempt: 'first' },
+    })
     expect(failedTurnRequests([retry, first], 3, 2)).toEqual([first, retry])
   })
 
@@ -93,7 +120,9 @@ describe('failedTurnRequests', () => {
   })
 
   it('returns fewer requests than attempts when a step was never consumed', () => {
-    expect(failedTurnRequests([record({ stepIndex: 5 })], 5, 2)).toHaveLength(1)
+    expect(failedTurnRequests([
+      record({ stepIndex: 5 }),
+    ], 5, 2)).toHaveLength(1)
   })
 
   it('returns no request for an empty record list', () => {
@@ -139,7 +168,14 @@ describe('nativeErrorMarker', () => {
     expect(matchingRetryPatterns(nativeErrorMarker(FAILED_RUN_UUID))).toEqual([])
   })
 
-  it.each(['429', '500', '502', '503', '504', '524'])('is not a message that OpenCode retries, for a UUID that holds %s', (status) => {
+  it.each([
+    '429',
+    '500',
+    '502',
+    '503',
+    '504',
+    '524',
+  ])('is not a message that OpenCode retries, for a UUID that holds %s', (status) => {
     const uuid = `${status}00000-0000-4000-8000-0000000${status}00`
     expect(matchingRetryPatterns(nativeErrorMarker(uuid))).toEqual([])
   })
@@ -177,7 +213,10 @@ describe('nativeErrorMarker', () => {
   it.each([
     ['an empty text', ''],
     ['a text that is not hexadecimal', 'not-a-uuid-not-a-uuid-not-a-uuid!!'],
-    ['a UUID that is one digit short', FAILED_RUN_UUID.slice(0, -1)],
+    [
+      'a UUID that is one digit short',
+      FAILED_RUN_UUID.slice(0, -1),
+    ],
     ['a UUID that is one digit long', `${FAILED_RUN_UUID}0`],
   ])('refuses %s', (_name, uuid) => {
     expect(() => nativeErrorMarker(uuid)).toThrow('32 hexadecimal digits')

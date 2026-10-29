@@ -63,7 +63,9 @@ export async function exerciseCompactAsModelText(context: NativeScenarioContext,
   const first = await sendNativeAnswer(context, prompt, answer)
   const reply = `The slash command reached the model as text: REPLY${marker}.`
   const start = await modelScript.queue(nativeTextStep(context, reply))
-  const command = options.markCommand ? modelScript.prompt('/compact') : '/compact'
+  const command = options.markCommand
+    ? modelScript.prompt('/compact')
+    : '/compact'
   // The marked command holds a blank line. Typed as it is, the blank line reaches the model as `<br />`.
   await sendMessage(page, paragraphKeys(command))
   await modelScript.waitForSteps(start + 1)

@@ -29,7 +29,13 @@ function split(
   ratios: number[],
   ...children: LayoutNodeLocal[]
 ): SplitNode {
-  return { type: 'split', id, direction, ratios, children }
+  return {
+    type: 'split',
+    id,
+    direction,
+    ratios,
+    children,
+  }
 }
 
 function grid(
@@ -40,7 +46,15 @@ function grid(
   colRatios: number[],
   ...cells: LayoutNodeLocal[]
 ): GridNode {
-  return { type: 'grid', id, rows, cols, rowRatios, colRatios, cells }
+  return {
+    type: 'grid',
+    id,
+    rows,
+    cols,
+    rowRatios,
+    colRatios,
+    cells,
+  }
 }
 
 function equalRatios(n: number): number[] {
@@ -164,13 +178,21 @@ describe('buildTilePredicateMap', () => {
   it('single leaf: closeMode=none for kind=\'main\'', () => {
     const root = leaf('A')
     const map = buildTilePredicateMap(root, 'main')
-    expect(map.get('A')).toEqual({ closeMode: { kind: 'none' }, canSplit: true, canMakeGrid: true })
+    expect(map.get('A')).toEqual({
+      closeMode: { kind: 'none' },
+      canSplit: true,
+      canMakeGrid: true,
+    })
   })
 
   it('single leaf: closeMode=none for kind=\'floating\' too — the window chrome owns close', () => {
     const root = leaf('A')
     const map = buildTilePredicateMap(root, 'floating')
-    expect(map.get('A')).toEqual({ closeMode: { kind: 'none' }, canSplit: true, canMakeGrid: true })
+    expect(map.get('A')).toEqual({
+      closeMode: { kind: 'none' },
+      canSplit: true,
+      canMakeGrid: true,
+    })
   })
 
   it('grid anchor leaf carries the grid id in closeMode', () => {
@@ -256,16 +278,50 @@ describe('buildTilePredicateMap', () => {
     const root = split('root', 'vertical', [0.4, 0.6], grid('g1', 2, 2, [0.5, 0.5], [0.5, 0.5], leaf('A1'), split('sNa', 'vertical', [0.5, 0.5], leaf('NaL'), leaf('NaR')), leaf('A3'), leaf('A4')), split('s2', 'horizontal', [0.5, 0.5], leaf('B1'), grid('g2', 1, 2, [1], [0.5, 0.5], leaf('C1'), leaf('C2'))))
     const map = buildTilePredicateMap(root, 'main')
     const expected: Record<string, TilePredicates> = {
-      A1: { closeMode: { kind: 'none' }, canSplit: true, canMakeGrid: true },
-      NaL: { closeMode: { kind: 'tile' }, canSplit: false, canMakeGrid: false },
-      NaR: { closeMode: { kind: 'grid', gridId: 'g1' }, canSplit: false, canMakeGrid: false },
-      A3: { closeMode: { kind: 'none' }, canSplit: true, canMakeGrid: true },
-      A4: { closeMode: { kind: 'none' }, canSplit: true, canMakeGrid: true },
-      B1: { closeMode: { kind: 'tile' }, canSplit: true, canMakeGrid: true },
-      C1: { closeMode: { kind: 'none' }, canSplit: false, canMakeGrid: false },
-      C2: { closeMode: { kind: 'grid', gridId: 'g2' }, canSplit: false, canMakeGrid: false },
+      A1: {
+        closeMode: { kind: 'none' },
+        canSplit: true,
+        canMakeGrid: true,
+      },
+      NaL: {
+        closeMode: { kind: 'tile' },
+        canSplit: false,
+        canMakeGrid: false,
+      },
+      NaR: {
+        closeMode: { kind: 'grid', gridId: 'g1' },
+        canSplit: false,
+        canMakeGrid: false,
+      },
+      A3: {
+        closeMode: { kind: 'none' },
+        canSplit: true,
+        canMakeGrid: true,
+      },
+      A4: {
+        closeMode: { kind: 'none' },
+        canSplit: true,
+        canMakeGrid: true,
+      },
+      B1: {
+        closeMode: { kind: 'tile' },
+        canSplit: true,
+        canMakeGrid: true,
+      },
+      C1: {
+        closeMode: { kind: 'none' },
+        canSplit: false,
+        canMakeGrid: false,
+      },
+      C2: {
+        closeMode: { kind: 'grid', gridId: 'g2' },
+        canSplit: false,
+        canMakeGrid: false,
+      },
     }
-    expect([...map.keys()].sort()).toEqual(Object.keys(expected).sort())
+    expect([
+      ...map.keys(),
+    ].sort()).toEqual(Object.keys(expected).sort())
     for (const [id, want] of Object.entries(expected))
       expect(map.get(id), id).toEqual(want)
   })
@@ -273,7 +329,9 @@ describe('buildTilePredicateMap', () => {
   it('produces an entry for every leaf in the tree', () => {
     const root = split('s', 'horizontal', [0.5, 0.5], leaf('A'), grid('g', 2, 2, [0.5, 0.5], [0.5, 0.5], leaf('B'), leaf('C'), leaf('D'), leaf('E')))
     const map = buildTilePredicateMap(root, 'main')
-    expect([...map.keys()].sort()).toEqual(['A', 'B', 'C', 'D', 'E'])
+    expect([
+      ...map.keys(),
+    ].sort()).toEqual(['A', 'B', 'C', 'D', 'E'])
   })
 })
 

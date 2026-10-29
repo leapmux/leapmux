@@ -238,7 +238,9 @@ function restartDeadline(original: AbortSignal, header: Headers): { signal: Abor
   // `Number('')` is 0, and a 0 here would abort the retry before it left --
   // the opposite of what "the call declared no deadline" asks for.
   const declared = header.get(CONNECT_TIMEOUT_HEADER)?.trim()
-  const timeoutMs = declared ? Number(declared) : Number.NaN
+  const timeoutMs = declared
+    ? Number(declared)
+    : Number.NaN
   // Mirrors Connect's own createDeadlineSignal: a non-positive budget is
   // already spent, and the abort reason is the ConnectError the transport
   // would have raised, so a genuinely slow retry still reports itself the

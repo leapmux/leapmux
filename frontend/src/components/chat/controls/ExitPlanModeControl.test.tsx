@@ -29,8 +29,12 @@ describe('ExitPlanModeActions', () => {
         hasEditorContent={false}
         onTriggerSend={() => {}}
         presets={{
-          smart: { sets: { permissionMode: 'auto' } },
-          bypass: { sets: { permissionMode: 'bypassPermissions' } },
+          smart: {
+            sets: { permissionMode: 'auto' },
+          },
+          bypass: {
+            sets: { permissionMode: 'bypassPermissions' },
+          },
           apply: vi.fn(),
         }}
         contextUsage={{ inputTokens: 300, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 }}
@@ -55,7 +59,12 @@ describe('ExitPlanModeActions', () => {
         onRespond={vi.fn().mockResolvedValue(undefined)}
         hasEditorContent={true}
         onTriggerSend={() => {}}
-        presets={{ bypass: { sets: { permissionMode: 'bypassPermissions' } }, apply: vi.fn() }}
+        presets={{
+          bypass: {
+            sets: { permissionMode: 'bypassPermissions' },
+          },
+          apply: vi.fn(),
+        }}
       />
     ))
 
@@ -76,7 +85,12 @@ describe('ExitPlanModeActions', () => {
         onRespond={onRespond}
         hasEditorContent={false}
         onTriggerSend={() => {}}
-        presets={{ bypass: { sets: { permissionMode: 'bypassPermissions' } }, apply: vi.fn() }}
+        presets={{
+          bypass: {
+            sets: { permissionMode: 'bypassPermissions' },
+          },
+          apply: vi.fn(),
+        }}
       />
     ))
 
@@ -104,7 +118,12 @@ describe('ExitPlanModeActions', () => {
         onRespond={onRespond}
         hasEditorContent={false}
         onTriggerSend={() => {}}
-        presets={{ bypass: { sets: { permissionMode: 'bypassPermissions' } }, apply }}
+        presets={{
+          bypass: {
+            sets: { permissionMode: 'bypassPermissions' },
+          },
+          apply,
+        }}
       />
     ))
 
@@ -137,8 +156,12 @@ describe('ExitPlanModeActions', () => {
         hasEditorContent={false}
         onTriggerSend={() => {}}
         presets={{
-          smart: { sets: { permissionMode: 'auto' } },
-          bypass: { sets: { permissionMode: 'bypassPermissions' } },
+          smart: {
+            sets: { permissionMode: 'auto' },
+          },
+          bypass: {
+            sets: { permissionMode: 'bypassPermissions' },
+          },
           apply,
         }}
       />
@@ -168,8 +191,12 @@ describe('ExitPlanModeActions', () => {
         hasEditorContent={false}
         onTriggerSend={() => {}}
         presets={{
-          smart: { sets: { permissionMode: 'auto' } },
-          bypass: { sets: { permissionMode: 'bypassPermissions' } },
+          smart: {
+            sets: { permissionMode: 'auto' },
+          },
+          bypass: {
+            sets: { permissionMode: 'bypassPermissions' },
+          },
           apply: vi.fn(),
         }}
       />
@@ -196,7 +223,12 @@ describe('ExitPlanModeActions', () => {
         onRespond={onRespond}
         hasEditorContent={false}
         onTriggerSend={() => {}}
-        presets={{ bypass: { sets: { permissionMode: 'bypassPermissions' } }, apply: vi.fn() }}
+        presets={{
+          bypass: {
+            sets: { permissionMode: 'bypassPermissions' },
+          },
+          apply: vi.fn(),
+        }}
       />
     ))
 
@@ -222,7 +254,12 @@ describe('ExitPlanModeActions', () => {
         onRespond={vi.fn().mockResolvedValue(undefined)}
         hasEditorContent={false}
         onTriggerSend={() => {}}
-        presets={{ bypass: { sets: { allow_all: 'on' } }, apply: vi.fn() }}
+        presets={{
+          bypass: {
+            sets: { allow_all: 'on' },
+          },
+          apply: vi.fn(),
+        }}
       />
     ))
 
@@ -241,7 +278,12 @@ describe('ExitPlanModeActions', () => {
         onRespond={onRespond}
         hasEditorContent={false}
         onTriggerSend={() => {}}
-        presets={{ bypass: { sets: { permissionMode: 'bypassPermissions' } }, apply: vi.fn() }}
+        presets={{
+          bypass: {
+            sets: { permissionMode: 'bypassPermissions' },
+          },
+          apply: vi.fn(),
+        }}
       />
     ))
 
@@ -287,7 +329,12 @@ describe('ExitPlanModeActions', () => {
           onRespond={onRespond}
           hasEditorContent={hasEditorContent}
           onTriggerSend={() => {}}
-          presets={{ bypass: { sets: { permissionMode: 'bypassPermissions' } }, apply: vi.fn() }}
+          presets={{
+            bypass: {
+              sets: { permissionMode: 'bypassPermissions' },
+            },
+            apply: vi.fn(),
+          }}
           choices={offered}
         />
       ))
@@ -298,7 +345,10 @@ describe('ExitPlanModeActions', () => {
       if (!call)
         throw new Error('the choice sent no response')
       const [bytes, options] = call
-      return { decoded: JSON.parse(new TextDecoder().decode(bytes)), options }
+      return {
+        decoded: JSON.parse(new TextDecoder().decode(bytes)),
+        options,
+      }
     }
 
     // A runtime can state what each approach does. The reader needs it to choose,
@@ -307,7 +357,12 @@ describe('ExitPlanModeActions', () => {
       vi.useFakeTimers()
       try {
         renderWithChoices(vi.fn<ControlResponseSender>().mockResolvedValue(undefined), false, [
-          { id: 'Option A', label: 'Approve: Option A', description: 'Split the parser first', approves: true },
+          {
+            id: 'Option A',
+            label: 'Approve: Option A',
+            description: 'Split the parser first',
+            approves: true,
+          },
           { id: 'Revise', label: 'Request revisions', approves: false },
         ])
         fireEvent.click(screen.getByTestId('control-more-actions'))
@@ -335,7 +390,9 @@ describe('ExitPlanModeActions', () => {
       const { decoded, options } = decodeCall(onRespond)
       expect(decoded.response.request_id).toBe('req-choice')
       expect(decoded.response.response).toMatchObject({ behavior: 'allow', choice: 'Option A' })
-      expect(options).toEqual({ planApproval: { permissionMode: '', clearContext: false } })
+      expect(options).toEqual({
+        planApproval: { permissionMode: '', clearContext: false },
+      })
     })
 
     // The choice approves the same plan as Approve, so it carries what the reader set
@@ -349,7 +406,9 @@ describe('ExitPlanModeActions', () => {
       fireEvent.click(screen.getByTestId('plan-choice-0'))
       const { decoded, options } = decodeCall(onRespond)
       expect(decoded).not.toHaveProperty('permissionMode')
-      expect(options).toEqual({ planApproval: { permissionMode: 'bypassPermissions', clearContext: true } })
+      expect(options).toEqual({
+        planApproval: { permissionMode: 'bypassPermissions', clearContext: true },
+      })
     })
 
     // The service refuses plan settings on anything but an approval, so a refusal

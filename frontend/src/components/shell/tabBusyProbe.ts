@@ -97,7 +97,9 @@ export function createTabBusyProbe(deps: TabBusyProbeDeps) {
    */
   const agentReasons = async (tabs: readonly Tab[]): Promise<Map<string, TabBusyReason>> => {
     const out = new Map<string, TabBusyReason>()
-    await Promise.all([...idsByWorker(tabs, guardedAgentTab)].map(async ([workerId, tabIds]) => {
+    await Promise.all([
+      ...idsByWorker(tabs, guardedAgentTab),
+    ].map(async ([workerId, tabIds]) => {
       try {
         const resp = await workerRpc.listAgents(workerId, { tabIds })
         for (const info of resp.agents) {
@@ -131,7 +133,9 @@ export function createTabBusyProbe(deps: TabBusyProbeDeps) {
    */
   const terminalReasons = async (tabs: readonly Tab[]): Promise<Map<string, TabBusyReason>> => {
     const out = new Map<string, TabBusyReason>()
-    await Promise.all([...idsByWorker(tabs, t => t.type === TabType.TERMINAL)].map(async ([workerId, terminalIds]) => {
+    await Promise.all([
+      ...idsByWorker(tabs, t => t.type === TabType.TERMINAL),
+    ].map(async ([workerId, terminalIds]) => {
       try {
         const resp = await workerRpc.inspectTerminalProcesses(workerId, { terminalIds })
         for (const entry of resp.terminals) {
@@ -160,12 +164,22 @@ export function createTabBusyProbe(deps: TabBusyProbeDeps) {
   const probeMany = async (tabs: readonly Tab[]): Promise<BusyTab[]> => {
     // Both kinds concurrently: a tile that mixes them is still one round of
     // requests, not two in sequence.
-    const [terminals, agents] = await Promise.all([terminalReasons(tabs), agentReasons(tabs)])
+    const [terminals, agents] = await Promise.all([
+      terminalReasons(tabs),
+      agentReasons(tabs),
+    ])
     const out: BusyTab[] = []
     for (const tab of tabs) {
-      const reason = tab.type === TabType.TERMINAL ? terminals.get(tab.id) ?? null : agents.get(tab.id) ?? null
-      if (reason)
-        out.push({ tab, title: tabDisplayLabel(tab), reason })
+      const reason = tab.type === TabType.TERMINAL
+        ? terminals.get(tab.id) ?? null
+        : agents.get(tab.id) ?? null
+      if (reason) {
+        out.push({
+          tab,
+          title: tabDisplayLabel(tab),
+          reason,
+        })
+      }
     }
     return out
   }

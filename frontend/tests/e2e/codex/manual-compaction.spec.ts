@@ -19,7 +19,13 @@ codexTest.describe('Codex compaction notice', () => {
     const gate = 'codex-compaction-hold'
     await withCleanup(async () => {
       const outcomes = await Promise.allSettled([
-        exerciseNativeCompaction(native, { ...CODEX_COMPACTION, summary: { ...summary, respond: { text: MANUAL_COMPACTION_SUMMARY, gate } } }),
+        exerciseNativeCompaction(native, {
+          ...CODEX_COMPACTION,
+          summary: {
+            ...summary,
+            respond: { text: MANUAL_COMPACTION_SUMMARY, gate },
+          },
+        }),
         (async () => {
           try {
             await native.modelScript.waitForGate(gate)

@@ -25,7 +25,9 @@ export function droidNativeOutputFilePaths(content: unknown): readonly string[] 
     : Array.isArray(content)
       ? content.filter(isObject).filter(block => block.type === 'text').map(block => block.text).filter((text): text is string => typeof text === 'string')
       : []
-  const paths = texts.flatMap(text => [...text.matchAll(OUTPUT_NOTICE)].map(match => match[1]!))
+  const paths = texts.flatMap(text => [
+    ...text.matchAll(OUTPUT_NOTICE),
+  ].map(match => match[1]!))
   for (const text of texts) {
     for (const match of text.matchAll(MIDDLE_CUT_NOTICE)) {
       if (BigInt(match[1]!) >= BigInt(match[2]!))
@@ -33,6 +35,10 @@ export function droidNativeOutputFilePaths(content: unknown): readonly string[] 
       paths.push(match[3]!)
     }
   }
-  const path = paths.length === 1 ? paths[0] : undefined
-  return isFilesystemPath(path) && OUTPUT_FILE.test(path) ? [path] : []
+  const path = paths.length === 1
+    ? paths[0]
+    : undefined
+  return isFilesystemPath(path) && OUTPUT_FILE.test(path)
+    ? [path]
+    : []
 }

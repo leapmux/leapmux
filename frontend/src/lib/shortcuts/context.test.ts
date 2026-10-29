@@ -295,7 +295,9 @@ describe('evaluateWhen', () => {
   describe('custom context getter', () => {
     it('uses provided getter instead of global context', () => {
       setContext('x', false) // global says false
-      const getter = (key: string) => (key === 'x' ? true : undefined)
+      const getter = (key: string) => (key === 'x'
+        ? true
+        : undefined)
       expect(evaluateWhen('x', getter)).toBe(true)
     })
   })

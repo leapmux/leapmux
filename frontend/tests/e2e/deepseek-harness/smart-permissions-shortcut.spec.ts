@@ -31,7 +31,9 @@ deepseekHarnessTest('executes the native Smart command under Auto review before 
   await native.modelScript.rule({
     name: REVIEW_ALLOWS,
     priority: 'high',
-    when: { system: escapeRegExp(REVIEWER_SYSTEM) },
+    when: {
+      system: escapeRegExp(REVIEWER_SYSTEM),
+    },
     respond: { text: '{"risk":"low","decision":"allow"}' },
   })
   await exerciseSmartPermissions(native, {
@@ -47,8 +49,12 @@ deepseekHarnessTest('asks about a call that the Auto review denies, and runs it 
   await modelScript.rule({
     name: REVIEW_DENIES,
     priority: 'high',
-    when: { system: escapeRegExp(REVIEWER_SYSTEM) },
-    respond: { text: JSON.stringify({ risk: 'medium', decision: 'deny', reason: DENIAL_REASON }) },
+    when: {
+      system: escapeRegExp(REVIEWER_SYSTEM),
+    },
+    respond: {
+      text: JSON.stringify({ risk: 'medium', decision: 'deny', reason: DENIAL_REASON }),
+    },
   })
   await applyPermissionPreset(page, 'smart')
   await waitForSettingsIdle(page)
@@ -61,7 +67,9 @@ deepseekHarnessTest('asks about a call that the Auto review denies, and runs it 
     mkdirSync(target)
     writeFileSync(join(target, 'keep.txt'), 'Only an allowed removal removes this file.\n')
     const id = `native-auto-review-${decision}`
-    saved.push(decision === 'allow' ? 'Allow once' : 'Deny')
+    saved.push(decision === 'allow'
+      ? 'Allow once'
+      : 'Deny')
     const expectedSaved = [...saved]
     await exerciseNativePermissionDecision(native, {
       toolCall: bashToolCall(native.provider, id, `rm -rf ${quotePosixShellArgument(target)}; printf 'REVIEWED-%s' 42`),

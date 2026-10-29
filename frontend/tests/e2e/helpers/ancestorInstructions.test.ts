@@ -99,7 +99,16 @@ describe('ANCESTOR_INSTRUCTION_SENTINEL', () => {
 
 describe('holdsAncestorInstructions', () => {
   it('finds the sentinel in a nested request body', () => {
-    expect(holdsAncestorInstructions({ messages: [{ role: 'system', content: [{ type: 'text', text: `Contents of /run/CLAUDE.md:\n${ANCESTOR_INSTRUCTION_SENTINEL}` }] }] })).toBe(true)
+    expect(holdsAncestorInstructions({
+      messages: [
+        {
+          role: 'system',
+          content: [
+            { type: 'text', text: `Contents of /run/CLAUDE.md:\n${ANCESTOR_INSTRUCTION_SENTINEL}` },
+          ],
+        },
+      ],
+    })).toBe(true)
   })
 
   it('finds the sentinel in a plain text body', () => {
@@ -107,7 +116,14 @@ describe('holdsAncestorInstructions', () => {
   })
 
   it.each([
-    ['an ordinary request', { messages: [{ role: 'user', content: 'Reply once.' }] }],
+    [
+      'an ordinary request',
+      {
+        messages: [
+          { role: 'user', content: 'Reply once.' },
+        ],
+      },
+    ],
     ['an empty body', {}],
     ['an absent body', undefined],
     ['a null body', null],
@@ -169,13 +185,24 @@ describe('refusedInstructionFiles', () => {
   const sentinelFile = (path: string) => ({ path, content: `${ANCESTOR_INSTRUCTION_SENTINEL}\n` })
 
   it('refuses each file outside the run root, for both policies', () => {
-    const outside = [{ path: join(dirname(runRoot), 'AGENTS.md'), content: 'A file above the run root.' }, { path: '/AGENTS.md', content: 'The root of the file system.' }]
+    const outside = [
+      {
+        path: join(dirname(runRoot), 'AGENTS.md'),
+        content: 'A file above the run root.',
+      },
+      { path: '/AGENTS.md', content: 'The root of the file system.' },
+    ]
     for (const policy of ['refuse', 'known-escape'] as const)
       expect(refusedInstructionFiles(outside, runRoot, policy), policy).toEqual(outside)
   })
 
   it('keeps a file of a working directory inside the run root, for both policies', () => {
-    const project = [{ path: join(runRoot, '1', 'work', 'AGENTS.md'), content: 'Project guidance.' }]
+    const project = [
+      {
+        path: join(runRoot, '1', 'work', 'AGENTS.md'),
+        content: 'Project guidance.',
+      },
+    ]
     for (const policy of ['refuse', 'known-escape'] as const)
       expect(refusedInstructionFiles(project, runRoot, policy), policy).toEqual([])
   })
@@ -187,7 +214,10 @@ describe('refusedInstructionFiles', () => {
   })
 
   it('refuses a relative path, which no caller can place', () => {
-    const relative = [{ path: 'AGENTS.md', content: 'Somewhere.' }, { path: '', content: 'Nowhere.' }]
+    const relative = [
+      { path: 'AGENTS.md', content: 'Somewhere.' },
+      { path: '', content: 'Nowhere.' },
+    ]
     expect(refusedInstructionFiles(relative, runRoot, 'known-escape')).toEqual(relative)
   })
 

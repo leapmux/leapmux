@@ -71,7 +71,9 @@ export function buildCommandRows(
       category: meta.category,
       keys,
       customized: overridden.has(command),
-      ...(when === undefined ? {} : { when }),
+      ...(when === undefined
+        ? {}
+        : { when }),
     })
   }
   rows.sort((a, b) => a.category.localeCompare(b.category) || a.title.localeCompare(b.title))
@@ -88,8 +90,11 @@ export function chordFromEvent(e: KeyboardEvent): string | null {
     return null
   const platform = getPlatform()
   const parts: string[] = []
-  if (platform === 'mac' ? e.metaKey : e.ctrlKey)
+  if (platform === 'mac'
+    ? e.metaKey
+    : e.ctrlKey) {
     parts.push('$mod')
+  }
   if (platform === 'mac' && e.ctrlKey)
     parts.push('Control')
   if (e.altKey)
@@ -119,7 +124,10 @@ export function chordFromEvent(e: KeyboardEvent): string | null {
 }
 
 /** All default bindings, core slot first like the runtime activation order. */
-const ALL_DEFAULTS: readonly Keybinding[] = [...CORE_KEYBINDINGS, ...WORKSPACE_KEYBINDINGS]
+const ALL_DEFAULTS: readonly Keybinding[] = [
+  ...CORE_KEYBINDINGS,
+  ...WORKSPACE_KEYBINDINGS,
+]
 
 /**
  * The keyboard-shortcuts editor: one row per command with its effective
@@ -147,7 +155,9 @@ export const KeybindingsControl: Component = () => {
   const write = (next: UserKeybindingOverride[]) => {
     setError(null)
     void Promise.resolve(prefs.setCustomKeybindings(next)).catch((err: unknown) => {
-      setError(err instanceof Error ? err.message : String(err))
+      setError(err instanceof Error
+        ? err.message
+        : String(err))
     })
   }
 
@@ -187,7 +197,13 @@ export const KeybindingsControl: Component = () => {
       setError(`Too many keybinding overrides (max ${MAX_KEYBINDING_OVERRIDES})`)
       return
     }
-    next.push({ key: chord, command, ...(row.when === undefined ? {} : { when: row.when }) })
+    next.push({
+      key: chord,
+      command,
+      ...(row.when === undefined
+        ? {}
+        : { when: row.when }),
+    })
     setCapturing(null)
     write(next)
   }
@@ -231,7 +247,9 @@ export const KeybindingsControl: Component = () => {
                             setError(null)
                           }}
                         >
-                          {row.keys.length > 0 ? row.keys.map(k => formatShortcut(k)).join(' / ') : 'Unbound'}
+                          {row.keys.length > 0
+                            ? row.keys.map(k => formatShortcut(k)).join(' / ')
+                            : 'Unbound'}
                         </button>
                       )}
                     >

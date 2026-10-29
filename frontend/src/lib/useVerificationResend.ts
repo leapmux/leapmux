@@ -39,7 +39,9 @@ export function useVerificationResend(options?: UseVerificationResendOptions) {
     if (!t)
       return null
     const ms = timestampDate(t).getTime()
-    return ms > Date.now() ? ms : null
+    return ms > Date.now()
+      ? ms
+      : null
   }
 
   const [resending, setResending] = createSignal(false)
@@ -117,7 +119,9 @@ export function useVerificationResend(options?: UseVerificationResendOptions) {
     setStatus(null)
     setError(null)
     try {
-      const resp = await userClient.resendVerificationEmail({ ...captcha.fields() })
+      const resp = await userClient.resendVerificationEmail({
+        ...captcha.fields(),
+      })
       setStatus(
         resp.emailSent
           ? 'We sent a fresh code to your inbox.'

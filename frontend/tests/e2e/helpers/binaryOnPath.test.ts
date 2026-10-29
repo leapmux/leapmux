@@ -50,14 +50,21 @@ function listingMise(installs: string[]): string {
 describe('findBinaryOnPath', () => {
   it('finds an executable file in one of the directories', () => {
     const agent = file('agent', 0o755)
-    expect(findBinaryOnPath('agent', ['', join(directory, 'absent'), directory].join(delimiter))).toBe(agent)
+    expect(findBinaryOnPath('agent', [
+      '',
+      join(directory, 'absent'),
+      directory,
+    ].join(delimiter))).toBe(agent)
   })
 
   // A spawn takes the first match, so a later match is not the file that runs.
   it('returns the match of the first directory that holds one', () => {
     const first = file('agent', 0o755, join(directory, 'first'))
     file('agent', 0o755, join(directory, 'second'))
-    expect(findBinaryOnPath('agent', [join(directory, 'first'), join(directory, 'second')].join(delimiter))).toBe(first)
+    expect(findBinaryOnPath('agent', [
+      join(directory, 'first'),
+      join(directory, 'second'),
+    ].join(delimiter))).toBe(first)
   })
 
   it('finds nothing for an empty or absent search path', () => {
@@ -108,7 +115,10 @@ describe('exeExtensionOnPath', () => {
 describe.skipIf(process.platform === 'win32')('agentSearchPath', () => {
   it('keeps a path that holds no shim directory, and asks mise nothing', () => {
     file('agent', 0o755)
-    const searchPath = [directory, join(directory, 'absent')].join(delimiter)
+    const searchPath = [
+      directory,
+      join(directory, 'absent'),
+    ].join(delimiter)
     const asked: string[] = []
     expect(agentSearchPath(searchPath, (mise) => {
       asked.push(mise)
@@ -136,7 +146,13 @@ describe.skipIf(process.platform === 'win32')('agentSearchPath', () => {
       return ['/install/a', '/install/b']
     })
 
-    expect(resolved).toBe([before, '/install/a', '/install/b', shims, after].join(delimiter))
+    expect(resolved).toBe([
+      before,
+      '/install/a',
+      '/install/b',
+      shims,
+      after,
+    ].join(delimiter))
     expect(asked).toEqual([mise])
   })
 
@@ -157,8 +173,15 @@ describe.skipIf(process.platform === 'win32')('agentSearchPath', () => {
 
   it('asks the real mise executable behind the shims', () => {
     const install = join(directory, 'install')
-    const shims = listingMise([install, join(directory, 'second')])
-    expect(agentSearchPath(shims)).toBe([install, join(directory, 'second'), shims].join(delimiter))
+    const shims = listingMise([
+      install,
+      join(directory, 'second'),
+    ])
+    expect(agentSearchPath(shims)).toBe([
+      install,
+      join(directory, 'second'),
+      shims,
+    ].join(delimiter))
   })
 
   // Each spawn of the run resolves the same PATH, and mise costs a process start.
@@ -205,7 +228,9 @@ describe.skipIf(process.platform === 'win32')('agentSearchPathEnv', () => {
   it('states the resolved path when it differs from the inherited one', () => {
     const install = join(directory, 'install')
     const shims = listingMise([install])
-    expect(agentSearchPathEnv({ PATH: shims })).toEqual({ PATH: [install, shims].join(delimiter) })
+    expect(agentSearchPathEnv({ PATH: shims })).toEqual({
+      PATH: [install, shims].join(delimiter),
+    })
   })
 
   // Leaving the variable out keeps the inherited spelling, `Path` on Windows.
@@ -276,7 +301,12 @@ describe('missingBinaryReason', () => {
     const shim = miseShim('agent', shims)
     file('agent', 0o755, join(directory, 'install'))
 
-    const reason = missingBinaryReason('agent', 'needs agent', { PATH: [shims, join(directory, 'install')].join(delimiter) })
+    const reason = missingBinaryReason('agent', 'needs agent', {
+      PATH: [
+        shims,
+        join(directory, 'install'),
+      ].join(delimiter),
+    })
     expect(reason).toBe(`needs agent. ${unusableBinaryReason('agent', shim)}`)
     expect(reason).toContain('mise shim')
   })
@@ -297,7 +327,12 @@ describe('missingBinaryReason', () => {
     miseShim('agent', shims)
     file('agent', 0o755, join(directory, 'install'))
 
-    expect(missingBinaryReason('agent', 'needs agent', { PATH: [join(directory, 'install'), shims].join(delimiter) })).toBeNull()
+    expect(missingBinaryReason('agent', 'needs agent', {
+      PATH: [
+        join(directory, 'install'),
+        shims,
+      ].join(delimiter),
+    })).toBeNull()
   })
 })
 
@@ -313,7 +348,9 @@ describe('lookupBinary', () => {
 
   it.skipIf(process.platform === 'win32')('returns no path for a mise shim that mise does not list', () => {
     const shim = miseShim('agent', join(directory, 'shims'))
-    const lookup = lookupBinary('agent', 'needs agent', { PATH: join(directory, 'shims') })
+    const lookup = lookupBinary('agent', 'needs agent', {
+      PATH: join(directory, 'shims'),
+    })
     expect(lookup.path).toBeNull()
     expect(lookup.skipReason).toBe(`needs agent. ${unusableBinaryReason('agent', shim)}`)
   })
@@ -329,7 +366,12 @@ describe('lookupBinary', () => {
   it('returns the first name although a later name sits in an earlier directory', () => {
     file('agent-host-triple', 0o755, join(directory, 'first'))
     const agent = file('agent', 0o755, join(directory, 'second'))
-    const env = { PATH: [join(directory, 'first'), join(directory, 'second')].join(delimiter) }
+    const env = {
+      PATH: [
+        join(directory, 'first'),
+        join(directory, 'second'),
+      ].join(delimiter),
+    }
     expect(lookupBinary(['agent', 'agent-host-triple'], 'needs agent', env)).toEqual({ path: agent, skipReason: null })
   })
 
@@ -341,7 +383,12 @@ describe('lookupBinary', () => {
   it.skipIf(process.platform === 'win32')('returns the mise-shim cause of a first name although a later name is on the path', () => {
     const shim = miseShim('agent', join(directory, 'shims'))
     file('agent-host-triple', 0o755, join(directory, 'install'))
-    const env = { PATH: [join(directory, 'shims'), join(directory, 'install')].join(delimiter) }
+    const env = {
+      PATH: [
+        join(directory, 'shims'),
+        join(directory, 'install'),
+      ].join(delimiter),
+    }
     expect(lookupBinary(['agent', 'agent-host-triple'], 'needs agent', env))
       .toEqual({ path: null, skipReason: `needs agent. ${unusableBinaryReason('agent', shim)}` })
   })
@@ -354,7 +401,9 @@ describe('lookupBinary', () => {
   it.skipIf(process.platform === 'win32')('adds no second period after a reason that ends a sentence', () => {
     const shim = miseShim('agent', join(directory, 'shims'))
     for (const reason of ['Needs agent.', 'Needs agent!', 'Needs agent?']) {
-      const lookup = lookupBinary('agent', reason, { PATH: join(directory, 'shims') })
+      const lookup = lookupBinary('agent', reason, {
+        PATH: join(directory, 'shims'),
+      })
       expect(lookup.skipReason).toBe(`${reason} ${unusableBinaryReason('agent', shim)}`)
     }
   })
@@ -378,7 +427,9 @@ describe('requireBinary', () => {
   // The four native catalog readers once threw their own reason and lost this cause.
   it.skipIf(process.platform === 'win32')('throws the mise-shim cause for a shim that mise does not list', () => {
     const shim = miseShim('agent', join(directory, 'shims'))
-    expect(() => requireBinary('agent', 'needs agent', { PATH: join(directory, 'shims') }))
+    expect(() => requireBinary('agent', 'needs agent', {
+      PATH: join(directory, 'shims'),
+    }))
       .toThrow(new Error(`needs agent. ${unusableBinaryReason('agent', shim)}`))
   })
 })

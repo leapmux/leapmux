@@ -16,14 +16,32 @@ deepseekHarnessTest('groups two actual one-shot children under their native work
   const secondGate = 'native-workflow-second'
   await withCleanup(async () => {
     await modelScript.rule(
-      { name: 'the first native workflow child', when: { lastMessage: { role: 'user', text: 'DEEPSEEKWORKFLOWFIRST' } }, once: true, respond: { text: 'The first native child completed.', gate: firstGate } },
-      { name: 'the second native workflow child', when: { lastMessage: { role: 'user', text: 'DEEPSEEKWORKFLOWSECOND' } }, once: true, respond: { text: 'The second native child completed.', gate: secondGate } },
+      {
+        name: 'the first native workflow child',
+        when: {
+          lastMessage: { role: 'user', text: 'DEEPSEEKWORKFLOWFIRST' },
+        },
+        once: true,
+        respond: { text: 'The first native child completed.', gate: firstGate },
+      },
+      {
+        name: 'the second native workflow child',
+        when: {
+          lastMessage: { role: 'user', text: 'DEEPSEEKWORKFLOWSECOND' },
+        },
+        once: true,
+        respond: { text: 'The second native child completed.', gate: secondGate },
+      },
     )
     const first = modelScript.prompt('DEEPSEEKWORKFLOWFIRST complete the first actual assignment.')
     const second = modelScript.prompt('DEEPSEEKWORKFLOWSECOND complete the second actual assignment.')
     const source = `return await parallel([() => agent(${JSON.stringify(first)}, {label:"First native work"}), () => agent(${JSON.stringify(second)}, {label:"Second native work"})]);`
     const start = await modelScript.queue(
-      { toolCalls: [codeExecutionToolCall(native.provider, 'native-workflow-run', source)] },
+      {
+        toolCalls: [
+          codeExecutionToolCall(native.provider, 'native-workflow-run', source),
+        ],
+      },
       { text: 'The actual native workflow completed.' },
     )
     await sendMessage(page, modelScript.prompt('Execute the actual native workflow with its two child assignments.'))
@@ -33,7 +51,10 @@ deepseekHarnessTest('groups two actual one-shot children under their native work
     const children = backgroundTaskRows(page, { kind: 'subagent' })
     await expect(children).toHaveCount(2)
     // No spec states the full heading text, so the pattern requires only `native-code` inside it.
-    await expectRowsInWorkflowGroup([children.nth(0), children.nth(1)], /native-code/)
+    await expectRowsInWorkflowGroup([
+      children.nth(0),
+      children.nth(1),
+    ], /native-code/)
     const running = await readNativeSidebarSnapshot(native, parent.id)
     const run = running.backgroundTasks.find(task => task.kind === BackgroundTaskKind.WORKFLOW)
     expect(run).toBeDefined()
@@ -43,7 +64,10 @@ deepseekHarnessTest('groups two actual one-shot children under their native work
     expect(owned).toHaveLength(2)
     expect(new Set(owned.map(task => task.childAgentId)).size).toBe(2)
     expect(owned.every(task => task.groupKey === run.groupKey && task.groupLabel === run.groupLabel)).toBe(true)
-    await Promise.all([modelScript.releaseGate(firstGate), modelScript.releaseGate(secondGate)])
+    await Promise.all([
+      modelScript.releaseGate(firstGate),
+      modelScript.releaseGate(secondGate),
+    ])
     await modelScript.waitForSteps(start + 2)
     await waitForAgentIdle(page)
     const status = await modelScript.status()
@@ -55,8 +79,14 @@ deepseekHarnessTest('groups two actual one-shot children under their native work
     await page.reload()
     await expandBackgroundTasksSection(page)
     await expect(children).toHaveCount(2)
-    await expectRowsInWorkflowGroup([children.nth(0), children.nth(1)], /native-code/)
+    await expectRowsInWorkflowGroup([
+      children.nth(0),
+      children.nth(1),
+    ], /native-code/)
     const restored = await readNativeSidebarSnapshot(native, parent.id)
     expect(restored.backgroundTasks.map(task => ({ id: task.id, groupKey: task.groupKey, groupLabel: task.groupLabel }))).toEqual(running.backgroundTasks.map(task => ({ id: task.id, groupKey: task.groupKey, groupLabel: task.groupLabel })))
-  }, () => finishCleanup([modelScript.releaseGateIfHeld(firstGate), modelScript.releaseGateIfHeld(secondGate)]))
+  }, () => finishCleanup([
+    modelScript.releaseGateIfHeld(firstGate),
+    modelScript.releaseGateIfHeld(secondGate),
+  ]))
 })

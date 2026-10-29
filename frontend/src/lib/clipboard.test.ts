@@ -76,7 +76,9 @@ describe('copyTextToClipboard', () => {
   })
 
   it('does not reach the fallback when the Clipboard API succeeds', async () => {
-    stubClipboard({ writeText: vi.fn().mockResolvedValue(undefined) })
+    stubClipboard({
+      writeText: vi.fn().mockResolvedValue(undefined),
+    })
     const { execCommand } = stubExecCommand(true)
 
     await expect(copyTextToClipboard('hello')).resolves.toBe(true)
@@ -99,7 +101,9 @@ describe('copyTextToClipboard', () => {
     })
 
     it('copies when the Clipboard API rejects', async () => {
-      stubClipboard({ writeText: vi.fn().mockRejectedValue(new Error('denied')) })
+      stubClipboard({
+        writeText: vi.fn().mockRejectedValue(new Error('denied')),
+      })
       const { copied } = stubExecCommand(true)
 
       await expect(copyTextToClipboard('hello')).resolves.toBe(true)
@@ -205,7 +209,9 @@ describe('copyTextToClipboard', () => {
 
       await copyTextToClipboard('hello')
 
-      expect(seen).toEqual([{ readOnly: true, position: 'fixed', opacity: '0' }])
+      expect(seen).toEqual([
+        { readOnly: true, position: 'fixed', opacity: '0' },
+      ])
     })
 
     // Firefox is the engine that hands out more than one range. The restore
@@ -226,7 +232,9 @@ describe('copyTextToClipboard', () => {
       const addRange = vi.fn()
       vi.spyOn(window, 'getSelection').mockReturnValue({
         rangeCount: 2,
-        getRangeAt: (index: number) => (index === 0 ? first : second),
+        getRangeAt: (index: number) => (index === 0
+          ? first
+          : second),
         removeAllRanges: () => {},
         addRange,
       } as unknown as Selection)
@@ -307,7 +315,9 @@ describe('copyTextToClipboard', () => {
     // to HTTPS would send them after the wrong thing.
     it('names a refusal when the page is secure', async () => {
       setSecureContext(true)
-      stubClipboard({ writeText: vi.fn().mockRejectedValue(new Error('NotAllowedError')) })
+      stubClipboard({
+        writeText: vi.fn().mockRejectedValue(new Error('NotAllowedError')),
+      })
       stubExecCommand(false)
 
       await copyTextToClipboard('hello')
@@ -329,7 +339,9 @@ describe('copyTextToClipboard', () => {
 
     it('logs the rejection as the cause', async () => {
       const denied = new Error('denied')
-      stubClipboard({ writeText: vi.fn().mockRejectedValue(denied) })
+      stubClipboard({
+        writeText: vi.fn().mockRejectedValue(denied),
+      })
       stubExecCommand(false)
 
       await copyTextToClipboard('hello')

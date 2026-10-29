@@ -43,13 +43,28 @@ async function withThinkingWorkspace(
         alternateReasoning: { supported: false },
       })
       return {
-        agentEnv: { ...leapmuxServer.agentEnv, ...environment, HOME: home, USERPROFILE: home, ZDOTDIR: home },
-        setup: { profile: join(home, '.codebuddy', 'settings.json') },
+        agentEnv: {
+          ...leapmuxServer.agentEnv,
+          ...environment,
+          HOME: home,
+          USERPROFILE: home,
+          ZDOTDIR: home,
+        },
+        setup: {
+          profile: join(home, '.codebuddy', 'settings.json'),
+        },
       }
     },
-    openAgent: (server, workspaceId, workingDir) => openAgentViaAPI(server, workspaceId, workingDir, agentOpenOptions(CODEBUDDY_AGENT.provider, { optionValues: { effort: 'high' } })),
+    openAgent: (server, workspaceId, workingDir) => openAgentViaAPI(server, workspaceId, workingDir, agentOpenOptions(CODEBUDDY_AGENT.provider, {
+      optionValues: { effort: 'high' },
+    })),
   }, async ({ server, workspaceId, setup }) => {
-    await use(await nativeContext({ page, leapmuxServer: server, workspaceId, modelScript }), setup.profile)
+    await use(await nativeContext({
+      page,
+      leapmuxServer: server,
+      workspaceId,
+      modelScript,
+    }), setup.profile)
   })
 }
 
@@ -98,7 +113,12 @@ codebuddyTest('restores the native profile for Auto without losing conversation 
     const before = await currentNativeAgent(native)
     await exerciseNativeOptionSequence(native, {
       groupId: 'thinking',
-      steps: [{ value: 'true', via: 'choose' }, { value: 'false', via: 'choose' }, { value: 'auto', via: 'choose' }, { value: 'auto', via: 'reload' }],
+      steps: [
+        { value: 'true', via: 'choose' },
+        { value: 'false', via: 'choose' },
+        { value: 'auto', via: 'choose' },
+        { value: 'auto', via: 'reload' },
+      ],
       nativeProof: async (request, step) => {
         expectThinking(request, step.value === 'true')
         expect(JSON.stringify(request.body)).toContain(baseline)
@@ -122,7 +142,12 @@ codebuddyTest('preserves an explicit Off override through a style restart and re
     await waitForSettingsIdle(page)
     await exerciseNativeOptionSequence(native, {
       groupId: 'thinking',
-      steps: [{ value: 'false', via: 'default' }, { value: 'true', via: 'choose' }, { value: 'auto', via: 'choose' }, { value: 'auto', via: 'reload' }],
+      steps: [
+        { value: 'false', via: 'default' },
+        { value: 'true', via: 'choose' },
+        { value: 'auto', via: 'choose' },
+        { value: 'auto', via: 'reload' },
+      ],
       nativeProof: async (request, step) => {
         expectThinking(request, step.value !== 'false')
         expectConciseInstructions(request)
@@ -144,7 +169,11 @@ codebuddyTest('retains the thinking preference through a model without reasoning
     const before = await currentNativeAgent(native)
     await exerciseNativeOptionSequence(native, {
       groupId: 'model',
-      steps: [{ value: CODEBUDDY_ALT_MODEL_ID, via: 'choose' }, { value: CODEBUDDY_ALT_MODEL_ID, via: 'reload' }, { value: CODEBUDDY_MODEL_ID, via: 'choose' }],
+      steps: [
+        { value: CODEBUDDY_ALT_MODEL_ID, via: 'choose' },
+        { value: CODEBUDDY_ALT_MODEL_ID, via: 'reload' },
+        { value: CODEBUDDY_MODEL_ID, via: 'choose' },
+      ],
       nativeProof: async (request, step) => {
         const capable = step.value === CODEBUDDY_MODEL_ID
         expectThinking(request, capable, capable ? MOCK_MODELS.deepseek : CODEBUDDY_ALT_MODEL_WIRE_ID)

@@ -25,7 +25,12 @@ piTest('keeps the native codemode output path and exact preview after reload', a
   const output = computedNativeToolOutput()
   activateNativeCodemode(directory, getGlobalState().tmpDir)
   await withMockPiModel(directory, leapmuxServer, async (settings) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
     await openAgentViaAPI(leapmuxServer, context.workspaceId, directory, { agentProvider: AgentProvider.PI, ...settings })
     await openWorkspace(page, context.workspaceId)
     const code = `// @options: {"max_output_tokens": 100}\n${output.source}\ntext(completeOutput);`
@@ -54,7 +59,12 @@ piTest('keeps the native real MCP output path and exact preview after reload', a
   activateNativeCodemode(directory, getGlobalState().tmpDir)
   const output = computedNativeToolOutput()
   await withMockPiModel(directory, leapmuxServer, async (settings) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
     await openAgentViaAPI(leapmuxServer, context.workspaceId, directory, { agentProvider: AgentProvider.PI, ...settings })
     await openWorkspace(page, context.workspaceId)
     const code = `// @options: {"max_output_tokens": 100}\n${output.source}\nconst result = await tools.${inspectTool}({count:0,enabled:false,text:completeOutput});\ntext(result.structuredContent.text);`
@@ -69,11 +79,15 @@ piTest('keeps the native real MCP output path and exact preview after reload', a
     expect(nativeToolResult(resultRequest, call.id)).not.toContain(output.omittedMarker)
     const nested = await readPiMcpResult(context, `${call.id}/1`, inspectTool)
     expect(nested.failed).toBe(false)
-    expect(nested.result.structuredContent).toMatchObject({ structuredContent: { nextCount: 1, enabled: false, text: output.text } })
+    expect(nested.result.structuredContent).toMatchObject({
+      structuredContent: { nextCount: 1, enabled: false, text: output.text },
+    })
     const exchange = readMcpCallExchange(receiptLog)
     expect(exchange.name).toBe('inspect')
     expect(exchange.arguments).toEqual({ count: 0, enabled: false, text: output.text })
-    expect(exchange.result).toMatchObject({ structuredContent: { nextCount: 1, enabled: false, text: output.text } })
+    expect(exchange.result).toMatchObject({
+      structuredContent: { nextCount: 1, enabled: false, text: output.text },
+    })
     await verifyPiOutputFilePaths(context, { callId: call.id, expectedText: output.text, omittedMarker: output.omittedMarker })
   })
 })

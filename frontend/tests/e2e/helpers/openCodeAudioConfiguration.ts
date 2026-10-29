@@ -15,8 +15,12 @@ export function openCodeAudioConfiguration(value: unknown): { configuration: Rec
   if (!isObject(value) || typeof value.model !== 'string' || !value.model.startsWith(prefix))
     throw new Error('The OpenCode audio fixture requires its private mock model.')
   const modelID = value.model.slice(prefix.length)
-  const provider = isObject(value.provider) ? value.provider[MOCK_PROVIDER_IDS.openCode] : undefined
-  const models = isObject(provider) && isObject(provider.models) ? provider.models : undefined
+  const provider = isObject(value.provider)
+    ? value.provider[MOCK_PROVIDER_IDS.openCode]
+    : undefined
+  const models = isObject(provider) && isObject(provider.models)
+    ? provider.models
+    : undefined
   const model = models?.[modelID]
   if (!models || !isObject(model) || !isObject(model.modalities) || !Array.isArray(model.modalities.input) || !model.modalities.input.every(part => typeof part === 'string'))
     throw new Error('The OpenCode audio fixture requires a private mock model with native input modalities.')
@@ -24,9 +28,11 @@ export function openCodeAudioConfiguration(value: unknown): { configuration: Rec
     throw new Error('The OpenCode audio fixture requires the existing private wire model.')
   if (Object.hasOwn(models, OPENCODE_AUDIO_MODEL_ALIAS))
     throw new Error('The private OpenCode audio model alias already exists.')
-  const options = isObject(provider) && isObject(provider.options) ? provider.options : undefined
+  const options = isObject(provider) && isObject(provider.options)
+    ? provider.options
+    : undefined
   if (typeof options?.baseURL !== 'string')
-    throw new Error('The OpenCode audio fixture requires its private mock endpoint.')
+    throw new TypeError('The OpenCode audio fixture requires its private mock endpoint.')
   const endpoint = requireLoopbackHttpURL(options.baseURL, 'The OpenCode audio fixture endpoint')
   if (endpoint.pathname !== '/v1')
     throw new Error('The OpenCode audio fixture requires the private OpenAI /v1 endpoint.')
@@ -42,7 +48,12 @@ export function openCodeAudioConfiguration(value: unknown): { configuration: Rec
               name: 'LeapMux audio fixture',
               attachment: true,
               provider: { npm: '@ai-sdk/google', api: `${endpoint.origin}/v1beta` },
-              modalities: { ...structuredClone(model.modalities), input: [...new Set([...model.modalities.input, 'audio'])] },
+              modalities: {
+                ...structuredClone(model.modalities),
+                input: [
+                  ...new Set([...model.modalities.input, 'audio']),
+                ],
+              },
             },
           },
         },

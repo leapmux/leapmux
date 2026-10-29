@@ -17,7 +17,9 @@ export const CompactSwitch: Component<CompactSwitchProps> = (props) => {
     <label
       class={styles.compactSwitch}
       data-testid={props['data-testid']}
-      style={props.fontSize ? { 'font-size': props.fontSize } : undefined}
+      style={props.fontSize
+        ? { 'font-size': props.fontSize }
+        : undefined}
     >
       <input
         type="checkbox"

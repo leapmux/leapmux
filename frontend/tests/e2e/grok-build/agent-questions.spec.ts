@@ -10,11 +10,16 @@ grokTest.describe('control requests for Grok Build', () => {
   grokTest('answers a question with a choice and a note', async ({ native }) => {
     const { page } = native
     const { result } = await exerciseQuestionAnswer(native, {
-      questions: [{
-        question: 'Which database?',
-        header: 'Database',
-        options: [{ label: 'Postgres', description: 'Relational' }, { label: 'Redis', description: 'In-memory' }],
-      }],
+      questions: [
+        {
+          question: 'Which database?',
+          header: 'Database',
+          options: [
+            { label: 'Postgres', description: 'Relational' },
+            { label: 'Redis', description: 'In-memory' },
+          ],
+        },
+      ],
       callId: 'grok-question',
       prompt: 'Ask me for a database.',
       answer: 'Postgres it is.',

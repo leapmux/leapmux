@@ -25,28 +25,50 @@ function snapshot(messages: Array<{ spanId: string, content: unknown }>): Native
 }
 
 function itemFrame(callId: string, toolUseId: string): unknown {
-  return { event: 'item.completed', payload: { item: { metadata: { provider_tool_use_id: callId, tool_use_id: toolUseId } } } }
+  return {
+    event: 'item.completed',
+    payload: {
+      item: {
+        metadata: { provider_tool_use_id: callId, tool_use_id: toolUseId },
+      },
+    },
+  }
 }
 
 describe('codewhaleNativeCallId', () => {
   it('resolves the runtime id of the one item that answers the scripted call', () => {
     expect(codewhaleNativeCallId(snapshot([
-      { spanId: 'other', content: itemFrame('foreign', 'other') },
-      { spanId: 'native-7', content: itemFrame('scripted', 'native-7') },
+      {
+        spanId: 'other',
+        content: itemFrame('foreign', 'other'),
+      },
+      {
+        spanId: 'native-7',
+        content: itemFrame('scripted', 'native-7'),
+      },
     ]), 'scripted')).toBe('native-7')
   })
 
   it('refuses a scripted call with no item or with two', () => {
     expect(() => codewhaleNativeCallId(snapshot([]), 'scripted')).toThrow('one native item')
     expect(() => codewhaleNativeCallId(snapshot([
-      { spanId: 'a', content: itemFrame('scripted', 'a') },
-      { spanId: 'b', content: itemFrame('scripted', 'b') },
+      {
+        spanId: 'a',
+        content: itemFrame('scripted', 'a'),
+      },
+      {
+        spanId: 'b',
+        content: itemFrame('scripted', 'b'),
+      },
     ]), 'scripted')).toThrow('one native item')
   })
 
   it('refuses an item whose stored span disagrees with its stated id', () => {
     expect(() => codewhaleNativeCallId(snapshot([
-      { spanId: 'a', content: itemFrame('scripted', 'b') },
+      {
+        spanId: 'a',
+        content: itemFrame('scripted', 'b'),
+      },
     ]), 'scripted')).toThrow('inconsistent')
   })
 })

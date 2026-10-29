@@ -44,7 +44,10 @@ function toggleSelection(state: ControlAnswerState, qIdx: number, value: string,
         : [...current, value]
       return { ...prev, [qIdx]: newSel }
     }
-    return { ...prev, [qIdx]: [value] }
+    return {
+      ...prev,
+      [qIdx]: [value],
+    }
   })
   // Auto-advance to next page on single-select option click (multi-question only)
   if (!multiSelect && totalQuestions > 1) {
@@ -79,8 +82,11 @@ function selectionWithinLimits(question: ControlQuestion | undefined, count: num
 export function selectionCountPhrase(question: ControlQuestion): string | null {
   const min = question.minimumSelections
   const max = question.maximumSelections
-  if (min !== undefined && max !== undefined)
-    return min === max ? `Select ${min} options` : `Select ${min} to ${max} options`
+  if (min !== undefined && max !== undefined) {
+    return min === max
+      ? `Select ${min} options`
+      : `Select ${min} to ${max} options`
+  }
   if (min !== undefined)
     return `Select at least ${min} options`
   if (max !== undefined)
@@ -128,15 +134,22 @@ export function submitBlockedReason(questions: ControlQuestion[], isAnswered: (i
   // `findIndex` yields a valid index when non-negative; `?.` is the type-level
   // guard alone.
   const waitingQuestion = questions[waiting]
-  const counts = waitingQuestion ? selectionCountPhrase(waitingQuestion) : null
-  if (waitingQuestion?.allowCustomText === false)
-    return counts !== null ? `${counts}.` : 'Choose an option. This agent accepts selected options only.'
+  const counts = waitingQuestion
+    ? selectionCountPhrase(waitingQuestion)
+    : null
+  if (waitingQuestion?.allowCustomText === false) {
+    return counts !== null
+      ? `${counts}.`
+      : 'Choose an option. This agent accepts selected options only.'
+  }
   const reason = counts !== null
     ? `${counts}, or type a custom answer below.`
     : waitingQuestion?.options?.length
       ? 'Choose an option, or type a custom answer below.'
       : 'Type a custom answer below.'
-  return questions.length > 1 ? `Every question needs an answer. ${reason}` : reason
+  return questions.length > 1
+    ? `Every question needs an answer. ${reason}`
+    : reason
 }
 
 export function buildAskAnswers(
@@ -198,7 +211,10 @@ export function controlQuestion(
     return undefined
   const capability = pluginFor(controlRequestProvider(request, agentProvider))?.controls?.askUserQuestion
   return capability?.isRequest(request.payload)
-    ? { capability, questions: capability.extractQuestions(request.payload, source) }
+    ? {
+        capability,
+        questions: capability.extractQuestions(request.payload, source),
+      }
     : undefined
 }
 
@@ -319,7 +335,12 @@ export const AskUserQuestionContent: Component<{ request: ControlRequest, answer
                   </div>
                 )}
               </Show>
-              <div class={styles.optionList} style={props.optionsDisabled ? { 'opacity': '0.5', 'pointer-events': 'none' } : undefined}>
+              <div
+                class={styles.optionList}
+                style={props.optionsDisabled
+                  ? { 'opacity': '0.5', 'pointer-events': 'none' }
+                  : undefined}
+              >
                 <Show
                   when={q().multiSelect}
                   fallback={(() => {
@@ -337,7 +358,9 @@ export const AskUserQuestionContent: Component<{ request: ControlRequest, answer
                               name={radioName}
                               checked={(props.answerState.selections()[qIdx()] ?? [])[0] === questionOptionValue(opt)}
                               onChange={() => toggleSelection(props.answerState, qIdx(), questionOptionValue(opt), false, questions().length, preservesSelectionNotes(props.agentProvider))}
-                              {...(props.optionsDisabled === undefined ? {} : { disabled: props.optionsDisabled })}
+                              {...(props.optionsDisabled === undefined
+                                ? {}
+                                : { disabled: props.optionsDisabled })}
                             />
                           )}
                         />
@@ -523,7 +546,10 @@ export const AskUserQuestionActions: Component<ActionsProps & {
         if (question.allowCustomText === false) {
           const count = Math.max(1, question.minimumSelections ?? 1)
           props.answerState.setCustomTexts(prev => ({ ...prev, [i]: '' }))
-          props.answerState.setSelections(prev => ({ ...prev, [i]: question.options.slice(0, count).map(questionOptionValue) }))
+          props.answerState.setSelections(prev => ({
+            ...prev,
+            [i]: question.options.slice(0, count).map(questionOptionValue),
+          }))
           continue
         }
         // A page left unanswered can hold a selection outside its native
@@ -572,7 +598,11 @@ export const AskUserQuestionActions: Component<ActionsProps & {
                 return (
                   <button
                     type="button"
-                    class={`${styles.paginationItem} ${isCurrent() ? styles.paginationItemCurrent : ''} ${answered() ? styles.paginationItemAnswered : ''}`}
+                    class={`${styles.paginationItem} ${isCurrent()
+                      ? styles.paginationItemCurrent
+                      : ''} ${answered()
+                      ? styles.paginationItemAnswered
+                      : ''}`}
                     onClick={() => navigateToPage(idx())}
                   >
                     {idx() + 1}
@@ -592,7 +622,9 @@ export const AskUserQuestionActions: Component<ActionsProps & {
             data-testid="control-submit-btn"
           >
             <Show when={submitting()}><Spinner /></Show>
-            {submitting() ? 'Submitting...' : 'Submit'}
+            {submitting()
+              ? 'Submitting...'
+              : 'Submit'}
           </button>
         </Tooltip>
       )}

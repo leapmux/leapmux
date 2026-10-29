@@ -249,7 +249,13 @@ describe('deltaE', () => {
   })
 
   it('rises as a colour moves away, so a floor can be compared against it', () => {
-    const steps = ['#000000', '#202020', '#606060', '#a0a0a0', '#ffffff']
+    const steps = [
+      '#000000',
+      '#202020',
+      '#606060',
+      '#a0a0a0',
+      '#ffffff',
+    ]
       .map(v => deltaE('#000000', v))
     for (let i = 1; i < steps.length; i++)
       expect(steps[i]!).toBeGreaterThan(steps[i - 1]!)

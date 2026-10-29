@@ -34,7 +34,12 @@ describe('createPromptSuggestionStore', () => {
       store.set('a', { text: 'first' })
       store.set('a', { text: 'second' })
       store.clear('a')
-      expect(seen).toEqual([undefined, 'first', 'second', undefined])
+      expect(seen).toEqual([
+        undefined,
+        'first',
+        'second',
+        undefined,
+      ])
     }
     finally {
       dispose()

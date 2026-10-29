@@ -25,7 +25,9 @@ export async function exerciseNativeReadOnlyPlan(
   writeFileSync(file, `${marker}\n`)
   const callId = 'native-read-only-plan'
   const { resultRequest: request } = await runNativeToolTurn(context, {
-    toolCalls: [readToolCall(context.provider, callId, file)],
+    toolCalls: [
+      readToolCall(context.provider, callId, file),
+    ],
     prompt: 'Read the supplied context and return the read-only plan.',
     answer: '# Native plan\n\n1. Inspect the file context.\n2. Implement after the user selects execution mode.',
   })

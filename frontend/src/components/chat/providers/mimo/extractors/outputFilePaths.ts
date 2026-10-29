@@ -19,5 +19,7 @@ export function mimoOutputFilePaths(input: RowExtractionInput, call: ToolCall): 
     return []
   }
   const path = pickObject(state, MIMO_OUTPUT_FILE_FIELD.Metadata)?.[MIMO_OUTPUT_FILE_FIELD.OutputPath]
-  return isFilesystemPath(path) && /[\\/]tool-output[\\/]tool_[A-Za-z0-9]+$/u.test(path) ? [path] : []
+  return isFilesystemPath(path) && /[\\/]tool-output[\\/]tool_[A-Za-z0-9]+$/u.test(path)
+    ? [path]
+    : []
 }

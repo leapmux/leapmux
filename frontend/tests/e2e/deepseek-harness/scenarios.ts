@@ -28,7 +28,10 @@ export async function nativeContext(fixtures: NativeContextFixtures): Promise<Ma
 }
 
 export function nativeLaunch(context: ManagedNativeScenarioContext) {
-  return resolveNativeStartupLaunch(context.leapmuxServer.agentEnv, { binaryName: 'dsh', holdWhen: ['--profile', 'web'] })
+  return resolveNativeStartupLaunch(context.leapmuxServer.agentEnv, {
+    binaryName: 'dsh',
+    holdWhen: ['--profile', 'web'],
+  })
 }
 
 /** Hold one continuable native child after its actual file read. */
@@ -38,7 +41,11 @@ export async function runningChild(context: ManagedNativeScenarioContext) {
   const task = `DEEPSEEKCHILD${marker} read the supplied file.`
   const path = join(parent.workingDir, `native-child-${marker}.txt`)
   writeFileSync(path, `NATIVE_CHILD_FILE${marker}\n`)
-  const spawn = spawnSubagentToolCall(context.provider, `spawn-${marker}`, { description: HELD_NATIVE_CHILD_DESCRIPTION, prompt: context.modelScript.prompt(task), background: true })
+  const spawn = spawnSubagentToolCall(context.provider, `spawn-${marker}`, {
+    description: HELD_NATIVE_CHILD_DESCRIPTION,
+    prompt: context.modelScript.prompt(task),
+    background: true,
+  })
   const readCallId = `child-read-${marker}`
   const child = await openRunningNativeChild(context, {
     gate: `native-child-${marker}`,
@@ -50,7 +57,12 @@ export async function runningChild(context: ManagedNativeScenarioContext) {
       finalStep: { text: `NATIVE_CHILD_REPORT${marker}` },
     },
     spawn,
-    parentSteps: [{ toolCalls: [spawn] }, { text: 'The native parent completed.' }],
+    parentSteps: [
+      {
+        toolCalls: [spawn],
+      },
+      { text: 'The native parent completed.' },
+    ],
     beforeRelease: () => registerChildReports(context),
   })
   return {

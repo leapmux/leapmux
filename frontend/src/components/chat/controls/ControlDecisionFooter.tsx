@@ -126,7 +126,9 @@ export const ControlDecisionFooter: Component<{
                     <button
                       type="button"
                       role="menuitem"
-                      class={decision().destructive ? dangerMenuItem : undefined}
+                      class={decision().destructive
+                        ? dangerMenuItem
+                        : undefined}
                       disabled={decision().disabled}
                       onClick={() => invokeControlAction(decision().onSelect)}
                       data-testid={decision().testId}
@@ -150,7 +152,9 @@ export const ControlDecisionFooter: Component<{
               class={actionButtonClass(true)}
               disabled={props.negativeAction?.disabled}
               onMouseDown={keepFocusOnPress}
-              onClick={() => invokeControlAction(() => props.hasEditorContent ? props.onSendFeedback() : props.negativeAction?.onSelect())}
+              onClick={() => invokeControlAction(() => props.hasEditorContent
+                ? props.onSendFeedback()
+                : props.negativeAction?.onSelect())}
               data-testid={props.negativeAction?.testId ?? 'control-deny-btn'}
             >
               {props.hasEditorContent ? 'Send feedback' : props.negativeAction?.label}

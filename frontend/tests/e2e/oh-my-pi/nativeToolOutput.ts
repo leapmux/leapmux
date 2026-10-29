@@ -5,7 +5,11 @@ import { readNativeToolOutputRecord } from '../helpers/nativeMessages'
 
 /** Read an opaque native artifact ID and the original Bash preview. Infer no filesystem path. */
 export function ohMyPiNativeOutput(snapshot: NativeMessageSnapshot, callId: string): { artifactId: string, previewText: string, frame: Record<string, unknown>, content: Uint8Array } {
-  const record = readNativeToolOutputRecord(snapshot, { callId, spanId: callId, accepts: frame => frame.type === 'tool_execution_end' && frame.toolCallId === callId && frame.toolName === 'bash' && frame.isError === false })
+  const record = readNativeToolOutputRecord(snapshot, {
+    callId,
+    spanId: callId,
+    accepts: frame => frame.type === 'tool_execution_end' && frame.toolCallId === callId && frame.toolName === 'bash' && frame.isError === false,
+  })
   const result = pickObject(record.frame, 'result')
   const details = pickObject(result, 'details')
   const truncation = pickObject(pickObject(details, OH_MY_PI_TRUNCATION_FIELD.Meta), OH_MY_PI_TRUNCATION_FIELD.Truncation)
@@ -24,5 +28,10 @@ export function ohMyPiNativeOutput(snapshot: NativeMessageSnapshot, callId: stri
     }
     break
   }
-  return { artifactId, previewText: lines.join('\n'), frame: record.frame, content: record.message.content }
+  return {
+    artifactId,
+    previewText: lines.join('\n'),
+    frame: record.frame,
+    content: record.message.content,
+  }
 }

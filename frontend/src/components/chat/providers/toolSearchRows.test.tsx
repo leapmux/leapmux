@@ -9,19 +9,26 @@ import './claude/plugin'
 import './testMocks'
 
 /** The three span sides an isolated extraction resolves to nothing. */
-const NO_SIDES = { request: undefined, result: undefined, role: 'other' as const, visibleRows: { request: false, result: false } }
+const NO_SIDES = {
+  request: undefined,
+  result: undefined,
+  role: 'other' as const,
+  visibleRows: { request: false, result: false },
+}
 
 /** Construct a ToolSearch tool_use assistant message. */
 function toolSearchRequest(args: Record<string, unknown> = {}) {
   return {
     type: 'assistant',
     message: {
-      content: [{
-        type: 'tool_use',
-        id: 'test-toolsearch',
-        name: CLAUDE_TOOL_NAMES.TOOL_SEARCH,
-        input: { query: 'select:Read,Glob,Grep', ...args },
-      }],
+      content: [
+        {
+          type: 'tool_use',
+          id: 'test-toolsearch',
+          name: CLAUDE_TOOL_NAMES.TOOL_SEARCH,
+          input: { query: 'select:Read,Glob,Grep', ...args },
+        },
+      ],
     },
   }
 }
@@ -32,13 +39,20 @@ function toolSearchResult(matches: string[]) {
     type: 'user',
     message: {
       role: 'user',
-      content: [{
-        tool_use_id: 'test-toolsearch',
-        type: 'tool_result',
-        content: matches.map(name => ({ type: 'tool_reference', tool_name: name })),
-      }],
+      content: [
+        {
+          tool_use_id: 'test-toolsearch',
+          type: 'tool_result',
+          content: matches.map(name => ({ type: 'tool_reference', tool_name: name })),
+        },
+      ],
     },
-    tool_use_result: { tool_name: CLAUDE_TOOL_NAMES.TOOL_SEARCH, matches, query: 'select:Read', total_deferred_tools: 19 },
+    tool_use_result: {
+      tool_name: CLAUDE_TOOL_NAMES.TOOL_SEARCH,
+      matches,
+      query: 'select:Read',
+      total_deferred_tools: 19,
+    },
   }
 }
 
@@ -52,17 +66,31 @@ describe('toolSearch rows', () => {
   it('hides the request row', () => {
     const payload = toolSearchRequest()
     const category: MessageCategory = { kind: 'tool_use' }
-    expect(claudeExtractRow({ resolved: input(payload), category, span: NO_SIDES })).toEqual({ kind: 'hidden' })
+    expect(claudeExtractRow({
+      resolved: input(payload),
+      category,
+      span: NO_SIDES,
+    })).toEqual({ kind: 'hidden' })
   })
 
   it('hides the result row', () => {
     const payload = toolSearchResult(['Read', 'Glob', 'Grep'])
-    expect(claudeExtractRow({ resolved: input(payload), category: { kind: 'tool_result' }, span: NO_SIDES })).toEqual({ kind: 'hidden' })
+    expect(claudeExtractRow({
+      resolved: input(payload),
+      category: { kind: 'tool_result' },
+      span: NO_SIDES,
+    })).toEqual({ kind: 'hidden' })
   })
 
   it('classifies both sides as hidden once the span column names the tool', () => {
     const plugin = providerFor(AgentProvider.CLAUDE_CODE)!
-    expect(plugin?.transcript.classify({ ...input(toolSearchRequest()), spanType: CLAUDE_TOOL_NAMES.TOOL_SEARCH }).kind).toBe('hidden')
-    expect(plugin?.transcript.classify({ ...input(toolSearchResult(['Read'])), spanType: CLAUDE_TOOL_NAMES.TOOL_SEARCH }).kind).toBe('hidden')
+    expect(plugin?.transcript.classify({
+      ...input(toolSearchRequest()),
+      spanType: CLAUDE_TOOL_NAMES.TOOL_SEARCH,
+    }).kind).toBe('hidden')
+    expect(plugin?.transcript.classify({
+      ...input(toolSearchResult(['Read'])),
+      spanType: CLAUDE_TOOL_NAMES.TOOL_SEARCH,
+    }).kind).toBe('hidden')
   })
 })

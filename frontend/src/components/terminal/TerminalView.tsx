@@ -262,14 +262,18 @@ function notifyTerminalInstanceReady(id: string): void {
 // HMR reloads.
 if (import.meta.hot) {
   import.meta.hot.dispose(() => {
-    for (const id of [...instances.keys()])
+    for (const id of [
+      ...instances.keys(),
+    ])
       disposeTerminalInstance(id)
     lastActiveTerminalId = null
   })
 }
 
 if (typeof window !== 'undefined') {
-  const getActiveInstance = () => (lastActiveTerminalId ? instances.get(lastActiveTerminalId) : undefined)
+  const getActiveInstance = () => (lastActiveTerminalId
+    ? instances.get(lastActiveTerminalId)
+    : undefined)
 
   ;(window as any).__getActiveTerminalText = () => {
     const instance = getActiveInstance()
@@ -310,7 +314,9 @@ if (typeof window !== 'undefined') {
   // the send-side counterpart of __getActiveTerminalText. Doubled or lost
   // sends are exact here, whatever the shell redraws onto the screen.
   ;(window as any).__getActiveTerminalInputLog = () =>
-    (lastActiveTerminalId ? inputLogs.get(lastActiveTerminalId) : undefined) ?? ''
+    (lastActiveTerminalId
+      ? inputLogs.get(lastActiveTerminalId)
+      : undefined) ?? ''
   // E2E hook: drive input through the same sendInput callback xterm's
   // onData handler uses, so the test exercises the full handleTerminalInput
   // routing (READY → SendInput RPC, EXITED → RestartTerminal RPC) without
@@ -349,7 +355,9 @@ if (typeof window !== 'undefined') {
         y: rect.top + (row + 0.5) * rowHeight,
         // A cell on another row, for a caller that has to make xterm ask for
         // the link again. See `clickTerminalText`.
-        awayY: rect.top + (row === 0 ? 1.5 : 0.5) * rowHeight,
+        awayY: rect.top + (row === 0
+          ? 1.5
+          : 0.5) * rowHeight,
       }
     }
     return null
@@ -357,7 +365,9 @@ if (typeof window !== 'undefined') {
   // E2E hooks for the WebGL context pool: assert that the number of live
   // contexts stays bounded and that hidden tabs hold none.
   ;(window as any).__webglTerminalCount = () => webglPool.size()
-  ;(window as any).__terminalRendererFor = (id: string) => (instances.get(id)?.webglAddon ? 'webgl' : 'dom')
+  ;(window as any).__terminalRendererFor = (id: string) => (instances.get(id)?.webglAddon
+    ? 'webgl'
+    : 'dom')
 }
 
 /**
@@ -416,8 +426,12 @@ const TerminalContainer: Component<TerminalContainerProps> = (props) => {
       instance = createTerminalInstance({
         fontFamily: props.fontFamily,
         fontSize: props.fontSize,
-        ...(props.cols !== undefined ? { cols: props.cols } : {}),
-        ...(props.rows !== undefined ? { rows: props.rows } : {}),
+        ...(props.cols !== undefined
+          ? { cols: props.cols }
+          : {}),
+        ...(props.rows !== undefined
+          ? { rows: props.rows }
+          : {}),
         theme: props.theme,
         ...(props.transparentBackground !== undefined
           ? { transparentBackground: props.transparentBackground }
@@ -856,7 +870,9 @@ export const TerminalView: Component<TerminalViewProps> = (props) => {
                     {...rowOptionalProps()}
                     fontFamily={preferences.monoFontFamily()}
                     fontSize={DEFAULT_FONT_SIZE}
-                    theme={props.transparentBackground ? transparentTerminalTheme() : terminalTheme()}
+                    theme={props.transparentBackground
+                      ? transparentTerminalTheme()
+                      : terminalTheme()}
                     contentReady={(terminal()?.contentReady ?? false)
                       || terminal()?.status === TerminalStatus.EXITED
                       || terminal()?.status === TerminalStatus.DISCONNECTED}

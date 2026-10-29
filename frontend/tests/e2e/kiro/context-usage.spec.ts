@@ -12,7 +12,11 @@ const CONTEXT_LINE = /([\d.]+)([km]?)\s*\/\s*([\d.]+)([km]?)\s*\((\d+)%\)/i
 
 /** Read a compact token count like "4.4k" as a plain number of tokens. */
 function compactTokens(value: string, unit: string): number {
-  const scale = unit.toLowerCase() === 'k' ? 1_000 : unit.toLowerCase() === 'm' ? 1_000_000 : 1
+  const scale = unit.toLowerCase() === 'k'
+    ? 1_000
+    : unit.toLowerCase() === 'm'
+      ? 1_000_000
+      : 1
   return Math.round(Number.parseFloat(value) * scale)
 }
 
@@ -23,7 +27,10 @@ kiroTest.describe('Kiro basic chat', () => {
     try {
       const readings = () => watch.readings()
       const beforeCount = readings().length
-      const step = await modelScript.queue({ text: 'Usage recorded.', usage: { ...SCRIPTED_CONTEXT_USAGE } })
+      const step = await modelScript.queue({
+        text: 'Usage recorded.',
+        usage: { ...SCRIPTED_CONTEXT_USAGE },
+      })
       await sendMessage(page, modelScript.prompt('Reply once.'))
       await modelScript.waitForSteps(step + 1)
       await waitForAgentIdle(page)

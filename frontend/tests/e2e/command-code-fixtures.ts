@@ -12,7 +12,11 @@ export const commandCodeTest = createProviderTest({
   skipReason: COMMAND_CODE_E2E_SKIP_REASON,
   /** An agent in bypass mode, which runs every tool call at once. */
   workspaceName: 'authenticatedCommandCodeWorkspace',
-  workspaceOptions: { openOptions: { optionValues: { permissionMode: 'bypass' } } },
+  workspaceOptions: {
+    openOptions: {
+      optionValues: { permissionMode: 'bypass' },
+    },
+  },
 }).extend<{
   /**
    * An agent in Command Code's default mode.
@@ -21,5 +25,11 @@ export const commandCodeTest = createProviderTest({
    */
   refusingCommandCodeWorkspace: AgentWorkspace
 }>({
-  refusingCommandCodeWorkspace: authenticatedAgentWorkspace({ ...COMMAND_CODE_AGENT, prefix: 'command-code-e2e-default', openOptions: { optionValues: { permissionMode: 'default' } } }),
+  refusingCommandCodeWorkspace: authenticatedAgentWorkspace({
+    ...COMMAND_CODE_AGENT,
+    prefix: 'command-code-e2e-default',
+    openOptions: {
+      optionValues: { permissionMode: 'default' },
+    },
+  }),
 })

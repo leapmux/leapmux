@@ -167,12 +167,16 @@ export function spawnCommandProcess(
   const ownTree = ownership.ownTree === true
   if (ownTree && process.platform === 'win32')
     return spawnWindowsCommandJob(command, args, spawnOptions, delay)
-  const child = spawn(command, args, ownTree ? { ...spawnOptions, detached: true } : spawnOptions)
+  const child = spawn(command, args, ownTree
+    ? { ...spawnOptions, detached: true }
+    : spawnOptions)
   let stopping: Promise<void> | undefined
   return {
     child,
     stop: () => {
-      stopping ??= ownTree ? stopOwnedProcessGroup(child, delay) : stopProcess(child, delay)
+      stopping ??= ownTree
+        ? stopOwnedProcessGroup(child, delay)
+        : stopProcess(child, delay)
       return stopping
     },
   }

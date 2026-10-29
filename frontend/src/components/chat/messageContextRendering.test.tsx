@@ -27,17 +27,35 @@ describe('message context rendering', () => {
       seq: 3n,
       spanId: 'task-call',
       agentProvider: AgentProvider.CLAUDE_CODE,
-      content: rawContent({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'task-call', name: 'TaskUpdate', input: { taskId: '42', status: 'completed' } }] } }),
-      supplementalContent: rawContent({ metadata: { [MESSAGE_METADATA_FIELD.TodoSnapshot]: {
-        id: '42',
-        content: 'Persisted task title',
-        status: 'TODO_STATUS_COMPLETED',
-        activeForm: '',
-        description: 'Persisted description',
-      } } }),
+      content: rawContent({
+        type: 'assistant',
+        message: {
+          content: [
+            {
+              type: 'tool_use',
+              id: 'task-call',
+              name: 'TaskUpdate',
+              input: { taskId: '42', status: 'completed' },
+            },
+          ],
+        },
+      }),
+      supplementalContent: rawContent({
+        metadata: {
+          [MESSAGE_METADATA_FIELD.TodoSnapshot]: {
+            id: '42',
+            content: 'Persisted task title',
+            status: 'TODO_STATUS_COMPLETED',
+            activeForm: '',
+            description: 'Persisted description',
+          },
+        },
+      }),
       supplementalRevision: 1n,
     })
-    const context = testMessageContext({ messages: () => [message] })
+    const context = testMessageContext({
+      messages: () => [message],
+    })
     const { container } = render(() => (
       <PreferencesProvider><MessageBubble message={message} host={{ messages: context }} /></PreferencesProvider>
     ))
@@ -52,10 +70,18 @@ describe('message context rendering', () => {
       seq: 1n,
       spanId: 'call',
       agentProvider: AgentProvider.OPENCODE,
-      content: rawContent({ sessionUpdate: 'tool_call', toolCallId: 'call', kind: 'edit', rawInput: { filePath: '/project/example.ts', oldString: 'oldValue', newString: 'recoveredValue' } }),
+      content: rawContent({
+        sessionUpdate: 'tool_call',
+        toolCallId: 'call',
+        kind: 'edit',
+        rawInput: { filePath: '/project/example.ts', oldString: 'oldValue', newString: 'recoveredValue' },
+      }),
     })
     const fetchSpan = vi.fn(async () => [request, result])
-    const context = testMessageContext({ messages: () => [result], fetchSpan })
+    const context = testMessageContext({
+      messages: () => [result],
+      fetchSpan,
+    })
     const { container } = render(() => (
       <PreferencesProvider><MessageBubble message={result} host={{ messages: context }} /></PreferencesProvider>
     ))
@@ -69,10 +95,22 @@ describe('message context rendering', () => {
       seq: 3n,
       spanId: 'command',
       agentProvider: AgentProvider.CODEX,
-      content: rawContent({ item: { type: 'commandExecution', id: 'command', status: 'completed', command: 'pwd', aggregatedOutput: '/project', exitCode: 0 } }),
+      content: rawContent({
+        item: {
+          type: 'commandExecution',
+          id: 'command',
+          status: 'completed',
+          command: 'pwd',
+          aggregatedOutput: '/project',
+          exitCode: 0,
+        },
+      }),
     })
     const fetchSpan = vi.fn(async () => [])
-    const context = testMessageContext({ messages: () => [message], fetchSpan })
+    const context = testMessageContext({
+      messages: () => [message],
+      fetchSpan,
+    })
     const { container } = render(() => (
       <PreferencesProvider><MessageBubble message={message} host={{ messages: context }} /></PreferencesProvider>
     ))
@@ -83,7 +121,10 @@ describe('message context rendering', () => {
   it('does not fetch related history during hidden measurement', () => {
     const message = resultMessage()
     const fetchSpan = vi.fn(async () => [])
-    const context = testMessageContext({ messages: () => [message], fetchSpan })
+    const context = testMessageContext({
+      messages: () => [message],
+      fetchSpan,
+    })
     render(() => (
       <PreferencesProvider><MessageBubble message={message} host={{ messages: context }} premeasureMode /></PreferencesProvider>
     ))

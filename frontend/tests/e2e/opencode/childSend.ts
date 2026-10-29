@@ -41,16 +41,26 @@ export async function exerciseOpenCodeFamilyChildSend(native: ManagedNativeScena
       {
         name: 'the child runs its first tool',
         when: member.profile.childTask(childTask),
-        respond: { gate, toolCalls: [bashToolCall(native.provider, 'child-shell', command)] },
+        respond: {
+          gate,
+          toolCalls: [
+            bashToolCall(native.provider, 'child-shell', command),
+          ],
+        },
         once: true,
       },
       ...(member.readsAfterTurn
-        ? [{
-            name: 'the child answers its tool before it reads the message',
-            when: { ...member.profile.childTask(childTask), lastMessage: { role: 'tool' as const } },
-            respond: { text: 'The child marker command ran.' },
-            once: true,
-          }]
+        ? [
+            {
+              name: 'the child answers its tool before it reads the message',
+              when: {
+                ...member.profile.childTask(childTask),
+                lastMessage: { role: 'tool' as const },
+              },
+              respond: { text: 'The child marker command ran.' },
+              once: true,
+            },
+          ]
         : []),
       {
         name: steeredRule,
@@ -61,10 +71,12 @@ export async function exerciseOpenCodeFamilyChildSend(native: ManagedNativeScena
     )
     const queued = await modelScript.queue(
       {
-        toolCalls: [spawnSubagentToolCall(native.provider, 'spawn-child-send', {
-          description: 'Answer the message from the child tab',
-          prompt: modelScript.prompt(childTask),
-        })],
+        toolCalls: [
+          spawnSubagentToolCall(native.provider, 'spawn-child-send', {
+            description: 'Answer the message from the child tab',
+            prompt: modelScript.prompt(childTask),
+          }),
+        ],
       },
       { text: 'The child read the message from its tab.' },
     )

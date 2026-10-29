@@ -49,31 +49,58 @@ function renderMenu(opts: {
     <ComposerPlusMenu
       optionGroups={opts.groups ?? []}
       optionValues={opts.values ?? {}}
-      {...(opts.provider === undefined ? {} : { agentProvider: opts.provider })}
-      {...(opts.settingsDispatcher === false ? {} : { onSettingChange })}
+      {...(opts.provider === undefined
+        ? {}
+        : { agentProvider: opts.provider })}
+      {...(opts.settingsDispatcher === false
+        ? {}
+        : { onSettingChange })}
       onAttachFile={onAttachFile}
       canAttach={opts.canAttach ?? true}
-      {...(opts.disabledReason === undefined ? {} : { disabledReason: opts.disabledReason })}
-      {...(opts.attachmentDisabledReason === undefined ? {} : { attachmentDisabledReason: opts.attachmentDisabledReason })}
-      {...(opts.settingsLoading === undefined ? {} : { settingsLoading: opts.settingsLoading })}
+      {...(opts.disabledReason === undefined
+        ? {}
+        : { disabledReason: opts.disabledReason })}
+      {...(opts.attachmentDisabledReason === undefined
+        ? {}
+        : { attachmentDisabledReason: opts.attachmentDisabledReason })}
+      {...(opts.settingsLoading === undefined
+        ? {}
+        : { settingsLoading: opts.settingsLoading })}
       workingTree={{
         isWorktree: opts.isWorktree ?? false,
         name: opts.branchName ?? '',
         directory: opts.directory ?? '',
-        ...(opts.homeDir === undefined ? {} : { homeDir: opts.homeDir }),
-        ...(opts.branchStats === undefined ? {} : { stats: opts.branchStats }),
+        ...(opts.homeDir === undefined
+          ? {}
+          : { homeDir: opts.homeDir }),
+        ...(opts.branchStats === undefined
+          ? {}
+          : { stats: opts.branchStats }),
       }}
       branchActions={branchActions}
       branchWorkerId="w-1"
-      {...(opts.branchDisabledReason === undefined ? {} : { branchDisabledReason: opts.branchDisabledReason })}
+      {...(opts.branchDisabledReason === undefined
+        ? {}
+        : { branchDisabledReason: opts.branchDisabledReason })}
       enterKeyMode={() => 'cmd-enter-sends'}
       onToggleEnterMode={onToggleEnterMode}
       showStatusBar={() => true}
       onToggleStatusBar={onToggleStatusBar}
-      {...(opts.agentInfo ? { agentInfo: () => <span data-testid="agent-info-rows" /> } : {})}
+      {...(opts.agentInfo
+        ? {
+            agentInfo: () => <span data-testid="agent-info-rows" />,
+          }
+        : {})}
     />
   ))
-  return { ...rendered, onSettingChange, onAttachFile, onToggleEnterMode, onToggleStatusBar, branchActions }
+  return {
+    ...rendered,
+    onSettingChange,
+    onAttachFile,
+    onToggleEnterMode,
+    onToggleStatusBar,
+    branchActions,
+  }
 }
 
 describe('ComposerPlusMenu structure freeze', () => {
@@ -91,7 +118,9 @@ describe('ComposerPlusMenu structure freeze', () => {
       <ComposerPlusMenu
         optionGroups={sources.groups()}
         optionValues={{}}
-        {...(sources.provider === undefined ? {} : { agentProvider: sources.provider })}
+        {...(sources.provider === undefined
+          ? {}
+          : { agentProvider: sources.provider })}
         onSettingChange={vi.fn()}
         onAttachFile={vi.fn()}
         canAttach
@@ -119,7 +148,9 @@ describe('ComposerPlusMenu structure freeze', () => {
    * The same hazard `OptionGroupPopover` freezes one level down.
    */
   it('does not move a row under the pointer when a push lands mid-open', async () => {
-    const [groups, setGroups] = createSignal<AvailableOptionGroup[]>([group('model', 'Model', 1, ['sonnet'])])
+    const [groups, setGroups] = createSignal<AvailableOptionGroup[]>([
+      group('model', 'Model', 1, ['sonnet']),
+    ])
     const [branch, setBranch] = createSignal<string | undefined>(undefined)
     renderLive({ groups, branch })
 
@@ -128,7 +159,10 @@ describe('ComposerPlusMenu structure freeze', () => {
 
     // A second axis AND a branch, both at once.
     batch(() => {
-      setGroups([group('model', 'Model', 1, ['sonnet']), group('effort', 'Effort', 2, ['high'])])
+      setGroups([
+        group('model', 'Model', 1, ['sonnet']),
+        group('effort', 'Effort', 2, ['high']),
+      ])
       setBranch('feature/x')
     })
     await Promise.resolve()
@@ -148,9 +182,15 @@ describe('ComposerPlusMenu structure freeze', () => {
    * which is the same hazard as a row sliding into that place.
    */
   it('does not rename the delete item under the pointer when a push lands mid-open', async () => {
-    const [groups] = createSignal<AvailableOptionGroup[]>([group('model', 'Model', 1, ['sonnet'])])
+    const [groups] = createSignal<AvailableOptionGroup[]>([
+      group('model', 'Model', 1, ['sonnet']),
+    ])
     const [isWorktree, setIsWorktree] = createSignal(false)
-    renderLive({ groups, branch: () => 'feature', isWorktree })
+    renderLive({
+      groups,
+      branch: () => 'feature',
+      isWorktree,
+    })
 
     await fireEvent.click(screen.getByTestId('composer-plus-trigger'))
     expect(screen.getByRole('menuitem', { name: /Delete branch/, hidden: true })).toBeInTheDocument()
@@ -168,9 +208,15 @@ describe('ComposerPlusMenu structure freeze', () => {
 
   // ...and the corrected kind is there the next time the menu opens.
   it('names the new kind the next time it opens', async () => {
-    const [groups] = createSignal<AvailableOptionGroup[]>([group('model', 'Model', 1, ['sonnet'])])
+    const [groups] = createSignal<AvailableOptionGroup[]>([
+      group('model', 'Model', 1, ['sonnet']),
+    ])
     const [isWorktree, setIsWorktree] = createSignal(false)
-    renderLive({ groups, branch: () => 'feature', isWorktree })
+    renderLive({
+      groups,
+      branch: () => 'feature',
+      isWorktree,
+    })
 
     await fireEvent.click(screen.getByTestId('composer-plus-trigger'))
     setIsWorktree(true)
@@ -185,11 +231,16 @@ describe('ComposerPlusMenu structure freeze', () => {
 
   // ...and the freeze is released on close, so the next open is current.
   it('shows the new rows the next time it opens', async () => {
-    const [groups, setGroups] = createSignal<AvailableOptionGroup[]>([group('model', 'Model', 1, ['sonnet'])])
+    const [groups, setGroups] = createSignal<AvailableOptionGroup[]>([
+      group('model', 'Model', 1, ['sonnet']),
+    ])
     renderLive({ groups })
 
     await fireEvent.click(screen.getByTestId('composer-plus-trigger'))
-    setGroups([group('model', 'Model', 1, ['sonnet']), group('effort', 'Effort', 2, ['high'])])
+    setGroups([
+      group('model', 'Model', 1, ['sonnet']),
+      group('effort', 'Effort', 2, ['high']),
+    ])
     await Promise.resolve()
     expect(screen.queryByTestId('composer-group-effort'), 'frozen while open').toBeNull()
 
@@ -218,7 +269,9 @@ describe('ComposerPlusMenu structure freeze', () => {
     // ONE push, the way the worker's status lands: a single metadata patch
     // carrying the catalog and the branch together.
     batch(() => {
-      setGroups([group('model', 'Model', 1, ['sonnet'])])
+      setGroups([
+        group('model', 'Model', 1, ['sonnet']),
+      ])
       setBranch('feature/x')
     })
     await Promise.resolve()
@@ -233,11 +286,16 @@ describe('ComposerPlusMenu structure freeze', () => {
     renderLive({ groups })
 
     await fireEvent.click(screen.getByTestId('composer-plus-trigger'))
-    setGroups([group('model', 'Model', 1, ['sonnet'])])
+    setGroups([
+      group('model', 'Model', 1, ['sonnet']),
+    ])
     await Promise.resolve()
     const filled = rowIds()
 
-    setGroups([group('model', 'Model', 1, ['sonnet']), group('effort', 'Effort', 2, ['high'])])
+    setGroups([
+      group('model', 'Model', 1, ['sonnet']),
+      group('effort', 'Effort', 2, ['high']),
+    ])
     await Promise.resolve()
 
     expect(rowIds(), 'the second push waits for the next open').toEqual(filled)
@@ -254,7 +312,9 @@ describe('ComposerPlusMenu structure freeze', () => {
     const bypass = screen.getByTestId('composer-bypass-permissions')
     expect(bypass).toBeEnabled()
 
-    setGroups([group('permissionMode', 'Approval', 30, ['on-request', 'auto-review', 'never'])])
+    setGroups([
+      group('permissionMode', 'Approval', 30, ['on-request', 'auto-review', 'never']),
+    ])
     await Promise.resolve()
 
     expect(bypass, 'the held row stays visible but cannot apply a stale preset').toBeDisabled()
@@ -278,7 +338,11 @@ function reasonOf(el: Element): string {
 describe('ComposerPlusMenu', () => {
   it('lists the settings submenus in backend order', () => {
     renderMenu({
-      groups: [group('c', 'Gamma', 30), group('a', 'Alpha', 10), group('b', 'Beta', 20)],
+      groups: [
+        group('c', 'Gamma', 30),
+        group('a', 'Alpha', 10),
+        group('b', 'Beta', 20),
+      ],
     })
 
     const labels = screen.getAllByRole('menuitem', { hidden: true })
@@ -290,17 +354,28 @@ describe('ComposerPlusMenu', () => {
   it('drops a group that offers no options', () => {
     // The backend can report a group before its option list resolves; a
     // submenu that opens onto nothing is a dead end.
-    renderMenu({ groups: [group('a', 'Alpha', 10), group('empty', 'Empty', 20, [])] })
+    renderMenu({
+      groups: [
+        group('a', 'Alpha', 10),
+        group('empty', 'Empty', 20, []),
+      ],
+    })
 
     expect(screen.getByText('Alpha')).toBeInTheDocument()
     expect(screen.queryByText('Empty')).toBeNull()
   })
 
   it('dispatches a settings change from a submenu', async () => {
-    const { onSettingChange } = renderMenu({ groups: [group('model', 'Model', 10, ['opus', 'sonnet'])] })
+    const { onSettingChange } = renderMenu({
+      groups: [
+        group('model', 'Model', 10, ['opus', 'sonnet']),
+      ],
+    })
 
     await fireEvent.click(screen.getByTestId('model-sonnet'))
-    expect(onSettingChange).toHaveBeenCalledWith({ sets: { model: 'sonnet' } })
+    expect(onSettingChange).toHaveBeenCalledWith({
+      sets: { model: 'sonnet' },
+    })
   })
 
   it('dispatches a provider action as ONE atomic change carrying every axis', async () => {
@@ -331,7 +406,9 @@ describe('ComposerPlusMenu', () => {
       ],
     })
 
-    const actions = [...container.querySelectorAll('[data-testid="composer-smart-permissions"], [data-testid="composer-bypass-permissions"]')]
+    const actions = [
+      ...container.querySelectorAll('[data-testid="composer-smart-permissions"], [data-testid="composer-bypass-permissions"]'),
+    ]
     expect(actions.map(action => action.textContent)).toEqual(['Smart permissions', 'Bypass permissions'])
   })
 
@@ -352,17 +429,23 @@ describe('ComposerPlusMenu', () => {
   it('shows smart immediately above bypass when both presets are usable', () => {
     const { container } = renderMenu({
       provider: AgentProvider.CLAUDE_CODE,
-      groups: [group('permissionMode', 'Permission Mode', 10, ['default', 'auto', 'bypassPermissions'])],
+      groups: [
+        group('permissionMode', 'Permission Mode', 10, ['default', 'auto', 'bypassPermissions']),
+      ],
     })
 
-    const actions = [...container.querySelectorAll('[data-testid="composer-smart-permissions"], [data-testid="composer-bypass-permissions"]')]
+    const actions = [
+      ...container.querySelectorAll('[data-testid="composer-smart-permissions"], [data-testid="composer-bypass-permissions"]'),
+    ]
     expect(actions.map(action => action.textContent)).toEqual(['Smart permissions', 'Bypass permissions'])
   })
 
   it('hides a permission action when one target group or value is unavailable', () => {
     renderMenu({
       provider: AgentProvider.CODEX,
-      groups: [group('permissionMode', 'Approval', 30, ['on-request', 'auto-review', 'never'])],
+      groups: [
+        group('permissionMode', 'Approval', 30, ['on-request', 'auto-review', 'never']),
+      ],
     })
 
     expect(screen.queryByTestId('composer-bypass-permissions')).toBeNull()
@@ -397,10 +480,12 @@ describe('ComposerPlusMenu', () => {
   it('hides a permission action when a target group is read-only', () => {
     renderMenu({
       provider: AgentProvider.CLAUDE_CODE,
-      groups: [{
-        ...group('permissionMode', 'Permission Mode', 10, ['default', 'auto', 'bypassPermissions']),
-        mutable: false,
-      }],
+      groups: [
+        {
+          ...group('permissionMode', 'Permission Mode', 10, ['default', 'auto', 'bypassPermissions']),
+          mutable: false,
+        },
+      ],
     })
 
     expect(screen.queryByTestId('composer-smart-permissions')).toBeNull()
@@ -410,7 +495,9 @@ describe('ComposerPlusMenu', () => {
   it('disables Smart permissions when all target values are active', () => {
     renderMenu({
       provider: AgentProvider.CLAUDE_CODE,
-      groups: [group('permissionMode', 'Permission Mode', 10, ['default', 'auto', 'bypassPermissions'])],
+      groups: [
+        group('permissionMode', 'Permission Mode', 10, ['default', 'auto', 'bypassPermissions']),
+      ],
       values: { permissionMode: 'auto' },
     })
 
@@ -437,7 +524,9 @@ describe('ComposerPlusMenu', () => {
   it('disables permission actions when no settings dispatcher exists', () => {
     renderMenu({
       provider: AgentProvider.CLAUDE_CODE,
-      groups: [group('permissionMode', 'Permission Mode', 10, ['default', 'auto', 'bypassPermissions'])],
+      groups: [
+        group('permissionMode', 'Permission Mode', 10, ['default', 'auto', 'bypassPermissions']),
+      ],
       settingsDispatcher: false,
     })
 
@@ -455,7 +544,9 @@ describe('ComposerPlusMenu', () => {
 
   it('keeps settings live when only attachments are unavailable', async () => {
     const { onSettingChange } = renderMenu({
-      groups: [group('model', 'Model', 10, ['opus', 'sonnet'])],
+      groups: [
+        group('model', 'Model', 10, ['opus', 'sonnet']),
+      ],
       canAttach: false,
       attachmentDisabledReason: 'Queueing input...',
     })
@@ -467,7 +558,9 @@ describe('ComposerPlusMenu', () => {
 
   it('disables attach and the settings submenus when the composer accepts no input', async () => {
     const { onSettingChange } = renderMenu({
-      groups: [group('model', 'Model', 10, ['opus', 'sonnet'])],
+      groups: [
+        group('model', 'Model', 10, ['opus', 'sonnet']),
+      ],
       disabledReason: 'This subagent doesn\'t accept messages.',
     })
 
@@ -602,11 +695,15 @@ describe('ComposerPlusMenu', () => {
   it('separates the settings axes from the session items', () => {
     // Above the rule: what the agent DOES. Below it: the session it works in.
     const { container } = renderMenu({
-      groups: [group('model', 'Model', 10)],
+      groups: [
+        group('model', 'Model', 10),
+      ],
       branchName: 'main',
     })
 
-    const items = [...container.querySelectorAll('hr, [data-testid]')]
+    const items = [
+      ...container.querySelectorAll('hr, [data-testid]'),
+    ]
     const groupItem = items.findIndex(el => el.getAttribute('data-testid') === 'composer-group-model')
     const branchItem = items.findIndex(el => el.getAttribute('data-testid') === 'composer-plus-branch')
 
@@ -620,7 +717,9 @@ describe('ComposerPlusMenu', () => {
     // Two adjacent rules read as a rendering bug. Neither an agent with no
     // option groups nor one with no branch and no info rows may produce one.
     const countAdjacentRules = (root: HTMLElement) => {
-      const kids = [...root.querySelectorAll('hr')]
+      const kids = [
+        ...root.querySelectorAll('hr'),
+      ]
       return kids.filter(hr => hr.nextElementSibling?.tagName === 'HR').length
     }
 
@@ -629,7 +728,11 @@ describe('ComposerPlusMenu', () => {
     expect(screen.getByTestId('composer-plus-branch')).toBeInTheDocument()
 
     cleanup()
-    const noSessionItems = renderMenu({ groups: [group('model', 'Model', 10)] })
+    const noSessionItems = renderMenu({
+      groups: [
+        group('model', 'Model', 10),
+      ],
+    })
     expect(countAdjacentRules(noSessionItems.container)).toBe(0)
     expect(screen.queryByTestId('composer-plus-branch')).toBeNull()
 
@@ -650,7 +753,14 @@ describe('ComposerPlusMenu', () => {
     // disables — and carries the reason through Tooltip, which renders its text
     // lazily on hover and so is not assertable here. The contract this test
     // specifies is the items.
-    for (const name of [/Switch to branch/, /Create new branch/, /Create new worktree/, /Delete branch/, /New agent\.\.\./, /New terminal\.\.\./])
+    for (const name of [
+      /Switch to branch/,
+      /Create new branch/,
+      /Create new worktree/,
+      /Delete branch/,
+      /New agent\.\.\./,
+      /New terminal\.\.\./,
+    ])
       expect(screen.getByRole('menuitem', { name, hidden: true })).toBeDisabled()
     expect(branchActions.onChangeBranch).not.toHaveBeenCalled()
     expect(branchActions.onDeleteBranch).not.toHaveBeenCalled()

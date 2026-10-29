@@ -103,7 +103,10 @@ export async function runWithGatedOutput<T>(gated: GatedOutput | undefined, run:
     return run()
   const { gate, shown } = gated
   return withCleanup(async () => {
-    const [result] = await Promise.all([run(), shown().then(() => gate.release())])
+    const [result] = await Promise.all([
+      run(),
+      shown().then(() => gate.release()),
+    ])
     return result
   }, async () => gate.release())
 }

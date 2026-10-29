@@ -14,14 +14,32 @@ describe('classifyCopilotMessage', () => {
     'user_input.completed',
     'audio',
   ])('leaves a stored %s row unknown', (type) => {
-    const frame = { method: 'session.event', params: { event: { type, data: {} } } }
+    const frame = {
+      method: 'session.event',
+      params: {
+        event: { type, data: {} },
+      },
+    }
     expect(classifyCopilotMessage(input(frame, undefined, AgentProvider.GITHUB_COPILOT))).toEqual({ kind: 'unknown' })
   })
 
   it('reads the referenced skill notice', () => {
-    const frame = { method: 'session.event', params: { event: { type: COPILOT_EVENT.SkillInvokedRef, data: { skill: 'review' } } } }
+    const frame = {
+      method: 'session.event',
+      params: {
+        event: {
+          type: COPILOT_EVENT.SkillInvokedRef,
+          data: { skill: 'review' },
+        },
+      },
+    }
     expect(classifyCopilotMessage(input(frame, undefined, AgentProvider.GITHUB_COPILOT)))
-      .toEqual({ kind: 'notification', entries: [{ kind: 'text', text: 'Loaded the skill review' }] })
+      .toEqual({
+        kind: 'notification',
+        entries: [
+          { kind: 'text', text: 'Loaded the skill review' },
+        ],
+      })
   })
 
   it('hides the sql to-do snapshot row', () => {

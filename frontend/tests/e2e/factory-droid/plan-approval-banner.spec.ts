@@ -16,9 +16,24 @@ import { expectDroidNativeSettings } from './settingsUpdates'
 
 droidTest.describe('Factory Droid Spec mode', () => {
   for (const approval of [
-    { choice: 'Unchanged', mode: 'default', autonomyLevel: 'off', answer: 'Approve' },
-    { choice: 'Smart', mode: 'auto-medium', autonomyLevel: 'medium', answer: 'Approve and set the autonomy level to Medium' },
-    { choice: 'Bypass', mode: 'auto-high', autonomyLevel: 'high', answer: 'Approve and set the autonomy level to High' },
+    {
+      choice: 'Unchanged',
+      mode: 'default',
+      autonomyLevel: 'off',
+      answer: 'Approve',
+    },
+    {
+      choice: 'Smart',
+      mode: 'auto-medium',
+      autonomyLevel: 'medium',
+      answer: 'Approve and set the autonomy level to Medium',
+    },
+    {
+      choice: 'Bypass',
+      mode: 'auto-high',
+      autonomyLevel: 'high',
+      answer: 'Approve and set the autonomy level to High',
+    },
   ] as const) {
     droidTest(`shows the native plan review and applies ${approval.choice} after approval`, async ({ askingDroidWorkspace, page, modelScript, leapmuxServer }) => {
       void askingDroidWorkspace
@@ -27,7 +42,11 @@ droidTest.describe('Factory Droid Spec mode', () => {
       await waitForSettingsIdle(page)
       await expectSettingsOptionChosen(page, 'permissionMode-spec')
       const start = await modelScript.queue(
-        { toolCalls: [exitPlanModeToolCall(AgentProvider.DROID, 'exit-spec-1', '# Native plan\n\n- Apply the change.')] },
+        {
+          toolCalls: [
+            exitPlanModeToolCall(AgentProvider.DROID, 'exit-spec-1', '# Native plan\n\n- Apply the change.'),
+          ],
+        },
         { text: 'The plan was approved.' },
       )
       await sendMessage(page, modelScript.prompt('Present the native plan for approval.'))
@@ -72,7 +91,9 @@ droidTest.describe('Factory Droid Spec mode', () => {
     const watch = await watchNativeControls(leapmuxServer, agent.id)
     await withCleanup(async () => {
       const start = await modelScript.queue({
-        toolCalls: [exitPlanModeToolCall(AgentProvider.DROID, 'exit-spec-rejected', '# Native plan\n\n- Keep this plan unapproved.')],
+        toolCalls: [
+          exitPlanModeToolCall(AgentProvider.DROID, 'exit-spec-rejected', '# Native plan\n\n- Keep this plan unapproved.'),
+        ],
       })
       await sendMessage(page, modelScript.prompt('Present the native plan for approval.'))
       await modelScript.waitForSteps(start + 1)
@@ -90,7 +111,10 @@ droidTest.describe('Factory Droid Spec mode', () => {
       await expectDroidNativeSettings({ page, leapmuxServer }, { interactionMode: 'spec' })
 
       const { decision } = await readObservedNativeDecision({ leapmuxServer }, agent, watch, observed)
-      expect(decision.request).toMatchObject({ confirmationType: DROID_CONFIRMATION_TYPE.ExitSpecMode, toolUse: { name: DROID_TOOL.ExitSpecMode } })
+      expect(decision.request).toMatchObject({
+        confirmationType: DROID_CONFIRMATION_TYPE.ExitSpecMode,
+        toolUse: { name: DROID_TOOL.ExitSpecMode },
+      })
       expect(decision.request.options).toContain(DROID_PERMISSION_OPTION.Cancel)
       const rpcId = pickString(decision.request, 'rpcId')
       expect(rpcId).not.toBe('')
@@ -124,7 +148,11 @@ droidTest.describe('Factory Droid Spec mode', () => {
       respond: { text: 'Understood, keeping the spec read-only.' },
     })
     const start = await modelScript.queue(
-      { toolCalls: [exitPlanModeToolCall(AgentProvider.DROID, 'exit-spec-reason', '# Native plan\n\n- Write the thing.')] },
+      {
+        toolCalls: [
+          exitPlanModeToolCall(AgentProvider.DROID, 'exit-spec-reason', '# Native plan\n\n- Write the thing.'),
+        ],
+      },
     )
     await sendMessage(page, modelScript.prompt('Present the native plan for approval.'))
     await modelScript.waitForSteps(start + 1)

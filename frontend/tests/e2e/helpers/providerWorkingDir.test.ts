@@ -17,7 +17,9 @@ import { gitTopLevel } from './worktree'
 
 // The run directory of these tests is the scratch directory of the current test.
 const runDirectory = vi.hoisted(() => ({ root: '' }))
-vi.mock('./runDirectory', () => ({ createTestDirectory: (prefix: string) => mkdtempSync(join(runDirectory.root, prefix)) }))
+vi.mock('./runDirectory', () => ({
+  createTestDirectory: (prefix: string) => mkdtempSync(join(runDirectory.root, prefix)),
+}))
 
 /** Return the root of the git work tree around `dir`, as git reports it. */
 const pi: ProviderAgent = { provider: AgentProvider.PI, prefix: 'pi-e2e' }

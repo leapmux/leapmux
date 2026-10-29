@@ -29,13 +29,26 @@ export function kiroToolResult(request: MockModelRequestRecord, callId: string):
     }
     throw new Error('Kiro returned no text or JSON for its native result.')
   }).join('\n')
-  const printed = [...text.matchAll(/^Exit Code:\s*(-?\d+)\s*$/gm)].map(match => Number(match[1]))
-  const unique = [...new Set([...codes, ...printed])]
+  const printed = [
+    ...text.matchAll(/^Exit Code:\s*(-?\d+)\s*$/gm),
+  ].map(match => Number(match[1]))
+  const unique = [
+    ...new Set([
+      ...codes,
+      ...printed,
+    ]),
+  ]
   if (unique.length > 1)
     throw new Error('Kiro returned conflicting native exit codes.')
   return {
     text,
-    ...(result.status === 'error' ? { failed: true } : result.status === 'success' ? { failed: false } : {}),
-    ...(unique[0] !== undefined ? { exitCode: unique[0] } : {}),
+    ...(result.status === 'error'
+      ? { failed: true }
+      : result.status === 'success'
+        ? { failed: false }
+        : {}),
+    ...(unique[0] !== undefined
+      ? { exitCode: unique[0] }
+      : {}),
   }
 }

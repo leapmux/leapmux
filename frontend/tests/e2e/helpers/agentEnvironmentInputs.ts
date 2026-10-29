@@ -57,6 +57,10 @@ export function validatedMcpServers(servers: readonly McpServerLaunch[] | undefi
     if (!isAbsolute(server.command))
       throw new Error(`The ${label} MCP command must be absolute.`)
     names.add(server.name)
-    return { name: server.name, command: server.command, args: [...server.args] }
+    return {
+      name: server.name,
+      command: server.command,
+      args: [...server.args],
+    }
   })
 }

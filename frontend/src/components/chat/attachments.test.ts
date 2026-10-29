@@ -41,7 +41,12 @@ describe('inferAttachmentDetails', () => {
     const decode = vi.spyOn(TextDecoder.prototype, 'decode')
     try {
       const bytes = new TextEncoder().encode('Media bytes without a NUL byte.')
-      for (const [filename, mime] of [['voice.wav', 'audio/wav'], ['image.png', 'image/png'], ['document.pdf', 'application/pdf'], ['archive.zip', 'application/zip']] as const) {
+      for (const [filename, mime] of [
+        ['voice.wav', 'audio/wav'],
+        ['image.png', 'image/png'],
+        ['document.pdf', 'application/pdf'],
+        ['archive.zip', 'application/zip'],
+      ] as const) {
         inferAttachmentDetails(filename, mime, bytes)
       }
       expect(decode).not.toHaveBeenCalled()
@@ -57,7 +62,11 @@ describe('inferAttachmentDetails', () => {
     ['native.XLSX', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'],
   ])('infers the Office type of %s without treating its bytes as text', (filename, expectedMime) => {
     for (const given of ['', 'application/octet-stream']) {
-      for (const data of [new Uint8Array(), new TextEncoder().encode('Office bytes'), new Uint8Array([0xFF, 0])])
+      for (const data of [
+        new Uint8Array(),
+        new TextEncoder().encode('Office bytes'),
+        new Uint8Array([0xFF, 0]),
+      ])
         expect(inferAttachmentDetails(filename, given, data)).toEqual({ kind: 'binary', mimeType: expectedMime })
     }
   })
@@ -137,7 +146,13 @@ describe('buildAcceptAttribute', () => {
   })
 
   it('omits accept when provider supports arbitrary binary attachments', () => {
-    expect(buildAcceptAttribute({ text: true, image: true, pdf: true, audio: false, binary: true })).toBeUndefined()
+    expect(buildAcceptAttribute({
+      text: true,
+      image: true,
+      pdf: true,
+      audio: false,
+      binary: true,
+    })).toBeUndefined()
   })
 })
 
@@ -171,21 +186,31 @@ describe('attachment cache', () => {
   })
 
   it('stores and retrieves attachments', () => {
-    const attachments = [{ id: 'a1', filename: 'test.png' } as FileAttachment]
+    const attachments = [
+      { id: 'a1', filename: 'test.png' } as FileAttachment,
+    ]
     setAttachments('agent-1', attachments)
     expect(getAttachments('agent-1')).toBe(attachments)
   })
 
   it('clears attachments', () => {
-    setAttachments('agent-2', [{ id: 'a2' } as FileAttachment])
+    setAttachments('agent-2', [
+      { id: 'a2' } as FileAttachment,
+    ])
     clearAttachments('agent-2')
     expect(getAttachments('agent-2')).toEqual([])
   })
 
   it('forgets normal and queue-edit attachments for a closed agent', () => {
-    setAttachments('agent-3', [{ id: 'normal' } as FileAttachment])
-    setAttachments('agent-3-queue-input-1', [{ id: 'queued' } as FileAttachment])
-    setAttachments('agent-30', [{ id: 'other' } as FileAttachment])
+    setAttachments('agent-3', [
+      { id: 'normal' } as FileAttachment,
+    ])
+    setAttachments('agent-3-queue-input-1', [
+      { id: 'queued' } as FileAttachment,
+    ])
+    setAttachments('agent-30', [
+      { id: 'other' } as FileAttachment,
+    ])
 
     forgetAgentAttachments('agent-3')
 
@@ -198,7 +223,9 @@ describe('attachment cache', () => {
 describe('queueEditDraftKey', () => {
   it('produces a key that the agent sweep forgets', () => {
     const key = queueEditDraftKey('agent-sweep', 'input-1')
-    setAttachments(key, [{ id: 'queued' } as FileAttachment])
+    setAttachments(key, [
+      { id: 'queued' } as FileAttachment,
+    ])
 
     forgetAgentAttachments('agent-sweep')
 
@@ -292,10 +319,16 @@ describe('collectDroppedAttachmentFiles', () => {
 
   it('recursively expands directory drops and preserves relative paths', async () => {
     const readme = createFileEntry('project/README.md', new File(['# test'], 'README.md', { type: 'text/markdown' }))
-    const logo = createFileEntry('project/assets/logo.png', new File([new Uint8Array([1, 2, 3])], 'logo.png', { type: 'image/png' }))
+    const logo = createFileEntry('project/assets/logo.png', new File([
+      new Uint8Array([1, 2, 3]),
+    ], 'logo.png', { type: 'image/png' }))
     const assets = createDirectoryEntry('assets', [logo])
     const project = createDirectoryEntry('project', [assets, readme])
-    const dataTransfer = mockDataTransfer([{ webkitGetAsEntry: () => project }])
+    const dataTransfer = mockDataTransfer([
+      {
+        webkitGetAsEntry: () => project,
+      },
+    ])
 
     const result = await collectDroppedAttachmentFiles(dataTransfer)
 
@@ -307,14 +340,24 @@ describe('collectDroppedAttachmentFiles', () => {
   })
 
   it('stops traversal immediately once the size limit would be exceeded', async () => {
-    const first = createFileEntry('big/first.txt', new File([new Uint8Array(64)], 'first.txt', { type: 'text/plain' }))
+    const first = createFileEntry('big/first.txt', new File([
+      new Uint8Array(64),
+    ], 'first.txt', { type: 'text/plain' }))
     const tooLarge = createFileEntry(
       'big/second.txt',
-      new File([new Uint8Array(64)], 'second.txt', { type: 'text/plain' }),
+      new File([
+        new Uint8Array(64),
+      ], 'second.txt', { type: 'text/plain' }),
     )
-    const late = createFileEntry('big/late.txt', new File([new Uint8Array(64)], 'late.txt', { type: 'text/plain' }))
+    const late = createFileEntry('big/late.txt', new File([
+      new Uint8Array(64),
+    ], 'late.txt', { type: 'text/plain' }))
     const directory = createDirectoryEntry('big', [first, tooLarge, late])
-    const dataTransfer = mockDataTransfer([{ webkitGetAsEntry: () => directory }])
+    const dataTransfer = mockDataTransfer([
+      {
+        webkitGetAsEntry: () => directory,
+      },
+    ])
 
     const result = await collectDroppedAttachmentFiles(dataTransfer, MAX_TOTAL_ATTACHMENT_SIZE - 96)
 
@@ -329,10 +372,19 @@ describe('collectDroppedAttachmentFiles', () => {
       file: (_resolve: (file: File) => void, reject: (error: DOMException) => void) => reject(new DOMException('Unavailable', 'NotReadableError')),
     }
     const last = createFileEntry('project/c.txt', new File(['last'], 'c.txt'))
-    const transfer = mockDataTransfer([{ webkitGetAsEntry: () => createDirectoryEntry('project', [first, broken, last]) }])
+    const transfer = mockDataTransfer([
+      {
+        webkitGetAsEntry: () => createDirectoryEntry('project', [first, broken, last]),
+      },
+    ])
     const result = await collectDroppedAttachmentFiles(transfer)
     expect(result.files.map(file => file.filename)).toEqual(['project/a.txt', 'project/c.txt'])
-    expect(result).toMatchObject({ sizeLimitHit: false, failures: [{ path: 'project/b.txt' }] })
+    expect(result).toMatchObject({
+      sizeLimitHit: false,
+      failures: [
+        { path: 'project/b.txt' },
+      ],
+    })
   })
 
   it('keeps entries from earlier batches when directory enumeration fails', async () => {
@@ -349,22 +401,39 @@ describe('collectDroppedAttachmentFiles', () => {
         },
       }),
     }
-    const result = await collectDroppedAttachmentFiles(mockDataTransfer([{ webkitGetAsEntry: () => directory }]))
+    const result = await collectDroppedAttachmentFiles(mockDataTransfer([
+      {
+        webkitGetAsEntry: () => directory,
+      },
+    ]))
     expect(result.files.map(file => file.filename)).toEqual(['project/a.txt'])
-    expect(result).toMatchObject({ sizeLimitHit: false, failures: [{ path: 'project' }] })
+    expect(result).toMatchObject({
+      sizeLimitHit: false,
+      failures: [
+        { path: 'project' },
+      ],
+    })
   })
 
   it('keeps other dropped entries when one entry lookup fails', async () => {
     const first = createFileEntry('first.txt', new File(['first'], 'first.txt'))
     const last = createFileEntry('last.txt', new File(['last'], 'last.txt'))
     const transfer = mockDataTransfer([
-      { webkitGetAsEntry: () => first },
-      { webkitGetAsEntry: () => { throw new DOMException('Unavailable', 'NotReadableError') } },
-      { webkitGetAsEntry: () => last },
+      {
+        webkitGetAsEntry: () => first,
+      },
+      {
+        webkitGetAsEntry: () => { throw new DOMException('Unavailable', 'NotReadableError') },
+      },
+      {
+        webkitGetAsEntry: () => last,
+      },
     ])
     const result = await collectDroppedAttachmentFiles(transfer)
     expect(result.files.map(file => file.filename)).toEqual(['first.txt', 'last.txt'])
-    expect(result).toMatchObject({ failures: [{}] })
+    expect(result).toMatchObject({
+      failures: [{}],
+    })
   })
 })
 
@@ -374,7 +443,11 @@ describe('native audio MIME inference', () => {
     ['tone.AAC', 'audio/aac'],
   ])('infers %s as audio for empty, text-like and binary bytes', (filename, mimeType) => {
     for (const supplied of ['', 'application/octet-stream']) {
-      for (const data of [new Uint8Array(), new TextEncoder().encode('audio bytes'), new Uint8Array([0xFF, 0])])
+      for (const data of [
+        new Uint8Array(),
+        new TextEncoder().encode('audio bytes'),
+        new Uint8Array([0xFF, 0]),
+      ])
         expect(inferAttachmentDetails(filename, supplied, data)).toEqual({ kind: 'audio', mimeType })
     }
     expect(inferAttachmentDetails(filename, 'text/plain', new TextEncoder().encode('explicit text'))).toEqual({ kind: 'text', mimeType: 'text/plain' })
@@ -393,7 +466,13 @@ describe('native audio MIME inference', () => {
 })
 
 describe('restricted audio attachments', () => {
-  const capabilities: AttachmentCapabilities = { text: true, image: false, pdf: false, audio: ['audio/wav'], binary: false }
+  const capabilities: AttachmentCapabilities = {
+    text: true,
+    image: false,
+    pdf: false,
+    audio: ['audio/wav'],
+    binary: false,
+  }
 
   it('allows only the declared audio MIME types', () => {
     expect(isAttachmentSupported('audio', capabilities, 'audio/wav')).toBe(true)
@@ -417,7 +496,11 @@ describe('restricted audio attachments', () => {
   })
 
   it('keeps a restricted binary policy independent from audio', () => {
-    const restricted = { ...capabilities, audio: false, binary: ['application/zip'] }
+    const restricted = {
+      ...capabilities,
+      audio: false,
+      binary: ['application/zip'],
+    }
     expect(isAttachmentSupported('binary', restricted, 'application/zip')).toBe(true)
     expect(isAttachmentSupported('binary', restricted, 'application/octet-stream')).toBe(false)
     expect(isAttachmentSupported('audio', restricted, 'audio/wav')).toBe(false)

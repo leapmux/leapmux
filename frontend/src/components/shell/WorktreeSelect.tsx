@@ -21,12 +21,16 @@ export const WorktreeSelect: Component<WorktreeSelectProps> = props => (
     ariaLabel="Worktree"
     value={props.value}
     onChange={props.onChange}
-    {...(props.loading ? { loadingLabel: 'Loading worktrees...' } : {})}
+    {...(props.loading
+      ? { loadingLabel: 'Loading worktrees...' }
+      : {})}
     emptyLabel="No worktrees found"
     placeholder="Select a worktree..."
     options={props.worktrees.map(wt => ({
       value: wt.path,
-      label: `${wt.branch ? `${wt.branch} — ` : ''}${tildify(wt.path, props.homeDir)}`,
+      label: `${wt.branch
+        ? `${wt.branch} — `
+        : ''}${tildify(wt.path, props.homeDir)}`,
     }))}
     data-testid="worktree-select-menu"
   />

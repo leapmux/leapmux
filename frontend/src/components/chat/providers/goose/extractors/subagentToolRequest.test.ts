@@ -9,15 +9,45 @@ describe('isGooseSubagentToolRequest', () => {
   })
 
   it('returns false when toolNotification.type is not "message"', () => {
-    expect(isGooseSubagentToolRequest({ _meta: { toolNotification: { type: 'log', params: { data: { type: 'subagent_tool_request' } } } } })).toBe(false)
+    expect(isGooseSubagentToolRequest({
+      _meta: {
+        toolNotification: {
+          type: 'log',
+          params: {
+            data: { type: 'subagent_tool_request' },
+          },
+        },
+      },
+    })).toBe(false)
   })
 
   it('returns false when the data discriminator is not subagent_tool_request', () => {
-    expect(isGooseSubagentToolRequest({ _meta: { toolNotification: { type: 'message', params: { data: { type: 'other' } } } } })).toBe(false)
+    expect(isGooseSubagentToolRequest({
+      _meta: {
+        toolNotification: {
+          type: 'message',
+          params: {
+            data: { type: 'other' },
+          },
+        },
+      },
+    })).toBe(false)
   })
 
   it('returns true for the full shape', () => {
-    expect(isGooseSubagentToolRequest({ _meta: { toolNotification: { type: 'message', params: { data: { type: 'subagent_tool_request', tool_call: { name: 'Read' } } } } } })).toBe(true)
+    expect(isGooseSubagentToolRequest({
+      _meta: {
+        toolNotification: {
+          type: 'message',
+          params: {
+            data: {
+              type: 'subagent_tool_request',
+              tool_call: { name: 'Read' },
+            },
+          },
+        },
+      },
+    })).toBe(true)
   })
 })
 
@@ -27,7 +57,12 @@ describe('gooseSubagentToolRequestName', () => {
       _meta: {
         toolNotification: {
           type: 'message',
-          params: { data: { type: 'subagent_tool_request', tool_call: { name: 'Bash' } } },
+          params: {
+            data: {
+              type: 'subagent_tool_request',
+              tool_call: { name: 'Bash' },
+            },
+          },
         },
       },
     }

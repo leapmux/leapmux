@@ -16,7 +16,9 @@ export async function exerciseCommandCodePermissionLimit(context: ManagedNativeS
   const content = `native computed value: ${40 + 2}\n`
   const write = async (id: string) => {
     const turn = await runNativeToolTurn(context, {
-      toolCalls: [writeToolCall(context.provider, id, { path, content })],
+      toolCalls: [
+        writeToolCall(context.provider, id, { path, content }),
+      ],
       prompt: 'Run the supplied native file write.',
       answer: 'The native write attempt completed.',
     })

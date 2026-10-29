@@ -15,16 +15,62 @@ import { KIMI_GOAL_CONTINUATION, kimiEvent, kimiEventData } from '../protocol'
  * A Map, for the reason `kimi/toolKinds.ts` gives: the key is a WIRE word.
  */
 const KIMI_ORIGIN_PHRASES: ReadonlyMap<string, (name: string) => string> = new Map([
-  [KIMI_ORIGIN.SystemTrigger, (name: string) => name === KIMI_GOAL_CONTINUATION ? 'Continuing the goal' : name ? `Started by ${name}` : 'Started by the agent'],
-  [KIMI_ORIGIN.CronJob, (name: string) => name ? `Scheduled prompt ${name} fired` : 'A scheduled prompt fired'],
-  [KIMI_ORIGIN.CronMissed, (name: string) => name ? `Missed scheduled prompt ${name} ran late` : 'A missed scheduled prompt ran late'],
-  [KIMI_ORIGIN.Retry, () => 'Retrying the turn'],
-  [KIMI_ORIGIN.HookResult, (name: string) => name ? `Hook ${name} started a turn` : 'A hook started a turn'],
-  [KIMI_ORIGIN.SkillActivation, (name: string) => name ? `Skill ${name} started a turn` : 'A skill started a turn'],
-  [KIMI_ORIGIN.PluginCommand, (name: string) => name ? `Plugin command ${name} started a turn` : 'A plugin command started a turn'],
-  [KIMI_ORIGIN.Injection, () => 'The agent received injected context'],
-  [KIMI_ORIGIN.ShellCommand, (name: string) => name ? `Shell command ${name} started a turn` : 'A shell command started a turn'],
-  [KIMI_ORIGIN.CompactionSummary, () => 'Continuing from the compacted context'],
+  [
+    KIMI_ORIGIN.SystemTrigger,
+    (name: string) => name === KIMI_GOAL_CONTINUATION
+      ? 'Continuing the goal'
+      : name
+        ? `Started by ${name}`
+        : 'Started by the agent',
+  ],
+  [
+    KIMI_ORIGIN.CronJob,
+    (name: string) => name
+      ? `Scheduled prompt ${name} fired`
+      : 'A scheduled prompt fired',
+  ],
+  [
+    KIMI_ORIGIN.CronMissed,
+    (name: string) => name
+      ? `Missed scheduled prompt ${name} ran late`
+      : 'A missed scheduled prompt ran late',
+  ],
+  [
+    KIMI_ORIGIN.Retry,
+    () => 'Retrying the turn',
+  ],
+  [
+    KIMI_ORIGIN.HookResult,
+    (name: string) => name
+      ? `Hook ${name} started a turn`
+      : 'A hook started a turn',
+  ],
+  [
+    KIMI_ORIGIN.SkillActivation,
+    (name: string) => name
+      ? `Skill ${name} started a turn`
+      : 'A skill started a turn',
+  ],
+  [
+    KIMI_ORIGIN.PluginCommand,
+    (name: string) => name
+      ? `Plugin command ${name} started a turn`
+      : 'A plugin command started a turn',
+  ],
+  [
+    KIMI_ORIGIN.Injection,
+    () => 'The agent received injected context',
+  ],
+  [
+    KIMI_ORIGIN.ShellCommand,
+    (name: string) => name
+      ? `Shell command ${name} started a turn`
+      : 'A shell command started a turn',
+  ],
+  [
+    KIMI_ORIGIN.CompactionSummary,
+    () => 'Continuing from the compacted context',
+  ],
 ])
 
 /**
@@ -41,49 +87,104 @@ export function kimiNotificationEntry(msg: Record<string, unknown>): Notificatio
   const data = event.data
   switch (event.type) {
     case KIMI_EVENT.ConfigWarning:
-      return (Array.isArray(data.warnings) ? data.warnings : []).flatMap((warning): NotificationEntry[] => {
-        const message = isObject(warning) ? pickString(warning, 'message') : ''
-        return message.trim() ? [{ kind: 'text', text: `Warning: ${message}` }] : []
+      return (Array.isArray(data.warnings)
+        ? data.warnings
+        : []).flatMap((warning): NotificationEntry[] => {
+        const message = isObject(warning)
+          ? pickString(warning, 'message')
+          : ''
+        return message.trim()
+          ? [
+              { kind: 'text', text: `Warning: ${message}` },
+            ]
+          : []
       })
     case KIMI_EVENT.HookResult:
-      return [{ kind: 'hook', outcome: 'blocked', event: pickString(data, 'hookEvent'), detail: pickString(data, 'content') }]
+      return [
+        {
+          kind: 'hook',
+          outcome: 'blocked',
+          event: pickString(data, 'hookEvent'),
+          detail: pickString(data, 'content'),
+        },
+      ]
     case KIMI_EVENT.TurnStarted: {
       const origin = pickObject(data, 'origin')
       const phrase = KIMI_ORIGIN_PHRASES.get(pickString(origin, 'kind'))
-      return phrase ? [{ kind: 'text', text: phrase(pickString(origin, 'name')) }] : []
+      return phrase
+        ? [
+            {
+              kind: 'text',
+              text: phrase(pickString(origin, 'name')),
+            },
+          ]
+        : []
     }
     case KIMI_EVENT.TurnStepRetrying: {
       const attempt = pickNumber(data, 'nextAttempt')
       const maxAttempts = pickNumber(data, 'maxAttempts')
       const delayMs = pickNumber(data, 'delayMs')
       const error = pickString(data, 'errorMessage').trim() || pickString(data, 'errorName').trim()
-      return [retryEntry('api', {
-        ...(attempt !== null ? { attempt } : {}),
-        ...(maxAttempts !== null ? { maxAttempts } : {}),
-        ...(delayMs !== null ? { delayMs } : {}),
-        ...(error ? { error } : {}),
-      })]
+      return [
+        retryEntry('api', {
+          ...(attempt !== null
+            ? { attempt }
+            : {}),
+          ...(maxAttempts !== null
+            ? { maxAttempts }
+            : {}),
+          ...(delayMs !== null
+            ? { delayMs }
+            : {}),
+          ...(error
+            ? { error }
+            : {}),
+        }),
+      ]
     }
     case KIMI_EVENT.CompactionCompleted:
-      return [{ kind: 'compaction', phase: 'end', detail: kimiCompactionDetails(data) }]
+      return [
+        {
+          kind: 'compaction',
+          phase: 'end',
+          detail: kimiCompactionDetails(data),
+        },
+      ]
     case KIMI_EVENT.CompactionCancelled:
-      return [{ kind: 'compaction', phase: 'end', outcome: 'aborted' }]
+      return [
+        { kind: 'compaction', phase: 'end', outcome: 'aborted' },
+      ]
     case KIMI_EVENT.Warning: {
       const message = pickString(data, 'message')
-      return message ? [{ kind: 'text', text: `Warning: ${message}` }] : []
+      return message
+        ? [
+            { kind: 'text', text: `Warning: ${message}` },
+          ]
+        : []
     }
     case KIMI_EVENT.Error: {
       const message = pickString(data, 'message')
       const code = pickString(data, 'code')
       if (!message && !code)
         return []
-      return [{ kind: 'text', text: code && message ? `Error (${code}): ${message}` : `Error: ${message || code}` }]
+      return [
+        {
+          kind: 'text',
+          text: code && message
+            ? `Error (${code}): ${message}`
+            : `Error: ${message || code}`,
+        },
+      ]
     }
     case KIMI_EVENT.TaskNotified: {
       const title = pickString(data, 'title')
       const body = pickString(data, 'body')
       const text = [title, body].filter(Boolean).join(': ')
-      return text ? [{ kind: 'text', text }] : []
+      return text
+        ? [
+            { kind: 'text', text },
+          ]
+        : []
     }
     default:
       return []
@@ -100,7 +201,14 @@ function kimiCompactionDetails(data: Record<string, unknown>): CompactionDetails
   const result = pickObject(data, 'result')
   const pre = pickNumber(result, 'tokensBefore')
   const post = pickNumber(result, 'tokensAfter')
-  return { ...(pre !== null ? { pre } : {}), ...(post !== null ? { post } : {}) }
+  return {
+    ...(pre !== null
+      ? { pre }
+      : {}),
+    ...(post !== null
+      ? { post }
+      : {}),
+  }
 }
 
 /**
@@ -111,5 +219,7 @@ function kimiCompactionDetails(data: Record<string, unknown>): CompactionDetails
  */
 export function kimiCompactionBoundary(parsed: ParsedMessageContent): CompactionDetails | null {
   const data = kimiEventData(parsed.parentObject, KIMI_EVENT.CompactionCompleted)
-  return data ? kimiCompactionDetails(data) : null
+  return data
+    ? kimiCompactionDetails(data)
+    : null
 }

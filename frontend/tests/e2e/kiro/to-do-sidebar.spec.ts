@@ -12,11 +12,13 @@ kiroTest.describe('tracks the Kiro to-do list', () => {
     const { page, modelScript } = native
     await modelScript.queue(
       {
-        toolCalls: [updateTodosToolCall(KIRO, 'todos-create', [
-          { step: 'Inspect the repository', status: 'pending' },
-          { step: 'List three checks', status: 'pending' },
-          { step: 'Report their purpose', status: 'pending' },
-        ])],
+        toolCalls: [
+          updateTodosToolCall(KIRO, 'todos-create', [
+            { step: 'Inspect the repository', status: 'pending' },
+            { step: 'List three checks', status: 'pending' },
+            { step: 'Report their purpose', status: 'pending' },
+          ]),
+        ],
       },
       { text: 'The plan is written.' },
     )
@@ -36,7 +38,11 @@ kiroTest.describe('tracks the Kiro to-do list', () => {
     // Kiro completes tasks by their IDs and sends no whole list, and it has no in-progress state.
     // So this spec cannot use exerciseTodoListReplacement, which writes the whole list twice.
     await modelScript.queue(
-      { toolCalls: [kiroCompleteTodosToolCall('todos-complete', ['1', '2'])] },
+      {
+        toolCalls: [
+          kiroCompleteTodosToolCall('todos-complete', ['1', '2']),
+        ],
+      },
       { text: 'Two steps are done.' },
     )
     await sendMessage(page, modelScript.prompt('Mark the first two steps done.'))

@@ -33,7 +33,11 @@ codebuddyTest.describe('CodeBuddy Code settings', () => {
     await chooseSettingsOption(page, `permissionMode-${CODEBUDDY_MODE.Plan}`)
     await waitForSettingsIdle(page)
     await expectSettingsChip(page, 'Plan')
-    const planStep = await modelScript.queue({ toolCalls: [exitPlanModeToolCall(AgentProvider.CODEBUDDY, 'exit-selected-plan', '# Probe plan')] })
+    const planStep = await modelScript.queue({
+      toolCalls: [
+        exitPlanModeToolCall(AgentProvider.CODEBUDDY, 'exit-selected-plan', '# Probe plan'),
+      ],
+    })
     await modelScript.fallback({ text: 'The mode probe ended.' })
     await sendMessage(page, modelScript.prompt('Present the plan for review after the mode change.'))
     const next = await modelScript.requestAt(planStep)
@@ -49,7 +53,11 @@ codebuddyTest.describe('CodeBuddy Code settings', () => {
     expect((await currentNativeAgent(native)).agentSessionId).toBe(original.agentSessionId)
 
     // This process starts in Plan, so rejection must restore input even when its launch mode matches.
-    const repeated = await modelScript.queue({ toolCalls: [exitPlanModeToolCall(AgentProvider.CODEBUDDY, 'exit-repeated-plan', '# Revised probe plan')] })
+    const repeated = await modelScript.queue({
+      toolCalls: [
+        exitPlanModeToolCall(AgentProvider.CODEBUDDY, 'exit-repeated-plan', '# Revised probe plan'),
+      ],
+    })
     await sendMessage(page, modelScript.prompt('Present the revised plan for review.'))
     await modelScript.requestAt(repeated)
     await waitForControlBanner(page)

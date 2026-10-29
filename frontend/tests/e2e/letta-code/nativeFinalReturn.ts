@@ -8,7 +8,9 @@ export function lettaNativeFinalReturn(frames: readonly unknown[], callId: strin
   const results = frames.filter(isObject).filter(frame => frame.message_type === LETTA_DELTA_KIND.ToolReturnMessage && !lettaNativeProgressReturn(frame)
     && frame[LETTA_DELTA_FIELD.ToolCallID] === callId && frame[LETTA_DELTA_FIELD.Status] === 'success'
     && frame[LETTA_DELTA_FIELD.ToolReturn] === modelText)
-  const result = results.length === 1 ? results[0] : undefined
+  const result = results.length === 1
+    ? results[0]
+    : undefined
   if (!result)
     throw new Error('The native Letta native result has no unique final return for the exact model result.')
   return result

@@ -78,19 +78,29 @@ export function ampCatalogPermission(controls: readonly NativeControlFrame[], th
 /** Native settings can use a private operating-system directory to satisfy socket path limits. */
 export function assertAmpGeneratedSettings(path: string, workerPid: number, privateRun: string): void {
   const inside = relative(realpathSync(privateRun), realpathSync(path))
-  if (inside !== '..' && !inside.startsWith(`..${process.platform === 'win32' ? '\\' : '/'}`) && !isAbsolute(inside)) {
+  if (inside !== '..' && !inside.startsWith(`..${process.platform === 'win32'
+    ? '\\'
+    : '/'}`) && !isAbsolute(inside)) {
     assertPrivateNativePath(path, privateRun)
     return
   }
   const directory = dirname(path)
   const parent = dirname(directory)
-  const expectedParent = process.getuid ? `leapmux-agents-${process.getuid()}` : 'leapmux-agents'
+  const expectedParent = process.getuid
+    ? `leapmux-agents-${process.getuid()}`
+    : 'leapmux-agents'
   if (basename(path) !== 'settings.json' || !new RegExp(`^amp-${workerPid}-[0-9]+$`).test(basename(directory)) || basename(parent) !== expectedParent)
     throw new Error('The native Amp settings do not belong to the observed Worker directory.')
-  for (const [candidate, file] of [[parent, false], [directory, false], [path, true]] as const) {
+  for (const [candidate, file] of [
+    [parent, false],
+    [directory, false],
+    [path, true],
+  ] as const) {
     const stat = lstatSync(candidate)
-    if (stat.isSymbolicLink() || (file ? !stat.isFile() : !stat.isDirectory()) || (process.getuid && stat.uid !== process.getuid())
-      || (process.platform !== 'win32' && (stat.mode & 0o777) !== (file ? 0o600 : 0o700))) {
+    if (stat.isSymbolicLink() || (file
+      ? !stat.isFile()
+      : !stat.isDirectory()) || (process.getuid && stat.uid !== process.getuid())
+    || (process.platform !== 'win32' && (stat.mode & 0o777) !== (file ? 0o600 : 0o700))) {
       throw new Error('The native Amp settings require private owned files and directories without symlinks.')
     }
   }
@@ -130,7 +140,9 @@ export function ampSettingsPath(command: string): string {
   const matched = command.slice(start, ends[0]).trim()
   if (!matched)
     throw new Error('The native Amp launch contains no complete settings-file argument.')
-  const path = (matched.startsWith('"') && matched.endsWith('"')) || (matched.startsWith('\'') && matched.endsWith('\'')) ? matched.slice(1, -1) : matched
+  const path = (matched.startsWith('"') && matched.endsWith('"')) || (matched.startsWith('\'') && matched.endsWith('\''))
+    ? matched.slice(1, -1)
+    : matched
   if (!isAbsolute(path) || !path.endsWith('settings.json') || path.includes('\n'))
     throw new Error('The native Amp settings path must identify its absolute generated file.')
   return path
@@ -171,13 +183,24 @@ export function ampCatalogProcess(rows: readonly ProcessRow[], proof: AmpProcess
     if (!owned.has(row.pid))
       return false
     const command = row.rawCommand ?? row.command
-    const executableMatches = proof.ampExecutables.some(path => row.executable ? sameExecutablePath(row.executable, path) : commandStartsWithExecutable(command, path))
-    return executableMatches && ['--execute', '--stream-json', '--stream-json-input', '--settings-file'].every(flag => flagPositions(command, flag).length === 1)
+    const executableMatches = proof.ampExecutables.some(path => row.executable
+      ? sameExecutablePath(row.executable, path)
+      : commandStartsWithExecutable(command, path))
+    return executableMatches && [
+      '--execute',
+      '--stream-json',
+      '--stream-json-input',
+      '--settings-file',
+    ].every(flag => flagPositions(command, flag).length === 1)
   })
   const candidate = candidates[0]
   if (candidates.length !== 1 || !candidate)
     throw new Error('The actual owned Amp process must have one complete native stream launch.')
-  return { workerPid: ownership.workerPid, ampPid: candidate.pid, settingsPath: ampSettingsPath(candidate.rawCommand ?? candidate.command) }
+  return {
+    workerPid: ownership.workerPid,
+    ampPid: candidate.pid,
+    settingsPath: ampSettingsPath(candidate.rawCommand ?? candidate.command),
+  }
 }
 
 interface AmpPidReceipt {
@@ -198,7 +221,13 @@ export function ampPidReceipt(text: string): AmpPidReceipt {
     || typeof value.endpoint !== 'string' || value.endpoint.trim() === '') {
     throw new Error('The actual Amp tool must report a valid PID and private environment.')
   }
-  return { pid: value.pid, ppid: value.ppid, workingDir: value.workingDir, home: value.home, endpoint: value.endpoint }
+  return {
+    pid: value.pid,
+    ppid: value.ppid,
+    workingDir: value.workingDir,
+    home: value.home,
+    endpoint: value.endpoint,
+  }
 }
 
 /** Read the exact workspace entry from the installed CLI's combined MCP configuration list. */
@@ -207,7 +236,7 @@ export function ampWorkspaceMcpConfiguration(text: string, name: string): Record
     throw new Error('The native Amp workspace MCP proof requires a server name.')
   const value: unknown = JSON.parse(text)
   if (!Array.isArray(value))
-    throw new Error('The native Amp local MCP list must contain an array.')
+    throw new TypeError('The native Amp local MCP list must contain an array.')
   const matches = value.filter(entry => isObject(entry) && entry.name === name)
   const entry = matches[0]
   if (matches.length !== 1 || !isObject(entry) || entry.source !== 'workspace' || entry.type !== 'command'
@@ -269,7 +298,11 @@ export async function readAmpExecutorCatalog(
   let started = false
   return withCleanup(async () => {
     const queued = await context.modelScript.queue(
-      { toolCalls: [bashToolCall(context.provider, callId, shellCommand)] },
+      {
+        toolCalls: [
+          bashToolCall(context.provider, callId, shellCommand),
+        ],
+      },
       { text: 'The native Amp catalog process completed.' },
     )
     start = queued
@@ -316,7 +349,12 @@ export async function readAmpExecutorCatalog(
     let rows = listProcesses()
     const ownership = resolveNativeProcessOwnership(rows, receipt.pid, state.binaryPath)
     const owned = new Set(ownership.ownedPids)
-    const launches = rows.filter(row => owned.has(row.pid) && ['--execute', '--stream-json', '--stream-json-input', '--settings-file'].every(flag => flagPositions(row.rawCommand ?? row.command, flag).length === 1))
+    const launches = rows.filter(row => owned.has(row.pid) && [
+      '--execute',
+      '--stream-json',
+      '--stream-json-input',
+      '--settings-file',
+    ].every(flag => flagPositions(row.rawCommand ?? row.command, flag).length === 1))
     const root = launches[0]
     if (launches.length !== 1 || !root)
       throw new Error('The native Amp catalog has no unique owned provider launch.')
@@ -329,9 +367,20 @@ export async function readAmpExecutorCatalog(
       const currentOwnership = resolveNativeProcessOwnership(currentRows, receipt.pid, state.binaryPath)
       if (currentOwnership.workerPid !== ownership.workerPid || !currentOwnership.ownedPids.includes(root.pid))
         throw new Error('The native Amp process ownership changed during its executable query.')
-      rows = currentRows.map(row => row.pid === root.pid ? { ...row, executable } : row)
+      rows = currentRows.map(row => row.pid === root.pid
+        ? { ...row, executable }
+        : row)
     }
-    const proof = { toolPid: receipt.pid, toolParentPid: receipt.ppid, workerExecutable: state.binaryPath, workerDataDir, ampExecutables: [binary, realpathSync(binary)] }
+    const proof = {
+      toolPid: receipt.pid,
+      toolParentPid: receipt.ppid,
+      workerExecutable: state.binaryPath,
+      workerDataDir,
+      ampExecutables: [
+        binary,
+        realpathSync(binary),
+      ],
+    }
     let launch: ReturnType<typeof ampCatalogProcess>
     try {
       launch = ampCatalogProcess(rows, proof)
@@ -343,14 +392,21 @@ export async function readAmpExecutorCatalog(
         ownership = resolveNativeProcessOwnership(rows, receipt.pid, state.binaryPath)
       }
       catch (error) {
-        ownershipError = error instanceof Error ? error.message : String(error)
+        ownershipError = error instanceof Error
+          ? error.message
+          : String(error)
       }
       const relevant = new Set(ownership?.ownedPids ?? [receipt.pid, receipt.ppid])
       if (ownership)
         relevant.add(ownership.workerPid)
       const diagnostic = join(before.workingDir, `amp-catalog-${marker}.ownership.json`)
       try {
-        writeFileSync(diagnostic, JSON.stringify({ proof, ownership, ownershipError, rows: rows.filter(row => relevant.has(row.pid)) }, null, 2), { mode: 0o600 })
+        writeFileSync(diagnostic, JSON.stringify({
+          proof,
+          ownership,
+          ownershipError,
+          rows: rows.filter(row => relevant.has(row.pid)),
+        }, null, 2), { mode: 0o600 })
       }
       catch (error) {
         throw new AggregateError([cause, error], 'The native Amp process identity and its diagnostic write failed.')
@@ -382,17 +438,60 @@ export async function readAmpExecutorCatalog(
     const mode = nativeOptionValue(agent, 'agent_mode')
     if (!mode)
       throw new Error('The native Amp catalog requires the actual thread mode.')
-    const output = await command(binary, ['tools', 'list', '--json', '--mode', mode, '--settings-file', settingsPath, '--no-ide', '--no-notifications', '--no-color'], { cwd: agent.workingDir, env: hubSpawnEnv(environment), maxBuffer: 2 * 1024 * 1024, timeout: nativeCommandTimeout(context.modelScript.testDeadline(), NATIVE_CATALOG_COMMAND_LIMIT_MS) })
+    const output = await command(binary, [
+      'tools',
+      'list',
+      '--json',
+      '--mode',
+      mode,
+      '--settings-file',
+      settingsPath,
+      '--no-ide',
+      '--no-notifications',
+      '--no-color',
+    ], {
+      cwd: agent.workingDir,
+      env: hubSpawnEnv(environment),
+      maxBuffer: 2 * 1024 * 1024,
+      timeout: nativeCommandTimeout(context.modelScript.testDeadline(), NATIVE_CATALOG_COMMAND_LIMIT_MS),
+    })
     let workspaceMcpConfiguration: Record<string, unknown> | undefined
     if (options.workspaceMcpServer !== undefined) {
-      const common = ['--settings-file', settingsPath, '--no-ide', '--no-notifications', '--no-color']
-      const listing = await command(binary, ['mcp', 'list', '--json', ...common], { cwd: agent.workingDir, env: hubSpawnEnv(environment), maxBuffer: 2 * 1024 * 1024, timeout: nativeCommandTimeout(context.modelScript.testDeadline(), NATIVE_CATALOG_COMMAND_LIMIT_MS) })
+      const common = [
+        '--settings-file',
+        settingsPath,
+        '--no-ide',
+        '--no-notifications',
+        '--no-color',
+      ]
+      const listing = await command(binary, ['mcp', 'list', '--json', ...common], {
+        cwd: agent.workingDir,
+        env: hubSpawnEnv(environment),
+        maxBuffer: 2 * 1024 * 1024,
+        timeout: nativeCommandTimeout(context.modelScript.testDeadline(), NATIVE_CATALOG_COMMAND_LIMIT_MS),
+      })
       workspaceMcpConfiguration = ampWorkspaceMcpConfiguration(listing.stdout, options.workspaceMcpServer)
-      const doctor = await command(binary, ['mcp', 'doctor', options.workspaceMcpServer, ...common], { cwd: agent.workingDir, env: hubSpawnEnv(environment), maxBuffer: 2 * 1024 * 1024, timeout: nativeCommandTimeout(context.modelScript.testDeadline(), NATIVE_CATALOG_COMMAND_LIMIT_MS) })
+      const doctor = await command(binary, [
+        'mcp',
+        'doctor',
+        options.workspaceMcpServer,
+        ...common,
+      ], {
+        cwd: agent.workingDir,
+        env: hubSpawnEnv(environment),
+        maxBuffer: 2 * 1024 * 1024,
+        timeout: nativeCommandTimeout(context.modelScript.testDeadline(), NATIVE_CATALOG_COMMAND_LIMIT_MS),
+      })
       ampWorkspaceMcpAwaitingApproval(doctor.stdout, options.workspaceMcpServer)
     }
     expectSameNativeSession(agent, await currentNativeAgent(context), 'The native Amp catalog read')
-    return { tools: ampExecutorToolNames(output.stdout), settings, ...(workspaceMcpConfiguration === undefined ? {} : { workspaceMcpConfiguration }) }
+    return {
+      tools: ampExecutorToolNames(output.stdout),
+      settings,
+      ...(workspaceMcpConfiguration === undefined
+        ? {}
+        : { workspaceMcpConfiguration }),
+    }
   }, async () => {
     let completed = false
     const queued = start

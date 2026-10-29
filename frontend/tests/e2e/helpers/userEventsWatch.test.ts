@@ -16,14 +16,32 @@ function frame(event: MessageInitShape<typeof WatchUserEventSchema>): Buffer {
   return Buffer.from(frameBytes(toBinary(WatchUserEventSchema, create(WatchUserEventSchema, event))))
 }
 
-const INITIAL = { event: { case: 'initial', value: { subscriberClientId: 'session:a' } } } as const
-const DELTA = { event: { case: 'delta', value: { subscriberClientId: 'session:b' } } } as const
+const INITIAL = {
+  event: {
+    case: 'initial',
+    value: { subscriberClientId: 'session:a' },
+  },
+} as const
+const DELTA = {
+  event: {
+    case: 'delta',
+    value: { subscriberClientId: 'session:b' },
+  },
+} as const
 function presence(workspaceId: string, activeClientId: string) {
-  return { event: { case: 'presence', value: { workspaceId, activeClientId } } } as const
+  return {
+    event: {
+      case: 'presence',
+      value: { workspaceId, activeClientId },
+    },
+  } as const
 }
 
 function emptyState(): UserEventsState {
-  return { subscriberClientId: '', activeClients: new Map() }
+  return {
+    subscriberClientId: '',
+    activeClients: new Map(),
+  }
 }
 
 let endWaitLimit: (() => void) | undefined
@@ -34,20 +52,35 @@ afterEach(() => {
 
 describe('decodeUserEventsFrame', () => {
   it('decodes one framed event', () => {
-    expect(decodeUserEventsFrame(frame(presence('ws-1', 'session:a')))?.event).toEqual({ case: 'presence', value: expect.objectContaining({ workspaceId: 'ws-1', activeClientId: 'session:a' }) })
+    expect(decodeUserEventsFrame(frame(presence('ws-1', 'session:a')))?.event).toEqual({
+      case: 'presence',
+      value: expect.objectContaining({ workspaceId: 'ws-1', activeClientId: 'session:a' }),
+    })
   })
 
   it('decodes a frame that is a view into a larger buffer', () => {
     const framed = frame(INITIAL)
-    const larger = Buffer.concat([Buffer.from([9, 9, 9]), framed])
+    const larger = Buffer.concat([
+      Buffer.from([9, 9, 9]),
+      framed,
+    ])
     expect(decodeUserEventsFrame(larger.subarray(3))?.event.case).toBe('initial')
   })
 
   it.each([
     ['a text frame', 'hello'],
-    ['a frame shorter than its length prefix', Buffer.from([0, 0])],
-    ['a frame whose length prefix states another length', Buffer.from([0, 0, 0, 9, 1])],
-    ['a frame that holds no event', Buffer.from([0, 0, 0, 2, 0xFF, 0xFF])],
+    [
+      'a frame shorter than its length prefix',
+      Buffer.from([0, 0]),
+    ],
+    [
+      'a frame whose length prefix states another length',
+      Buffer.from([0, 0, 0, 9, 1]),
+    ],
+    [
+      'a frame that holds no event',
+      Buffer.from([0, 0, 0, 2, 0xFF, 0xFF]),
+    ],
   ])('drops %s', (_name, payload) => {
     expect(decodeUserEventsFrame(payload)).toBeNull()
   })
@@ -65,7 +98,9 @@ describe('applyUserEvent', () => {
   it('keeps the identity when a first frame names none', () => {
     const state = emptyState()
     applyUserEvent(state, create(WatchUserEventSchema, INITIAL))
-    applyUserEvent(state, create(WatchUserEventSchema, { event: { case: 'initial', value: {} } }))
+    applyUserEvent(state, create(WatchUserEventSchema, {
+      event: { case: 'initial', value: {} },
+    }))
     expect(state.subscriberClientId).toBe('session:a')
   })
 
@@ -74,14 +109,24 @@ describe('applyUserEvent', () => {
     applyUserEvent(state, create(WatchUserEventSchema, presence('ws-1', 'session:a')))
     applyUserEvent(state, create(WatchUserEventSchema, presence('ws-2', 'session:b')))
     applyUserEvent(state, create(WatchUserEventSchema, presence('ws-1', 'session:b')))
-    expect(state.activeClients).toEqual(new Map([['ws-1', 'session:b'], ['ws-2', 'session:b']]))
+    expect(state.activeClients).toEqual(new Map([
+      ['ws-1', 'session:b'],
+      ['ws-2', 'session:b'],
+    ]))
     applyUserEvent(state, create(WatchUserEventSchema, presence('ws-1', '')))
-    expect(state.activeClients).toEqual(new Map([['ws-2', 'session:b']]))
+    expect(state.activeClients).toEqual(new Map([
+      ['ws-2', 'session:b'],
+    ]))
   })
 
   it('ignores the other events', () => {
     const state = emptyState()
-    applyUserEvent(state, create(WatchUserEventSchema, { event: { case: 'renamed', value: { workspaceId: 'ws-1' } } }))
+    applyUserEvent(state, create(WatchUserEventSchema, {
+      event: {
+        case: 'renamed',
+        value: { workspaceId: 'ws-1' },
+      },
+    }))
     expect(state).toEqual(emptyState())
   })
 })
@@ -91,15 +136,28 @@ describe('watchUserEvents', () => {
   function fakePage() {
     const emitter = new EventEmitter()
     const mainFrame = {}
-    const page = Object.assign(emitter, { mainFrame: () => mainFrame }) as unknown as Page
+    const page = Object.assign(emitter, {
+      mainFrame: () => mainFrame,
+    }) as unknown as Page
     const openSocket = (path: string) => {
-      const socket = Object.assign(new EventEmitter(), { url: () => `ws://hub.test${path}?workspace_ids=ws-1` })
+      const socket = Object.assign(new EventEmitter(), {
+        url: () => `ws://hub.test${path}?workspace_ids=ws-1`,
+      })
       emitter.emit('websocket', socket)
       return (payload: string | Buffer) => socket.emit('framereceived', { payload })
     }
     /** Emit the request that a navigation of `frame` makes, as a reload or a `goto` does. */
-    const requestDocument = (frame: object) => emitter.emit('request', { isNavigationRequest: () => true, frame: () => frame })
-    return { page, mainFrame, emitter, openSocket, requestDocument }
+    const requestDocument = (frame: object) => emitter.emit('request', {
+      isNavigationRequest: () => true,
+      frame: () => frame,
+    })
+    return {
+      page,
+      mainFrame,
+      emitter,
+      openSocket,
+      requestDocument,
+    }
   }
 
   it('reads the identity and the presence from the user events stream only', () => {
@@ -153,32 +211,52 @@ describe('watchUserEvents', () => {
 
 describe('waitForActiveClient', () => {
   function watching(active: string): UserEventsWatch {
-    return { subscriberClientId: () => 'session:a', activeClient: () => active }
+    return {
+      subscriberClientId: () => 'session:a',
+      activeClient: () => active,
+    }
   }
 
   it('returns once every watch received the update', async () => {
-    await expect(waitForActiveClient([watching('session:a'), watching('session:a')], 'ws-1', 'session:a')).resolves.toBeUndefined()
+    await expect(waitForActiveClient([
+      watching('session:a'),
+      watching('session:a'),
+    ], 'ws-1', 'session:a')).resolves.toBeUndefined()
   })
 
   it('names the client that did not receive the update', async () => {
     endWaitLimit = startWaitLimitForTests(300)
-    await expect(waitForActiveClient([watching('session:a'), watching('')], 'ws-1', 'session:a')).rejects.toThrow('client 2 received the presence update')
+    await expect(waitForActiveClient([
+      watching('session:a'),
+      watching(''),
+    ], 'ws-1', 'session:a')).rejects.toThrow('client 2 received the presence update')
   })
 
   it('refuses an empty client ID before it reads a watch', async () => {
     const activeClient = vi.fn(() => 'session:a')
-    await expect(waitForActiveClient([{ subscriberClientId: () => '', activeClient }], 'ws-1', '')).rejects.toThrow('needs a client ID')
+    await expect(waitForActiveClient([
+      {
+        subscriberClientId: () => '',
+        activeClient,
+      },
+    ], 'ws-1', '')).rejects.toThrow('needs a client ID')
     expect(activeClient).not.toHaveBeenCalled()
   })
 })
 
 describe('waitForSubscriberClientId', () => {
   it('returns the identity that the hub gave the page', async () => {
-    await expect(waitForSubscriberClientId({ subscriberClientId: () => 'session:a', activeClient: () => '' })).resolves.toBe('session:a')
+    await expect(waitForSubscriberClientId({
+      subscriberClientId: () => 'session:a',
+      activeClient: () => '',
+    })).resolves.toBe('session:a')
   })
 
   it('fails when no first frame arrives', async () => {
     endWaitLimit = startWaitLimitForTests(300)
-    await expect(waitForSubscriberClientId({ subscriberClientId: () => '', activeClient: () => '' })).rejects.toThrow('the hub names the identity of the page')
+    await expect(waitForSubscriberClientId({
+      subscriberClientId: () => '',
+      activeClient: () => '',
+    })).rejects.toThrow('the hub names the identity of the page')
   })
 })

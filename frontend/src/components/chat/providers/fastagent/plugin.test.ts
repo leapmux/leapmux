@@ -11,7 +11,9 @@ import './plugin'
 describe('fast agent permission presets', () => {
   it('maps Bypass to the native launch policy without changing another setting', () => {
     const plugin = providerFor(AgentProvider.FAST_AGENT)
-    expect(plugin?.controls?.permissionPresets?.bypass).toEqual({ sets: { bypassPermissions: 'true' } })
+    expect(plugin?.controls?.permissionPresets?.bypass).toEqual({
+      sets: { bypassPermissions: 'true' },
+    })
     expect(plugin?.controls?.permissionPresets?.smart).toBeUndefined()
   })
 })
@@ -41,7 +43,12 @@ describe('native output without a filesystem pointer', () => {
         exitCode: 0,
       },
     }
-    const call = providerToolCall(AgentProvider.FAST_AGENT, frame, { spanId: 'native-call', spanType: 'execute', agentSessionId: 'native-session', role: 'result' })
+    const call = providerToolCall(AgentProvider.FAST_AGENT, frame, {
+      spanId: 'native-call',
+      spanType: 'execute',
+      agentSessionId: 'native-session',
+      role: 'result',
+    })
     expect(call).not.toBeNull()
     expect(call?.id).toBe('native-call')
     expect(call?.outputFilePaths).toBeUndefined()
@@ -65,8 +72,21 @@ describe('native output without a filesystem pointer', () => {
 describe('fast agent refused tool calls', () => {
   /** The pending call and the failed update that refuses it, read as one span. */
   function refused(opening: Record<string, unknown>, text: string, status = 'failed') {
-    const ending = { sessionUpdate: 'tool_call_update', toolCallId: opening.toolCallId, status, content: acpTextContent(text) }
-    return providerToolCall(AgentProvider.FAST_AGENT, ending, { request: input({ sessionUpdate: 'tool_call', status: 'pending', content: [], ...opening }, null, AgentProvider.FAST_AGENT) as ParsedMessageContent, spanType: 'tool_call_update' })
+    const ending = {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: opening.toolCallId,
+      status,
+      content: acpTextContent(text),
+    }
+    return providerToolCall(AgentProvider.FAST_AGENT, ending, {
+      request: input({
+        sessionUpdate: 'tool_call',
+        status: 'pending',
+        content: [],
+        ...opening,
+      }, null, AgentProvider.FAST_AGENT) as ParsedMessageContent,
+      spanType: 'tool_call_update',
+    })
   }
 
   // `write_text_file` takes the arguments `{ path, content_length }`. They state the file
@@ -74,7 +94,12 @@ describe('fast agent refused tool calls', () => {
   // did not stream opens with them. A streamed call opens with no arguments. The worker
   // then folds the arguments of the permission request into the request row (see the
   // next block).
-  const WRITE = { toolCallId: 'fast-write', title: 'write_text_file', kind: 'edit', rawInput: { path: '/w/notes.txt', content_length: 12 } }
+  const WRITE = {
+    toolCallId: 'fast-write',
+    title: 'write_text_file',
+    kind: 'edit',
+    rawInput: { path: '/w/notes.txt', content_length: 12 },
+  }
   const WRITE_REFUSAL = 'The user has declined permission to use this tool: acp_filesystem__write_text_file'
 
   it('reads a refused write as declined, with its file and the refusal as the result', () => {
@@ -82,8 +107,17 @@ describe('fast agent refused tool calls', () => {
     expect(call?.degradation).toBeUndefined()
     expect(call?.kind).toBe('edit')
     expect(call?.status).toBe('declined')
-    expect(call?.kind === 'edit' ? call.request.changes : []).toStrictEqual([
-      { filePath: '/w/notes.txt', operation: 'edit', oldStr: '', newStr: '', structuredPatch: null, showLineNumbers: false },
+    expect(call?.kind === 'edit'
+      ? call.request.changes
+      : []).toStrictEqual([
+      {
+        filePath: '/w/notes.txt',
+        operation: 'edit',
+        oldStr: '',
+        newStr: '',
+        structuredPatch: null,
+        showLineNumbers: false,
+      },
     ])
     expect(call?.result).toStrictEqual(failedResult(WRITE_REFUSAL))
     expect(call?.images).toStrictEqual([])
@@ -91,7 +125,12 @@ describe('fast agent refused tool calls', () => {
 
   it('reads a refusal that Fast Agent remembers as declined', () => {
     const text = 'The user has permanently declined permission to use this tool: acp_terminal__execute'
-    const call = refused({ toolCallId: 'fast-shell', title: 'execute', kind: 'execute', rawInput: { command: 'rm -f doomed.txt' } }, text)
+    const call = refused({
+      toolCallId: 'fast-shell',
+      title: 'execute',
+      kind: 'execute',
+      rawInput: { command: 'rm -f doomed.txt' },
+    }, text)
     expect(call?.kind).toBe('execute')
     expect(call?.status).toBe('declined')
     expect(call?.result).toStrictEqual(failedResult(text))
@@ -100,7 +139,12 @@ describe('fast agent refused tool calls', () => {
 
   it('reads a refused MCP tool as declined', () => {
     const text = 'The user has declined permission to use this tool: permission_probe__touch'
-    const call = refused({ toolCallId: 'fast-mcp', title: 'permission_probe/touch', kind: 'other', rawInput: {} }, text)
+    const call = refused({
+      toolCallId: 'fast-mcp',
+      title: 'permission_probe/touch',
+      kind: 'other',
+      rawInput: {},
+    }, text)
     expect(call?.status).toBe('declined')
     expect(call?.result).toStrictEqual(failedResult(text))
     expect(call?.degradation).toBeUndefined()
@@ -144,28 +188,78 @@ describe('fast agent refused tool calls', () => {
  */
 describe('a refused streamed write', () => {
   const REFUSAL = 'The user has declined permission to use this tool: acp_filesystem__write_text_file'
-  const opening = { sessionUpdate: 'tool_call', toolCallId: 'fast-write', title: 'write_text_file', kind: 'edit', status: 'pending', content: [] }
-  const supplement = { sessionUpdate: 'tool_call', toolCallId: 'fast-write', status: 'pending', rawInput: { path: '/w/fa-local.txt', content_length: 16 } }
-  const ending = { sessionUpdate: 'tool_call_update', toolCallId: 'fast-write', status: 'failed', content: acpTextContent(REFUSAL) }
-  const stored = (frame: Record<string, unknown>, supplementalContent?: Record<string, unknown>): ParsedMessageContent => ({ rawText: '', topLevel: frame, parentObject: frame, wrapper: null, supplementalContent })
-  const changes = [{ filePath: '/w/fa-local.txt', operation: 'edit', oldStr: '', newStr: '', structuredPatch: null, showLineNumbers: false }]
+  const opening = {
+    sessionUpdate: 'tool_call',
+    toolCallId: 'fast-write',
+    title: 'write_text_file',
+    kind: 'edit',
+    status: 'pending',
+    content: [],
+  }
+  const supplement = {
+    sessionUpdate: 'tool_call',
+    toolCallId: 'fast-write',
+    status: 'pending',
+    rawInput: { path: '/w/fa-local.txt', content_length: 16 },
+  }
+  const ending = {
+    sessionUpdate: 'tool_call_update',
+    toolCallId: 'fast-write',
+    status: 'failed',
+    content: acpTextContent(REFUSAL),
+  }
+  const stored = (frame: Record<string, unknown>, supplementalContent?: Record<string, unknown>): ParsedMessageContent => ({
+    rawText: '',
+    topLevel: frame,
+    parentObject: frame,
+    wrapper: null,
+    supplementalContent,
+  })
+  const changes = [
+    {
+      filePath: '/w/fa-local.txt',
+      operation: 'edit',
+      oldStr: '',
+      newStr: '',
+      structuredPatch: null,
+      showLineNumbers: false,
+    },
+  ]
 
   it.each([
-    ['request', opening, { supplementalContent: supplement, result: stored(ending) }],
-    ['result', ending, { request: stored(opening, supplement) }],
+    [
+      'request',
+      opening,
+      {
+        supplementalContent: supplement,
+        result: stored(ending),
+      },
+    ],
+    [
+      'result',
+      ending,
+      {
+        request: stored(opening, supplement),
+      },
+    ],
   ] as const)('reads the %s row as a declined edit of the file that the permission request stated', (role, frame, sides) => {
     const call = providerToolCall(AgentProvider.FAST_AGENT, frame, { role, spanType: 'edit', ...sides })
     expect(call?.degradation).toBeUndefined()
     expect(call?.kind).toBe('edit')
     expect(call?.status).toBe('declined')
-    expect(call?.kind === 'edit' ? call.request.changes : []).toStrictEqual(changes)
+    expect(call?.kind === 'edit'
+      ? call.request.changes
+      : []).toStrictEqual(changes)
     expect(call?.result).toStrictEqual(failedResult(REFUSAL))
   })
 
   // Without the supplement, the call states no file and the row degrades to the
   // uncategorized card. The worker stored this row before it read the permission request.
   it('degrades the refused write when no frame states its file', () => {
-    const call = providerToolCall(AgentProvider.FAST_AGENT, ending, { request: stored(opening), spanType: 'edit' })
+    const call = providerToolCall(AgentProvider.FAST_AGENT, ending, {
+      request: stored(opening),
+      spanType: 'edit',
+    })
     expect(call?.kind).toBe('other')
     expect(call?.degradation).toStrictEqual({ fault: 'a-file-change-states-no-file', originalKind: 'edit' })
     expect(call?.status).toBe('declined')

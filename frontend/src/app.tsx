@@ -136,7 +136,11 @@ const PreferencesApplier: ParentComponent = (props) => {
   })
 
   return (
-    <div style={{ 'height': '100%', 'font-family': preferences.uiFontFamily() }}>
+    <div style={{
+      'height': '100%',
+      'font-family': preferences.uiFontFamily(),
+    }}
+    >
       {props.children}
     </div>
   )
@@ -148,7 +152,9 @@ const PreferencesApplier: ParentComponent = (props) => {
  * opacity 0 and fades in after a short delay.
  */
 const DesktopFadeIn: ParentComponent = (props) => {
-  const [opacity, setOpacity] = createSignal(isTauriApp() ? 0 : 1)
+  const [opacity, setOpacity] = createSignal(isTauriApp()
+    ? 0
+    : 1)
 
   onMount(() => {
     if (!isTauriApp())
@@ -159,7 +165,12 @@ const DesktopFadeIn: ParentComponent = (props) => {
   })
 
   return (
-    <div style={{ height: '100%', opacity: opacity(), transition: 'opacity var(--transition)' }}>
+    <div style={{
+      height: '100%',
+      opacity: opacity(),
+      transition: 'opacity var(--transition)',
+    }}
+    >
       {props.children}
     </div>
   )
@@ -190,7 +201,9 @@ export default function App() {
   useCoreShortcuts()
 
   type DesktopState = 'loading' | 'launcher' | 'connected'
-  const [desktopState, setDesktopState] = createSignal<DesktopState>(isTauriApp() ? 'loading' : 'connected')
+  const [desktopState, setDesktopState] = createSignal<DesktopState>(isTauriApp()
+    ? 'loading'
+    : 'connected')
   // Expose so "Switch mode..." in the menu can reset without page reload.
   window.__leapmux_disconnectDesktop = () => {
     channelManager.closeAll()

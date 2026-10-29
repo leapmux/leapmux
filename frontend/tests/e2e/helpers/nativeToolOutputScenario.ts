@@ -40,7 +40,9 @@ export function nativeOutputFileCommand(output: NativeToolOutput, options: { exi
   const { exitCode } = options
   if (exitCode !== undefined && (!Number.isSafeInteger(exitCode) || exitCode < 0 || exitCode > 255))
     throw new Error('A native output command requires an exit code from 0 through 255.')
-  const exit = exitCode === undefined ? '' : `; process.exitCode = ${exitCode}`
+  const exit = exitCode === undefined
+    ? ''
+    : `; process.exitCode = ${exitCode}`
   return `node -e ${quotePosixShellArgument(`${output.source} process.stdout.write(completeOutput)${exit}`)}`
 }
 
@@ -81,7 +83,15 @@ export async function runNativeToolOutputCapture<Context>(
     const nativeCallId = operations.nativeCallId?.(request, call.id, snapshot) ?? call.id
     if (!nativeCallId)
       throw new Error('The native tool output capture received no actual call ID.')
-    return { context, agent, snapshot, call, nativeCallId, request, output }
+    return {
+      context,
+      agent,
+      snapshot,
+      call,
+      nativeCallId,
+      request,
+      output,
+    }
   }
   await operations.wait(start + 2, async () => {
     const capture = await readCapture()
@@ -115,17 +125,45 @@ export async function captureNativeToolOutput(
   const command = nativeOutputFileCommand(options.output)
   const call = options.call?.(options.output, options.callId) ?? bashToolCall(context.provider, options.callId, command)
   return runNativeToolOutputCapture(context, call, options.output, {
-    ...(options.prepare ? { prepare: options.prepare } : {}),
-    ...(options.nativeCallId ? { nativeCallId: options.nativeCallId } : {}),
-    ...(options.beforeIdleProof ? { earlyProof: options.beforeIdleProof } : {}),
-    queue: nativeCall => context.modelScript.queue({ toolCalls: [nativeCall] }, options.finalStep ?? nativeTextStep(context, 'The native large tool output ended.')),
+    ...(options.prepare
+      ? { prepare: options.prepare }
+      : {}),
+    ...(options.nativeCallId
+      ? { nativeCallId: options.nativeCallId }
+      : {}),
+    ...(options.beforeIdleProof
+      ? { earlyProof: options.beforeIdleProof }
+      : {}),
+    queue: nativeCall => context.modelScript.queue({
+      toolCalls: [nativeCall],
+    }, options.finalStep ?? nativeTextStep(context, 'The native large tool output ended.')),
     send: () => sendMessage(context.page, context.modelScript.prompt('Run the native large output tool once.')),
     wait: (target, beforeIdle) => waitForNativeToolSteps(context, target, { beforeIdle }),
     request: step => context.modelScript.requestAt(step),
     agent: () => currentNativeAgent(context),
     snapshot: agent => readNativeMessageSnapshot(context, agent.id),
     attach: async capture => testInfo.attach('native-tool-output-records', {
-      body: JSON.stringify({ agentId: capture.agent.id, agentSessionId: capture.agent.agentSessionId, call: capture.call, nativeCallId: capture.nativeCallId, request: capture.request, output: { source: capture.output.source, firstMarker: capture.output.firstMarker, omittedMarker: capture.output.omittedMarker, lastMarker: capture.output.lastMarker }, messages: capture.snapshot.messages.map(message => ({ id: message.id, spanId: message.spanId, spanType: message.spanType, completion: message.completion, frame: nativeMessageBody(message), supplement: nativeMessageSupplement(message) })) }, null, 2),
+      body: JSON.stringify({
+        agentId: capture.agent.id,
+        agentSessionId: capture.agent.agentSessionId,
+        call: capture.call,
+        nativeCallId: capture.nativeCallId,
+        request: capture.request,
+        output: {
+          source: capture.output.source,
+          firstMarker: capture.output.firstMarker,
+          omittedMarker: capture.output.omittedMarker,
+          lastMarker: capture.output.lastMarker,
+        },
+        messages: capture.snapshot.messages.map(message => ({
+          id: message.id,
+          spanId: message.spanId,
+          spanType: message.spanType,
+          completion: message.completion,
+          frame: nativeMessageBody(message),
+          supplement: nativeMessageSupplement(message),
+        })),
+      }, null, 2),
       contentType: 'application/json',
     }),
     proof: options.proof,

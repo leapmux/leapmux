@@ -36,7 +36,9 @@ const srcRoot = join(frontendRoot, 'src')
 describe('untrusted anchors', () => {
   it('marks every agent-authored anchor, or names it first-party', () => {
     const unmarked: string[] = []
-    const files = collectFiles(srcRoot, { matches: name => name.endsWith('.tsx') && !name.includes('.test.') })
+    const files = collectFiles(srcRoot, {
+      matches: name => name.endsWith('.tsx') && !name.includes('.test.'),
+    })
     for (const file of files) {
       const source = readFileSync(file, 'utf-8')
       if (!OPENS_NEW_TAB.test(source))
@@ -56,7 +58,9 @@ describe('untrusted anchors', () => {
   // The walk passes vacuously the day `src/` moves, so pin that it found the
   // surfaces this guard exists for.
   it('sees both sets, so the walk is not empty', () => {
-    const files = collectFiles(srcRoot, { matches: name => name.endsWith('.tsx') && !name.includes('.test.') })
+    const files = collectFiles(srcRoot, {
+      matches: name => name.endsWith('.tsx') && !name.includes('.test.'),
+    })
     const withAnchors = files
       .filter(file => OPENS_NEW_TAB.test(readFileSync(file, 'utf-8')))
       .map(file => posixRelative(frontendRoot, file))

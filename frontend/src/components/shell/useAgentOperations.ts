@@ -42,7 +42,9 @@ import '~/components/chat/providers'
  * wire omitted the field; `awaitCloseResult` takes the key absent, so strip it.
  */
 function closeResultView<T extends { result?: CloseTabResult | undefined }>(resp: T): { result?: CloseTabResult } {
-  return resp.result === undefined ? {} : { result: resp.result }
+  return resp.result === undefined
+    ? {}
+    : { result: resp.result }
 }
 
 export interface UseAgentOperationsProps {
@@ -184,7 +186,9 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
         workerId,
         workingDir,
         ...openAgentRequestOptions(agentProvider),
-        ...(sessionId ? { agentSessionId: sessionId } : {}),
+        ...(sessionId
+          ? { agentSessionId: sessionId }
+          : {}),
       })
       if (resp.agent) {
         // Seed git branch / origin from the active tab when both resolve to
@@ -226,7 +230,10 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
           // Today the response carries no toplevel, so the seed is the only
           // source and the order changes nothing. It matters if the response
           // ever carries one and it differs from the active tab's guess.
-          { ...seed.fields, ...agentFields },
+          {
+            ...seed.fields,
+            ...agentFields,
+          },
         )
         // Only now, because placement can be refused. Writing the store first
         // leaves an entry that no tab reads and nothing reclaims.
@@ -527,7 +534,9 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
     try {
       resp = await workerRpc.updateAgentSettings(agent.workerId, {
         agentId,
-        settings: { options: { ...sets } },
+        settings: {
+          options: { ...sets },
+        },
       })
     }
     catch (err) {
@@ -539,7 +548,9 @@ export function useAgentOperations(props: UseAgentOperationsProps) {
       // Roll back an axis only when this request still owns its version. A newer
       // request can select the same value, so value equality cannot detect this race.
       const current = props.view.getAgentTab(agentId)
-      const rolledBack = { ...(current?.optionValues || {}) }
+      const rolledBack = {
+        ...(current?.optionValues || {}),
+      }
       let didRollback = false
       for (const { key, hadPrevious, previous } of priors) {
         if (!requestStillOwnsAxis(agentId, requestVersions, key))

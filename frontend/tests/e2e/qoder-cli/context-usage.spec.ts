@@ -10,7 +10,10 @@ import { qoderTest } from '../qoder-fixtures'
 qoderTest.describe('Qoder CLI attachments and context usage', () => {
   qoderTest('the agent info card follows the native context percentage after reload', async ({ native }) => {
     const { page, modelScript } = native
-    const step = await modelScript.queue({ text: 'Usage recorded.', usage: { ...SCRIPTED_CONTEXT_USAGE } })
+    const step = await modelScript.queue({
+      text: 'Usage recorded.',
+      usage: { ...SCRIPTED_CONTEXT_USAGE },
+    })
     await sendMessage(page, modelScript.prompt('Reply once.'))
     await modelScript.waitForSteps(step + 1)
     await waitForAgentIdle(page)
@@ -24,7 +27,9 @@ qoderTest.describe('Qoder CLI attachments and context usage', () => {
       if (!isObject(frame) || !isObject(frame.usage))
         return []
       const ratio = frame.usage.context_usage_ratio
-      return typeof ratio === 'number' && Number.isFinite(ratio) && ratio >= 0 ? [ratio] : []
+      return typeof ratio === 'number' && Number.isFinite(ratio) && ratio >= 0
+        ? [ratio]
+        : []
     })
     const ratio = ratios.at(-1)
     if (ratio === undefined)

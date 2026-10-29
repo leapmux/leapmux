@@ -11,12 +11,16 @@ export function copilotPermissionSource(payload: Record<string, unknown>) {
   if (event?.type === COPILOT_EVENT.AutoModeSwitchRequested) {
     return {
       title: 'Copilot asks to switch to Auto',
-      ...(event.data.errorCode === COPILOT_AUTO_SWITCH_RATE_LIMIT_CODE ? { reason: 'The current model reached its rate limit.' } : {}),
+      ...(event.data.errorCode === COPILOT_AUTO_SWITCH_RATE_LIMIT_CODE
+        ? { reason: 'The current model reached its rate limit.' }
+        : {}),
     }
   }
   if (event?.type === COPILOT_EVENT.SamplingRequested) {
     const server = pickString(event.data, 'serverName')
-    return { title: `The MCP server${server ? ` ${server}` : ''} asks the model to answer`, input: pickObject(event.data, 'request') ?? {} }
+    return { title: `The MCP server${server
+      ? ` ${server}`
+      : ''} asks the model to answer`, input: pickObject(event.data, 'request') ?? {} }
   }
   const request = copilotPermission(payload)
   const kind = pickString(request, 'kind')
@@ -25,11 +29,15 @@ export function copilotPermissionSource(payload: Record<string, unknown>) {
     || pickString(request, 'toolName')
     || kind
   // The command is optional on the model, so it stays ABSENT for every other kind.
-  const command = kind === 'shell' ? pickString(request, 'fullCommandText', undefined) : undefined
+  const command = kind === 'shell'
+    ? pickString(request, 'fullCommandText', undefined)
+    : undefined
   return {
     title,
     input: request,
-    ...(command !== undefined ? { command } : {}),
+    ...(command !== undefined
+      ? { command }
+      : {}),
   }
 }
 
@@ -50,12 +58,16 @@ export function copilotQuestions(payload: Record<string, unknown>): ControlQuest
   const data = copilotEvent(payload)?.data
   if (!data)
     return []
-  const choices = Array.isArray(data.choices) ? data.choices.filter((choice): choice is string => typeof choice === 'string') : []
-  return [{
-    question: pickString(data, 'question'),
-    options: choices.map(choice => ({ label: choice })),
-    allowEmpty: data.allowFreeform === true,
-  }]
+  const choices = Array.isArray(data.choices)
+    ? data.choices.filter((choice): choice is string => typeof choice === 'string')
+    : []
+  return [
+    {
+      question: pickString(data, 'question'),
+      options: choices.map(choice => ({ label: choice })),
+      allowEmpty: data.allowFreeform === true,
+    },
+  ]
 }
 
 /** `Provider.extractControl` for GitHub Copilot. */
@@ -74,7 +86,9 @@ export function copilotExtractControl(input: ControlExtractionInput): ExtractedC
     permission: {
       ...copilotPermissionSource(payload),
       options: copilotPermissionOptions(payload),
-      ...(event?.type === COPILOT_EVENT.AutoModeSwitchRequested ? { independentOptions: true } : {}),
+      ...(event?.type === COPILOT_EVENT.AutoModeSwitchRequested
+        ? { independentOptions: true }
+        : {}),
     },
   }
 }

@@ -56,7 +56,12 @@ function text(b: Uint8Array): string {
 
 /** A FULL delta carrying `header` plus one chunk per `kind:id -> body` entry. */
 function fullDelta(header: string, entities: Record<string, string> = {}): CheckpointDelta {
-  return { headerBytes: bytes(header), upserts: chunksOf(entities), deletes: [], full: true }
+  return {
+    headerBytes: bytes(header),
+    upserts: chunksOf(entities),
+    deletes: [],
+    full: true,
+  }
 }
 
 /** An INCREMENTAL delta: only the named chunks move. */
@@ -74,7 +79,10 @@ function incrementalDelta(
 }
 
 function chunksOf(entities: Record<string, string>): ChunkUpsert[] {
-  return Object.entries(entities).map(([key, body]) => ({ ...refOf(key), bytes: bytes(body) }))
+  return Object.entries(entities).map(([key, body]) => ({
+    ...refOf(key),
+    bytes: bytes(body),
+  }))
 }
 
 function refOf(key: string): ChunkRef {
@@ -94,7 +102,10 @@ async function readOk(userId: string, clientId: string) {
 /** An owner's chunks as a `kind:id -> body` record, order-independent. */
 async function chunkMap(userId: string, clientId: string): Promise<Record<string, string>> {
   const read = await readOk(userId, clientId)
-  return Object.fromEntries(read.chunks.map(c => [`${c.kind}:${c.entityId}`, text(c.bytes)]))
+  return Object.fromEntries(read.chunks.map(c => [
+    `${c.kind}:${c.entityId}`,
+    text(c.bytes),
+  ]))
 }
 
 /** Frame byte arrays, comparable with toEqual. */
@@ -271,7 +282,10 @@ describe('checkpointStore', () => {
       await writeCheckpointAndTruncateOpLog('u', 'tab-1', fullDelta('h'), WM, 1n)
       await writeCheckpointAndTruncateOpLog('u', 'tab-2', fullDelta('h'), WM, 1n)
 
-      const foreground = [bytes('fg-1'), bytes('fg-2')]
+      const foreground = [
+        bytes('fg-1'),
+        bytes('fg-2'),
+      ]
       await opLog.append('u', 'tab-2', foreground)
       expect((await readOk('u', 'tab-2')).opLogFrames.length).toBe(2)
 
@@ -284,8 +298,12 @@ describe('checkpointStore', () => {
     it('keeps each tab\'s op-log to itself on read', async () => {
       await writeCheckpointAndTruncateOpLog('u', 'tab-1', fullDelta('h'), WM, 1n)
       await writeCheckpointAndTruncateOpLog('u', 'tab-2', fullDelta('h'), WM, 1n)
-      await opLog.append('u', 'tab-1', [bytes('one')])
-      await opLog.append('u', 'tab-2', [bytes('two')])
+      await opLog.append('u', 'tab-1', [
+        bytes('one'),
+      ])
+      await opLog.append('u', 'tab-2', [
+        bytes('two'),
+      ])
 
       expect(asText((await readOk('u', 'tab-1')).opLogFrames)).toEqual(['one'])
       expect(asText((await readOk('u', 'tab-2')).opLogFrames)).toEqual(['two'])
@@ -295,7 +313,11 @@ describe('checkpointStore', () => {
   describe('appendOpLogSegment', () => {
     it('writes one segment and reads its frames back in apply order', async () => {
       await writeCheckpointAndTruncateOpLog('u', 'c', fullDelta('h'), WM, 1n)
-      await opLog.append('u', 'c', [bytes('b1'), bytes('b2'), bytes('b3')])
+      await opLog.append('u', 'c', [
+        bytes('b1'),
+        bytes('b2'),
+        bytes('b3'),
+      ])
 
       expect(asText((await readOk('u', 'c')).opLogFrames)).toEqual(['b1', 'b2', 'b3'])
     })
@@ -305,8 +327,13 @@ describe('checkpointStore', () => {
       // autoIncrement key still orders ONE owner's segments by append time --
       // the index cursor yields equal-index-key records in primary-key order.
       await writeCheckpointAndTruncateOpLog('u', 'c', fullDelta('h'), WM, 1n)
-      await opLog.append('u', 'c', [bytes('b1'), bytes('b2')])
-      await opLog.append('u', 'c', [bytes('b3')])
+      await opLog.append('u', 'c', [
+        bytes('b1'),
+        bytes('b2'),
+      ])
+      await opLog.append('u', 'c', [
+        bytes('b3'),
+      ])
 
       expect(asText((await readOk('u', 'c')).opLogFrames)).toEqual(['b1', 'b2', 'b3'])
     })
@@ -315,10 +342,18 @@ describe('checkpointStore', () => {
       await writeCheckpointAndTruncateOpLog('u', 'tab-1', fullDelta('h'), WM, 1n)
       await writeCheckpointAndTruncateOpLog('u', 'tab-2', fullDelta('h'), WM, 1n)
 
-      await opLog.append('u', 'tab-1', [bytes('a1')])
-      await opLog.append('u', 'tab-2', [bytes('b1')])
-      await opLog.append('u', 'tab-1', [bytes('a2')])
-      await opLog.append('u', 'tab-2', [bytes('b2')])
+      await opLog.append('u', 'tab-1', [
+        bytes('a1'),
+      ])
+      await opLog.append('u', 'tab-2', [
+        bytes('b1'),
+      ])
+      await opLog.append('u', 'tab-1', [
+        bytes('a2'),
+      ])
+      await opLog.append('u', 'tab-2', [
+        bytes('b2'),
+      ])
 
       expect(asText((await readOk('u', 'tab-1')).opLogFrames)).toEqual(['a1', 'a2'])
       expect(asText((await readOk('u', 'tab-2')).opLogFrames)).toEqual(['b1', 'b2'])
@@ -326,7 +361,9 @@ describe('checkpointStore', () => {
 
     it('a single-frame segment round-trips (the cold-start first-frame case)', async () => {
       await writeCheckpointAndTruncateOpLog('u', 'c', fullDelta('h'), WM, 1n)
-      await opLog.append('u', 'c', [bytes('solo')])
+      await opLog.append('u', 'c', [
+        bytes('solo'),
+      ])
       expect(asText((await readOk('u', 'c')).opLogFrames)).toEqual(['solo'])
     })
 
@@ -338,14 +375,19 @@ describe('checkpointStore', () => {
 
     it('is best-effort: drops silently when the store is unavailable', async () => {
       vi.unstubAllGlobals()
-      await expect(appendOpLogSegment('u', 'c', [new Uint8Array([1, 2, 3])], 0)).resolves.toBeUndefined()
+      await expect(appendOpLogSegment('u', 'c', [
+        new Uint8Array([1, 2, 3]),
+      ], 0)).resolves.toBeUndefined()
     })
   })
 
   describe('writeCheckpointAndTruncateOpLog truncates the op-log', () => {
     it('clears the op-log atomically when rewriting the checkpoint', async () => {
       await writeCheckpointAndTruncateOpLog('u', 'c', fullDelta('h'), WM, 1n)
-      await opLog.append('u', 'c', [bytes('b1'), bytes('b2')])
+      await opLog.append('u', 'c', [
+        bytes('b1'),
+        bytes('b2'),
+      ])
       expect((await readOk('u', 'c')).opLogFrames.length).toBe(2)
 
       // Rewrite the checkpoint at a newer watermark — the op-log must clear.
@@ -422,17 +464,27 @@ describe('checkpointStore', () => {
   describe('a malformed op-log segment', () => {
     async function seedWithBadSegment(): Promise<void> {
       await writeCheckpointAndTruncateOpLog('u', 'c', fullDelta('h'), WM, 1n)
-      await opLog.append('u', 'c', [bytes('before-1'), bytes('before-2')])
+      await opLog.append('u', 'c', [
+        bytes('before-1'),
+        bytes('before-2'),
+      ])
       // A row whose framesBytes is not an array (a partial write, or a quota
       // abort mid-row). Written directly so the store's own guards are bypassed.
       const db = await openDbRaw()
       await new Promise<void>((resolve) => {
         const tx = db.transaction('opLog', 'readwrite')
-        tx.objectStore('opLog').add({ userId: 'u', clientId: 'c', ordinal: 1, framesBytes: undefined })
+        tx.objectStore('opLog').add({
+          userId: 'u',
+          clientId: 'c',
+          ordinal: 1,
+          framesBytes: undefined,
+        })
         tx.oncomplete = () => resolve()
       })
       db.close()
-      await appendOpLogSegment('u', 'c', [bytes('after')], 2)
+      await appendOpLogSegment('u', 'c', [
+        bytes('after'),
+      ], 2)
     }
 
     it('returns the PREFIX before it, never frames from past the gap', async () => {
@@ -456,10 +508,16 @@ describe('checkpointStore', () => {
     // is strictly after the cursor.
     it('stops at a MISSING segment, even though every row is well-formed', async () => {
       await writeCheckpointAndTruncateOpLog('u', 'c', fullDelta('h'), WM, 1n)
-      await appendOpLogSegment('u', 'c', [bytes('kept-1')], 0)
-      await appendOpLogSegment('u', 'c', [bytes('kept-2')], 1)
+      await appendOpLogSegment('u', 'c', [
+        bytes('kept-1'),
+      ], 0)
+      await appendOpLogSegment('u', 'c', [
+        bytes('kept-2'),
+      ], 1)
       // ordinal 2 never landed.
-      await appendOpLogSegment('u', 'c', [bytes('past-the-hole')], 3)
+      await appendOpLogSegment('u', 'c', [
+        bytes('past-the-hole'),
+      ], 3)
 
       const read = await readOk('u', 'c')
       expect(asText(read.opLogFrames)).toEqual(['kept-1', 'kept-2'])
@@ -470,8 +528,12 @@ describe('checkpointStore', () => {
       // Restarting the sequence behind segments already numbered 0..N-1 would
       // make the NEXT cold start read a well-formed log as holed and discard it.
       await writeCheckpointAndTruncateOpLog('u', 'c', fullDelta('h'), WM, 1n)
-      await appendOpLogSegment('u', 'c', [bytes('a')], 0)
-      await appendOpLogSegment('u', 'c', [bytes('b')], 1)
+      await appendOpLogSegment('u', 'c', [
+        bytes('a'),
+      ], 0)
+      await appendOpLogSegment('u', 'c', [
+        bytes('b'),
+      ], 1)
 
       const read = await readOk('u', 'c')
       expect(read.opLogNextOrdinal).toBe(2)
@@ -480,7 +542,9 @@ describe('checkpointStore', () => {
 
     it('restarts the ordinal at 0 after a checkpoint write truncates the log', async () => {
       await writeCheckpointAndTruncateOpLog('u', 'c', fullDelta('h'), WM, 1n)
-      await appendOpLogSegment('u', 'c', [bytes('a')], 0)
+      await appendOpLogSegment('u', 'c', [
+        bytes('a'),
+      ], 0)
       await writeCheckpointAndTruncateOpLog('u', 'c', fullDelta('h2'), WM, 1n)
 
       const read = await readOk('u', 'c')
@@ -506,9 +570,15 @@ describe('checkpointStore', () => {
       await writeCheckpointAndTruncateOpLog('user-a', 'tab-1', fullDelta('h', { 'node:a1': 'A1' }), WM, 1n)
       await writeCheckpointAndTruncateOpLog('user-a', 'tab-2', fullDelta('h', { 'node:a2': 'A2' }), WM, 1n)
       await writeCheckpointAndTruncateOpLog('user-b', 'tab-1', fullDelta('h', { 'node:b1': 'B1' }), { physical: 3n, logical: 0n, clientId: 'b' }, 1n)
-      await opLog.append('user-a', 'tab-1', [bytes('b1')])
-      await opLog.append('user-a', 'tab-2', [bytes('b2')])
-      await opLog.append('user-b', 'tab-1', [bytes('b3')])
+      await opLog.append('user-a', 'tab-1', [
+        bytes('b1'),
+      ])
+      await opLog.append('user-a', 'tab-2', [
+        bytes('b2'),
+      ])
+      await opLog.append('user-b', 'tab-1', [
+        bytes('b3'),
+      ])
 
       await clearCheckpointAndOpLog('user-a')
 
@@ -526,8 +596,12 @@ describe('checkpointStore', () => {
     it('removes one owner\'s metadata, chunks and op-log, and nothing else', async () => {
       await writeCheckpointAndTruncateOpLog('u', 'tab-bad', fullDelta('h', { 'node:x': 'X', 'tab:y': 'Y' }), WM, 1n)
       await writeCheckpointAndTruncateOpLog('u', 'tab-good', fullDelta('h', { 'node:z': 'Z' }), WM, 1n)
-      await opLog.append('u', 'tab-bad', [bytes('f')])
-      await opLog.append('u', 'tab-good', [bytes('g')])
+      await opLog.append('u', 'tab-bad', [
+        bytes('f'),
+      ])
+      await opLog.append('u', 'tab-good', [
+        bytes('g'),
+      ])
 
       await clearOwnerCheckpointAndOpLog('u', 'tab-bad')
 
@@ -597,7 +671,9 @@ describe('readCheckpoint when the op-log is unreadable', () => {
 
   it('keeps the checkpoint and reports the replay as truncated', async () => {
     await writeCheckpointAndTruncateOpLog('u', 'tab', fullDelta('header', { 'k:1': 'chunk-body' }), WM, 1n)
-    await opLog.append('u', 'tab', [bytes('frame-1')])
+    await opLog.append('u', 'tab', [
+      bytes('frame-1'),
+    ])
 
     const broken = breakIndexReadsOn('opLog')
     const got = await readCheckpoint('u', 'tab')
@@ -641,7 +717,9 @@ describe('sweepAbandonedCheckpoints', () => {
       1n,
       at,
     )
-    await opLog.append(userId, clientId, [bytes(`f-${clientId}`)])
+    await opLog.append(userId, clientId, [
+      bytes(`f-${clientId}`),
+    ])
   }
 
   it('collects owners past the TTL, with their chunks and op-logs, and never this tab', async () => {
@@ -1032,7 +1110,9 @@ describe('listSeedCandidates', () => {
     await owner('u', 'ancient', now - 99_999_999)
 
     expect(await listSeedCandidates('u', 'me', { now, maxAgeMs: 5000 }))
-      .toEqual([{ clientId: 'fresh', lastSeenAt: now - 1000 }])
+      .toEqual([
+        { clientId: 'fresh', lastSeenAt: now - 1000 },
+      ])
   })
 
   it('stops at a FOREIGN owner past the cutoff too', async () => {
@@ -1043,7 +1123,9 @@ describe('listSeedCandidates', () => {
     await owner('u', 'behind-the-wall', now - 60_000)
 
     expect(await listSeedCandidates('u', 'me', { now, maxAgeMs: 5000 }))
-      .toEqual([{ clientId: 'fresh', lastSeenAt: now - 1000 }])
+      .toEqual([
+        { clientId: 'fresh', lastSeenAt: now - 1000 },
+      ])
   })
 
   // `lastSeenAt` is wall-clock, so a session that ran while the device clock was
@@ -1056,7 +1138,9 @@ describe('listSeedCandidates', () => {
     await owner('u', 'usable', now - 1000)
 
     expect(await listSeedCandidates('u', 'me', { now, limit: 2 }))
-      .toEqual([{ clientId: 'usable', lastSeenAt: now - 1000 }])
+      .toEqual([
+        { clientId: 'usable', lastSeenAt: now - 1000 },
+      ])
   })
 
   it('honours the limit, keeping the most recent', async () => {
@@ -1086,7 +1170,9 @@ describe('listSeedCandidates', () => {
     it('accepts an owner seen at exactly `now`', async () => {
       await owner('u', 'exactly-now', now)
       expect(await listSeedCandidates('u', 'me', { now, maxAgeMs: 5000 }))
-        .toEqual([{ clientId: 'exactly-now', lastSeenAt: now }])
+        .toEqual([
+          { clientId: 'exactly-now', lastSeenAt: now },
+        ])
     })
 
     it('rejects an owner seen at exactly the cutoff', async () => {
@@ -1098,7 +1184,9 @@ describe('listSeedCandidates', () => {
     it('accepts an owner one millisecond inside the cutoff', async () => {
       await owner('u', 'just-inside', now - 4999)
       expect(await listSeedCandidates('u', 'me', { now, maxAgeMs: 5000 }))
-        .toEqual([{ clientId: 'just-inside', lastSeenAt: now - 4999 }])
+        .toEqual([
+          { clientId: 'just-inside', lastSeenAt: now - 4999 },
+        ])
     })
   })
 
@@ -1168,8 +1256,12 @@ describe('adoptCheckpoint', () => {
   // the truncate walk was awaited would be deleted the moment it reached it.
   it('adds the seeded segment AFTER truncating what this owner had', async () => {
     await writeCheckpointAndTruncateOpLog('u', 'me', fullDelta('old'), WM, 1n)
-    await opLog.append('u', 'me', [bytes('stale-1')])
-    await opLog.append('u', 'me', [bytes('stale-2')])
+    await opLog.append('u', 'me', [
+      bytes('stale-1'),
+    ])
+    await opLog.append('u', 'me', [
+      bytes('stale-2'),
+    ])
 
     await adoptCheckpoint('u', 'me', snapshotOf('h', {}, ['fresh']))
 
@@ -1192,7 +1284,9 @@ describe('adoptCheckpoint', () => {
 
   it('leaves the source owner untouched', async () => {
     await writeCheckpointAndTruncateOpLog('u', 'source', fullDelta('src', { 'node:n1': 'A' }), WM, 1n)
-    await opLog.append('u', 'source', [bytes('their-frame')])
+    await opLog.append('u', 'source', [
+      bytes('their-frame'),
+    ])
     const before = await readCheckpoint('u', 'source')
 
     await adoptCheckpoint('u', 'me', snapshotOf('h', { 'node:n2': 'B' }, ['mine']))

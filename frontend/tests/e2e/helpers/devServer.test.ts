@@ -25,7 +25,10 @@ vi.mock('./server', async (importOriginal) => {
       const raw = await actual.waitForHubStateFile(statePath, proc)
       const hubUrl = actual.hubUrlFromStateJson(raw, browserHost)
       state.waitedURL = hubUrl
-      return { hubUrl, listen: actual.resolvedHubTCPFromStateJson(raw) }
+      return {
+        hubUrl,
+        listen: actual.resolvedHubTCPFromStateJson(raw),
+      }
     },
   }
 })
@@ -38,9 +41,13 @@ vi.mock('./api', async importOriginal => ({
   signUpViaAPI: vi.fn(async () => 'leapmux-session=admin'),
 }))
 
-vi.mock('./cli', () => ({ mintCLITokenForAdmin: vi.fn() }))
+vi.mock('./cli', () => ({
+  mintCLITokenForAdmin: vi.fn(),
+}))
 
-vi.mock('./process', () => ({ stopProcess: vi.fn(async () => {}) }))
+vi.mock('./process', () => ({
+  stopProcess: vi.fn(async () => {}),
+}))
 
 vi.mock('./processRegistry', async (importOriginal) => {
   const { EventEmitter } = await import('node:events')
@@ -57,10 +64,16 @@ vi.mock('./processRegistry', async (importOriginal) => {
       mkdirSync(stateDir, { recursive: true })
       const requested = args[args.indexOf('-listen') + 1] ?? ''
       const host = requested.slice(0, requested.lastIndexOf(':'))
-      writeFileSync(join(stateDir, 'state.json'), JSON.stringify({ listen: [`${host}:49123`] }))
+      writeFileSync(join(stateDir, 'state.json'), JSON.stringify({
+        listen: [`${host}:49123`],
+      }))
       return Object.assign(new EventEmitter(), {
-        stdout: { resume() {} },
-        stderr: { resume() {} },
+        stdout: {
+          resume() {},
+        },
+        stderr: {
+          resume() {},
+        },
         exitCode: null,
         signalCode: null,
       })

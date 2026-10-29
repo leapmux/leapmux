@@ -8,7 +8,13 @@ import { hoverForTooltip } from '~/test-support/clipStub'
 import { retryDetailText, ToolRunningBadge } from './ToolRunningBadge'
 import * as styles from './ToolRunningBadge.css'
 
-const RETRY = { attempt: 2, maxRetries: 5, retryDelayMs: 4000, errorStatus: 529, errorCategory: 'overloaded' }
+const RETRY = {
+  attempt: 2,
+  maxRetries: 5,
+  retryDelayMs: 4000,
+  errorStatus: 529,
+  errorCategory: 'overloaded',
+}
 
 /** The tool_use row the live-store cases render: one span of one provider session. */
 const SPAN = { spanId: 'toolu_A', agentSessionId: 'sess-1' }
@@ -49,7 +55,13 @@ describe('ToolRunningBadge', () => {
   })
 
   it('formats the elapsed time the way the result divider formats a duration', () => {
-    for (const [seconds, text] of [[30, '30s'], [60, '1m'], [90, '1m 30s'], [3600, '1h'], [3690, '1h 1m 30s']] as const) {
+    for (const [seconds, text] of [
+      [30, '30s'],
+      [60, '1m'],
+      [90, '1m 30s'],
+      [3600, '1h'],
+      [3690, '1h 1m 30s'],
+    ] as const) {
       const { container, unmount } = renderBadge({ elapsedSeconds: seconds })
       expect(container.textContent).toBe(text)
       unmount()
@@ -190,7 +202,10 @@ describe('ToolRunningBadge', () => {
     expect(container.textContent).toBe('Retrying 2/5')
 
     setSelecting(true)
-    store.apply('a1', { ...SPAN, retry: { ...RETRY, attempt: 3 } })
+    store.apply('a1', {
+      ...SPAN,
+      retry: { ...RETRY, attempt: 3 },
+    })
     expect(container.textContent).toBe('Retrying 2/5')
 
     setSelecting(false)
@@ -336,7 +351,12 @@ describe('ToolRunningBadge', () => {
    * live for the first provider that reports a shorter one.
    */
   it('renders a short elapsed time in whole seconds, never as a decimal', () => {
-    for (const [seconds, text] of [[1, '1s'], [5, '5s'], [9, '9s'], [10, '10s']] as const) {
+    for (const [seconds, text] of [
+      [1, '1s'],
+      [5, '5s'],
+      [9, '9s'],
+      [10, '10s'],
+    ] as const) {
       const { container, unmount } = renderBadge({ elapsedSeconds: seconds })
       expect(container.textContent).toBe(text)
       unmount()
@@ -370,7 +390,12 @@ describe('retryDetailText', () => {
       ['rate_limit', 'rate limit'],
       ['overloaded', 'overloaded'],
     ] as const) {
-      const text = retryDetailText({ ...RETRY, errorCategory: category, errorStatus: null, retryDelayMs: 0 })
+      const text = retryDetailText({
+        ...RETRY,
+        errorCategory: category,
+        errorStatus: null,
+        retryDelayMs: 0,
+      })
       expect(text).toBe(`Retrying after ${words}.`)
       expect(text).not.toContain('_')
     }
@@ -381,7 +406,13 @@ describe('retryDetailText', () => {
   })
 
   it('states the failure generically when the category is empty', () => {
-    expect(retryDetailText({ attempt: 1, maxRetries: 3, retryDelayMs: 0, errorStatus: null, errorCategory: '' }))
+    expect(retryDetailText({
+      attempt: 1,
+      maxRetries: 3,
+      retryDelayMs: 0,
+      errorStatus: null,
+      errorCategory: '',
+    }))
       .toBe('Retrying after an API error.')
   })
 })

@@ -13,7 +13,13 @@ export function makeItems(specs: Array<{ seq: number, span?: boolean, kind?: str
   // `seq` is only a convenient way to derive a unique row id in these specs; the
   // virtualizer itself keys everything by `id`. `kind` is omitted unless a spec
   // sets it, so the rows that don't care keep the shared estimate bucket.
-  return specs.map(s => ({ id: `m${s.seq}`, hasSpanLines: !!s.span, ...(s.kind === undefined ? {} : { kind: s.kind }) }))
+  return specs.map(s => ({
+    id: `m${s.seq}`,
+    hasSpanLines: !!s.span,
+    ...(s.kind === undefined
+      ? {}
+      : { kind: s.kind }),
+  }))
 }
 
 export function plainItems(count: number, startSeq = 1): VirtualItem[] {

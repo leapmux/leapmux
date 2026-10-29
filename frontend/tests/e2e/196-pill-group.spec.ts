@@ -50,7 +50,9 @@ test.describe('pill group segmented control', () => {
 
     const layout = await group.evaluate((element, optionButtons) => {
       const groupStyle = getComputedStyle(element)
-      const buttons = [...element.querySelectorAll<HTMLButtonElement>(optionButtons)]
+      const buttons = [
+        ...element.querySelectorAll<HTMLButtonElement>(optionButtons),
+      ]
       const boxes = buttons.map((button) => {
         const rect = button.getBoundingClientRect()
         const style = getComputedStyle(button)
@@ -163,7 +165,9 @@ test.describe('pill group segmented control', () => {
     // A read from the test after the event comes a round trip later, and a short slide can end before it.
     const slideStart = await group.evaluate((element, optionButtons) => new Promise<{ property: string, targetRing: string }>((resolve, reject) => {
       const fill = element.querySelector<HTMLElement>(':scope > [data-pill-selection-fill]')
-      const target = [...element.querySelectorAll<HTMLButtonElement>(optionButtons)]
+      const target = [
+        ...element.querySelectorAll<HTMLButtonElement>(optionButtons),
+      ]
         .find(button => button.textContent === 'Dark')
       if (!fill || !target) {
         reject(new Error('The segmented control is incomplete.'))
@@ -208,7 +212,9 @@ test.describe('pill group segmented control', () => {
       shadow: string
     }>((resolve, reject) => {
       const fill = element.querySelector<HTMLElement>(':scope > [data-pill-selection-fill]')
-      const target = [...element.querySelectorAll<HTMLButtonElement>(optionButtons)]
+      const target = [
+        ...element.querySelectorAll<HTMLButtonElement>(optionButtons),
+      ]
         .find(button => button.textContent === 'Dark')
       if (!fill || !target) {
         reject(new Error('The segmented control is incomplete.'))
@@ -269,7 +275,9 @@ test.describe('pill group segmented control', () => {
         containerLeft: containerRect.left,
         containerRight: containerRect.right,
         viewportWidth: window.innerWidth,
-        maxButtonOverflow: Math.max(...[...element.querySelectorAll<HTMLButtonElement>('[role="radio"]')]
+        maxButtonOverflow: Math.max(...[
+          ...element.querySelectorAll<HTMLButtonElement>('[role="radio"]'),
+        ]
           .map(button => button.scrollWidth - button.clientWidth)),
       }
     })

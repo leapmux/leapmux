@@ -14,7 +14,12 @@ import { nativeContext } from './scenarios'
  */
 clineTest.describe('Cline control requests', () => {
   clineTest('approves a pending tool and the next tool when Bypass changes during a turn', async ({ askingClineWorkspace, page, modelScript, leapmuxServer }) => {
-    await exerciseMidTurnBypass(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingClineWorkspace.workspaceId }))
+    await exerciseMidTurnBypass(await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: askingClineWorkspace.workspaceId,
+    }))
   })
 
   clineTest('runs every call without a banner in Auto-approve, which the Bypass shortcut selects', async ({ askingClineWorkspace, page, modelScript, leapmuxServer }) => {
@@ -22,7 +27,12 @@ clineTest.describe('Cline control requests', () => {
     // Cline has no mode that asks for the risky calls alone, so it offers no Smart
     // shortcut. Bypass selects Auto-approve, which applies to the next call at once.
     await expectPermissionShortcuts(page, { smart: 'absent', bypass: 'offered' })
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingClineWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: askingClineWorkspace.workspaceId,
+    })
     await exerciseBypassPermissions(context, {
       settingsProof: agent => expect(nativeOptionValue(agent, 'permissionMode')).toBe(CLINE_PERMISSION_MODE.AutoApprove),
     })

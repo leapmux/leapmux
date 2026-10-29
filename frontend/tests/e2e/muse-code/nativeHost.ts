@@ -119,7 +119,9 @@ export class MuseNativeHost {
   }
 
   private fail(cause: unknown): void {
-    this.failure ??= cause instanceof Error ? cause : new Error(String(cause))
+    this.failure ??= cause instanceof Error
+      ? cause
+      : new Error(String(cause))
     for (const request of this.pending.values()) {
       request.cancel()
       request.reject(this.failure)

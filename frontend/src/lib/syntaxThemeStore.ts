@@ -139,8 +139,12 @@ export function resolveSyntaxPair(
   // sentinel the way the switch it came from would: follow the app.
   if (pref.mode === MATCH_UI)
     return pair
-  const mode = pref.mode === 'system' ? systemMode : pref.mode
-  const pinned = mode === 'dark' ? pair.dark : pair.light
+  const mode = pref.mode === 'system'
+    ? systemMode
+    : pref.mode
+  const pinned = mode === 'dark'
+    ? pair.dark
+    : pair.light
   return { light: pinned, dark: pinned }
 }
 
@@ -173,6 +177,8 @@ export function resolveSyntaxVariant(
   // pair does. `match-ui` in either half means the app answers for both.
   const mode = following || pref.mode === MATCH_UI
     ? uiMode
-    : pref.mode === 'system' ? systemMode : pref.mode
+    : pref.mode === 'system'
+      ? systemMode
+      : pref.mode
   return resolveVariant(theme, chosen?.[mode], mode)
 }

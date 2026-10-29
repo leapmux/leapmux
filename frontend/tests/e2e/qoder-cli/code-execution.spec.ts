@@ -23,10 +23,18 @@ import { qoderWorkflowDiagnosticJson, qoderWorkflowLaunch, qoderWorkflowModelOut
 import { nativeContext } from './scenarios'
 
 qoderTest('executes native Workflow code and preserves the computed result and script error', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }, testInfo) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+  })
   const catalogRequest = await openNativeCatalogTurn(context, { directoryPrefix: 'native-workflow-code-' })
   expect(nativeModelToolNames(catalogRequest)).toContain('Workflow')
-  await testInfo.attach('qoder-workflow-catalog', { body: JSON.stringify(catalogRequest, null, 2), contentType: 'application/json' })
+  await testInfo.attach('qoder-workflow-catalog', {
+    body: JSON.stringify(catalogRequest, null, 2),
+    contentType: 'application/json',
+  })
   const agent = await currentNativeAgent(context)
   const marker = uniqueMarker('NATIVEWORKFLOW')
   // Workflow completion can start another parent turn after the launch turn ends.
@@ -34,40 +42,57 @@ qoderTest('executes native Workflow code and preserves the computed result and s
   const runs: { launch: QoderWorkflowLaunch, failed: boolean }[] = []
   for (const { callId, source, expected, failed } of nativeWorkflowScripts(marker)) {
     expect(source).not.toContain(expected)
-    const start = await modelScript.queue({ toolCalls: [codeExecutionToolCall(context.provider, callId, source)] }, { text: 'The native Workflow launch turn ended.' })
-    const evidence: Record<string, unknown> = { callId, source, agentId: agent.id, agentSessionId: agent.agentSessionId }
+    const start = await modelScript.queue({
+      toolCalls: [
+        codeExecutionToolCall(context.provider, callId, source),
+      ],
+    }, { text: 'The native Workflow launch turn ended.' })
+    const evidence: Record<string, unknown> = {
+      callId,
+      source,
+      agentId: agent.id,
+      agentSessionId: agent.agentSessionId,
+    }
     await withCleanup(async () => {
       await sendMessage(page, modelScript.prompt(`Run the native Workflow ${failed ? 'error' : 'output'} script.`))
-      await waitForNativeToolSteps(context, start + 2, { beforeIdle: async () => {
-        const [messages, sidebar, current, status, queue] = await Promise.all([
-          readNativeMessageSnapshot(context, agent.id),
-          readNativeSidebarSnapshot(context, agent.id),
-          nativeAgentById(context, agent.id),
-          modelScript.status(),
-          readNativeInputQueue(leapmuxServer, agent.id),
-        ])
-        evidence.beforeIdle = {
-          agent: current,
-          agentId: messages.agentId,
-          agentSessionId: messages.agentSessionId,
-          messages: messages.messages.map(message => ({ id: message.id, seq: message.seq.toString(), body: nativeMessageBody(message) })),
-          tasks: sidebar.backgroundTasks,
-          modelStatus: status,
-          inputQueue: queue,
-        }
-        await testInfo.attach(`qoder-workflow-${failed ? 'error' : 'output'}-before-idle`, {
-          body: qoderWorkflowDiagnosticJson(evidence.beforeIdle),
-          contentType: 'application/json',
-        })
-        if (!current || current.id !== agent.id || current.agentSessionId !== agent.agentSessionId)
-          throw new Error('The Qoder Workflow changed native agent identity before the idle wait.')
-      } })
+      await waitForNativeToolSteps(context, start + 2, {
+        beforeIdle: async () => {
+          const [messages, sidebar, current, status, queue] = await Promise.all([
+            readNativeMessageSnapshot(context, agent.id),
+            readNativeSidebarSnapshot(context, agent.id),
+            nativeAgentById(context, agent.id),
+            modelScript.status(),
+            readNativeInputQueue(leapmuxServer, agent.id),
+          ])
+          evidence.beforeIdle = {
+            agent: current,
+            agentId: messages.agentId,
+            agentSessionId: messages.agentSessionId,
+            messages: messages.messages.map(message => ({
+              id: message.id,
+              seq: message.seq.toString(),
+              body: nativeMessageBody(message),
+            })),
+            tasks: sidebar.backgroundTasks,
+            modelStatus: status,
+            inputQueue: queue,
+          }
+          await testInfo.attach(`qoder-workflow-${failed ? 'error' : 'output'}-before-idle`, {
+            body: qoderWorkflowDiagnosticJson(evidence.beforeIdle),
+            contentType: 'application/json',
+          })
+          if (!current || current.id !== agent.id || current.agentSessionId !== agent.agentSessionId)
+            throw new Error('The Qoder Workflow changed native agent identity before the idle wait.')
+        },
+      })
       const initial = await readNativeMessageSnapshot(context, agent.id)
       evidence.messages = initial.messages.map(nativeMessageBody)
       evidence.tasks = (await readNativeSidebarSnapshot(context, agent.id)).backgroundTasks
       const launches = initial.messages.map(nativeMessageBody).flatMap((value) => {
         const launch = qoderWorkflowLaunch(value, callId)
-        return launch ? [launch] : []
+        return launch
+          ? [launch]
+          : []
       })
       if (launches.length !== 1)
         throw new Error(`The Qoder Workflow has ${launches.length} exact native launch receipts.`)
@@ -95,7 +120,10 @@ qoderTest('executes native Workflow code and preserves the computed result and s
       const tasks = (await readNativeSidebarSnapshot(context, agent.id)).backgroundTasks
       const task = tasks.find(value => value.id === rowKey)
       evidence.task = task
-      await testInfo.attach(`qoder-workflow-${failed ? 'error' : 'output'}-native-pre-full-output`, { body: qoderWorkflowDiagnosticJson(evidence), contentType: 'application/json' })
+      await testInfo.attach(`qoder-workflow-${failed ? 'error' : 'output'}-native-pre-full-output`, {
+        body: qoderWorkflowDiagnosticJson(evidence),
+        contentType: 'application/json',
+      })
       const outputFile = join(agent.workingDir, '.qoder', 'sessions', launch.sessionId, 'workflows', 'runs', launch.runId, 'output.json')
       if (resolve(launch.transcriptDir) !== resolve(join(outputFile, '..')) || outcome.outputFile !== outputFile)
         throw new Error('The Qoder Workflow output path does not match the exact native run.')
@@ -106,7 +134,10 @@ qoderTest('executes native Workflow code and preserves the computed result and s
       evidence.outputFile = outputFile
       await testInfo.attach(`qoder-workflow-${failed ? 'error' : 'output'}-output`, { path: outputFile, contentType: 'application/json' })
       evidence.output = JSON.parse(readFileSync(outputFile, 'utf8'))
-      await testInfo.attach(`qoder-workflow-${failed ? 'error' : 'output'}-native`, { body: qoderWorkflowDiagnosticJson(evidence), contentType: 'application/json' })
+      await testInfo.attach(`qoder-workflow-${failed ? 'error' : 'output'}-native`, {
+        body: qoderWorkflowDiagnosticJson(evidence),
+        contentType: 'application/json',
+      })
       expect(task?.kind).toBe(BackgroundTaskKind.WORKFLOW)
       expect(initial.agentSessionId).toBe(agent.agentSessionId)
       expect(task?.status).toBe(failed ? BackgroundTaskStatus.FAILED : BackgroundTaskStatus.SUCCEEDED)
@@ -125,12 +156,23 @@ qoderTest('executes native Workflow code and preserves the computed result and s
     }, async () => {
       const results = await Promise.allSettled([
         modelScript.status(),
-        readNativeMessageSnapshot(context, agent.id).then(snapshot => ({ agentId: snapshot.agentId, agentSessionId: snapshot.agentSessionId, messages: snapshot.messages.map(nativeMessageBody) })),
+        readNativeMessageSnapshot(context, agent.id).then(snapshot => ({
+          agentId: snapshot.agentId,
+          agentSessionId: snapshot.agentSessionId,
+          messages: snapshot.messages.map(nativeMessageBody),
+        })),
         readNativeSidebarSnapshot(context, agent.id).then(snapshot => snapshot.backgroundTasks),
       ])
-      evidence.finalReads = results.map(result => result.status === 'fulfilled' ? result.value : String(result.reason))
-      await testInfo.attach(`qoder-workflow-${failed ? 'error' : 'output'}-diagnostics`, { body: qoderWorkflowDiagnosticJson(evidence), contentType: 'application/json' })
-      const errors = results.flatMap(result => result.status === 'rejected' ? [result.reason] : [])
+      evidence.finalReads = results.map(result => result.status === 'fulfilled'
+        ? result.value
+        : String(result.reason))
+      await testInfo.attach(`qoder-workflow-${failed ? 'error' : 'output'}-diagnostics`, {
+        body: qoderWorkflowDiagnosticJson(evidence),
+        contentType: 'application/json',
+      })
+      const errors = results.flatMap(result => result.status === 'rejected'
+        ? [result.reason]
+        : [])
       if (errors.length > 0)
         throw new AggregateError(errors, 'The Qoder Workflow diagnostic reads failed.')
     })
@@ -138,7 +180,13 @@ qoderTest('executes native Workflow code and preserves the computed result and s
   await page.reload()
   const reloaded = await readNativeMessageSnapshot(context, agent.id)
   const tasks = (await readNativeSidebarSnapshot(context, agent.id)).backgroundTasks
-  await testInfo.attach('qoder-workflow-reloaded', { body: JSON.stringify({ messages: reloaded.messages.map(nativeMessageBody), tasks }, null, 2), contentType: 'application/json' })
+  await testInfo.attach('qoder-workflow-reloaded', {
+    body: JSON.stringify({
+      messages: reloaded.messages.map(nativeMessageBody),
+      tasks,
+    }, null, 2),
+    contentType: 'application/json',
+  })
   expect(reloaded.agentSessionId).toBe(agent.agentSessionId)
   await expandBackgroundTasksSection(page)
   for (const run of runs) {

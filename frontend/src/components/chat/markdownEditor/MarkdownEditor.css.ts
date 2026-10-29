@@ -210,16 +210,19 @@ globalStyle(`${container}[data-expanded] ${footerSlot}[data-full-width]`, {
  * chrome, CSS computes `overflow-x` to `auto` as well, and the card grew a
  * horizontal scrollbar with the remove button pushed out of view.
  */
-export const linkPopover = style([popoverBase, {
-  boxSizing: 'border-box',
-  width: 'fit-content',
-  maxWidth: 'min(28rem, calc(100vw - var(--space-4) * 2))',
-  backgroundColor: 'var(--card)',
-  border: '1px solid var(--border)',
-  borderRadius: 'var(--radius-medium)',
-  padding: 'var(--space-1)',
-  boxShadow: 'var(--shadow-large)',
-}])
+export const linkPopover = style([
+  popoverBase,
+  {
+    boxSizing: 'border-box',
+    width: 'fit-content',
+    maxWidth: 'min(28rem, calc(100vw - var(--space-4) * 2))',
+    backgroundColor: 'var(--card)',
+    border: '1px solid var(--border)',
+    borderRadius: 'var(--radius-medium)',
+    padding: 'var(--space-1)',
+    boxShadow: 'var(--shadow-large)',
+  },
+])
 
 export const linkPopoverForm = style({
   display: 'flex',
@@ -255,17 +258,20 @@ export const linkPopoverInput = style({
   },
 })
 
-export const codeLangPopoverContent = style([popoverBase, {
+export const codeLangPopoverContent = style([
+  popoverBase,
+  {
   // popoverBase supplies the UA-reset (position:fixed; margin:0 -- so calcPopoverPosition's
   // top/left place the popover at the trigger instead of margin:auto re-centering it) and
   // the `display: flex` that `:popover-open` controls. This adds the picker's box.
-  flexDirection: 'column',
-  backgroundColor: 'var(--background)',
-  border: '1px solid var(--border)',
-  borderRadius: 'var(--radius-medium)',
-  boxShadow: 'var(--shadow-large)',
-  width: '280px',
-}])
+    flexDirection: 'column',
+    backgroundColor: 'var(--background)',
+    border: '1px solid var(--border)',
+    borderRadius: 'var(--radius-medium)',
+    boxShadow: 'var(--shadow-large)',
+    width: '280px',
+  },
+])
 
 export const editorWrapper = style({
   flex: 1,
@@ -397,7 +403,9 @@ globalStyle(`${editorWrapper} .ProseMirror pre .code-lang-label:hover`, {
 // Shiki syntax highlighting in editor code blocks (via prosemirror-highlight):
 // the inline decorations carry --shiki-light / --shiki-dark CSS variables (color
 // only -- the wrapper owns the bg).
-codeSurface(`${editorWrapper} .ProseMirror pre`, 'block', [{ suffix: ' .shiki' }])
+codeSurface(`${editorWrapper} .ProseMirror pre`, 'block', [
+  { suffix: ' .shiki' },
+])
 
 // Task list checkboxes (ProseMirror-specific)
 globalStyle(`${editorWrapper} .ProseMirror li[data-checked]`, {

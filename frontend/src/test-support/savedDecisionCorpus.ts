@@ -31,7 +31,15 @@ const CLINE_BASH_APPROVAL: ClineHubStamp = { eventId: 'hevt_1790258525021_pu703'
 
 /** One event envelope of Cline's hub, as the capture recorded it. */
 function clineHubEvent(event: string, stamp: ClineHubStamp, payload: Record<string, unknown>): Record<string, unknown> {
-  return { version: 'v1', event, eventId: stamp.eventId, sessionId: '1790258346189_zqp76', timestamp: stamp.timestamp, payload, sequence: stamp.sequence }
+  return {
+    version: 'v1',
+    event,
+    eventId: stamp.eventId,
+    sessionId: '1790258346189_zqp76',
+    timestamp: stamp.timestamp,
+    payload,
+    sequence: stamp.sequence,
+  }
 }
 
 /**
@@ -565,8 +573,23 @@ export const SAVED_DECISION_CORPUS: readonly SavedDecisionCapture[] = [
           toolCallId: 'call_2_0',
           kind: 'execute',
           title: 'Execute `echo probe > probe.txt && ls`',
-          rawInput: { variant: 'Bash', command: 'echo probe > probe.txt && ls', description: 'Write probe file', is_background: false },
-          _meta: { 'x.ai/tool': { version: 1, name: 'run_terminal_command', kind: 'execute', namespace: 'grok_build', label: 'Run Command', read_only: false, input: { command: 'echo probe > probe.txt && ls', description: 'Write probe file' } } },
+          rawInput: {
+            variant: 'Bash',
+            command: 'echo probe > probe.txt && ls',
+            description: 'Write probe file',
+            is_background: false,
+          },
+          _meta: {
+            'x.ai/tool': {
+              version: 1,
+              name: 'run_terminal_command',
+              kind: 'execute',
+              namespace: 'grok_build',
+              label: 'Run Command',
+              read_only: false,
+              input: { command: 'echo probe > probe.txt && ls', description: 'Write probe file' },
+            },
+          },
         },
         options: [
           { optionId: 'always-allow', name: 'Yes, and don\'t ask again for bash commands', kind: 'allow_always' },
@@ -579,7 +602,9 @@ export const SAVED_DECISION_CORPUS: readonly SavedDecisionCapture[] = [
     response: {
       jsonrpc: '2.0',
       id: 0,
-      result: { outcome: { outcome: 'selected', optionId: 'allow-once' } },
+      result: {
+        outcome: { outcome: 'selected', optionId: 'allow-once' },
+      },
     },
   },
   // Kiro, captured from a v3 `kiro-cli-chat acp` session on September 24, 2026.
@@ -600,13 +625,27 @@ export const SAVED_DECISION_CORPUS: readonly SavedDecisionCapture[] = [
           { optionId: 'reject', name: 'Deny', kind: 'reject_once' },
           { optionId: 'always-reject', name: 'Always deny', kind: 'reject_always' },
         ],
-        _meta: { kiro: { toolId: 'run_command', command: 'echo v3-shell', consent: { capability: 'shell', resource: 'echo v3-shell', askType: 'implicit', workspaceRoot: '/w' }, consentRound: 1 } },
+        _meta: {
+          kiro: {
+            toolId: 'run_command',
+            command: 'echo v3-shell',
+            consent: {
+              capability: 'shell',
+              resource: 'echo v3-shell',
+              askType: 'implicit',
+              workspaceRoot: '/w',
+            },
+            consentRound: 1,
+          },
+        },
       },
     },
     response: {
       jsonrpc: '2.0',
       id: 3,
-      result: { outcome: { outcome: 'selected', optionId: 'accept' } },
+      result: {
+        outcome: { outcome: 'selected', optionId: 'accept' },
+      },
     },
   },
   {
@@ -640,7 +679,9 @@ export const SAVED_DECISION_CORPUS: readonly SavedDecisionCapture[] = [
     response: {
       jsonrpc: '2.0',
       id: 0,
-      result: { outcome: { outcome: 'selected', optionId: 'proceed_once' } },
+      result: {
+        outcome: { outcome: 'selected', optionId: 'proceed_once' },
+      },
     },
   },
   // Oh My Pi asks with a `select` dialog and takes its own option word as the answer.
@@ -746,7 +787,10 @@ export const SAVED_DECISION_CORPUS: readonly SavedDecisionCapture[] = [
       capabilityName: 'tool_executor.askQuestion',
       payload: {
         executor: 'askQuestion',
-        args: ['Which color do you prefer?', ['Red', 'Blue']],
+        args: [
+          'Which color do you prefer?',
+          ['Red', 'Blue'],
+        ],
         context: {
           sessionId: '1790258346189_zqp76',
           agentId: 'agent_1790258346331_0r5l6z',
@@ -758,6 +802,10 @@ export const SAVED_DECISION_CORPUS: readonly SavedDecisionCapture[] = [
         },
       },
     }),
-    response: { requestId: 'capreq_1790258346728_1gzza', ok: true, payload: { result: 'Blue' } },
+    response: {
+      requestId: 'capreq_1790258346728_1gzza',
+      ok: true,
+      payload: { result: 'Blue' },
+    },
   },
 ]

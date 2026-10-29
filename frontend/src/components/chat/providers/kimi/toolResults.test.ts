@@ -10,7 +10,9 @@ import { KIMI_TOOL_RESULTS } from './toolResults.fixtures'
 import '~/components/chat/providers'
 
 const KINDS: ToolVocabularyCheck = {
-  names: [...Object.values(KIMI_TOOL)],
+  names: [
+    ...Object.values(KIMI_TOOL),
+  ],
   kindOf: kimiToolKind,
   generic: {},
   fallback: 'other',
@@ -30,7 +32,9 @@ function requestCallOf(name: string) {
   if (fixture === undefined)
     throw new Error(`No kimi result fixture for ${name}`)
   const frame = openingFrameOf(fixture)
-  return frame === null ? null : providerToolCall(AgentProvider.KIMI_CODE, frame, { spanType: name })
+  return frame === null
+    ? null
+    : providerToolCall(AgentProvider.KIMI_CODE, frame, { spanType: name })
 }
 
 describe('kimi tool results', () => {

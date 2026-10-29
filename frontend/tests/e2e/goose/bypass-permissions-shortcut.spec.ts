@@ -13,7 +13,18 @@ gooseTest('bypass-permissions-shortcut: smart mode asks before a removal and aut
 })
 
 gooseTest('approves a pending tool and the next tool when Bypass changes during a turn', async ({ native }) => {
-  await native.modelScript.rule({ name: 'mid-bypass-goose-judge', when: { system: 'permission-safety classifier' }, respond: { toolCalls: [goosePermissionJudgmentToolCall('mid-bypass-judge', [])] } })
-  const operations = await Promise.all([createNativePermissionRemoval(native), createNativePermissionRemoval(native)])
+  await native.modelScript.rule({
+    name: 'mid-bypass-goose-judge',
+    when: { system: 'permission-safety classifier' },
+    respond: {
+      toolCalls: [
+        goosePermissionJudgmentToolCall('mid-bypass-judge', []),
+      ],
+    },
+  })
+  const operations = await Promise.all([
+    createNativePermissionRemoval(native),
+    createNativePermissionRemoval(native),
+  ])
   await exerciseMidTurnBypass(native, operations)
 })

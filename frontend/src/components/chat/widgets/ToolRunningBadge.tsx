@@ -144,7 +144,9 @@ export const ToolRunningBadge: Component<ToolRunningBadgeProps> = (props) => {
   // replacing one, so it disturbs no selection.
   const shown = createMemo<BadgeView | undefined>((prev) => {
     const live = badgeView(props.toolProgress?.())
-    return props.textSelectionActive?.() && prev !== undefined ? prev : live
+    return props.textSelectionActive?.() && prev !== undefined
+      ? prev
+      : live
   })
 
   // ONE span, and one Tooltip that is always mounted. The retry state changes
@@ -159,7 +161,9 @@ export const ToolRunningBadge: Component<ToolRunningBadgeProps> = (props) => {
       {view => (
         <Tooltip text={view().permissionCheck?.detail ?? view().retry?.detail ?? ''}>
           <span
-            class={view().retry && !view().permissionCheck ? `${styles.root} ${styles.retry}` : styles.root}
+            class={view().retry && !view().permissionCheck
+              ? `${styles.root} ${styles.retry}`
+              : styles.root}
             data-testid="tool-running-badge"
           >
             {view().permissionCheck?.label ?? view().retry?.label ?? view().elapsedText}

@@ -6,7 +6,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { AgentChatMessageSchema, AgentProvider, ContentCompression } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { exerciseMiMoShellToolExecution, mimoShellOutcome } from './shellToolExecution'
 
-const shared = vi.hoisted(() => ({ exerciseShellToolExecution: vi.fn() }))
+const shared = vi.hoisted(() => ({
+  exerciseShellToolExecution: vi.fn(),
+}))
 vi.mock('../helpers/nativeToolExecution', async (importOriginal) => {
   const original = await importOriginal<typeof import('../helpers/nativeToolExecution')>()
   return { ...original, exerciseShellToolExecution: shared.exerciseShellToolExecution }
@@ -22,13 +24,19 @@ beforeEach(() => {
 describe('exerciseMiMoShellToolExecution', () => {
   it('holds each command until its output shows, and reads the exit through the MiMo reader', async () => {
     await exerciseMiMoShellToolExecution(context)
-    expect(shared.exerciseShellToolExecution).toHaveBeenCalledWith({ ...context, readToolResult: expect.any(Function) }, { outputGate: true })
+    expect(shared.exerciseShellToolExecution).toHaveBeenCalledWith({
+      ...context,
+      readToolResult: expect.any(Function),
+    }, { outputGate: true })
   })
 
   it('keeps the options of the caller beside the output gate', async () => {
     const prepare = vi.fn(async () => {})
     await exerciseMiMoShellToolExecution(context, { includeFailure: false, prepare })
-    expect(shared.exerciseShellToolExecution).toHaveBeenCalledWith({ ...context, readToolResult: expect.any(Function) }, { includeFailure: false, prepare, outputGate: true })
+    expect(shared.exerciseShellToolExecution).toHaveBeenCalledWith({
+      ...context,
+      readToolResult: expect.any(Function),
+    }, { includeFailure: false, prepare, outputGate: true })
   })
 
   it('returns after the shared helper completes and rethrows its failure', async () => {
@@ -53,7 +61,22 @@ function stored(frame: unknown, spanId = 'shell-part', agentSessionId = 'native-
 function bashPart(exit: unknown, output = 'SHELLERR77\n', status = 'completed', callID = 'shell-call') {
   return {
     type: 'message.part.updated',
-    properties: { part: { id: 'shell-part', sessionID: 'native-session', messageID: 'native-message', type: 'tool', tool: 'bash', callID, state: { status, input: { command: 'printf x >&2; exit 7' }, output, metadata: { output, exit, truncated: false } } } },
+    properties: {
+      part: {
+        id: 'shell-part',
+        sessionID: 'native-session',
+        messageID: 'native-message',
+        type: 'tool',
+        tool: 'bash',
+        callID,
+        state: {
+          status,
+          input: { command: 'printf x >&2; exit 7' },
+          output,
+          metadata: { output, exit, truncated: false },
+        },
+      },
+    },
   }
 }
 
@@ -81,11 +104,31 @@ describe('mimoShellOutcome', () => {
   })
 
   it.each([
-    ['no completed part', snapshot(stored(bashPart(7, 'SHELLERR77\n', 'running'))), 'one completed part'],
-    ['two completed parts', snapshot(stored(bashPart(7)), stored(bashPart(7))), 'one completed part'],
-    ['a Worker span that uses the model CallID', snapshot(stored(bashPart(7), 'shell-call')), 'one completed part'],
-    ['an exit that is not an integer', snapshot(stored(bashPart('7'))), 'safe integer exit code'],
-    ['another output than the model request', snapshot(stored(bashPart(7, 'different\n'))), 'different output bytes'],
+    [
+      'no completed part',
+      snapshot(stored(bashPart(7, 'SHELLERR77\n', 'running'))),
+      'one completed part',
+    ],
+    [
+      'two completed parts',
+      snapshot(stored(bashPart(7)), stored(bashPart(7))),
+      'one completed part',
+    ],
+    [
+      'a Worker span that uses the model CallID',
+      snapshot(stored(bashPart(7), 'shell-call')),
+      'one completed part',
+    ],
+    [
+      'an exit that is not an integer',
+      snapshot(stored(bashPart('7'))),
+      'safe integer exit code',
+    ],
+    [
+      'another output than the model request',
+      snapshot(stored(bashPart(7, 'different\n'))),
+      'different output bytes',
+    ],
   ])('refuses %s', (_case, read, message) => {
     expect(() => mimoShellOutcome(read, 'shell-call', 'SHELLERR77\n')).toThrow(message)
   })

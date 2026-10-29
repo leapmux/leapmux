@@ -97,7 +97,12 @@ exec ${quotePosixShellArgument(installedQoder)} "$@"
     // `qodercli` under $HOME. SDK mode, which this fixture selects, defaults the
     // four checks to off; this value does not depend on that default. Each key must
     // be a literal false, and the value must be valid JSON, or Qoder ignores it.
-    QODER_SECURITY_SCAN_SETTINGS_JSON: JSON.stringify({ l1StaticCheck: false, l2LightweightScan: false, l3DeepScan: false, gitPushScanHook: false }),
+    QODER_SECURITY_SCAN_SETTINGS_JSON: JSON.stringify({
+      l1StaticCheck: false,
+      l2LightweightScan: false,
+      l3DeepScan: false,
+      gitPushScanHook: false,
+    }),
     QODERSEC_SKIP_ASYNC_UPDATE: '1',
     QODER_CONFIG_SERVICE_URL: options.origin,
     QODER_SERVER_ENDPOINT: '',
@@ -118,7 +123,10 @@ function qoderSettings(options: QoderEnvironmentOptions, formServer: McpProbeSer
     // The native LLM classifier uses the configured model endpoint. The default Jev classifier uses a separate service.
     autoMode: { classifier: 'llm' },
     mcpServers: {
-      [formServer.name]: { command: formServer.command, args: [...formServer.args] },
+      [formServer.name]: {
+        command: formServer.command,
+        args: [...formServer.args],
+      },
     },
     providers: {
       mockprov: {
@@ -130,8 +138,16 @@ function qoderSettings(options: QoderEnvironmentOptions, formServer: McpProbeSer
         apiKey: options.modelKey,
         displayName: 'Mock Provider',
         models: [
-          { model: options.modelID, displayName: 'Mock Model', capabilities: { vision: true } },
-          { model: options.alternateModelID, displayName: 'Alternate Mock Model', capabilities: { vision: true } },
+          {
+            model: options.modelID,
+            displayName: 'Mock Model',
+            capabilities: { vision: true },
+          },
+          {
+            model: options.alternateModelID,
+            displayName: 'Alternate Mock Model',
+            capabilities: { vision: true },
+          },
         ],
       },
     },

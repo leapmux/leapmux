@@ -12,7 +12,9 @@ describe('acpWebFetchFromToolCall', () => {
   })
 
   it('returns null when rawOutput.code is not a number', () => {
-    expect(acpWebFetchFromToolCall({ rawOutput: { code: 'oops' } })).toBeNull()
+    expect(acpWebFetchFromToolCall({
+      rawOutput: { code: 'oops' },
+    })).toBeNull()
   })
 
   // The payload's `url` stays out of the result: the call's request states the
@@ -37,7 +39,9 @@ describe('acpWebFetchFromToolCall', () => {
   })
 
   it('defaults missing fields to sensible empty values', () => {
-    expect(acpWebFetchFromToolCall({ rawOutput: { code: 500 } })).toEqual({
+    expect(acpWebFetchFromToolCall({
+      rawOutput: { code: 500 },
+    })).toEqual({
       code: 500,
       codeText: '',
       bytes: 0,

@@ -32,7 +32,13 @@ export function codexAutoReviewRule(name: string, verdict: CodexReviewVerdict): 
     throw new Error('A Codex auto-review rule needs a name.')
   if (verdict.rationale.trim() === '')
     throw new Error('A Codex auto-review verdict needs a rationale.')
-  return { name, when: { system: CODEX_REVIEWER_POLICY }, respond: { text: JSON.stringify(verdict) } }
+  return {
+    name,
+    when: { system: CODEX_REVIEWER_POLICY },
+    respond: {
+      text: JSON.stringify(verdict),
+    },
+  }
 }
 
 /**
@@ -43,5 +49,7 @@ export function codexAutoReviewRule(name: string, verdict: CodexReviewVerdict): 
 export function codexManualApproval(request: Pick<MockModelRequestRecord, 'protocol' | 'body'>): string | undefined {
   const text = systemText(request.protocol, request.body)
   const start = text.indexOf(CODEX_MANUAL_APPROVAL_PREFIX)
-  return start < 0 ? undefined : text.slice(start)
+  return start < 0
+    ? undefined
+    : text.slice(start)
 }

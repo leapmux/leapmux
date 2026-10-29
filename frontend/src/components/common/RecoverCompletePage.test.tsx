@@ -71,9 +71,13 @@ describe('recover complete page', () => {
   it('keeps Set new password disabled until the new password fields match', async () => {
     renderRecoverCompletePage('/recover-account/complete?token=recovery-token')
     expect(await screen.findByRole('button', { name: 'Set new password' })).toBeDisabled()
-    fireEvent.input(screen.getByLabelText('New Password'), { target: { value: 'newpass123' } })
+    fireEvent.input(screen.getByLabelText('New Password'), {
+      target: { value: 'newpass123' },
+    })
     expect(screen.getByRole('button', { name: 'Set new password' })).toBeDisabled()
-    fireEvent.input(screen.getByLabelText('Confirm Password'), { target: { value: 'newpass123' } })
+    fireEvent.input(screen.getByLabelText('Confirm Password'), {
+      target: { value: 'newpass123' },
+    })
     expect(screen.getByRole('button', { name: 'Set new password' })).toBeEnabled()
   })
 
@@ -83,8 +87,12 @@ describe('recover complete page', () => {
       resolveReset = resolve
     }))
     renderRecoverCompletePage('/recover-account/complete?token=recovery-token')
-    fireEvent.input(await screen.findByLabelText('New Password'), { target: { value: 'newpass123' } })
-    fireEvent.input(screen.getByLabelText('Confirm Password'), { target: { value: 'newpass123' } })
+    fireEvent.input(await screen.findByLabelText('New Password'), {
+      target: { value: 'newpass123' },
+    })
+    fireEvent.input(screen.getByLabelText('Confirm Password'), {
+      target: { value: 'newpass123' },
+    })
     fireEvent.click(screen.getByRole('button', { name: 'Set new password' }))
     expect(await screen.findByRole('button', { name: 'Recovering…' })).toBeDisabled()
     fireEvent.click(screen.getByRole('button', { name: 'Recovering…' }))
@@ -155,8 +163,12 @@ describe('recover complete page', () => {
   it('re-enables Set new password after a failed attempt and refreshes captcha info on PermissionDenied', async () => {
     mockCompleteAccountRecoveryPassword.mockRejectedValue(new ConnectError('denied', Code.PermissionDenied))
     renderRecoverCompletePage('/recover-account/complete?token=recovery-token')
-    fireEvent.input(await screen.findByLabelText('New Password'), { target: { value: 'newpass123' } })
-    fireEvent.input(screen.getByLabelText('Confirm Password'), { target: { value: 'newpass123' } })
+    fireEvent.input(await screen.findByLabelText('New Password'), {
+      target: { value: 'newpass123' },
+    })
+    fireEvent.input(screen.getByLabelText('Confirm Password'), {
+      target: { value: 'newpass123' },
+    })
     fireEvent.click(screen.getByRole('button', { name: 'Set new password' }))
     await vi.waitFor(() => {
       expect(mockCompleteAccountRecoveryPassword).toHaveBeenCalledOnce()

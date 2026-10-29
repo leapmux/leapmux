@@ -17,7 +17,10 @@ export async function nativeContext(fixtures: NativeContextFixtures): Promise<Ma
 
 /** Select the actual isolated executable and hold only its native runtime invocation. */
 export function nativeLaunch(context: ManagedNativeScenarioContext): NativeStartupLaunch {
-  return resolveNativeStartupLaunch(context.leapmuxServer.agentEnv, { binaryName: 'reasonix', holdWhen: ['acp'] })
+  return resolveNativeStartupLaunch(context.leapmuxServer.agentEnv, {
+    binaryName: 'reasonix',
+    holdWhen: ['acp'],
+  })
 }
 
 /**
@@ -30,5 +33,7 @@ export async function bypassToolRequests(context: Pick<ManagedNativeScenarioCont
 
 /** The related proof of a missing-setting cell: a native to-do call fills the sidebar. */
 export async function relatedNativeProof(context: ManagedNativeScenarioContext): Promise<void> {
-  await exerciseRelatedTodo(context, { prepare: () => bypassToolRequests(context) })
+  await exerciseRelatedTodo(context, {
+    prepare: () => bypassToolRequests(context),
+  })
 }

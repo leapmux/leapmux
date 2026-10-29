@@ -9,7 +9,11 @@ import { buildBrowserReset } from './registry/settings'
 
 const listUserSettings = vi.hoisted(() => vi.fn().mockResolvedValue({ descriptors: [], values: [] }))
 vi.mock('~/api/clients', () => ({
-  userClient: { listUserSettings, updateUserSetting: vi.fn(), resetUserSetting: vi.fn() },
+  userClient: {
+    listUserSettings,
+    updateUserSetting: vi.fn(),
+    resetUserSetting: vi.fn(),
+  },
   authClient: {},
 }))
 

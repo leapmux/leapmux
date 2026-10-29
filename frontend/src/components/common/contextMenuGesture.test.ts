@@ -433,7 +433,10 @@ describe('attachContextMenuGesture', () => {
     }
 
     it('declines a press inside every element the list covers', () => {
-      for (const { label, host, target } of [...inputOrEditableHosts(), popoverHost()]) {
+      for (const { label, host, target } of [
+        ...inputOrEditableHosts(),
+        popoverHost(),
+      ]) {
         row.appendChild(host)
 
         holdOn(target)
@@ -466,7 +469,12 @@ describe('attachContextMenuGesture', () => {
     row.dispatchEvent(pointer('pointerdown', { x: 90, y: 110 }))
     vi.advanceTimersByTime(HOLD_MS)
 
-    row.dispatchEvent(pointer('pointerdown', { x: 130, y: 110, pointerId: 2, isPrimary: false }))
+    row.dispatchEvent(pointer('pointerdown', {
+      x: 130,
+      y: 110,
+      pointerId: 2,
+      isPrimary: false,
+    }))
     row.dispatchEvent(pointer('pointerdown', { x: 130, y: 110, pointerType: 'mouse' }))
 
     row.dispatchEvent(pointer('pointerup', { x: 90, y: 110 }))
@@ -515,14 +523,24 @@ describe('attachContextMenuGesture', () => {
   describe('contextmenu', () => {
     /** Windows dispatches `contextmenu` on button RELEASE, so no button is down. */
     function rightClick(x = 150): MouseEvent {
-      const e = new MouseEvent('contextmenu', { clientX: x, buttons: 0, bubbles: true, cancelable: true })
+      const e = new MouseEvent('contextmenu', {
+        clientX: x,
+        buttons: 0,
+        bubbles: true,
+        cancelable: true,
+      })
       row.dispatchEvent(e)
       return e
     }
 
     /** macOS and Linux dispatch `contextmenu` on button PRESS, with button 2 still held. */
     function rightPress(x = 150): MouseEvent {
-      const e = new MouseEvent('contextmenu', { clientX: x, buttons: 2, bubbles: true, cancelable: true })
+      const e = new MouseEvent('contextmenu', {
+        clientX: x,
+        buttons: 2,
+        bubbles: true,
+        cancelable: true,
+      })
       row.dispatchEvent(e)
       return e
     }
@@ -538,7 +556,13 @@ describe('attachContextMenuGesture', () => {
 
     it('anchors at the cursor on the viewport\'s top edge, where clientY is 0', () => {
       // clientY 0 is a real coordinate, not the keyboard path's "no position".
-      const e = new MouseEvent('contextmenu', { clientX: 150, clientY: 0, buttons: 0, bubbles: true, cancelable: true })
+      const e = new MouseEvent('contextmenu', {
+        clientX: 150,
+        clientY: 0,
+        buttons: 0,
+        bubbles: true,
+        cancelable: true,
+      })
       row.dispatchEvent(e)
       vi.runAllTimers()
 
@@ -583,7 +607,12 @@ describe('attachContextMenuGesture', () => {
 
       expect(onOpen).not.toHaveBeenCalled()
 
-      document.dispatchEvent(new PointerEvent('pointerup', { pointerId: 5, pointerType: 'mouse', button: 2, bubbles: true }))
+      document.dispatchEvent(new PointerEvent('pointerup', {
+        pointerId: 5,
+        pointerType: 'mouse',
+        button: 2,
+        bubbles: true,
+      }))
       vi.runAllTimers()
 
       expect(onOpen).toHaveBeenCalledTimes(1)
@@ -592,8 +621,18 @@ describe('attachContextMenuGesture', () => {
 
     it('opens once when the button is released, not once per release', () => {
       rightPress(150)
-      document.dispatchEvent(new PointerEvent('pointerup', { pointerId: 5, pointerType: 'mouse', button: 2, bubbles: true }))
-      document.dispatchEvent(new PointerEvent('pointerup', { pointerId: 5, pointerType: 'mouse', button: 0, bubbles: true }))
+      document.dispatchEvent(new PointerEvent('pointerup', {
+        pointerId: 5,
+        pointerType: 'mouse',
+        button: 2,
+        bubbles: true,
+      }))
+      document.dispatchEvent(new PointerEvent('pointerup', {
+        pointerId: 5,
+        pointerType: 'mouse',
+        button: 0,
+        bubbles: true,
+      }))
       vi.runAllTimers()
 
       expect(onOpen).toHaveBeenCalledTimes(1)
@@ -673,9 +712,19 @@ describe('attachContextMenuGesture', () => {
     })
 
     it('yields to the native menu when the click lands on selected text', () => {
-      selectTextWithRect(selectable, { left: 100, right: 300, top: 50, bottom: 70 })
+      selectTextWithRect(selectable, {
+        left: 100,
+        right: 300,
+        top: 50,
+        bottom: 70,
+      })
 
-      const e = new MouseEvent('contextmenu', { clientX: 150, clientY: 60, bubbles: true, cancelable: true })
+      const e = new MouseEvent('contextmenu', {
+        clientX: 150,
+        clientY: 60,
+        bubbles: true,
+        cancelable: true,
+      })
       selectable.dispatchEvent(e)
       vi.runAllTimers()
 
@@ -684,9 +733,19 @@ describe('attachContextMenuGesture', () => {
     })
 
     it('opens the app menu when the click lands beside the selection', () => {
-      selectTextWithRect(selectable, { left: 100, right: 300, top: 50, bottom: 70 })
+      selectTextWithRect(selectable, {
+        left: 100,
+        right: 300,
+        top: 50,
+        bottom: 70,
+      })
 
-      const e = new MouseEvent('contextmenu', { clientX: 400, clientY: 60, bubbles: true, cancelable: true })
+      const e = new MouseEvent('contextmenu', {
+        clientX: 400,
+        clientY: 60,
+        bubbles: true,
+        cancelable: true,
+      })
       selectable.dispatchEvent(e)
       vi.runAllTimers()
 
@@ -695,7 +754,12 @@ describe('attachContextMenuGesture', () => {
     })
 
     it('opens the app menu when nothing is selected', () => {
-      const e = new MouseEvent('contextmenu', { clientX: 150, clientY: 60, bubbles: true, cancelable: true })
+      const e = new MouseEvent('contextmenu', {
+        clientX: 150,
+        clientY: 60,
+        bubbles: true,
+        cancelable: true,
+      })
       selectable.dispatchEvent(e)
       vi.runAllTimers()
 
@@ -723,7 +787,12 @@ describe('attachContextMenuGesture', () => {
       }
 
       it('does not open the menu on a hold', () => {
-        selectTextWithRect(selectable, { left: 100, right: 300, top: 50, bottom: 70 })
+        selectTextWithRect(selectable, {
+          left: 100,
+          right: 300,
+          top: 50,
+          bottom: 70,
+        })
         hold()
         expect(onOpenSelectable).not.toHaveBeenCalled()
       })
@@ -732,7 +801,12 @@ describe('attachContextMenuGesture', () => {
       // the ROW holding a selection, because the handle a finger reaches for is
       // outside every rect the selection reports.
       it('does not open the menu for a hold beside the highlight either', () => {
-        selectTextWithRect(selectable, { left: 100, right: 300, top: 50, bottom: 70 })
+        selectTextWithRect(selectable, {
+          left: 100,
+          right: 300,
+          top: 50,
+          bottom: 70,
+        })
         selectable.dispatchEvent(pointer('pointerdown', { x: 500, y: 200 }))
         vi.advanceTimersByTime(HOLD_MS)
         vi.runAllTimers()
@@ -744,9 +818,19 @@ describe('attachContextMenuGesture', () => {
       // the platform's own selection menu -- which is the one that can act on
       // the selection.
       it('leaves the platform contextmenu alone on that press', () => {
-        selectTextWithRect(selectable, { left: 100, right: 300, top: 50, bottom: 70 })
+        selectTextWithRect(selectable, {
+          left: 100,
+          right: 300,
+          top: 50,
+          bottom: 70,
+        })
         selectable.dispatchEvent(pointer('pointerdown', { x: 500, y: 200 }))
-        const e = new MouseEvent('contextmenu', { clientX: 500, clientY: 200, bubbles: true, cancelable: true })
+        const e = new MouseEvent('contextmenu', {
+          clientX: 500,
+          clientY: 200,
+          bubbles: true,
+          cancelable: true,
+        })
         selectable.dispatchEvent(e)
         vi.runAllTimers()
 
@@ -755,7 +839,12 @@ describe('attachContextMenuGesture', () => {
       })
 
       it('opens the menu again once the selection is gone', () => {
-        selectTextWithRect(selectable, { left: 100, right: 300, top: 50, bottom: 70 })
+        selectTextWithRect(selectable, {
+          left: 100,
+          right: 300,
+          top: 50,
+          bottom: 70,
+        })
         hold()
         expect(onOpenSelectable).not.toHaveBeenCalled()
 
@@ -768,7 +857,12 @@ describe('attachContextMenuGesture', () => {
       // hold is still the menu's.
       it('opens the menu when the selection holds no text', () => {
         selectable.textContent = '   '
-        selectTextWithRect(selectable, { left: 100, right: 300, top: 50, bottom: 70 })
+        selectTextWithRect(selectable, {
+          left: 100,
+          right: 300,
+          top: 50,
+          bottom: 70,
+        })
         hold()
         expect(onOpenSelectable).toHaveBeenCalledTimes(1)
       })

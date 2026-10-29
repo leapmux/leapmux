@@ -10,7 +10,9 @@ import { claudeToolFailureResult } from './failure'
 /** The questions of an `AskUserQuestion` call, as the tool spells them. */
 function questionList(source: Record<string, unknown> | null | undefined): Record<string, unknown>[] {
   const questions = source?.questions
-  return Array.isArray(questions) ? questions.filter(isObject) : []
+  return Array.isArray(questions)
+    ? questions.filter(isObject)
+    : []
 }
 
 /** The header of one question, which the tool caps at twelve characters. */
@@ -48,25 +50,37 @@ export function claudeQuestions(input: Record<string, unknown>): QuestionPrompt[
     if (!text)
       return []
     const header = pickString(question, 'header')
-    const options = Array.isArray(question.options) ? question.options.filter(isObject) : []
-    return [{
+    const options = Array.isArray(question.options)
+      ? question.options.filter(isObject)
+      : []
+    return [
+      {
       // Each optional half rides only when the tool stated it; a blank one is
       // no header, not an empty one.
-      ...(header ? { header } : {}),
-      question: text,
-      options: options.flatMap((option) => {
-        const label = pickString(option, 'label')
-        if (!label)
-          return []
-        const description = pickString(option, 'description')
-        const preview = pickString(option, 'preview')
-        return [{
-          label,
-          ...(description ? { description } : {}),
-          ...(preview ? { preview } : {}),
-        }]
-      }),
-    }]
+        ...(header
+          ? { header }
+          : {}),
+        question: text,
+        options: options.flatMap((option) => {
+          const label = pickString(option, 'label')
+          if (!label)
+            return []
+          const description = pickString(option, 'description')
+          const preview = pickString(option, 'preview')
+          return [
+            {
+              label,
+              ...(description
+                ? { description }
+                : {}),
+              ...(preview
+                ? { preview }
+                : {}),
+            },
+          ]
+        }),
+      },
+    ]
   })
 }
 
@@ -82,20 +96,41 @@ export function claudeQuestionSpec(request: QuestionRequest, args: ClaudeToolRow
   if (!result || result.role !== 'result')
     return { kind: 'question', request, title }
   const failure = claudeToolFailureResult(result)
-  if (failure)
-    return { kind: 'question', request, title, result: failure }
+  if (failure) {
+    return {
+      kind: 'question',
+      request,
+      title,
+      result: failure,
+    }
+  }
   const questions = questionList(result.toolUseResult)
   // No structured payload means this build could not read the answer, which is a
   // different statement from "the reader answered nothing": an empty `answers`
   // list renders as an empty body and loses the text the result did carry.
-  if (questions.length === 0)
-    return { kind: 'question', request, title, result: unparsedResult(result.resultContent) }
-  const answers = isObject(result.toolUseResult?.answers) ? result.toolUseResult.answers : {}
+  if (questions.length === 0) {
+    return {
+      kind: 'question',
+      request,
+      title,
+      result: unparsedResult(result.resultContent),
+    }
+  }
+  const answers = isObject(result.toolUseResult?.answers)
+    ? result.toolUseResult.answers
+    : {}
   const chosen = questions.flatMap((question) => {
     const header = questionHeader(question)
     const text = pickString(question, 'question')
     const answer = pickString(answers, text) || pickString(answers, header)
-    return [{ header: header || text, answer: answer || null }]
+    return [
+      { header: header || text, answer: answer || null },
+    ]
   })
-  return { kind: 'question', request, title, result: { answers: chosen } }
+  return {
+    kind: 'question',
+    request,
+    title,
+    result: { answers: chosen },
+  }
 }

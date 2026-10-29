@@ -19,28 +19,59 @@ import './plugin'
 import '../testMocks'
 
 function renderTool(toolName: string, args: Record<string, unknown>, result?: Record<string, unknown>, isError = false) {
-  const start = { type: 'tool_execution_start', toolCallId: 'call', toolName, args }
-  const payload = result ? { type: 'tool_execution_end', toolCallId: 'call', toolName, result, isError } : start
+  const start = {
+    type: 'tool_execution_start',
+    toolCallId: 'call',
+    toolName,
+    args,
+  }
+  const payload = result
+    ? {
+        type: 'tool_execution_end',
+        toolCallId: 'call',
+        toolName,
+        result,
+        isError,
+      }
+    : start
   const category = providerFor(AgentProvider.PI)!.transcript.classify(input(payload))
   return render(() => renderMessageContent(payload, {
     workingDir: '/project',
     premeasureMode: true,
-    sources: testMessageSources({ current: () => input(payload), request: () => input(start) }),
+    sources: testMessageSources({
+      current: () => input(payload),
+      request: () => input(start),
+    }),
   }, category, AgentProvider.PI))
 }
 
-const content = (text: string) => [{ type: 'text', text }]
+function content(text: string) {
+  return [
+    { type: 'text', text },
+  ]
+}
 
 describe('pi tool rendering', () => {
   // An end frame for a tool the plugin does not map, with no start row beside it. The
   // row carries the name Pi sent and the content Pi returned, and nothing the mapped
   // table would have supplied.
   it('shows an unmatched completion by its content alone', () => {
-    const payload = { type: 'tool_execution_end', toolCallId: 'orphan', toolName: 'mystery_tool', result: { content: content('recovered output') }, isError: false }
+    const payload = {
+      type: 'tool_execution_end',
+      toolCallId: 'orphan',
+      toolName: 'mystery_tool',
+      result: {
+        content: content('recovered output'),
+      },
+      isError: false,
+    }
     const category = providerFor(AgentProvider.PI)!.transcript.classify(input(payload))
     const { container } = render(() => renderMessageContent(payload, {
       premeasureMode: true,
-      sources: testMessageSources({ current: () => input(payload), request: () => undefined }),
+      sources: testMessageSources({
+        current: () => input(payload),
+        request: () => undefined,
+      }),
     }, category, AgentProvider.PI))
     expect(container.textContent).toContain('recovered output')
     for (const invented of ['Run command', 'Read file', 'Search'])
@@ -53,12 +84,30 @@ describe('pi tool rendering', () => {
     const message = makeMessage({
       agentProvider: AgentProvider.PI,
       spanId: 'artifact',
-      content: rawContent({ type: 'tool_execution_end', toolCallId: 'artifact', toolName: 'mcp__sample__image', result: {
-        content: [{ type: 'text', text: 'Short preview' }],
-        details: { server: 'sample', tool: 'image', fullOutputPath: path },
-        structuredContent: { content: [{ type: 'text', text: 'Full stored text' }, { type: 'image', data, mimeType: 'image/png' }] },
-      } }),
-      supplementalContent: rawContent({ provider: { toolCallId: 'artifact', toolName: 'mcp__sample__image', outputFile: { path, text: 'Full stored text' } } }),
+      content: rawContent({
+        type: 'tool_execution_end',
+        toolCallId: 'artifact',
+        toolName: 'mcp__sample__image',
+        result: {
+          content: [
+            { type: 'text', text: 'Short preview' },
+          ],
+          details: { server: 'sample', tool: 'image', fullOutputPath: path },
+          structuredContent: {
+            content: [
+              { type: 'text', text: 'Full stored text' },
+              { type: 'image', data, mimeType: 'image/png' },
+            ],
+          },
+        },
+      }),
+      supplementalContent: rawContent({
+        provider: {
+          toolCallId: 'artifact',
+          toolName: 'mcp__sample__image',
+          outputFile: { path, text: 'Full stored text' },
+        },
+      }),
     })
     const original = message.content.slice()
     const { container } = render(() => <PreferencesProvider><MessageBubble message={message} /></PreferencesProvider>)
@@ -81,14 +130,27 @@ describe('pi tool rendering', () => {
   it('renders a native resource image once and exposes it to the shared image viewer', () => {
     const data = 'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEUlEQVR4nGP4z8DwH4QZYAwAR8oH+WdZbrcAAAAASUVORK5CYII='
     const result = {
-      content: [{ type: 'image', data, mimeType: 'image/png' }],
+      content: [
+        { type: 'image', data, mimeType: 'image/png' },
+      ],
       details: { server: 'sample', tool: 'read_mcp_resource' },
-      structuredContent: { server: 'sample', uri: 'probe://image', contents: [{ uri: 'probe://image', blob: data, mimeType: 'image/png' }] },
+      structuredContent: {
+        server: 'sample',
+        uri: 'probe://image',
+        contents: [
+          { uri: 'probe://image', blob: data, mimeType: 'image/png' },
+        ],
+      },
     }
     const { container } = renderTool('read_mcp_resource', { server: 'sample', uri: 'probe://image' }, result)
     expect(container.querySelectorAll('img')).toHaveLength(1)
     expect(container.textContent).not.toContain(data)
-    const payload = { type: 'tool_execution_end', toolCallId: 'image', toolName: 'read_mcp_resource', result: { ...result, content: [] } }
+    const payload = {
+      type: 'tool_execution_end',
+      toolCallId: 'image',
+      toolName: 'read_mcp_resource',
+      result: { ...result, content: [] },
+    }
     const images = providerRowImages(AgentProvider.PI, payload, { spanType: 'read_mcp_resource' })
     expect(images).toHaveLength(1)
     expect(images?.[0]?.data).toBe(data)
@@ -96,7 +158,10 @@ describe('pi tool rendering', () => {
 
   it('keeps the plan result concise when the request already contains the plan', () => {
     const plan = '# Welcome plan\n\nRead the sample.'
-    const { container } = renderTool('plan_mode_complete', { plan }, { content: content(`**Proposed Plan**\n\n${plan}`), details: { plan } })
+    const { container } = renderTool('plan_mode_complete', { plan }, {
+      content: content(`**Proposed Plan**\n\n${plan}`),
+      details: { plan },
+    })
     expect(container.textContent).toContain('Plan ready for review')
     expect(container.textContent).not.toContain('Welcome plan')
   })
@@ -106,14 +171,28 @@ describe('pi tool rendering', () => {
   // opens -- see the case below. The reader this replaced consulted that pair, so the
   // same row drew a plan card before the pair landed and the notice afterwards.
   it('states the notice on the result row rather than the plan again', () => {
-    const payload = { type: 'tool_execution_end', toolCallId: 'plan', toolName: 'plan_mode_complete', result: { content: content('Plan ready'), details: { plan: '# Recovered plan\n\nRead the sample.' } }, isError: false }
+    const payload = {
+      type: 'tool_execution_end',
+      toolCallId: 'plan',
+      toolName: 'plan_mode_complete',
+      result: {
+        content: content('Plan ready'),
+        details: { plan: '# Recovered plan\n\nRead the sample.' },
+      },
+      isError: false,
+    }
     const { container } = render(() => renderMessageContent(payload, { premeasureMode: true }, providerFor(AgentProvider.PI)!.transcript.classify(input(payload)), AgentProvider.PI))
     expect(container.textContent).toContain('Plan ready for review')
     expect(container.textContent).not.toContain('Recovered plan')
   })
 
   it('renders a completed plan request as Markdown in the transcript', () => {
-    const payload = { type: 'tool_execution_start', toolCallId: 'plan', toolName: 'plan_mode_complete', args: { plan: '# Welcome plan\n\n- Keep **original bytes**.' } }
+    const payload = {
+      type: 'tool_execution_start',
+      toolCallId: 'plan',
+      toolName: 'plan_mode_complete',
+      args: { plan: '# Welcome plan\n\n- Keep **original bytes**.' },
+    }
     const { container, getByRole } = render(() => renderMessageContent(payload, { premeasureMode: true }, providerFor(AgentProvider.PI)!.transcript.classify(input(payload)), AgentProvider.PI))
     expect(getByRole('heading', { name: 'Welcome plan' })).toBeInTheDocument()
     expect(container.querySelector('li strong')?.textContent).toBe('original bytes')
@@ -122,17 +201,28 @@ describe('pi tool rendering', () => {
 
   it('renders an image once when a todo result has an unknown shape', () => {
     const { container } = renderTool('todo', { action: 'list' }, {
-      content: [{ type: 'image', mimeType: 'image/png', data: 'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEUlEQVR4nGP4z8DwH4QZYAwAR8oH+WdZbrcAAAAASUVORK5CYII=' }],
+      content: [
+        { type: 'image', mimeType: 'image/png', data: 'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEUlEQVR4nGP4z8DwH4QZYAwAR8oH+WdZbrcAAAAASUVORK5CYII=' },
+      ],
     })
     expect(container.querySelectorAll('img')).toHaveLength(1)
   })
 
   it('exposes native MCP images to the shared image viewer', () => {
-    const payload = { type: 'tool_execution_end', toolCallId: 'mcp-image', toolName: 'mcp__sample__image', result: {
-      content: [],
-      details: { server: 'sample', tool: 'image' },
-      structuredContent: { content: [{ type: 'image', mimeType: 'image/png', data: 'image-bytes' }] },
-    } }
+    const payload = {
+      type: 'tool_execution_end',
+      toolCallId: 'mcp-image',
+      toolName: 'mcp__sample__image',
+      result: {
+        content: [],
+        details: { server: 'sample', tool: 'image' },
+        structuredContent: {
+          content: [
+            { type: 'image', mimeType: 'image/png', data: 'image-bytes' },
+          ],
+        },
+      },
+    }
     const images = providerRowImages(AgentProvider.PI, payload, { spanType: 'mcp' })
     expect(images).toHaveLength(1)
     expect(images?.[0]?.data).toBe('image-bytes')
@@ -141,7 +231,13 @@ describe('pi tool rendering', () => {
   it('renders the rpiv todo list through the shared checklist', () => {
     const { container } = renderTool('todo', { action: 'list' }, {
       content: content('[pending] #1 Inspect sample'),
-      details: { action: 'list', params: { action: 'list' }, tasks: [{ id: 1, subject: 'Inspect sample', status: 'pending' }] },
+      details: {
+        action: 'list',
+        params: { action: 'list' },
+        tasks: [
+          { id: 1, subject: 'Inspect sample', status: 'pending' },
+        ],
+      },
     })
     expect(container.querySelector('[data-task-checkbox="pending"]')).not.toBeNull()
     expect(container.textContent).toContain('Inspect sample')
@@ -151,20 +247,35 @@ describe('pi tool rendering', () => {
   it('shows rpiv todo failures even when Pi reports isError false', () => {
     const { container } = renderTool('todo', { action: 'update', id: 99, status: 'completed' }, {
       content: content('Error: #99 not found'),
-      details: { action: 'update', params: { action: 'update', id: 99, status: 'completed' }, error: '#99 not found', tasks: [] },
+      details: {
+        action: 'update',
+        params: { action: 'update', id: 99, status: 'completed' },
+        error: '#99 not found',
+        tasks: [],
+      },
     })
     expect(container.textContent).toContain('#99 not found')
     expect(container.querySelector('.lucide-circle-alert')).not.toBeNull()
   })
 
   it('renders a background completion from the native custom message', () => {
-    const payload = { type: 'message_end', message: {
-      role: 'custom',
-      customType: 'subagent-notification',
-      display: true,
-      content: '<task-notification>\n<task-id>wf_probe</task-id>\n<result>- Full **report** &amp; details</result>\n</task-notification>',
-      details: { id: 'wf_probe', description: 'Workflow probe', status: 'completed', resultPreview: '- Full…', toolUses: 0, durationMs: 1200 },
-    } }
+    const payload = {
+      type: 'message_end',
+      message: {
+        role: 'custom',
+        customType: 'subagent-notification',
+        display: true,
+        content: '<task-notification>\n<task-id>wf_probe</task-id>\n<result>- Full **report** &amp; details</result>\n</task-notification>',
+        details: {
+          id: 'wf_probe',
+          description: 'Workflow probe',
+          status: 'completed',
+          resultPreview: '- Full…',
+          toolUses: 0,
+          durationMs: 1200,
+        },
+      },
+    }
     const plugin = providerFor(AgentProvider.PI)!
     const category = plugin?.transcript.classify(input(payload))
     const { container } = render(() => renderMessageContent(payload, { premeasureMode: true }, category, AgentProvider.PI))
@@ -176,7 +287,15 @@ describe('pi tool rendering', () => {
   })
 
   it('renders a visible custom plan as Markdown', () => {
-    const payload = { type: 'message_end', message: { role: 'custom', customType: 'proposed-plan', display: true, content: '## Proposed plan\n\n- Read **sample.ts**' } }
+    const payload = {
+      type: 'message_end',
+      message: {
+        role: 'custom',
+        customType: 'proposed-plan',
+        display: true,
+        content: '## Proposed plan\n\n- Read **sample.ts**',
+      },
+    }
     const category = providerFor(AgentProvider.PI)!.transcript.classify(input(payload))
     const { container } = render(() => renderMessageContent(payload, { premeasureMode: true }, category, AgentProvider.PI))
     expect(container.querySelector('h2')?.textContent).toBe('Proposed plan')
@@ -212,7 +331,9 @@ describe('pi tool rendering', () => {
     const request = renderTool(toolName, { query: 'marker' })
     expect(request.container.textContent).toContain(toolName)
     request.unmount()
-    const result = renderTool(toolName, {}, { content: content('Extension report') })
+    const result = renderTool(toolName, {}, {
+      content: content('Extension report'),
+    })
     expect(result.container.textContent).toContain('Extension report')
   })
 
@@ -226,7 +347,15 @@ describe('pi tool rendering', () => {
   it('renders an agent report and native usage through the shared result component', () => {
     const { container } = renderTool('Agent', { description: 'Inspect sample', prompt: 'Read sample.ts' }, {
       content: content('Agent completed in 1.2s (1 tool uses, 100 token).\n\n- Read **sample.ts**'),
-      details: { description: 'Inspect sample', subagentType: 'Explore', status: 'completed', agentId: 'child-1', toolUses: 1, tokens: '100 token', durationMs: 1200 },
+      details: {
+        description: 'Inspect sample',
+        subagentType: 'Explore',
+        status: 'completed',
+        agentId: 'child-1',
+        toolUses: 1,
+        tokens: '100 token',
+        durationMs: 1200,
+      },
     })
     expect(container.textContent).toContain('Agent "Inspect sample" completed')
     expect(container.querySelector('li strong')?.textContent).toBe('sample.ts')
@@ -239,7 +368,12 @@ describe('pi tool rendering', () => {
   it('uses native agent errors even when the extension returns isError false', () => {
     const { container } = renderTool('Agent', { description: 'Inspect sample' }, {
       content: content('Agent failed: Source unavailable\n\n- Partial **finding**'),
-      details: { description: 'Inspect sample', status: 'error', error: 'Source unavailable', agentId: 'child-1' },
+      details: {
+        description: 'Inspect sample',
+        status: 'error',
+        error: 'Source unavailable',
+        agentId: 'child-1',
+      },
     })
     expect(container.textContent).toContain('Agent "Inspect sample" failed')
     expect(container.querySelector('li strong')?.textContent).toBe('finding')
@@ -249,7 +383,13 @@ describe('pi tool rendering', () => {
   it('keeps a completed background launch marked as running', () => {
     const { container } = renderTool('Agent', { description: 'Inspect sample', run_in_background: true }, {
       content: content('Agent started in background.\nAgent ID: child-1\nType: Explore\nDescription: Inspect sample'),
-      details: { status: 'background', agentId: 'child-1', description: 'Inspect sample', toolUses: 0, durationMs: 0 },
+      details: {
+        status: 'background',
+        agentId: 'child-1',
+        description: 'Inspect sample',
+        toolUses: 0,
+        durationMs: 0,
+      },
     })
     expect(container.textContent).toContain('Agent "Inspect sample" running')
     expect(container.textContent).toMatch(/Tool uses:\s*0/)
@@ -257,11 +397,19 @@ describe('pi tool rendering', () => {
   })
 
   it('copies only the report after it removes a verified native summary', () => {
-    const payload = { type: 'tool_execution_end', toolCallId: 'call', toolName: 'Agent', result: {
-      content: content('Agent completed in 1.2s (1 tool uses).\n\n- **Report**'),
-      details: { status: 'completed', toolUses: 1, durationMs: 1200 },
-    } }
-    const meta = providerToolMeta(AgentProvider.PI, payload, { category: { kind: 'tool_result' }, spanType: 'Agent' })
+    const payload = {
+      type: 'tool_execution_end',
+      toolCallId: 'call',
+      toolName: 'Agent',
+      result: {
+        content: content('Agent completed in 1.2s (1 tool uses).\n\n- **Report**'),
+        details: { status: 'completed', toolUses: 1, durationMs: 1200 },
+      },
+    }
+    const meta = providerToolMeta(AgentProvider.PI, payload, {
+      category: { kind: 'tool_result' },
+      spanType: 'Agent',
+    })
     expect(meta?.copyableContent?.()).toBe('- **Report**')
   })
 
@@ -271,22 +419,45 @@ describe('pi tool rendering', () => {
   })
 
   it('renders directory output with the shared entry summary', () => {
-    const { container } = renderTool('ls', { path: '/project' }, { content: [{ type: 'text', text: 'a.ts\nsrc/' }] })
+    const { container } = renderTool('ls', { path: '/project' }, {
+      content: [
+        { type: 'text', text: 'a.ts\nsrc/' },
+      ],
+    })
     expect(container.textContent).toContain('2 entries')
     expect(container.textContent).toContain('src/')
     expect(container.textContent).not.toContain('2 files')
   })
 
   it('resolves an image file path from the native read request', () => {
-    const request = input({ type: 'tool_execution_start', toolCallId: 'call', toolName: 'read', args: { path: '/project/image.png' } })
-    const payload = { type: 'tool_execution_end', toolCallId: 'call', toolName: 'read', result: { content: [{ type: 'image', mimeType: 'image/png', data: 'image-bytes' }] } }
+    const request = input({
+      type: 'tool_execution_start',
+      toolCallId: 'call',
+      toolName: 'read',
+      args: { path: '/project/image.png' },
+    })
+    const payload = {
+      type: 'tool_execution_end',
+      toolCallId: 'call',
+      toolName: 'read',
+      result: {
+        content: [
+          { type: 'image', mimeType: 'image/png', data: 'image-bytes' },
+        ],
+      },
+    }
     const images = providerRowImages(AgentProvider.PI, payload, { spanType: 'read', request })
     expect(images?.[0]?.filePath).toBe('/project/image.png')
   })
 
   it('renders extension result resources and structured details', () => {
     const { container } = renderTool('extension_lookup', { query: 'marker' }, {
-      content: [{ type: 'resource', resource: { uri: 'probe://item', text: 'Extension resource' } }],
+      content: [
+        {
+          type: 'resource',
+          resource: { uri: 'probe://item', text: 'Extension resource' },
+        },
+      ],
       details: { count: 0 },
     })
     expect(container.textContent).toContain('Extension resource')
@@ -295,7 +466,12 @@ describe('pi tool rendering', () => {
 
   it('preserves resources and details when an extension call fails', () => {
     const { container } = renderTool('extension_lookup', {}, {
-      content: [{ type: 'resource', resource: { uri: 'probe://failure', text: 'Failure resource' } }],
+      content: [
+        {
+          type: 'resource',
+          resource: { uri: 'probe://failure', text: 'Failure resource' },
+        },
+      ],
       details: { reason: 'source unavailable' },
     }, true)
     expect(container.textContent).toContain('Failure resource')
@@ -305,32 +481,75 @@ describe('pi tool rendering', () => {
 
   it('offers expansion for a long extension result', () => {
     const text = 'first\nsecond\nthird\nfourth'
-    const payload = { type: 'tool_execution_end', toolCallId: 'call', toolName: 'extension_lookup', result: { content: content(text) } }
-    const meta = providerToolMeta(AgentProvider.PI, payload, { category: { kind: 'tool_result' }, spanType: 'extension_lookup' })
+    const payload = {
+      type: 'tool_execution_end',
+      toolCallId: 'call',
+      toolName: 'extension_lookup',
+      result: {
+        content: content(text),
+      },
+    }
+    const meta = providerToolMeta(AgentProvider.PI, payload, {
+      category: { kind: 'tool_result' },
+      spanType: 'extension_lookup',
+    })
     expect(meta).toMatchObject({ collapsible: true, hasCopyable: true })
     expect(meta?.copyableContent()).toBe(text)
   })
 
   it('copies the displayed raw diff when a diff cannot be parsed', () => {
     const diff = 'A provider diff in an unknown format'
-    const payload = { type: 'tool_execution_end', toolCallId: 'call', toolName: 'edit', result: { content: content('Edit completed'), details: { diff } } }
-    const meta = providerToolMeta(AgentProvider.PI, payload, { category: { kind: 'tool_result' }, spanType: 'edit' })
+    const payload = {
+      type: 'tool_execution_end',
+      toolCallId: 'call',
+      toolName: 'edit',
+      result: {
+        content: content('Edit completed'),
+        details: { diff },
+      },
+    }
+    const meta = providerToolMeta(AgentProvider.PI, payload, {
+      category: { kind: 'tool_result' },
+      spanType: 'edit',
+    })
     expect(meta?.hasDiff).toBe(false)
     expect(meta?.copyableContent()).toBe(diff)
   })
 
   it('offers expansion and copying for a long search result', () => {
     const text = 'a.ts\nb.ts\nc.ts\nd.ts'
-    const payload = { type: 'tool_execution_end', toolCallId: 'call', toolName: 'find', result: { content: content(text) }, isError: false }
-    const meta = providerToolMeta(AgentProvider.PI, payload, { category: { kind: 'tool_result' }, spanType: 'find' })
+    const payload = {
+      type: 'tool_execution_end',
+      toolCallId: 'call',
+      toolName: 'find',
+      result: {
+        content: content(text),
+      },
+      isError: false,
+    }
+    const meta = providerToolMeta(AgentProvider.PI, payload, {
+      category: { kind: 'tool_result' },
+      spanType: 'find',
+    })
     expect(meta).toMatchObject({ collapsible: true, hasCopyable: true })
     expect(meta?.copyableContent()).toBe(text)
   })
 
   it('offers expansion for a long failed edit report', () => {
     const text = 'failure\nfirst detail\nsecond detail\nthird detail'
-    const payload = { type: 'tool_execution_end', toolCallId: 'call', toolName: 'edit', result: { content: content(text) }, isError: true }
-    const meta = providerToolMeta(AgentProvider.PI, payload, { category: { kind: 'tool_result' }, spanType: 'edit' })
+    const payload = {
+      type: 'tool_execution_end',
+      toolCallId: 'call',
+      toolName: 'edit',
+      result: {
+        content: content(text),
+      },
+      isError: true,
+    }
+    const meta = providerToolMeta(AgentProvider.PI, payload, {
+      category: { kind: 'tool_result' },
+      spanType: 'edit',
+    })
     expect(meta?.collapsible).toBe(true)
     expect(meta?.hasDiff).toBe(false)
   })
@@ -350,7 +569,9 @@ describe('pi tool rendering', () => {
   })
 
   it('renders a PowerShell execution with the shared command status', () => {
-    const { container } = renderTool('powershell', { command: 'Write-Output marker; exit 7' }, { content: content('marker\n\nCommand exited with code 7') }, true)
+    const { container } = renderTool('powershell', { command: 'Write-Output marker; exit 7' }, {
+      content: content('marker\n\nCommand exited with code 7'),
+    }, true)
     expect(container.textContent).toContain('marker')
     expect(container.textContent).toContain('Error (exit 7)')
     expect(container.textContent).not.toContain('Command exited with code')
@@ -360,26 +581,38 @@ describe('pi tool rendering', () => {
   // for one state on the same operation: a native search said "Output truncated" and a
   // shell command said "[output truncated]" (RL-020).
   it('retains the command truncation flag and states it in the shared words', () => {
-    const { container } = renderTool('bash', { command: 'output-command' }, { content: content('partial output'), details: { truncation: { truncated: true }, fullOutputPath: '/project/output.log' } })
+    const { container } = renderTool('bash', { command: 'output-command' }, {
+      content: content('partial output'),
+      details: {
+        truncation: { truncated: true },
+        fullOutputPath: '/project/output.log',
+      },
+    })
     expect(container.textContent).toContain(TRUNCATION_NOTICE)
     expect(container.textContent).not.toContain('[output truncated]')
   })
 
   it('shows a failed read as an error instead of file contents', () => {
-    const { container } = renderTool('read', { path: '/project/missing.ts' }, { content: content('ENOENT: file does not exist') }, true)
+    const { container } = renderTool('read', { path: '/project/missing.ts' }, {
+      content: content('ENOENT: file does not exist'),
+    }, true)
     expect(container.textContent).toContain('ENOENT')
     expect(container.textContent).toMatch(/Error|Failed/)
   })
 
   it('renders file search results with the shared count summary', () => {
-    const { container } = renderTool('find', { path: '/project', pattern: '*.ts' }, { content: content('first.ts\nsecond.ts') })
+    const { container } = renderTool('find', { path: '/project', pattern: '*.ts' }, {
+      content: content('first.ts\nsecond.ts'),
+    })
     expect(container.textContent).toContain('Found 2 files')
     expect(container.textContent).toContain('first.ts')
     expect(container.textContent).toContain('second.ts')
   })
 
   it('renders grep matches with the shared count summary', () => {
-    const { container } = renderTool('grep', { path: '/project', pattern: 'answer' }, { content: content('first.ts:3: answer = 42') })
+    const { container } = renderTool('grep', { path: '/project', pattern: 'answer' }, {
+      content: content('first.ts:3: answer = 42'),
+    })
     expect(container.textContent).toContain('1 match')
     expect(container.textContent).toContain('first.ts:3: answer = 42')
   })
@@ -395,12 +628,21 @@ describe('pi tool rendering', () => {
  */
 describe('a pi tool row that has not returned', () => {
   function renderRunning(toolName: string, args: Record<string, unknown>, outputTail: string) {
-    const payload = { type: 'tool_execution_start', toolCallId: 'call', toolName, args }
+    const payload = {
+      type: 'tool_execution_start',
+      toolCallId: 'call',
+      toolName,
+      args,
+    }
     const category = providerFor(AgentProvider.PI)!.transcript.classify(input(payload))
     return render(() => renderMessageContent(payload, {
       premeasureMode: true,
-      sources: testMessageSources({ current: () => input(payload) }),
-      toolProgress: { liveTail: () => ({ outputTail }) },
+      sources: testMessageSources({
+        current: () => input(payload),
+      }),
+      toolProgress: {
+        liveTail: () => ({ outputTail }),
+      },
     }, category, AgentProvider.PI))
   }
 
@@ -432,11 +674,20 @@ describe('pi rows on the shared tool path', () => {
 
   // A result with no request beside it states WHICH tool it belongs to.
   it('draws its own header when no request row sits beside the result', () => {
-    const payload = { type: 'tool_execution_end', toolCallId: 'call', toolName: 'read', result: { content: content('first line') } }
+    const payload = {
+      type: 'tool_execution_end',
+      toolCallId: 'call',
+      toolName: 'read',
+      result: {
+        content: content('first line'),
+      },
+    }
     const category = providerFor(AgentProvider.PI)!.transcript.classify(input(payload))
     const { container } = render(() => renderMessageContent(payload, {
       premeasureMode: true,
-      sources: testMessageSources({ current: () => input(payload) }),
+      sources: testMessageSources({
+        current: () => input(payload),
+      }),
     }, category, AgentProvider.PI))
     expect(container.textContent).toContain('Read')
     expect(container.querySelector('.lucide-eye')).not.toBeNull()
@@ -460,7 +711,10 @@ describe('a pi tool row the turn ended before the call did', () => {
       [MESSAGE_SUPPLEMENT_FIELD.Provider]: {
         toolCallId: 'call',
         toolName: 'bash',
-        partialResult: { content: content('Running 240 tests'), details: {} },
+        partialResult: {
+          content: content('Running 240 tests'),
+          details: {},
+        },
       },
     }),
   })
@@ -473,7 +727,9 @@ describe('a pi tool row the turn ended before the call did', () => {
     // message, and a `delete` on the cached object would reach every later reader of
     // this same message. The key is deleted rather than stated `undefined`, which the
     // exact-optional rule reads as a different object.
-    const uncompleted = { ...parseMessageContent(message) }
+    const uncompleted = {
+      ...parseMessageContent(message),
+    }
     delete uncompleted.completion
     expect(plugin().transcript.spanRole!(resolveMessageForRendering(uncompleted, AgentProvider.PI))).toBe('request')
   })
@@ -483,7 +739,12 @@ describe('a pi tool row the turn ended before the call did', () => {
     const category = plugin().transcript.classify({ ...parsed, agentProvider: AgentProvider.PI })
     const { container } = render(() => renderMessageContent(
       parsed.parentObject,
-      { premeasureMode: true, sources: testMessageSources({ current: () => parsed }) },
+      {
+        premeasureMode: true,
+        sources: testMessageSources({
+          current: () => parsed,
+        }),
+      },
       category,
       AgentProvider.PI,
       message.completion,

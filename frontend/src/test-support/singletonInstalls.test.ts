@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
@@ -31,12 +31,12 @@ const SINGLETONS = [
   },
   {
     name: 'vite',
-    // vinxi 0.5.11 declares `vite: ^6.4.1` while the root is on 8.x, so without
-    // the override bun nests a second Vite. Two Vites means two plugin
-    // registries and two module graphs: the vanilla-extract and solid plugins
-    // load into one while the dev server runs the other, and styles or HMR go
-    // missing with no error naming the cause.
-    why: 'plugins and the dev server would run against different Vite instances',
+    // @vanilla-extract/compiler evaluates `.css.ts` files through vite-node
+    // 3.2.4, which declares `vite: ^5.0.0 || ^6.0.0 || ^7.0.0-0` while the
+    // root is on 8.x, so without the override bun nests a second Vite. The
+    // compiler then loads vite.config.ts and evaluates every `.css.ts` file
+    // with Vite 7, while the build and the dev server run Vite 8.
+    why: 'the vanilla-extract compiler would evaluate .css.ts files with a different Vite than the build',
     remedy: 'Restore the `overrides["vite"]` entry in package.json and re-run `bun install --force`',
   },
 ]
@@ -73,22 +73,27 @@ describe('singleton installs', () => {
     }
   })
 
-  it('applies every patch in patchedDependencies to the version installed', () => {
+  it('keys every patch file and applies each patch to the version installed', () => {
     // `patchedDependencies` keys on an exact `name@version`. When the resolved
     // version moves past the key, bun applies nothing and says nothing --
     // verified against bun 1.3.14: a patch keyed at 3.0.0 against a resolved
-    // 3.0.1 installs clean, exit 0, no warning, patch absent.
-    //
-    // That is silent for `vinxi@0.5.11`, whose patch teaches viteManifestPath
-    // to recognise Vite 8. Losing it does not fail a build: it moves the
-    // manifest lookup back to the pre-Vite-5 path, so asset preloading stops
-    // matching `window.manifest` keys in the PRODUCTION bundle only. The
-    // dependency is pinned exactly for the same reason, and this catches the
-    // other direction -- a deliberate bump that forgets to re-key the patch.
+    // 3.0.1 installs clean, exit 0, no warning, patch absent. Pin a patched
+    // dependency exactly; this catches the other direction -- a deliberate
+    // bump that forgets to re-key the patch.
     const pkg = JSON.parse(readFileSync(join(frontendRoot, 'package.json'), 'utf-8'))
-    const patched = pkg.patchedDependencies ?? {}
+    const patched: Record<string, string> = pkg.patchedDependencies ?? {}
 
-    expect(Object.keys(patched).length, 'no patchedDependencies left to guard').toBeGreaterThan(0)
+    // bun applies only a patch that a key points at, so a patch file with no
+    // key is just as silently absent. This also keeps the test meaningful
+    // while no dependency needs a patch.
+    const patchDir = join(frontendRoot, 'patches')
+    const patchFiles = existsSync(patchDir)
+      ? readdirSync(patchDir).filter(name => name.endsWith('.patch')).map(name => `patches/${name}`)
+      : []
+    expect(
+      [...patchFiles].sort(),
+      'every frontend/patches/*.patch file must be keyed in package.json patchedDependencies, and every key must point at a file there',
+    ).toEqual(Object.values(patched).sort())
 
     for (const key of Object.keys(patched)) {
       const at = key.lastIndexOf('@')

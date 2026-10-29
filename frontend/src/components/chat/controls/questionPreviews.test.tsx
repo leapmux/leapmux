@@ -13,7 +13,21 @@ describe('question option previews', () => {
     const answerState = createControlAnswerState()
     const [option, setOption] = createSignal({ label: '1. A — First', value: '1. A — First', preview: '' })
     const request = { requestId: 'question', agentId: 'agent', payload: {} }
-    const { getByRole } = render(() => <AskUserQuestionContent request={request} answerState={answerState} questions={[{ question: 'Choose', multiSelect, options: [option()] }]} />)
+    const { getByRole } = render(() => (
+      <AskUserQuestionContent
+        request={request}
+        answerState={answerState}
+        questions={[
+          {
+            question: 'Choose',
+            multiSelect,
+            options: [
+              option(),
+            ],
+          },
+        ]}
+      />
+    ))
     fireEvent.click(getByRole(multiSelect ? 'checkbox' : 'radio'))
     setOption({ label: 'A', value: '1. A — First', preview: 'Recovered preview' })
     expect(getByRole(multiSelect ? 'checkbox' : 'radio')).toBeChecked()
@@ -27,7 +41,26 @@ describe('question option previews', () => {
     const { container, getByRole } = render(() => (
       <ControlRequestContent
         agentProvider={AgentProvider.CLAUDE_CODE}
-        request={{ requestId: 'preview', agentId: 'agent', payload: { request: { tool_name: 'AskUserQuestion', input: { questions: [{ question: 'Choose an implementation', multiSelect, options: [{ label: 'Simple', description: 'One constant', preview: '```ts\nconst answer = 42\n```' }] }] } } } }}
+        request={{
+          requestId: 'preview',
+          agentId: 'agent',
+          payload: {
+            request: {
+              tool_name: 'AskUserQuestion',
+              input: {
+                questions: [
+                  {
+                    question: 'Choose an implementation',
+                    multiSelect,
+                    options: [
+                      { label: 'Simple', description: 'One constant', preview: '```ts\nconst answer = 42\n```' },
+                    ],
+                  },
+                ],
+              },
+            },
+          },
+        }}
         answerState={answerState}
       />
     ))
@@ -45,7 +78,23 @@ describe('question option previews', () => {
     const { getByRole } = render(() => (
       <ControlRequestContent
         agentProvider={AgentProvider.ZCODE}
-        request={{ requestId: 'preview', agentId: 'agent', payload: { request: { tool_name: 'AskUserQuestion', input: {} }, params: { questions: [{ question: 'Choose a layout', options: [{ label: 'Box', value: 'Box', preview: text }] }] } } }}
+        request={{
+          requestId: 'preview',
+          agentId: 'agent',
+          payload: {
+            request: { tool_name: 'AskUserQuestion', input: {} },
+            params: {
+              questions: [
+                {
+                  question: 'Choose a layout',
+                  options: [
+                    { label: 'Box', value: 'Box', preview: text },
+                  ],
+                },
+              ],
+            },
+          },
+        }}
         answerState={createControlAnswerState()}
       />
     ))
@@ -56,7 +105,25 @@ describe('question option previews', () => {
     const { queryByRole } = render(() => (
       <ControlRequestContent
         agentProvider={AgentProvider.CLAUDE_CODE}
-        request={{ requestId: 'preview', agentId: 'agent', payload: { request: { tool_name: 'AskUserQuestion', input: { questions: [{ question: 'Choose', options: [{ label: 'A', preview }] }] } } } }}
+        request={{
+          requestId: 'preview',
+          agentId: 'agent',
+          payload: {
+            request: {
+              tool_name: 'AskUserQuestion',
+              input: {
+                questions: [
+                  {
+                    question: 'Choose',
+                    options: [
+                      { label: 'A', preview },
+                    ],
+                  },
+                ],
+              },
+            },
+          },
+        }}
         answerState={createControlAnswerState()}
       />
     ))

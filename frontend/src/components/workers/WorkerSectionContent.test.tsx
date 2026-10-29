@@ -18,7 +18,15 @@ import { WorkerSectionContent } from './WorkerSectionContent'
 
 /** A port-forward tunnel, whose label is the one that carries the arrow. */
 function portForward(): TunnelInfo {
-  return { id: 't1', workerId: 'w1', type: 'port_forward', bindAddr: '127.0.0.1', bindPort: 3000, targetAddr: '10.0.0.1', targetPort: 8080 }
+  return {
+    id: 't1',
+    workerId: 'w1',
+    type: 'port_forward',
+    bindAddr: '127.0.0.1',
+    bindPort: 3000,
+    targetAddr: '10.0.0.1',
+    targetPort: 8080,
+  }
 }
 
 vi.mock('~/api/platformBridge', async (importOriginal) => {
@@ -54,7 +62,9 @@ function renderSection(opts?: {
   workers?: Worker[]
   tunnels?: TunnelInfo[]
 }) {
-  const workers = opts?.workers ?? [makeWorker('w1')]
+  const workers = opts?.workers ?? [
+    makeWorker('w1'),
+  ]
   const onAddTunnel = vi.fn()
   const onDeregister = vi.fn()
 
@@ -94,10 +104,29 @@ describe('WorkerSectionContent', () => {
   })
 
   it('tunnels shown under correct worker', () => {
-    const workers = [makeWorker('w1'), makeWorker('w2')]
+    const workers = [
+      makeWorker('w1'),
+      makeWorker('w2'),
+    ]
     const tunnels: TunnelInfo[] = [
-      { id: 't1', workerId: 'w1', type: 'port_forward', bindAddr: '127.0.0.1', bindPort: 3000, targetAddr: '10.0.0.1', targetPort: 8080 },
-      { id: 't2', workerId: 'w2', type: 'socks5', bindAddr: '127.0.0.1', bindPort: 1080, targetAddr: '', targetPort: 0 },
+      {
+        id: 't1',
+        workerId: 'w1',
+        type: 'port_forward',
+        bindAddr: '127.0.0.1',
+        bindPort: 3000,
+        targetAddr: '10.0.0.1',
+        targetPort: 8080,
+      },
+      {
+        id: 't2',
+        workerId: 'w2',
+        type: 'socks5',
+        bindAddr: '127.0.0.1',
+        bindPort: 1080,
+        targetAddr: '',
+        targetPort: 0,
+      },
     ]
     renderSection({ workers, tunnels })
     expect(screen.getByText(/127\.0\.0\.1:3000 \u2192 10\.0\.0\.1:8080/)).toBeInTheDocument()
@@ -106,7 +135,15 @@ describe('WorkerSectionContent', () => {
 
   it('port forward tunnel shows target info', () => {
     const tunnels: TunnelInfo[] = [
-      { id: 't1', workerId: 'w1', type: 'port_forward', bindAddr: '127.0.0.1', bindPort: 3000, targetAddr: '10.0.0.1', targetPort: 8080 },
+      {
+        id: 't1',
+        workerId: 'w1',
+        type: 'port_forward',
+        bindAddr: '127.0.0.1',
+        bindPort: 3000,
+        targetAddr: '10.0.0.1',
+        targetPort: 8080,
+      },
     ]
     renderSection({ tunnels })
     expect(screen.getByText(/127\.0\.0\.1:3000 \u2192 10\.0\.0\.1:8080/)).toBeInTheDocument()
@@ -114,7 +151,15 @@ describe('WorkerSectionContent', () => {
 
   it('socks5 tunnel shows bind info only', () => {
     const tunnels: TunnelInfo[] = [
-      { id: 't1', workerId: 'w1', type: 'socks5', bindAddr: '127.0.0.1', bindPort: 1080, targetAddr: '', targetPort: 0 },
+      {
+        id: 't1',
+        workerId: 'w1',
+        type: 'socks5',
+        bindAddr: '127.0.0.1',
+        bindPort: 1080,
+        targetAddr: '',
+        targetPort: 0,
+      },
     ]
     renderSection({ tunnels })
     expect(screen.getByText(/SOCKS5 127\.0\.0\.1:1080/)).toBeInTheDocument()
@@ -187,8 +232,14 @@ describe('WorkerSectionContent', () => {
   })
 
   it('clips a tunnel label the same way', () => {
-    const { container } = renderSection({ tunnels: [portForward()] })
-    const label = [...container.querySelectorAll(classSelector(listStyles.itemTitle))]
+    const { container } = renderSection({
+      tunnels: [
+        portForward(),
+      ],
+    })
+    const label = [
+      ...container.querySelectorAll(classSelector(listStyles.itemTitle)),
+    ]
       .find(el => el.textContent?.includes('→'))!
     expect(label.className.trim().split(/\s+/)).toContain(clippedText)
   })
@@ -221,8 +272,14 @@ describe('WorkerSectionContent', () => {
     })
 
     it('gives the full tunnel label on hover once it is clipped', () => {
-      const { container } = renderSection({ tunnels: [portForward()] })
-      const label = [...container.querySelectorAll<HTMLElement>(classSelector(listStyles.itemTitle))]
+      const { container } = renderSection({
+        tunnels: [
+          portForward(),
+        ],
+      })
+      const label = [
+        ...container.querySelectorAll<HTMLElement>(classSelector(listStyles.itemTitle)),
+      ]
         .find(el => el.textContent?.includes('→'))!
       stubClipped(label)
       expect(hoverForTooltip(label)?.textContent).toBe('127.0.0.1:3000 → 10.0.0.1:8080')
@@ -243,7 +300,9 @@ describe('WorkerSectionContent', () => {
     render(() => (
       <TunnelProvider store={tunnelStore}>
         <WorkerSectionContent
-          workers={[makeWorker('w1')]}
+          workers={[
+            makeWorker('w1'),
+          ]}
           workerInfo={() => null}
           channelStatus={() => 'connected' as ChannelStatus}
           onAddTunnel={vi.fn()}

@@ -98,7 +98,9 @@ describe('broadcast channel isolation between test files', () => {
           if (event.data?.from === foreignBarrier) {
             localSender.postMessage({
               from: localBarrier,
-              changes: [{ k: marker, v: true, e: Date.now() + 60_000 }],
+              changes: [
+                { k: marker, v: true, e: Date.now() + 60_000 },
+              ],
             })
           }
         }
@@ -114,7 +116,9 @@ describe('broadcast channel isolation between test files', () => {
       // sent. No sleep decides whether the foreign write reached its observer.
       foreignSender.postMessage({
         from: foreignId,
-        changes: [{ k: 'leapmux:channel-relay-seq', v: 7, e: Date.now() + 60_000 }],
+        changes: [
+          { k: 'leapmux:channel-relay-seq', v: 7, e: Date.now() + 60_000 },
+        ],
       })
       foreignSender.postMessage({ from: foreignBarrier, changes: [] })
       await Promise.all([delivered, applied])

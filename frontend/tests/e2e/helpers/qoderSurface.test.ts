@@ -13,7 +13,10 @@ const configServers: Server[] = []
 
 async function configServer(): Promise<string> {
   const server = createServer(async (request, response) => {
-    const owned = await handleQoderHttp(request, response, new URL(request.url ?? '/', origin), { origin: () => origin, identityToken: token })
+    const owned = await handleQoderHttp(request, response, new URL(request.url ?? '/', origin), {
+      origin: () => origin,
+      identityToken: token,
+    })
     if (!owned)
       response.writeHead(404).end()
   })
@@ -38,7 +41,10 @@ function exchange(method: string, pathname: string, machineId?: string) {
     request.headers['cosy-machineid'] = machineId
   const response = new ServerResponse(request)
   const end = vi.spyOn(response, 'end').mockImplementation(() => response)
-  const owned = handleQoderHttp(request, response, new URL(pathname, 'http://mock.invalid'), { origin: () => origin, identityToken: token })
+  const owned = handleQoderHttp(request, response, new URL(pathname, 'http://mock.invalid'), {
+    origin: () => origin,
+    identityToken: token,
+  })
   return { owned, response, end }
 }
 
@@ -46,21 +52,32 @@ afterEach(async () => {
   vi.useRealTimers()
   await Promise.all(configServers.splice(0).map(server => new Promise<void>((resolve, reject) => {
     server.closeAllConnections()
-    server.close(error => error ? reject(error) : resolve())
+    server.close(error => error
+      ? reject(error)
+      : resolve())
   })))
 })
 
 describe('handleQoderHttp', () => {
   it.each([
     { path: '/algo/api/v3/service/region/endpoints', machineId: undefined, node: origin },
-    { path: '/algo/api/v5/service/region/endpoints', machineId: undefined, node: { url: origin } },
+    {
+      path: '/algo/api/v5/service/region/endpoints',
+      machineId: undefined,
+      node: { url: origin },
+    },
     { path: '/algo/api/v5/service/region/endpoints', machineId: 'native-machine', node: origin },
     { path: '/algo/api/v5/service/region/endpoints', machineId: '', node: origin },
   ])('keeps the native region response for $path and $machineId', ({ path, machineId, node }) => {
     const result = exchange('GET', path, machineId)
     expect(result.owned).toBe(true)
     expect(result.response.statusCode).toBe(200)
-    expect(JSON.parse(String(result.end.mock.calls[0]?.[0]))).toEqual({ centerNodes: [node], inferNodes: [node], security: [node], openapiNodes: [node] })
+    expect(JSON.parse(String(result.end.mock.calls[0]?.[0]))).toEqual({
+      centerNodes: [node],
+      inferNodes: [node],
+      security: [node],
+      openapiNodes: [node],
+    })
   })
 
   it.each(['/api/v1/jobToken/exchange', '/api/v1/jobToken/refresh'])('keeps the isolated token and native millisecond expiry for %s', (path) => {
@@ -80,13 +97,24 @@ describe('handleQoderHttp', () => {
   it('keeps every native user identity field', () => {
     const result = exchange('GET', '/api/v1/userinfo')
     expect(result.owned).toBe(true)
-    expect(JSON.parse(String(result.end.mock.calls[0]?.[0]))).toEqual({ id: 'leapmux-e2e', uid: 'leapmux-e2e', username: 'leapmux-e2e', name: 'LeapMux E2E', email: 'e2e@leapmux.test' })
+    expect(JSON.parse(String(result.end.mock.calls[0]?.[0]))).toEqual({
+      id: 'leapmux-e2e',
+      uid: 'leapmux-e2e',
+      username: 'leapmux-e2e',
+      name: 'LeapMux E2E',
+      email: 'e2e@leapmux.test',
+    })
   })
 
   it('keeps the BYOK permission that the native registration path requires', () => {
     const result = exchange('GET', '/api/v3/user/status')
     expect(result.owned).toBe(true)
-    expect(JSON.parse(String(result.end.mock.calls[0]?.[0]))).toEqual({ code: 0, success: true, data: {}, featureSwitches: { allow_byok: 2 } })
+    expect(JSON.parse(String(result.end.mock.calls[0]?.[0]))).toEqual({
+      code: 0,
+      success: true,
+      data: {},
+      featureSwitches: { allow_byok: 2 },
+    })
   })
 
   it.each(['/algo/api/v2/model/list', '/api/v2/user/plan', '/ide-text/latest'])('keeps the empty native success envelope for %s', (path) => {
@@ -124,25 +152,55 @@ describe('handleQoderHttp', () => {
 })
 
 describe('qoderEndpointCacheRecords', () => {
-  it.each([0, -1, 1_797_000_000_000, Number.MAX_SAFE_INTEGER])('retains the complete V1 and V2 records with timestamp %s', (updatedAt) => {
+  it.each([
+    0,
+    -1,
+    1_797_000_000_000,
+    Number.MAX_SAFE_INTEGER,
+  ])('retains the complete V1 and V2 records with timestamp %s', (updatedAt) => {
     const records = qoderEndpointCacheRecords(origin, updatedAt)
-    expect(records.v1).toEqual({ version: 1, entries: { prod: {
-      endpoint: origin,
-      inferEndpoints: [origin],
-      securityEndpoint: origin,
-      securityEndpoints: [origin],
-      centerEndpoint: origin,
-      centerEndpoints: [origin],
-      openapiEndpoint: origin,
-      openapiEndpoints: [origin],
-      updatedAt,
-    } } })
-    expect(records.v2).toEqual({ version: 2, entries: { prod: { updatedAt, endpointSets: {
-      center: { candidates: [origin], selected: origin },
-      inference: { candidates: [origin], selected: origin },
-      securityInference: { candidates: [origin], selected: origin },
-      openapi: { candidates: [origin], selected: origin },
-    } } } })
+    expect(records.v1).toEqual({
+      version: 1,
+      entries: {
+        prod: {
+          endpoint: origin,
+          inferEndpoints: [origin],
+          securityEndpoint: origin,
+          securityEndpoints: [origin],
+          centerEndpoint: origin,
+          centerEndpoints: [origin],
+          openapiEndpoint: origin,
+          openapiEndpoints: [origin],
+          updatedAt,
+        },
+      },
+    })
+    expect(records.v2).toEqual({
+      version: 2,
+      entries: {
+        prod: {
+          updatedAt,
+          endpointSets: {
+            center: {
+              candidates: [origin],
+              selected: origin,
+            },
+            inference: {
+              candidates: [origin],
+              selected: origin,
+            },
+            securityInference: {
+              candidates: [origin],
+              selected: origin,
+            },
+            openapi: {
+              candidates: [origin],
+              selected: origin,
+            },
+          },
+        },
+      },
+    })
   })
 
   it('returns independent cache records for separate private origins', () => {
@@ -156,38 +214,89 @@ describe('qoderEndpointCacheRecords', () => {
 })
 
 describe('handleQoderHttp configuration client', () => {
-  const body = { namespaces: ['qodercli-feature-gates'], keys: [], context: { platform: 'macos', clientVersion: '1.1.65', clientType: 'qodercli' } }
+  const body = {
+    namespaces: ['qodercli-feature-gates'],
+    keys: [],
+    context: { platform: 'macos', clientVersion: '1.1.65', clientType: 'qodercli' },
+  }
   const headers = { 'authorization': `Bearer ${token}`, 'content-type': 'application/json' }
 
   it('serves the native config namespace and keeps its original prompt policy', async () => {
     const url = await configServer()
-    const response = await fetch(`${url}/api/v1/qcs/config/resolve`, { method: 'POST', headers, body: JSON.stringify(body) })
+    const response = await fetch(`${url}/api/v1/qcs/config/resolve`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    })
     expect(response.status).toBe(200)
     expect(response.headers.get('etag')).toBe('"leapmux-e2e-qoder-config"')
-    expect(await response.json()).toEqual({ configs: { 'qodercli-feature-gates': { prompt_policy: { value: { sectionGates: { 'behavior.act_dont_rederive': 'disable' } }, ruleId: -1, scope: 'default' } } }, etag: 'leapmux-e2e-qoder-config' })
+    expect(await response.json()).toEqual({
+      configs: {
+        'qodercli-feature-gates': {
+          prompt_policy: {
+            value: {
+              sectionGates: { 'behavior.act_dont_rederive': 'disable' },
+            },
+            ruleId: -1,
+            scope: 'default',
+          },
+        },
+      },
+      etag: 'leapmux-e2e-qoder-config',
+    })
   })
 
   it('returns an empty unchanged response for the exact native etag', async () => {
     const url = await configServer()
-    const response = await fetch(`${url}/api/v1/qcs/config/resolve`, { method: 'POST', headers: { ...headers, 'if-none-match': '"leapmux-e2e-qoder-config"' }, body: JSON.stringify(body) })
+    const response = await fetch(`${url}/api/v1/qcs/config/resolve`, {
+      method: 'POST',
+      headers: { ...headers, 'if-none-match': '"leapmux-e2e-qoder-config"' },
+      body: JSON.stringify(body),
+    })
     expect(response.status).toBe(304)
     expect(await response.text()).toBe('')
   })
 
   it.each([
-    { request: { ...body, namespaces: ['foreign'] }, label: 'foreign namespace' },
-    { request: { ...body, keys: ['foreign'] }, label: 'unknown key' },
-    { request: { ...body, context: { ...body.context, clientType: 'foreign' } }, label: 'another native client' },
+    {
+      request: {
+        ...body,
+        namespaces: ['foreign'],
+      },
+      label: 'foreign namespace',
+    },
+    {
+      request: {
+        ...body,
+        keys: ['foreign'],
+      },
+      label: 'unknown key',
+    },
+    {
+      request: {
+        ...body,
+        context: { ...body.context, clientType: 'foreign' },
+      },
+      label: 'another native client',
+    },
     { request: {}, label: 'absent fields' },
   ])('rejects $label before returning config values', async ({ request }) => {
     const url = await configServer()
-    const response = await fetch(`${url}/api/v1/qcs/config/resolve`, { method: 'POST', headers, body: JSON.stringify(request) })
+    const response = await fetch(`${url}/api/v1/qcs/config/resolve`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(request),
+    })
     expect(response.status).toBe(400)
   })
 
   it.each(['', 'Bearer real-user-credential'])('refuses an unowned config credential: %j', async (authorization) => {
     const url = await configServer()
-    const response = await fetch(`${url}/api/v1/qcs/config/resolve`, { method: 'POST', headers: { ...headers, authorization }, body: JSON.stringify(body) })
+    const response = await fetch(`${url}/api/v1/qcs/config/resolve`, {
+      method: 'POST',
+      headers: { ...headers, authorization },
+      body: JSON.stringify(body),
+    })
     expect(response.status).toBe(401)
   })
 
@@ -202,7 +311,10 @@ describe('handleQoderHttp configuration client', () => {
   it('opens the native config stream and keeps it open until the client closes', async () => {
     const url = await configServer()
     const controller = new AbortController()
-    const response = await fetch(`${url}/api/v1/qcs/config/stream?ns=qodercli-feature-gates`, { headers: { authorization: `Bearer ${token}`, accept: 'text/event-stream' }, signal: controller.signal })
+    const response = await fetch(`${url}/api/v1/qcs/config/stream?ns=qodercli-feature-gates`, {
+      headers: { authorization: `Bearer ${token}`, accept: 'text/event-stream' },
+      signal: controller.signal,
+    })
     expect(response.status).toBe(200)
     expect(response.headers.get('content-type')).toContain('text/event-stream')
     const reader = response.body?.getReader()
@@ -233,12 +345,18 @@ describe('createQoderSurface quota service', () => {
   })
 
   async function quotaServer(scenarioId: string) {
-    const server = await createMockModelServer({ models: ['qoder-quota-test'] })
+    const server = await createMockModelServer({
+      models: ['qoder-quota-test'],
+    })
     servers.push(server)
     await registerMockModelScenario(server.url, scenarioId, { steps: [] })
     const control = new URL(`${QODER_QUOTA_CONTROL_PREFIX}${scenarioId}`, server.url)
     const usage = new URL(QODER_QUOTA_PATH, server.url)
-    const configure = (body: unknown) => fetch(control, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ status: 200, body }) })
+    const configure = (body: unknown) => fetch(control, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ status: 200, body }),
+    })
     return { server, control, usage, configure }
   }
 
@@ -248,12 +366,18 @@ describe('createQoderSurface quota service', () => {
     expect((await fetch(usage, { headers: authorization })).status, 'no answer is configured yet').toBe(404)
     expect((await configure({ user_id: 'leapmux-e2e', user_type: 'personal', total_usage_percentage: 42 })).status).toBe(200)
     expect((await fetch(usage)).status).toBe(401)
-    expect((await fetch(usage, { headers: { authorization: 'Bearer another-token' } })).status).toBe(401)
+    expect((await fetch(usage, {
+      headers: { authorization: 'Bearer another-token' },
+    })).status).toBe(401)
     const answered = await fetch(usage, { headers: authorization })
     expect(answered.status).toBe(200)
     expect(await answered.json()).toEqual({ user_id: 'leapmux-e2e', user_type: 'personal', total_usage_percentage: 42 })
     const state = await (await fetch(control)).json()
-    expect(state.receipts.map((receipt: { status: number, authorized: boolean }) => [receipt.status, receipt.authorized])).toEqual([[401, false], [401, false], [200, true]])
+    expect(state.receipts.map((receipt: { status: number, authorized: boolean }) => [receipt.status, receipt.authorized])).toEqual([
+      [401, false],
+      [401, false],
+      [200, true],
+    ])
     expect(JSON.stringify(state)).not.toContain(MOCK_IDENTITY_TOKEN)
   })
 
@@ -262,13 +386,17 @@ describe('createQoderSurface quota service', () => {
     expect((await configure({ user_id: 'leapmux-e2e', user_type: 'personal' })).status).toBe(200)
     await removeMockModelScenario(server.url, 'qoder-quota-removed')
     expect((await fetch(control)).status).toBe(404)
-    expect((await fetch(usage, { headers: { authorization: `Bearer ${MOCK_IDENTITY_TOKEN}` } })).status).toBe(404)
+    expect((await fetch(usage, {
+      headers: { authorization: `Bearer ${MOCK_IDENTITY_TOKEN}` },
+    })).status).toBe(404)
   })
 
   it('keeps serving the other native Qoder services', async () => {
     const { usage } = await quotaServer('qoder-quota-services')
     const status = await fetch(new URL('/api/v3/user/status', usage))
     expect(status.status).toBe(200)
-    expect(await status.json()).toMatchObject({ featureSwitches: { allow_byok: 2 } })
+    expect(await status.json()).toMatchObject({
+      featureSwitches: { allow_byok: 2 },
+    })
   })
 })

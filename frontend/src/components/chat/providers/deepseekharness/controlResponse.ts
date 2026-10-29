@@ -18,14 +18,22 @@ export function deepseekHarnessControlResponseSummary(cr: PersistedControlRespon
   const decision = decodeControlBehaviorEnvelope(cr.response)
   if (!decision || !cr.request || decision.requestId !== cr.requestId)
     return null
-  if (cr.request.event === DEEPSEEK_HARNESS_CONTROL_EVENT.Approval)
-    return label(decision.behavior === 'allow' ? 'Allow once' : CONTROL_DECISION_WORDS.permission.deny)
+  if (cr.request.event === DEEPSEEK_HARNESS_CONTROL_EVENT.Approval) {
+    return label(decision.behavior === 'allow'
+      ? 'Allow once'
+      : CONTROL_DECISION_WORDS.permission.deny)
+  }
   if (cr.request.event !== DEEPSEEK_HARNESS_CONTROL_EVENT.UserQuestions)
     return null
   const questions = deepseekHarnessQuestionRecords(cr.request)
-  const plan = questions.length === 1 ? questions[0] : undefined
-  if (pickObject(plan, 'intent')?.kind === 'plan-review')
-    return decision.behavior === 'allow' ? label(CONTROL_DECISION_WORDS.plan.allow) : feedbackOrLabel(decision.message, 'Keep planning')
+  const plan = questions.length === 1
+    ? questions[0]
+    : undefined
+  if (pickObject(plan, 'intent')?.kind === 'plan-review') {
+    return decision.behavior === 'allow'
+      ? label(CONTROL_DECISION_WORDS.plan.allow)
+      : feedbackOrLabel(decision.message, 'Keep planning')
+  }
   if (decision.behavior === 'deny')
     return feedbackOrLabel(decision.message, 'Dismissed')
   const native = pickObject(pickObject(cr.response, 'response'), 'response')
@@ -42,15 +50,24 @@ export function deepseekHarnessControlResponseSummary(cr: PersistedControlRespon
     const answer = answers.find(answer => answer.id === question.id)
     if (!answer)
       return null
-    const offered = Array.isArray(question.options) ? question.options.filter(isObject).map(option => pickString(option, 'label')) : []
+    const offered = Array.isArray(question.options)
+      ? question.options.filter(isObject).map(option => pickString(option, 'label'))
+      : []
     const selected = stringArray(answer.selected)
     if (selected.some(value => !offered.includes(value)))
       return null
     const custom = pickString(answer, 'custom')
-    const text = [...selected, ...(custom ? [custom] : [])].join(', ')
+    const text = [
+      ...selected,
+      ...(custom
+        ? [custom]
+        : []),
+    ].join(', ')
     if (text)
       lines.push(`${pickString(question, 'question') || pickString(question, 'header') || pickString(question, 'id')}: ${text}`)
   }
   const text = joinAnswerLines(lines)
-  return text ? label(text) : label('No answer')
+  return text
+    ? label(text)
+    : label('No answer')
 }

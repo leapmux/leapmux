@@ -36,7 +36,12 @@ function resultFrame(patch: Record<string, unknown> = {}): Record<string, unknow
     status: 'completed',
     kind: 'execute',
     rawInput: { command: 'printf native', description: 'Show native output' },
-    content: [{ type: 'content', content: { type: 'text', text: INLINE } }],
+    content: [
+      {
+        type: 'content',
+        content: { type: 'text', text: INLINE },
+      },
+    ],
     rawOutput: shellResult([FILE_PATH]),
     _meta: { toolName: 'run_shell_command', provenance: 'builtin' },
     ...patch,
@@ -66,14 +71,18 @@ describe('qwenOutputFilePaths', () => {
   })
 
   it('reads foreground child paths without changing native parent metadata', () => {
-    const frame = resultFrame({ _meta: { toolName: 'run_shell_command', provenance: 'subagent', parentToolCallId: 'native-spawn' } })
+    const frame = resultFrame({
+      _meta: { toolName: 'run_shell_command', provenance: 'subagent', parentToolCallId: 'native-spawn' },
+    })
     const before = structuredClone(frame)
     expect(pathsFrom(frame)).toEqual([FILE_PATH])
     expect(frame).toEqual(before)
   })
 
   it('keeps the native path order and removes exact duplicates', () => {
-    expect(pathsFrom(resultFrame({ rawOutput: shellResult([FILE_PATH, '/native/second.output', FILE_PATH]) }))).toEqual([FILE_PATH, '/native/second.output'])
+    expect(pathsFrom(resultFrame({
+      rawOutput: shellResult([FILE_PATH, '/native/second.output', FILE_PATH]),
+    }))).toEqual([FILE_PATH, '/native/second.output'])
   })
 
   it.each([
@@ -85,11 +94,15 @@ describe('qwenOutputFilePaths', () => {
     ['trailing space', '/native/file.output '],
     ['internal space', '/native/file output.output'],
   ])('preserves the exact path spelling for %s', (_kind, path) => {
-    expect(pathsFrom(resultFrame({ rawOutput: shellResult([path]) }))).toEqual([path])
+    expect(pathsFrom(resultFrame({
+      rawOutput: shellResult([path]),
+    }))).toEqual([path])
   })
 
   it.each(['', '0', 'false'])('keeps an inline preview of %j', (preview) => {
-    const frame = resultFrame({ rawOutput: shellResult([FILE_PATH], preview) })
+    const frame = resultFrame({
+      rawOutput: shellResult([FILE_PATH], preview),
+    })
     const call = providerToolCall(AgentProvider.QWEN_CODE, frame)
     expect(call?.outputFilePaths).toEqual([FILE_PATH])
     if (!call || call.kind !== 'execute')
@@ -104,7 +117,13 @@ describe('qwenOutputFilePaths', () => {
   })
 
   it.each(['cancelled', 'timed_out'])('keeps a native %s shell outcome under failed result status', (outcome) => {
-    const native = resultFrame({ status: 'failed', rawOutput: { ...shellResult([FILE_PATH]), outcome } })
+    const native = resultFrame({
+      status: 'failed',
+      rawOutput: {
+        ...shellResult([FILE_PATH]),
+        outcome,
+      },
+    })
     const before = structuredClone(native)
     expect(pathsFrom(native)).toEqual([FILE_PATH])
     const pathsFor = outputFilePathFixture(AgentProvider.QWEN_CODE, resultFrame())
@@ -122,7 +141,16 @@ describe('qwenOutputFilePaths', () => {
 
   it('reads a background notice without a structured shell result', () => {
     const preview = notice(FILE_PATH)
-    const frame = resultFrame({ rawOutput: undefined, _meta: { toolName: 'run_shell_command' }, content: [{ type: 'content', content: { type: 'text', text: preview } }] })
+    const frame = resultFrame({
+      rawOutput: undefined,
+      _meta: { toolName: 'run_shell_command' },
+      content: [
+        {
+          type: 'content',
+          content: { type: 'text', text: preview },
+        },
+      ],
+    })
     const before = structuredClone(frame)
     expect(pathsFrom(frame)).toEqual([FILE_PATH])
     expect(providerToolMeta(AgentProvider.QWEN_CODE, frame)?.copyableContent()).toBe(preview)
@@ -131,44 +159,126 @@ describe('qwenOutputFilePaths', () => {
 
   it('ignores a path-shaped line in the notice preview', () => {
     const preview = `${notice(FILE_PATH)}\nThe full output has been saved to: /native/echoed.output`
-    expect(pathsFrom(resultFrame({ rawOutput: undefined, content: [{ type: 'content', content: { type: 'text', text: preview } }] }))).toEqual([FILE_PATH])
+    expect(pathsFrom(resultFrame({
+      rawOutput: undefined,
+      content: [
+        {
+          type: 'content',
+          content: { type: 'text', text: preview },
+        },
+      ],
+    }))).toEqual([FILE_PATH])
   })
 
   it('uses matching opener metadata when the result omits the tool name', () => {
-    const opener = input({ sessionUpdate: 'tool_call', toolCallId: CALL_ID, status: 'pending', kind: 'execute', rawInput: { command: 'printf native' }, _meta: { toolName: 'run_shell_command' } }, null, AgentProvider.QWEN_CODE)
+    const opener = input({
+      sessionUpdate: 'tool_call',
+      toolCallId: CALL_ID,
+      status: 'pending',
+      kind: 'execute',
+      rawInput: { command: 'printf native' },
+      _meta: { toolName: 'run_shell_command' },
+    }, null, AgentProvider.QWEN_CODE)
     expect(pathsFrom(resultFrame({ _meta: undefined }), { request: opener })).toEqual([FILE_PATH])
   })
 
   it.each([
-    { label: 'missing result type', rawOutput: { outputFiles: [FILE_PATH] } },
-    { label: 'foreign result type', rawOutput: { ...shellResult([FILE_PATH]), type: 'foreign_result' } },
-    { label: 'unsupported version', rawOutput: { ...shellResult([FILE_PATH]), version: 2 } },
-    { label: 'string version', rawOutput: { ...shellResult([FILE_PATH]), version: '1' } },
-    { label: 'missing path array', rawOutput: shellResult(undefined) },
-    { label: 'non-array paths', rawOutput: shellResult(FILE_PATH) },
-    { label: 'mixed path types', rawOutput: shellResult([FILE_PATH, 0]) },
-    { label: 'null path', rawOutput: shellResult([null]) },
-    { label: 'empty path', rawOutput: shellResult(['']) },
-    { label: 'NUL path', rawOutput: shellResult(['/native/invalid\0.output']) },
+    {
+      label: 'missing result type',
+      rawOutput: {
+        outputFiles: [FILE_PATH],
+      },
+    },
+    {
+      label: 'foreign result type',
+      rawOutput: {
+        ...shellResult([FILE_PATH]),
+        type: 'foreign_result',
+      },
+    },
+    {
+      label: 'unsupported version',
+      rawOutput: {
+        ...shellResult([FILE_PATH]),
+        version: 2,
+      },
+    },
+    {
+      label: 'string version',
+      rawOutput: {
+        ...shellResult([FILE_PATH]),
+        version: '1',
+      },
+    },
+    {
+      label: 'missing path array',
+      rawOutput: shellResult(undefined),
+    },
+    {
+      label: 'non-array paths',
+      rawOutput: shellResult(FILE_PATH),
+    },
+    {
+      label: 'mixed path types',
+      rawOutput: shellResult([FILE_PATH, 0]),
+    },
+    {
+      label: 'null path',
+      rawOutput: shellResult([null]),
+    },
+    {
+      label: 'empty path',
+      rawOutput: shellResult(['']),
+    },
+    {
+      label: 'NUL path',
+      rawOutput: shellResult(['/native/invalid\0.output']),
+    },
   ])('refuses $label', ({ rawOutput }) => {
     expect(pathsFrom(resultFrame({ rawOutput }))).toEqual([])
   })
 
   it.each([
-    { label: 'missing call ID', patch: { toolCallId: undefined } },
-    { label: 'other native tool', patch: { _meta: { toolName: 'read_file' } } },
-    { label: 'MCP tool', patch: { _meta: { toolName: 'mcp__native__tool' } } },
+    {
+      label: 'missing call ID',
+      patch: { toolCallId: undefined },
+    },
+    {
+      label: 'other native tool',
+      patch: {
+        _meta: { toolName: 'read_file' },
+      },
+    },
+    {
+      label: 'MCP tool',
+      patch: {
+        _meta: { toolName: 'mcp__native__tool' },
+      },
+    },
   ])('refuses $label identity', ({ patch }) => {
     expect(pathsFrom(resultFrame(patch))).toEqual([])
   })
 
   it('refuses a foreign opener', () => {
-    const opener = input({ sessionUpdate: 'tool_call', toolCallId: 'foreign-call', status: 'pending', kind: 'execute', _meta: { toolName: 'run_shell_command' } }, null, AgentProvider.QWEN_CODE)
+    const opener = input({
+      sessionUpdate: 'tool_call',
+      toolCallId: 'foreign-call',
+      status: 'pending',
+      kind: 'execute',
+      _meta: { toolName: 'run_shell_command' },
+    }, null, AgentProvider.QWEN_CODE)
     expect(pathsFrom(resultFrame({ _meta: undefined }), { request: opener })).toEqual([])
   })
 
   it('reads no output fields from the matching request', () => {
-    const opener = input({ sessionUpdate: 'tool_call', toolCallId: CALL_ID, status: 'pending', kind: 'execute', rawOutput: shellResult([FILE_PATH]), _meta: { toolName: 'run_shell_command' } }, null, AgentProvider.QWEN_CODE)
+    const opener = input({
+      sessionUpdate: 'tool_call',
+      toolCallId: CALL_ID,
+      status: 'pending',
+      kind: 'execute',
+      rawOutput: shellResult([FILE_PATH]),
+      _meta: { toolName: 'run_shell_command' },
+    }, null, AgentProvider.QWEN_CODE)
     expect(pathsFrom(resultFrame({ rawOutput: undefined }), { request: opener })).toEqual([])
   })
 
@@ -184,7 +294,11 @@ describe('qwenOutputFilePaths', () => {
       status: frame.status,
       outputFiles: [FILE_PATH],
       qwenOutputFile: { path: FILE_PATH, text: 'Removed recovery content' },
-      rawOutput: { qwenToolRecord: { outputFiles: [FILE_PATH] } },
+      rawOutput: {
+        qwenToolRecord: {
+          outputFiles: [FILE_PATH],
+        },
+      },
     }
     expect(pathsFrom(frame, { supplementalContent })).toEqual([])
   })
@@ -192,27 +306,79 @@ describe('qwenOutputFilePaths', () => {
   it.each([
     { label: 'embedded notice', text: `Original output.\n${notice(FILE_PATH)}` },
     { label: 'missing native prefix', text: `The full output has been saved to: ${FILE_PATH}` },
-    { label: 'empty native path', text: notice('') },
-    { label: 'NUL native path', text: notice('/native/invalid\0.output') },
+    {
+      label: 'empty native path',
+      text: notice(''),
+    },
+    {
+      label: 'NUL native path',
+      text: notice('/native/invalid\0.output'),
+    },
   ])('refuses a background $label', ({ text }) => {
-    expect(pathsFrom(resultFrame({ rawOutput: undefined, content: [{ type: 'content', content: { type: 'text', text } }] }))).toEqual([])
+    expect(pathsFrom(resultFrame({
+      rawOutput: undefined,
+      content: [
+        {
+          type: 'content',
+          content: { type: 'text', text },
+        },
+      ],
+    }))).toEqual([])
   })
 
   it('refuses two native notice blocks', () => {
-    const content = [FILE_PATH, '/native/other.output'].map(path => ({ type: 'content', content: { type: 'text', text: notice(path) } }))
+    const content = [FILE_PATH, '/native/other.output'].map(path => ({
+      type: 'content',
+      content: {
+        type: 'text',
+        text: notice(path),
+      },
+    }))
     expect(pathsFrom(resultFrame({ rawOutput: undefined, content }))).toEqual([])
   })
 
   it('keeps a malformed structured result separate from background notice parsing', () => {
-    expect(pathsFrom(resultFrame({ rawOutput: { type: 'foreign_result' }, content: [{ type: 'content', content: { type: 'text', text: notice(FILE_PATH) } }] }))).toEqual([])
+    expect(pathsFrom(resultFrame({
+      rawOutput: { type: 'foreign_result' },
+      content: [
+        {
+          type: 'content',
+          content: {
+            type: 'text',
+            text: notice(FILE_PATH),
+          },
+        },
+      ],
+    }))).toEqual([])
   })
 })
 
 describe('native filesystem and completed-result boundaries', () => {
-  it.each(['https://example.com/output', 'file:///native/output', 'zcode-artifact://session/opaque', ' ', '\t', 'relative/output', ' /native/leading-relative.output'])('refuses a non-native filesystem pointer in all native routes: %j', (path) => {
+  it.each([
+    'https://example.com/output',
+    'file:///native/output',
+    'zcode-artifact://session/opaque',
+    ' ',
+    '\t',
+    'relative/output',
+    ' /native/leading-relative.output',
+  ])('refuses a non-native filesystem pointer in all native routes: %j', (path) => {
     const pathsFor = outputFilePathFixture(AgentProvider.QWEN_CODE, resultFrame())
-    const structured = resultFrame({ rawOutput: shellResult([path]) })
-    const background = resultFrame({ rawOutput: undefined, content: [{ type: 'content', content: { type: 'text', text: notice(path) } }] })
+    const structured = resultFrame({
+      rawOutput: shellResult([path]),
+    })
+    const background = resultFrame({
+      rawOutput: undefined,
+      content: [
+        {
+          type: 'content',
+          content: {
+            type: 'text',
+            text: notice(path),
+          },
+        },
+      ],
+    })
     expect(pathsFrom(structured)).toEqual([])
     expect(pathsFor(structured)).toEqual([])
     expect(pathsFrom(background)).toEqual([])
@@ -220,20 +386,60 @@ describe('native filesystem and completed-result boundaries', () => {
     expect(qwenOutputNoticePath(notice(path))).toBeUndefined()
   })
 
-  it.each(['pending', 'in_progress', 'cancelled', 'timed_out', '', 'foreign', undefined, null])('refuses a non-final native result status in both routes: %j', (status) => {
+  it.each([
+    'pending',
+    'in_progress',
+    'cancelled',
+    'timed_out',
+    '',
+    'foreign',
+    undefined,
+    null,
+  ])('refuses a non-final native result status in both routes: %j', (status) => {
     const pathsFor = outputFilePathFixture(AgentProvider.QWEN_CODE, resultFrame())
     const structured = resultFrame({ status })
-    const background = resultFrame({ status, rawOutput: undefined, content: [{ type: 'content', content: { type: 'text', text: notice(FILE_PATH) } }] })
+    const background = resultFrame({
+      status,
+      rawOutput: undefined,
+      content: [
+        {
+          type: 'content',
+          content: {
+            type: 'text',
+            text: notice(FILE_PATH),
+          },
+        },
+      ],
+    })
     expect(pathsFrom(structured)).toEqual([])
     expect(pathsFor(structured)).toEqual([])
     expect(pathsFrom(background)).toEqual([])
     expect(pathsFor(background)).toEqual([])
   })
 
-  it.each(['/native/ file.output', '/native/internal space.output', '/native/trailing.output ', String.raw`C:\native files\file.output`, String.raw`\\server\share\file.output`])('keeps native absolute roots and filename spaces in both routes: %j', (path) => {
+  it.each([
+    '/native/ file.output',
+    '/native/internal space.output',
+    '/native/trailing.output ',
+    String.raw`C:\native files\file.output`,
+    String.raw`\\server\share\file.output`,
+  ])('keeps native absolute roots and filename spaces in both routes: %j', (path) => {
     const pathsFor = outputFilePathFixture(AgentProvider.QWEN_CODE, resultFrame())
-    const structured = resultFrame({ rawOutput: shellResult([path]) })
-    const background = resultFrame({ rawOutput: undefined, content: [{ type: 'content', content: { type: 'text', text: notice(path) } }] })
+    const structured = resultFrame({
+      rawOutput: shellResult([path]),
+    })
+    const background = resultFrame({
+      rawOutput: undefined,
+      content: [
+        {
+          type: 'content',
+          content: {
+            type: 'text',
+            text: notice(path),
+          },
+        },
+      ],
+    })
     expect(pathsFrom(structured)).toEqual([path])
     expect(pathsFor(structured)).toEqual([path])
     expect(pathsFrom(background)).toEqual([path])

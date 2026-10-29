@@ -82,7 +82,13 @@ describe('attachTapSelect', () => {
   function tap(x: number, opts: TapOpts = {}) {
     const target = opts.on ?? para
     const rest = opts.releaseOn ?? target
-    const shared = { pointerType: opts.pointerType ?? 'touch', y: 0, ...(opts.isPrimary !== undefined ? { isPrimary: opts.isPrimary } : {}) }
+    const shared = {
+      pointerType: opts.pointerType ?? 'touch',
+      y: 0,
+      ...(opts.isPrimary !== undefined
+        ? { isPrimary: opts.isPrimary }
+        : {}),
+    }
     target.dispatchEvent(pointerEvent('pointerdown', { ...shared, x }))
     if (opts.drift !== undefined)
       rest.dispatchEvent(pointerEvent('pointermove', { ...shared, x: x + opts.drift }))
@@ -124,7 +130,10 @@ describe('attachTapSelect', () => {
       tap(BROWN + 2)
       tap(BROWN + 2)
       tap(BROWN + 2)
-      expect(onSelect.mock.calls).toEqual([['word'], ['paragraph']])
+      expect(onSelect.mock.calls).toEqual([
+        ['word'],
+        ['paragraph'],
+      ])
     })
 
     it('starts a new sequence after the previous one finished', () => {
@@ -498,7 +507,12 @@ describe('attachTapSelect', () => {
     it('keeps it lifted for a finger that lands on the highlight', () => {
       tap(BROWN + 2)
       tap(BROWN + 2)
-      highlightAt({ left: 0, right: 200, top: 0, bottom: 40 })
+      highlightAt({
+        left: 0,
+        right: 200,
+        top: 0,
+        bottom: 40,
+      })
       clock += MULTI_TAP_MS + 1
       para.dispatchEvent(pointerEvent('pointerdown', { pointerType: 'touch', x: 50, y: 20 }))
       expect(suppressed.style.userSelect).toBe('text')
@@ -511,7 +525,12 @@ describe('attachTapSelect', () => {
     it('keeps it lifted for a finger reaching just past the highlight', () => {
       tap(BROWN + 2)
       tap(BROWN + 2)
-      highlightAt({ left: 0, right: 200, top: 0, bottom: 40 })
+      highlightAt({
+        left: 0,
+        right: 200,
+        top: 0,
+        bottom: 40,
+      })
       clock += MULTI_TAP_MS + 1
       para.dispatchEvent(pointerEvent('pointerdown', { pointerType: 'touch', x: 50, y: 60 }))
       expect(suppressed.style.userSelect).toBe('text')
@@ -520,7 +539,12 @@ describe('attachTapSelect', () => {
     it('drops it for a finger well clear of the highlight', () => {
       tap(BROWN + 2)
       tap(BROWN + 2)
-      highlightAt({ left: 0, right: 200, top: 0, bottom: 40 })
+      highlightAt({
+        left: 0,
+        right: 200,
+        top: 0,
+        bottom: 40,
+      })
       clock += MULTI_TAP_MS + 1
       para.dispatchEvent(pointerEvent('pointerdown', { pointerType: 'touch', x: 50, y: 400 }))
       expect(suppressed.style.userSelect).toBe('')

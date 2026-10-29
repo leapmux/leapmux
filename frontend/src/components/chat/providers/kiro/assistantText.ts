@@ -11,7 +11,9 @@ const STEER_NOTE = /\[STEERING (steer-[A-Za-z0-9-]+): ([^\]\n]*)\]/g
 export function kiroAssistantTextSegments(text: string): AssistantTextSegment[] | undefined {
   if (!text.includes('[STEERING '))
     return undefined
-  const matches = [...text.matchAll(STEER_NOTE)]
+  const matches = [
+    ...text.matchAll(STEER_NOTE),
+  ]
   if (matches.length === 0)
     return undefined
   const segments: AssistantTextSegment[] = []

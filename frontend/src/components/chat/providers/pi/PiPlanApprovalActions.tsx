@@ -16,10 +16,24 @@ export const PiPlanApprovalActions: Component<ActionsProps> = (props) => {
     <ControlDecisionFooter
       hasEditorContent={props.hasEditorContent}
       onSendFeedback={props.onTriggerSend}
-      negativeAction={{ label: 'Reject', testId: 'plan-reject-btn', onSelect: () => send(PI_PLAN_ACTION.Stay) }}
-      positiveAction={{ label: 'Approve', testId: 'plan-approve-btn', onSelect: () => send(state.clearContext() ? PI_PLAN_ACTION.ImplementFresh : PI_PLAN_ACTION.ImplementHere) }}
+      negativeAction={{
+        label: 'Reject',
+        testId: 'plan-reject-btn',
+        onSelect: () => send(PI_PLAN_ACTION.Stay),
+      }}
+      positiveAction={{
+        label: 'Approve',
+        testId: 'plan-approve-btn',
+        onSelect: () => send(state.clearContext()
+          ? PI_PLAN_ACTION.ImplementFresh
+          : PI_PLAN_ACTION.ImplementHere),
+      }}
       switches={() => planApprovalSwitches(state)}
-      additionalActions={() => additional().map((option, index) => ({ label: option, testId: `pi-plan-action-${index}`, onSelect: () => send(option) }))}
+      additionalActions={() => additional().map((option, index) => ({
+        label: option,
+        testId: `pi-plan-action-${index}`,
+        onSelect: () => send(option),
+      }))}
     />
   )
 }

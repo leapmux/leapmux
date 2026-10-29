@@ -23,7 +23,13 @@ vi.mock('~/components/common/Toast', () => ({
 }))
 
 function section(id: string, name: string, sectionType = SectionType.WORKSPACES_CUSTOM): Section {
-  return { id, name, position: 'n', sectionType, sidebar: Sidebar.LEFT } as Section
+  return {
+    id,
+    name,
+    position: 'n',
+    sectionType,
+    sidebar: Sidebar.LEFT,
+  } as Section
 }
 
 function harness(sections: Section[] = []) {
@@ -31,7 +37,12 @@ function harness(sections: Section[] = []) {
   return createRoot((dispose) => {
     const sectionStore = createSectionStore()
     sectionStore.setSections(sections)
-    return { dispose, sectionStore, loadSections, ops: useSectionOperations({ sectionStore, loadSections }) }
+    return {
+      dispose,
+      sectionStore,
+      loadSections,
+      ops: useSectionOperations({ sectionStore, loadSections }),
+    }
   })
 }
 
@@ -59,7 +70,9 @@ describe('useSectionOperations', () => {
     })
 
     it('sends the cleaned name, because the hub sanitizes whatever arrives', async () => {
-      mockCreateSection.mockResolvedValue({ section: section('sec-new', 'Reviews') })
+      mockCreateSection.mockResolvedValue({
+        section: section('sec-new', 'Reviews'),
+      })
       const h = harness()
 
       await h.ops.createSection('  Reviews  ', Sidebar.RIGHT)
@@ -99,7 +112,9 @@ describe('useSectionOperations', () => {
   describe('renameSection', () => {
     it('renames the stored row', async () => {
       mockRenameSection.mockResolvedValue({})
-      const h = harness([section('sec-1', 'Old')])
+      const h = harness([
+        section('sec-1', 'Old'),
+      ])
 
       await h.ops.renameSection('sec-1', '  New  ')
 
@@ -110,7 +125,9 @@ describe('useSectionOperations', () => {
 
     it('leaves the row alone when the RPC fails', async () => {
       mockRenameSection.mockRejectedValueOnce(new Error('nope'))
-      const h = harness([section('sec-1', 'Old')])
+      const h = harness([
+        section('sec-1', 'Old'),
+      ])
 
       await expect(h.ops.renameSection('sec-1', 'New')).rejects.toThrow('nope')
       expect(h.sectionStore.state.sections[0]?.name).toBe('Old')
@@ -118,7 +135,9 @@ describe('useSectionOperations', () => {
     })
 
     it('rejects a name that cleans to nothing, and sends nothing', async () => {
-      const h = harness([section('sec-1', 'Old')])
+      const h = harness([
+        section('sec-1', 'Old'),
+      ])
       await expect(h.ops.renameSection('sec-1', '​')).rejects.toThrow(/needs a name/)
       expect(mockRenameSection).not.toHaveBeenCalled()
       h.dispose()
@@ -130,7 +149,9 @@ describe('useSectionOperations', () => {
       // The hub re-stamps every relocated item's lexorank, and those positions
       // are the server's to compute.
       mockDeleteSection.mockResolvedValue({})
-      const h = harness([section('sec-1', 'Reviews')])
+      const h = harness([
+        section('sec-1', 'Reviews'),
+      ])
 
       await h.ops.deleteSection('sec-1')
 
@@ -145,7 +166,9 @@ describe('useSectionOperations', () => {
     // new call site free to pick up the wrong surface by accident.
     it('rejects when the RPC fails, and keeps the row', async () => {
       mockDeleteSection.mockRejectedValueOnce(new Error('nope'))
-      const h = harness([section('sec-1', 'Reviews')])
+      const h = harness([
+        section('sec-1', 'Reviews'),
+      ])
 
       await expect(h.ops.deleteSection('sec-1')).rejects.toThrow('nope')
 
@@ -158,7 +181,9 @@ describe('useSectionOperations', () => {
     // not a failed delete. Reporting it as one told the user a completed
     // destructive operation had failed.
     it('reports a failed refresh separately, and keeps the row deleted', async () => {
-      const h = harness([section('sec-1', 'Reviews')])
+      const h = harness([
+        section('sec-1', 'Reviews'),
+      ])
       h.loadSections.mockRejectedValueOnce(new Error('offline'))
 
       await h.ops.deleteSection('sec-1')

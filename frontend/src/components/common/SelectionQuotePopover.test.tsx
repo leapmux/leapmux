@@ -22,10 +22,14 @@ const originalGetSelection = window.getSelection
  * predicate. A case that needs geometry overrides `getRangeAt` itself.
  */
 function mockSelection(selection: Partial<Selection> | null): void {
-  const text = selection ? String(selection.toString?.() ?? '') : ''
+  const text = selection
+    ? String(selection.toString?.() ?? '')
+    : ''
   const withRange = selection && {
     rangeCount: 1,
-    getRangeAt: () => ({ toString: () => text }) as unknown as Range,
+    getRangeAt: () => ({
+      toString: () => text,
+    }) as unknown as Range,
     ...selection,
   }
   vi.spyOn(window, 'getSelection').mockReturnValue(withRange as Selection | null)
@@ -79,7 +83,12 @@ describe('selection quote popover', () => {
     const TEXT = 'the quick brown fox'
 
     /** jsdom has no layout, so the two things layout would answer are supplied. */
-    function withLayout(node: Text, rect = { left: 10, right: 90, top: 40, bottom: 60 }) {
+    function withLayout(node: Text, rect = {
+      left: 10,
+      right: 90,
+      top: 40,
+      bottom: 60,
+    }) {
       document.caretPositionFromPoint = ((x: number) => ({
         offsetNode: node,
         offset: Math.max(0, Math.min(Math.round(x), node.data.length)),
@@ -87,7 +96,9 @@ describe('selection quote popover', () => {
       })) as unknown as typeof document.caretPositionFromPoint
       Object.defineProperty(Range.prototype, 'getClientRects', {
         configurable: true,
-        value: () => [{ ...rect, width: rect.right - rect.left, height: rect.bottom - rect.top }],
+        value: () => [
+          { ...rect, width: rect.right - rect.left, height: rect.bottom - rect.top },
+        ],
       })
       vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb) => {
         cb(0)
@@ -215,7 +226,14 @@ describe('selection quote popover', () => {
       toString: () => 'selected text',
       getRangeAt: () => ({
         toString: () => 'selected text',
-        getClientRects: () => [{ left: 0, right: 10, top: 10, bottom: 20 }],
+        getClientRects: () => [
+          {
+            left: 0,
+            right: 10,
+            top: 10,
+            bottom: 20,
+          },
+        ],
       }) as unknown as Range,
     })
 
@@ -267,7 +285,14 @@ describe('selection quote popover', () => {
         toString: () => 'selected text',
         removeAllRanges,
         getRangeAt: () => ({
-          getClientRects: () => [{ left: 0, right: 10, top: 10, bottom: 20 }],
+          getClientRects: () => [
+            {
+              left: 0,
+              right: 10,
+              top: 10,
+              bottom: 20,
+            },
+          ],
           cloneContents: () => selectedFragment.cloneNode(true),
         }) as unknown as Range,
       })
@@ -333,7 +358,14 @@ describe('selection quote popover', () => {
         toString: () => 'selected text',
         removeAllRanges,
         getRangeAt: () => ({
-          getClientRects: () => [{ left: 0, right: 10, top: 10, bottom: 20 }],
+          getClientRects: () => [
+            {
+              left: 0,
+              right: 10,
+              top: 10,
+              bottom: 20,
+            },
+          ],
           cloneContents: () => selectedFragment.cloneNode(true),
         }) as unknown as Range,
       })

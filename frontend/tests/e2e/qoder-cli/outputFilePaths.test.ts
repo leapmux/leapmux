@@ -27,5 +27,10 @@ const frame = {
 }
 
 describe('readQoderNativeOutput', () => {
-  runNativeOutputReaderCases({ read: readQoderNativeOutput, frame, path, pointerError: 'The native Qoder pointer belongs to another native result or session.' })
+  runNativeOutputReaderCases({
+    read: readQoderNativeOutput,
+    frame,
+    path,
+    pointerError: 'The native Qoder pointer belongs to another native result or session.',
+  })
 })

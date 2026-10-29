@@ -21,13 +21,19 @@ kiroTest.describe('Kiro session goal', () => {
   // reach the parent transcript.
   kiroTest('leaves the goal blocked when a step reports an error', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
     // The native fixture opens Kiro with its default policy. This test needs `allow-all`, so it opens its own agent.
-    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, KIRO_AGENT, { optionValues: { policyPreset: 'allow-all' } })
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, KIRO_AGENT, {
+      optionValues: { policyPreset: 'allow-all' },
+    })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await waitForSettingsHydrated(page)
     await modelScript.rule({
       name: 'the first step reports an error',
       when: { protocol: 'aws-event-stream', user: GOAL_STEP_PROMPT },
-      respond: { toolCalls: [blockGoalToolCall(KIRO, 'kiro-goal-blocked', 'The repository is read-only.')] },
+      respond: {
+        toolCalls: [
+          blockGoalToolCall(KIRO, 'kiro-goal-blocked', 'The repository is read-only.'),
+        ],
+      },
       once: true,
     })
     // The step then ends its turn with words, and Kiro wakes the parent session for

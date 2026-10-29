@@ -17,10 +17,19 @@ qoderTest.describe('Qoder CLI plan approval', () => {
   function planSteps(revision: string) {
     return [
       {
-        toolCalls: [writeToolCall(PROVIDER, `write-plan-${revision}`, { path: '{{planFile}}', content: planText(revision) })],
+        toolCalls: [
+          writeToolCall(PROVIDER, `write-plan-${revision}`, {
+            path: '{{planFile}}',
+            content: planText(revision),
+          }),
+        ],
         captures: PLAN_FILE_CAPTURE,
       },
-      { toolCalls: [exitPlanModeFromFileToolCall(PROVIDER, `exit-plan-${revision}`, [])] },
+      {
+        toolCalls: [
+          exitPlanModeFromFileToolCall(PROVIDER, `exit-plan-${revision}`, []),
+        ],
+      },
     ]
   }
 
@@ -31,7 +40,11 @@ qoderTest.describe('Qoder CLI plan approval', () => {
     // Each plan decision can start another turn.
     await modelScript.fallback({ text: 'Working through the plan.' })
 
-    const enter = await modelScript.queue({ toolCalls: [enterPlanModeToolCall(PROVIDER, 'enter-plan')] })
+    const enter = await modelScript.queue({
+      toolCalls: [
+        enterPlanModeToolCall(PROVIDER, 'enter-plan'),
+      ],
+    })
     await sendMessage(page, modelScript.prompt('Enter plan mode and present the plan.'))
     await modelScript.waitForSteps(enter + 1)
     const enterBanner = await waitForControlBanner(page)

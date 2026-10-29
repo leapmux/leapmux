@@ -6,7 +6,12 @@ import { anthropicDiracTest } from './fixtures'
 import { nativeContext } from './scenarios'
 
 anthropicDiracTest('enables and disables native thinking with the model and effort fixed', async ({ anthropicDiracWorkspace, page, modelScript }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer: anthropicDiracWorkspace.server, workspaceId: anthropicDiracWorkspace.workspaceId })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer: anthropicDiracWorkspace.server,
+    workspaceId: anthropicDiracWorkspace.workspaceId,
+  })
   await exerciseNativeOptionSequence(context, {
     groupId: 'thinking_budget',
     steps: [

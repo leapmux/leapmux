@@ -30,9 +30,15 @@ function deps(over: {
     metadata,
     selection,
     getActiveWorkspaceId: () => 'ws-1',
-    view: { getTerminalTab: () => undefined },
-    ...(over.isDetachedOnScreen !== undefined ? { isDetachedOnScreen: over.isDetachedOnScreen } : {}),
-    ...(over.detachedOwnerOf !== undefined ? { detachedOwnerOf: over.detachedOwnerOf } : {}),
+    view: {
+      getTerminalTab: () => undefined,
+    },
+    ...(over.isDetachedOnScreen !== undefined
+      ? { isDetachedOnScreen: over.isDetachedOnScreen }
+      : {}),
+    ...(over.detachedOwnerOf !== undefined
+      ? { detachedOwnerOf: over.detachedOwnerOf }
+      : {}),
   }
 }
 
@@ -48,7 +54,9 @@ describe('handleTerminalNotification for a quake terminal', () => {
   // a tab -- so an OSC 9 in a shell the user watches would raise a desktop
   // notification and badge a row nobody can see.
   it('raises no OS notification while its panel is open and its directory is focused', () => {
-    const d = deps({ isDetachedOnScreen: id => id === QUAKE_ID })
+    const d = deps({
+      isDetachedOnScreen: id => id === QUAKE_ID,
+    })
 
     handleTerminalNotification(QUAKE_ID, NOTIFICATION, d)
 
@@ -57,7 +65,9 @@ describe('handleTerminalNotification for a quake terminal', () => {
   })
 
   it('raises one while its panel is closed', () => {
-    const d = deps({ isDetachedOnScreen: () => false })
+    const d = deps({
+      isDetachedOnScreen: () => false,
+    })
 
     handleTerminalNotification(QUAKE_ID, NOTIFICATION, d)
 
@@ -74,7 +84,9 @@ describe('handleTerminalNotification for a quake terminal', () => {
   it('badges a tab in the directory, not the quake terminal nobody renders', () => {
     const d = deps({
       isDetachedOnScreen: () => false,
-      detachedOwnerOf: id => (id === QUAKE_ID ? 'agent-1' : undefined),
+      detachedOwnerOf: id => (id === QUAKE_ID
+        ? 'agent-1'
+        : undefined),
     })
 
     handleTerminalNotification(QUAKE_ID, NOTIFICATION, d)
@@ -84,7 +96,10 @@ describe('handleTerminalNotification for a quake terminal', () => {
   })
 
   it('badges a placed terminal on its own row', () => {
-    const d = deps({ isDetachedOnScreen: () => false, detachedOwnerOf: () => undefined })
+    const d = deps({
+      isDetachedOnScreen: () => false,
+      detachedOwnerOf: () => undefined,
+    })
 
     handleTerminalBell('t-placed', d)
 
@@ -104,7 +119,9 @@ describe('handleTerminalNotification for a quake terminal', () => {
 
 describe('handleTerminalBell for a quake terminal', () => {
   it('badges nothing while its panel is open and its owner is on screen', () => {
-    const d = deps({ isDetachedOnScreen: () => true })
+    const d = deps({
+      isDetachedOnScreen: () => true,
+    })
 
     handleTerminalBell(QUAKE_ID, d)
 
@@ -112,7 +129,9 @@ describe('handleTerminalBell for a quake terminal', () => {
   })
 
   it('badges the row while its panel is closed', () => {
-    const d = deps({ isDetachedOnScreen: () => false })
+    const d = deps({
+      isDetachedOnScreen: () => false,
+    })
 
     handleTerminalBell(QUAKE_ID, d)
 

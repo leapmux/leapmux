@@ -3,7 +3,13 @@ import { MUSE_STARTUP_OPTION_GROUPS } from '~/generated/contracts/muse-protocol'
 
 export const museConfiguration: ProviderConfigurationCapability = {
   startupOptionGroups: Object.values(MUSE_STARTUP_OPTION_GROUPS),
-  attachments: { text: true, image: true, pdf: false, audio: false, binary: false },
+  attachments: {
+    text: true,
+    image: true,
+    pdf: false,
+    audio: false,
+    binary: false,
+  },
   triggerModeGroupKey: 'permissionMode',
   supportsSubagentSend: true,
 }

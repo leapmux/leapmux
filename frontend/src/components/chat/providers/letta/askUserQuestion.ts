@@ -26,17 +26,27 @@ export function lettaQuestionToolInput(payload: Record<string, unknown>): Record
 /** The questions of a stored question request, for the shared control. */
 export function lettaQuestionsFromPayload(payload: Record<string, unknown>): ControlQuestion[] {
   const toolInput = lettaQuestionToolInput(payload)
-  const questions = Array.isArray(toolInput.questions) ? toolInput.questions : []
+  const questions = Array.isArray(toolInput.questions)
+    ? toolInput.questions
+    : []
   return questions.filter(isObject).map((question) => {
-    const options = Array.isArray(question.options) ? question.options : []
+    const options = Array.isArray(question.options)
+      ? question.options
+      : []
     return {
       question: pickString(question, 'question'),
       // Letta's options are `{label, description}` OBJECTS, not bare strings.
       // Reading them as strings dropped every one and the banner drew a
       // question with no choices.
       options: options.flatMap((option) => {
-        const label = typeof option === 'string' ? option : pickString(option, 'label')
-        return label ? [{ value: label, label }] : []
+        const label = typeof option === 'string'
+          ? option
+          : pickString(option, 'label')
+        return label
+          ? [
+              { value: label, label },
+            ]
+          : []
       }),
       multiSelect: question.multiSelect === true,
     }
@@ -56,14 +66,24 @@ export function lettaQuestionsFromToolInput(input: Record<string, unknown>): Que
     input.questions,
     (question) => {
       const header = pickString(question, 'header')
-      return { ...(header ? { header } : {}), question: pickString(question, 'question') }
+      return {
+        ...(header
+          ? { header }
+          : {}),
+        question: pickString(question, 'question'),
+      }
     },
     (option) => {
       const label = pickString(option, 'label')
       if (!label)
         return null
       const description = pickString(option, 'description')
-      return { label, ...(description ? { description } : {}) }
+      return {
+        label,
+        ...(description
+          ? { description }
+          : {}),
+      }
     },
   )
 }
@@ -83,5 +103,7 @@ export function lettaQuestionReceiptMessage(returned: Record<string, unknown> | 
   if (pickString(returned, LETTA_QUESTION.FieldType) !== LETTA_QUESTION.ReceiptType)
     return undefined
   const message = pickString(returned, LETTA_QUESTION.FieldMessage)
-  return message.trim() === '' ? undefined : message
+  return message.trim() === ''
+    ? undefined
+    : message
 }

@@ -4,17 +4,23 @@ import { museNativeRecordSet } from './nativeRecords'
 
 function nativeEvent(record: Record<string, unknown>): Record<string, unknown> | undefined {
   const payload = pickObject(record, 'payload')
-  return payload?.kind === MUSE_PARENT_INPUT.Run ? pickObject(payload, 'event') ?? undefined : undefined
+  return payload?.kind === MUSE_PARENT_INPUT.Run
+    ? pickObject(payload, 'event') ?? undefined
+    : undefined
 }
 
 function nativeControl(record: Record<string, unknown>): Record<string, unknown> | undefined {
   const payload = pickObject(record, 'payload')
-  return payload?.kind === MUSE_PARENT_INPUT.SubagentControl ? pickObject(payload, 'record') ?? undefined : undefined
+  return payload?.kind === MUSE_PARENT_INPUT.SubagentControl
+    ? pickObject(payload, 'record') ?? undefined
+    : undefined
 }
 
 function uniqueRecord(records: readonly Record<string, unknown>[], matches: (record: Record<string, unknown>) => boolean): Record<string, unknown> | undefined {
   const found = records.filter(matches)
-  return found.length === 1 ? found[0] : undefined
+  return found.length === 1
+    ? found[0]
+    : undefined
 }
 
 function jsonObject(value: unknown): Record<string, unknown> | undefined {
@@ -22,7 +28,9 @@ function jsonObject(value: unknown): Record<string, unknown> | undefined {
     return undefined
   try {
     const parsed: unknown = JSON.parse(value)
-    return isObject(parsed) ? parsed : undefined
+    return isObject(parsed)
+      ? parsed
+      : undefined
   }
   catch {
     return undefined
@@ -70,7 +78,9 @@ export function museNativeParentInput(payload: unknown, supplemental: unknown, c
   const set = museNativeRecordSet(supplemental[MUSE_SUPPLEMENT_FIELD.NativeRecords], parentId)
   if (!set || set.size !== 5)
     return undefined
-  const records = [...set.values()]
+  const records = [
+    ...set.values(),
+  ]
   if (records.some(record => !validNativeEnvelope(record)) || set.has(pickString(payload, 'id')))
     return undefined
   const positions = new Set(records.map(record => record.sequence))

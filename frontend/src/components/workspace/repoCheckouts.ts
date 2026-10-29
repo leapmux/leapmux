@@ -54,7 +54,9 @@ export function listRepoCheckouts(
       branch,
     })
   }
-  return [...byPath.values()]
+  return [
+    ...byPath.values(),
+  ]
 }
 
 /**
@@ -65,5 +67,7 @@ export function listRepoCheckouts(
  * is the fact that distinguishes two checkouts of one repository.
  */
 function checkoutLabel(branch: BranchGroup): string {
-  return branch.isWorktree ? `${branch.displayLabel} (worktree)` : branch.displayLabel
+  return branch.isWorktree
+    ? `${branch.displayLabel} (worktree)`
+    : branch.displayLabel
 }

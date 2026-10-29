@@ -20,12 +20,16 @@ export interface MuseItemLifecycle {
 /** Keep native finality, native outcome, and retained completion separate. */
 export function museItemLifecycle(status: unknown, completion: MessageCompletion | undefined): MuseItemLifecycle {
   const nativeFinal = status !== MUSE_ITEM_STATUS.InProgress
-  const providerOutcome = typeof status === 'string' ? NATIVE_ITEM_OUTCOMES.get(status) ?? null : null
+  const providerOutcome = typeof status === 'string'
+    ? NATIVE_ITEM_OUTCOMES.get(status) ?? null
+    : null
   const resultFrameLanded = providerOutcome !== null
   return {
     nativeFinal,
     facts: {
-      frameStatus: resultFrameLanded ? 'completed' : nativeFinal ? 'incomplete' : 'in_progress',
+      frameStatus: resultFrameLanded
+        ? 'completed'
+        : nativeFinal ? 'incomplete' : 'in_progress',
       providerOutcome,
       retainedOutcome: retainedOutcome(completion),
       rowFinal: nativeFinal || retainedRowIsFinal(completion),

@@ -24,10 +24,18 @@ export function reasonixContentWithoutProvenance(content: string): string {
     if (length >= 64)
       return content
     const code = character.codePointAt(0) ?? 0
-    length += code <= 0x7F ? 1 : code <= 0x7FF ? 2 : code <= 0xFFFF ? 3 : 4
+    length += code <= 0x7F
+      ? 1
+      : code <= 0x7FF
+        ? 2
+        : code <= 0xFFFF
+          ? 3
+          : 4
   }
   const body = content.slice(end + 1)
-  return body.startsWith(INJECTION_NOTICE) ? body.slice(INJECTION_NOTICE.length) : body
+  return body.startsWith(INJECTION_NOTICE)
+    ? body.slice(INJECTION_NOTICE.length)
+    : body
 }
 
 /** Read Reasonix's native spill receipt and bind its file to this exact tool call. */
@@ -45,7 +53,9 @@ export function reasonixOutputFilePointer(text: unknown, toolName: string, callI
     return undefined
   // The native filename replaces each non-ASCII character, trims hyphens, and caps the identity at 96 characters.
   const identity = callId.replace(/[^\w-]/gu, '-').replace(/^-+|-+$/g, '').slice(0, 96) || 'output'
-  return path.split(/[\\/]/u).at(-1) === `${identity}.txt` ? path : undefined
+  return path.split(/[\\/]/u).at(-1) === `${identity}.txt`
+    ? path
+    : undefined
 }
 
 /** Authenticate a failed receipt against the error headline that ACP actually sent. */
@@ -72,5 +82,7 @@ export function reasonixAuthenticatedOutputFilePointer(text: unknown, toolName: 
   const lines = reasonixContentWithoutProvenance(text).split('\n')
   if (lines.length !== 4 || lines[3] !== '')
     return undefined
-  return witness[REASONIX_OUTPUT_RECEIPT.PathField] === path && witness[REASONIX_OUTPUT_RECEIPT.ErrorHeadlineField] === headline ? path : undefined
+  return witness[REASONIX_OUTPUT_RECEIPT.PathField] === path && witness[REASONIX_OUTPUT_RECEIPT.ErrorHeadlineField] === headline
+    ? path
+    : undefined
 }

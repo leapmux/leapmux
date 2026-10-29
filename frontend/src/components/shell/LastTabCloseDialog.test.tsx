@@ -99,7 +99,9 @@ function renderDialog(
     <LastTabCloseDialog
       state={state}
       onDismiss={onDismiss}
-      {...(onStatusRefreshed !== undefined ? { onStatusRefreshed } : {})}
+      {...(onStatusRefreshed !== undefined
+        ? { onStatusRefreshed }
+        : {})}
     />
   ))
   return { onDismiss, onStatusRefreshed }
@@ -147,7 +149,9 @@ describe('LastTabCloseDialog', () => {
       tabType: TabType.TERMINAL,
       busyReason: {
         kind: 'terminal-processes',
-        processes: [create(TerminalProcessSchema, { pid: 51234, name: 'node' })],
+        processes: [
+          create(TerminalProcessSchema, { pid: 51234, name: 'node' }),
+        ],
         totalCount: 1,
       },
     }))

@@ -15,5 +15,8 @@ export function resolveCodebuddyMessage(parsed: ParsedMessageContent): Record<st
     || frame._requestId !== requestID || frame.session_id !== sessionID || frame.errors[0] !== repeated) {
     return undefined
   }
-  return { ...frame, errors: frame.errors.filter(error => error !== repeated) }
+  return {
+    ...frame,
+    errors: frame.errors.filter(error => error !== repeated),
+  }
 }

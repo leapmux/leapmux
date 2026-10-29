@@ -20,13 +20,17 @@ export function lettaExtractControl(input: ControlExtractionInput): ExtractedCon
   const toolName = pickString(payload, LETTA_DELTA_FIELD.ToolName) || 'Tool'
   const toolInput = pickObject(payload, LETTA_DELTA_FIELD.ToolInput) ?? {}
   const shell = lettaToolKind(toolName) === 'execute'
-  const command = shell ? pickString(toolInput, 'command') : ''
+  const command = shell
+    ? pickString(toolInput, 'command')
+    : ''
   return {
     kind: 'permission',
     permission: {
       title: toolName,
       input: toolInput,
-      ...(command !== '' ? { command } : {}),
+      ...(command !== ''
+        ? { command }
+        : {}),
       options: [],
     },
   }

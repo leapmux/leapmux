@@ -14,5 +14,7 @@ export function piOutputFilePaths(input: RowExtractionInput, call: ToolCall): re
   }
   const result = pickObject(native, PI_RESULT_FIELD.Result)
   const path = pickObject(result, PI_TOOL_RESULT_FIELD.Details)?.[PI_TOOL_RESULT_FIELD.FullOutputPath]
-  return isFilesystemPath(path) ? [path] : []
+  return isFilesystemPath(path)
+    ? [path]
+    : []
 }

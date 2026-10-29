@@ -23,11 +23,26 @@ const MCP_TIMEOUT_SECONDS = 10
 
 clineTest('times out an MCP input request that the native client never answers, without a browser form', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
   // Cline reads a failed tool call as the output `{ error: <message> }`, so the context reads the error alone.
-  const context = { ...await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId }), readToolResult: clineToolError }
+  const context = {
+    ...await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    }),
+    readToolResult: clineToolError,
+  }
   await withNativeMcpFormAgent(context, {
     directoryPrefix: 'cline-native-mcp-unanswered-',
     configurationPath: join(leapmuxServer.agentEnv.CLINE_DATA_DIR!, 'settings', 'cline_mcp_settings.json'),
-    configuration: server => ({ mcpServers: { [server.name]: { transport: { type: 'stdio', command: server.command, args: server.args }, timeout: MCP_TIMEOUT_SECONDS } } }),
+    configuration: server => ({
+      mcpServers: {
+        [server.name]: {
+          transport: { type: 'stdio', command: server.command, args: server.args },
+          timeout: MCP_TIMEOUT_SECONDS,
+        },
+      },
+    }),
   }, async ({ server, receiptLog }) => {
     await waitForMcpToolListed(receiptLog, 'ask')
     const callId = 'native-cline-form-unanswered'
@@ -36,7 +51,12 @@ clineTest('times out an MCP input request that the native client never answers, 
       callId,
       additionalTestIds: ['control-banner'],
       nativeFailureText: `MCP request to "${server.name}" (tools/call) timed out after ${MCP_TIMEOUT_SECONDS}s.`,
-      invoke: () => invokeNativeMcpTool(context, { server: server.name, tool: 'ask', callId, input: {} }),
+      invoke: () => invokeNativeMcpTool(context, {
+        server: server.name,
+        tool: 'ask',
+        callId,
+        input: {},
+      }),
     })
   })
 })

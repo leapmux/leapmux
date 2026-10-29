@@ -160,7 +160,9 @@ const TabLeaf: Component<{
       // that rather than on the presence of a hashed style class.
       data-active={props.isActive ? 'true' : 'false'}
       data-tab-id={props.tab.id}
-      data-terminal-status={isTerminalTab(props.tab) ? props.tab.status : undefined}
+      data-terminal-status={isTerminalTab(props.tab)
+        ? props.tab.status
+        : undefined}
     >
       <div class={shared.chevronPlaceholder} />
       <TabTypeIcon tab={props.tab} class={css.tabIcon} />
@@ -196,7 +198,9 @@ const TabLeaf: Component<{
         <Tooltip text={tabTooltipText(props.tab)} showWhen={tabTooltipShowWhen(props.tab)}>
           <span
             class={css.tabLabel}
-            classList={terminalStatusClassList(isTerminalTab(props.tab) ? props.tab.status : undefined)}
+            classList={terminalStatusClassList(isTerminalTab(props.tab)
+              ? props.tab.status
+              : undefined)}
           >
             {tabDisplayLabel(props.tab)}
           </span>
@@ -238,9 +242,15 @@ const TabLeaf: Component<{
       <TabContextMenu
         contextMenuFor={rowEl}
         data-testid="tab-tree-leaf-menu"
-        {...(props.onRename !== undefined ? { onRename: props.onRename } : {})}
-        {...(props.canClose && props.onClose !== undefined ? { onClose: props.onClose } : {})}
-        {...(props.isClosing !== undefined ? { isClosing: props.isClosing } : {})}
+        {...(props.onRename !== undefined
+          ? { onRename: props.onRename }
+          : {})}
+        {...(props.canClose && props.onClose !== undefined
+          ? { onClose: props.onClose }
+          : {})}
+        {...(props.isClosing !== undefined
+          ? { isClosing: props.isClosing }
+          : {})}
       />
     </div>
   )
@@ -357,7 +367,9 @@ const TabLeafSlot: Component<{ tab: Tab, depth: number }> = (props) => {
   // then -- a second read beside the first could not be narrowed.
   const isClosingProps = () => {
     const isClosing = sel.tabItemOps()?.closingKeys?.has(tabKey(props.tab))
-    return isClosing !== undefined ? { isClosing } : {}
+    return isClosing !== undefined
+      ? { isClosing }
+      : {}
   }
   return (
     <TabLeaf
@@ -369,7 +381,11 @@ const TabLeafSlot: Component<{ tab: Tab, depth: number }> = (props) => {
       editingValue={edit.editingValue()}
       onClick={() => sel.onTabClick(props.tab.type, props.tab.id)}
       onDblClick={() => edit.startEditing(props.tab)}
-      {...(edit.canRename(props.tab) ? { onRename: () => edit.startEditing(props.tab) } : {})}
+      {...(edit.canRename(props.tab)
+        ? {
+            onRename: () => edit.startEditing(props.tab),
+          }
+        : {})}
       onClose={() => sel.tabItemOps()?.onClose?.(props.tab)}
       {...isClosingProps()}
       canClose={sel.canClose()}
@@ -486,14 +502,18 @@ const BranchGroupRow: Component<{
   // a second `props.branch()` call beside the first could not be narrowed.
   const flavorProps = () => {
     const flavor = props.branch().flavor
-    return flavor !== undefined ? { flavor } : {}
+    return flavor !== undefined
+      ? { flavor }
+      : {}
   }
   // Spread-ready menu reason, read ONCE: `menuDisabledReason()` answers
   // undefined while the items are usable, and the spread keeps the prop
   // absent then -- a second call beside the first could not be narrowed.
   const menuDisabledReasonProps = () => {
     const reason = menuDisabledReason()
-    return reason !== undefined ? { disabledReason: reason } : {}
+    return reason !== undefined
+      ? { disabledReason: reason }
+      : {}
   }
   return (
     <>
@@ -506,7 +526,9 @@ const BranchGroupRow: Component<{
       >
         <ChevronRight
           size={14}
-          class={`${shared.chevron} ${!sel.isCollapsed(collapseKey()) ? shared.chevronExpanded : ''}`}
+          class={`${shared.chevron} ${!sel.isCollapsed(collapseKey())
+            ? shared.chevronExpanded
+            : ''}`}
         />
         {/* The one call site that LABELS the glyph. This row is a plain `div`
             with no `tabindex`, so its tooltip opens under a pointer alone --
@@ -537,9 +559,13 @@ const BranchGroupRow: Component<{
               isWorktree={props.branch().isWorktree}
               name={props.branch().branchName ?? NO_BRANCH_LABEL}
               directory={props.branch().gitToplevel}
-              {...(props.branch().homeDir !== undefined ? { homeDir: props.branch().homeDir } : {})}
+              {...(props.branch().homeDir !== undefined
+                ? { homeDir: props.branch().homeDir }
+                : {})}
               {...flavorProps()}
-              {...(props.branch().workerLabel !== undefined ? { worker: props.branch().workerLabel } : {})}
+              {...(props.branch().workerLabel !== undefined
+                ? { worker: props.branch().workerLabel }
+                : {})}
               stats={branchStats()}
             />
           )}
@@ -570,7 +596,10 @@ const BranchGroupRow: Component<{
             and the dialog opens stuck on a permission-denied banner. The
             new-tab items resolve no working directory at all and fall back
             to their dialog. */}
-        <Show when={!sel.archived() && props.branch().branchName !== null && props.branch().gitToplevel !== '' ? actions.branchActions : undefined}>
+        <Show when={!sel.archived() && props.branch().branchName !== null && props.branch().gitToplevel !== ''
+          ? actions.branchActions
+          : undefined}
+        >
           {branchActions => (
             <div class={sidebarActions}>
               <BranchContextMenu
@@ -597,7 +626,10 @@ const BranchGroupRow: Component<{
         </Show>
       </div>
 
-      <div class={`${shared.childrenWrapper} ${!sel.isCollapsed(collapseKey()) ? shared.childrenWrapperExpanded : ''}`}>
+      <div class={`${shared.childrenWrapper} ${!sel.isCollapsed(collapseKey())
+        ? shared.childrenWrapperExpanded
+        : ''}`}
+      >
         <div class={shared.childrenInner}>
           <TabLeafList tabs={props.branch().tabs} depth={3} />
         </div>
@@ -648,7 +680,9 @@ const RepoGroupRow: Component<{
       >
         <ChevronRight
           size={14}
-          class={`${shared.chevron} ${!sel.isCollapsed(props.repoKey) ? shared.chevronExpanded : ''}`}
+          class={`${shared.chevron} ${!sel.isCollapsed(props.repoKey)
+            ? shared.chevronExpanded
+            : ''}`}
         />
         <FolderGit size={14} class={css.groupIcon} />
         <RowLabelWithStats
@@ -698,7 +732,10 @@ const RepoGroupRow: Component<{
         </Show>
       </div>
 
-      <div class={`${shared.childrenWrapper} ${!sel.isCollapsed(props.repoKey) ? shared.childrenWrapperExpanded : ''}`}>
+      <div class={`${shared.childrenWrapper} ${!sel.isCollapsed(props.repoKey)
+        ? shared.childrenWrapperExpanded
+        : ''}`}
+      >
         <div class={shared.childrenInner}>
           <KeyedFor each={branchKeys()} lookup={bKey => props.group().branchByKey.get(bKey)}>
             {(b, bKey) => (
@@ -843,7 +880,10 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
         if (t.workerId)
           ids.add(t.workerId)
       }
-      return [...ids].sort().map(id => ({ id, info: fn(id) }))
+      return [...ids].sort().map(id => ({
+        id,
+        info: fn(id),
+      }))
     },
     [],
     { equals: workerProjectionsEqual },
@@ -854,7 +894,11 @@ export const WorkspaceTabTree: Component<WorkspaceTabTreeProps> = (props) => {
   // stable identity on no-op pushes.
   const tree = createMemo(
     on(
-      () => [tabsProjection(), tileOrderProjection(), workersProjection()] as const,
+      () => [
+        tabsProjection(),
+        tileOrderProjection(),
+        workersProjection(),
+      ] as const,
       () => buildTree(props.tabs, props.repoGitStore, props.tileOrder, props.workerInfoFn),
     ),
   )

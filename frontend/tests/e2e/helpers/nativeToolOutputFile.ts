@@ -38,7 +38,9 @@ function sameFile(first: NativeToolOutputFileStat, second: NativeToolOutputFileS
 
 /** Read one stable regular text file. The provider validates native reference ownership before this call. */
 export function readNativeToolOutputFile(path: string, maxBytes = 4 * 1024 * 1024, io: NativeToolOutputFileIO = filesystem): string {
-  path = sep === '\\' ? path.replaceAll('/', sep) : path
+  path = sep === '\\'
+    ? path.replaceAll('/', sep)
+    : path
   if (!isAbsolute(path) || normalize(path) !== path || path.includes('\0') || basename(path) === '')
     throw new Error('The native full tool output requires an absolute normalized file path without NUL.')
   if (!Number.isSafeInteger(maxBytes) || maxBytes < 0 || maxBytes > 16 * 1024 * 1024)

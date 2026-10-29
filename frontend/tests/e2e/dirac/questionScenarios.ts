@@ -18,11 +18,16 @@ export async function exerciseQuestionReply(
   reply: (form: Locator) => Promise<void>,
 ): Promise<string> {
   const { result } = await exerciseQuestionAnswer(context, {
-    questions: [{
-      question: DIRAC_COLOR_QUESTION,
-      header: 'Color',
-      options: [{ label: 'Blue', description: 'Use blue.' }, { label: 'Red', description: 'Use red.' }],
-    }],
+    questions: [
+      {
+        question: DIRAC_COLOR_QUESTION,
+        header: 'Color',
+        options: [
+          { label: 'Blue', description: 'Use blue.' },
+          { label: 'Red', description: 'Use red.' },
+        ],
+      },
+    ],
     callId: `dirac-question-${randomUUID()}`,
     prompt: 'Ask the scripted color question and then complete.',
     answer: 'The native question turn completed.',

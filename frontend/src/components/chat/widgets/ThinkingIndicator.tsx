@@ -201,7 +201,9 @@ function pickAndCacheVerb(id: string | undefined): string {
 export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
   // eslint-disable-next-line solid/reactivity -- intentional setup-time read; the effect below tracks reactive updates.
   const initialId = props.id
-  const snapshot = initialId !== undefined ? indicatorCache.get(initialId) : undefined
+  const snapshot = initialId !== undefined
+    ? indicatorCache.get(initialId)
+    : undefined
   const cached = snapshot?.verb
   // Two stacked verb slots so we can crossfade between them. The active
   // one renders at opacity 1, the other at opacity 0 — when rotating,
@@ -214,8 +216,12 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
   const [verbB, setVerbB] = createSignal('')
   const [activeIsA, setActiveIsA] = createSignal(true)
 
-  const charsA = createMemo(() => (verbA() ? `${verbA()}...`.split('') : []))
-  const charsB = createMemo(() => (verbB() ? `${verbB()}...`.split('') : []))
+  const charsA = createMemo(() => (verbA()
+    ? `${verbA()}...`.split('')
+    : []))
+  const charsB = createMemo(() => (verbB()
+    ? `${verbB()}...`.split('')
+    : []))
 
   // Seed the angle from the cache so a re-mount caused by a layout
   // change resumes the pendulum at the angle the user last saw,
@@ -372,7 +378,9 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
     // verb globally; the safety check here defends against the
     // single-verb-pool edge case where it returns the same string.
     const next = getRandomVerb()
-    const current = activeIsA() ? verbA() : verbB()
+    const current = activeIsA()
+      ? verbA()
+      : verbB()
     if (next === current)
       return
 
@@ -501,7 +509,9 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
         {(char, i) => (
           <span
             class={styles.char}
-            style={{ '--char-i': String(i()) } as JSX.CSSProperties}
+            style={{
+              '--char-i': String(i()),
+            } as JSX.CSSProperties}
           >
             {char}
           </span>
@@ -613,13 +623,28 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
       // popping -- and unmounts after, so a stale estimate can't keep it (or
       // its roll effects) alive in a collapsed row.
       show: showTokens,
-      render: () => <ThinkingTokenCount tokens={countTokens()!} {...(props.paused === undefined ? {} : { paused: props.paused })} />,
+      render: () => (
+        <ThinkingTokenCount
+          tokens={countTokens()!}
+          {...(props.paused === undefined
+            ? {}
+            : { paused: props.paused })}
+        />
+      ),
     },
     {
       show: showOutput,
       render: () => {
         const output = countOutput()!
-        return <ThinkingOutputCount bytes={output.bytes} minimum={output.minimum} {...(props.paused === undefined ? {} : { paused: props.paused })} />
+        return (
+          <ThinkingOutputCount
+            bytes={output.bytes}
+            minimum={output.minimum}
+            {...(props.paused === undefined
+              ? {}
+              : { paused: props.paused })}
+          />
+        )
       },
     },
   ]
@@ -637,9 +662,15 @@ export const ThinkingIndicator: Component<ThinkingIndicatorProps> = (props) => {
       class={styles.wrapper}
       data-testid="thinking-indicator"
       style={{
-        'display': present() ? 'grid' : 'none',
-        'grid-template-rows': expanded() ? '1fr' : '0fr',
-        'opacity': expanded() ? 1 : 0,
+        'display': present()
+          ? 'grid'
+          : 'none',
+        'grid-template-rows': expanded()
+          ? '1fr'
+          : '0fr',
+        'opacity': expanded()
+          ? 1
+          : 0,
         'transition': expanded()
           ? `grid-template-rows var(--transition), opacity var(--transition) ${motion.medium}ms`
           : `opacity var(--transition), grid-template-rows var(--transition) ${motion.medium}ms`,

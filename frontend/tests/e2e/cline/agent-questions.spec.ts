@@ -13,15 +13,25 @@ import { nativeContext } from './scenarios'
  */
 clineTest.describe('control requests for Cline', () => {
   clineTest('answers a question with the option the reader picks', async ({ askingClineWorkspace, page, modelScript, leapmuxServer }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingClineWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: askingClineWorkspace.workspaceId,
+    })
     // The SECOND option: a result that states the first option, or no option at
     // all, fails the check below.
     const { result } = await exerciseQuestionAnswer(context, {
-      questions: [{
-        question: 'Which database?',
-        header: 'Database',
-        options: [{ label: 'Postgres', description: 'Relational' }, { label: 'Redis', description: 'In-memory' }],
-      }],
+      questions: [
+        {
+          question: 'Which database?',
+          header: 'Database',
+          options: [
+            { label: 'Postgres', description: 'Relational' },
+            { label: 'Redis', description: 'In-memory' },
+          ],
+        },
+      ],
       callId: 'cline-question',
       prompt: 'Ask me for a database.',
       answer: 'Redis it is.',
@@ -40,6 +50,11 @@ clineTest('returns a custom native answer after its draft survives reload', asyn
 })
 
 clineTest('keeps a native question on its owner tab and workspace after reload', async ({ page, modelScript, leapmuxServer, askingClineWorkspace }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingClineWorkspace.workspaceId })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: askingClineWorkspace.workspaceId,
+  })
   await exerciseQuestionIsolation(context, { customAnswerDraft: true })
 })

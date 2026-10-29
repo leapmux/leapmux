@@ -157,7 +157,11 @@ export function createSharedInputQueues<K, C>(): SharedInputQueues<K, C> {
         existing.drain = drain
         return new Promise<void>(resolve => existing.waiters.push(resolve))
       }
-      const entry: QueueEntry<K, C> = { batches: [data], drain, waiters: [] }
+      const entry: QueueEntry<K, C> = {
+        batches: [data],
+        drain,
+        waiters: [],
+      }
       queues.set(key, entry)
       return drainKey(key, entry)
     },

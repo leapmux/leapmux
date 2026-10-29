@@ -11,22 +11,28 @@ import { chooseSettingsOption, composerEditor, controlButton, expectNoControlBan
 
 codexTest.describe('agent questions for Codex', () => {
   for (const note of [undefined, 'Use a darker red.']) {
-    codexTest(note === undefined ? 'returns the selected answer to the native question tool' : 'returns the selected answer and its typed note after reload', async ({ native }) => {
+    codexTest(note === undefined
+      ? 'returns the selected answer to the native question tool'
+      : 'returns the selected answer and its typed note after reload', async ({ native }) => {
       await chooseSettingsOption(native.page, 'collaboration_mode-plan')
       await waitForSettingsIdle(native.page)
       const { result, request } = await exerciseQuestionAnswer(native, {
-        questions: [{
-          header: 'Color',
-          question: 'Which color should I use?',
-          options: [
-            { label: 'Blue (Recommended)', description: 'Use blue.' },
-            { label: 'Red', description: 'Use red.' },
-          ],
-        }],
+        questions: [
+          {
+            header: 'Color',
+            question: 'Which color should I use?',
+            options: [
+              { label: 'Blue (Recommended)', description: 'Use blue.' },
+              { label: 'Red', description: 'Use red.' },
+            ],
+          },
+        ],
         callId: 'codex-color-question',
         prompt: 'Ask me which color to use.',
         answer: 'The answer was recorded.',
-        reply: note === undefined ? chooseQuestionOption('Red', native) : chooseQuestionOptionWithNote(native, 'Red', note),
+        reply: note === undefined
+          ? chooseQuestionOption('Red', native)
+          : chooseQuestionOptionWithNote(native, 'Red', note),
       })
       expect(request.protocol).toBe('openai-responses')
       expect(result).toContain('Red')
@@ -70,7 +76,16 @@ codexTest.describe('async agent questions for Codex', () => {
     await chooseSettingsOption(native.page, `model-${CODEX_ASYNC_QUESTION_MODEL}`)
     await waitForSettingsIdle(native.page)
     const start = await native.modelScript.queue(
-      { toolCalls: [codexAsyncQuestionToolCall(ASYNC_QUESTION_CALL_ID, [{ title, options: ['Blue', 'Red'] }])] },
+      {
+        toolCalls: [
+          codexAsyncQuestionToolCall(ASYNC_QUESTION_CALL_ID, [
+            {
+              title,
+              options: ['Blue', 'Red'],
+            },
+          ]),
+        ],
+      },
       { text: 'I asked about the color.' },
       { text: 'Recorded.' },
     )
@@ -105,7 +120,16 @@ codexTest.describe('async agent questions for Codex', () => {
     await chooseSettingsOption(native.page, `model-${CODEX_ASYNC_QUESTION_MODEL}`)
     await waitForSettingsIdle(native.page)
     const start = await native.modelScript.queue(
-      { toolCalls: [codexAsyncQuestionToolCall(ASYNC_QUESTION_CALL_ID, [{ title: ASYNC_QUESTION_TITLE, options: ['Blue', 'Red'] }])] },
+      {
+        toolCalls: [
+          codexAsyncQuestionToolCall(ASYNC_QUESTION_CALL_ID, [
+            {
+              title: ASYNC_QUESTION_TITLE,
+              options: ['Blue', 'Red'],
+            },
+          ]),
+        ],
+      },
       { text: 'Still working on it.', gate: 'async-turn-holds' },
       { text: 'Recorded.' },
     )
@@ -133,7 +157,16 @@ codexTest.describe('async agent questions for Codex', () => {
     await chooseSettingsOption(native.page, `model-${CODEX_ASYNC_QUESTION_MODEL}`)
     await waitForSettingsIdle(native.page)
     const start = await native.modelScript.queue(
-      { toolCalls: [codexAsyncQuestionToolCall(ASYNC_QUESTION_CALL_ID, [{ title: ASYNC_QUESTION_TITLE, options: ['Blue', 'Red'] }])] },
+      {
+        toolCalls: [
+          codexAsyncQuestionToolCall(ASYNC_QUESTION_CALL_ID, [
+            {
+              title: ASYNC_QUESTION_TITLE,
+              options: ['Blue', 'Red'],
+            },
+          ]),
+        ],
+      },
       { text: 'I asked about the color.' },
     )
     await sendMessage(native.page, native.modelScript.prompt('Ask me which color to use.'))
@@ -154,7 +187,16 @@ codexTest.describe('async agent questions for Codex', () => {
     await chooseSettingsOption(native.page, `model-${CODEX_ASYNC_QUESTION_MODEL}`)
     await waitForSettingsIdle(native.page)
     const start = await native.modelScript.queue(
-      { toolCalls: [codexAsyncQuestionToolCall(ASYNC_QUESTION_CALL_ID, [{ title: ASYNC_QUESTION_TITLE, options: ['Blue', 'Red'] }])] },
+      {
+        toolCalls: [
+          codexAsyncQuestionToolCall(ASYNC_QUESTION_CALL_ID, [
+            {
+              title: ASYNC_QUESTION_TITLE,
+              options: ['Blue', 'Red'],
+            },
+          ]),
+        ],
+      },
       { text: 'I asked about the color.' },
     )
     await sendMessage(native.page, native.modelScript.prompt('Ask me which color to use.'))
@@ -173,7 +215,16 @@ codexTest.describe('async agent questions for Codex', () => {
     await chooseSettingsOption(native.page, `model-${CODEX_ASYNC_QUESTION_MODEL}`)
     await waitForSettingsIdle(native.page)
     const start = await native.modelScript.queue(
-      { toolCalls: [codexAsyncQuestionToolCall(ASYNC_QUESTION_CALL_ID, [{ title: ASYNC_QUESTION_TITLE, options: ['Blue', 'Red'] }])] },
+      {
+        toolCalls: [
+          codexAsyncQuestionToolCall(ASYNC_QUESTION_CALL_ID, [
+            {
+              title: ASYNC_QUESTION_TITLE,
+              options: ['Blue', 'Red'],
+            },
+          ]),
+        ],
+      },
       { text: 'I asked about the color.' },
     )
     await sendMessage(native.page, native.modelScript.prompt('Ask me which color to use.'))
@@ -194,7 +245,16 @@ codexTest.describe('async agent questions for Codex', () => {
     await chooseSettingsOption(native.page, `model-${CODEX_ASYNC_QUESTION_MODEL}`)
     await waitForSettingsIdle(native.page)
     const start = await native.modelScript.queue(
-      { toolCalls: [codexAsyncQuestionToolCall(ASYNC_QUESTION_CALL_ID, [{ title: ASYNC_QUESTION_TITLE, options: ['Blue', 'Red'] }])] },
+      {
+        toolCalls: [
+          codexAsyncQuestionToolCall(ASYNC_QUESTION_CALL_ID, [
+            {
+              title: ASYNC_QUESTION_TITLE,
+              options: ['Blue', 'Red'],
+            },
+          ]),
+        ],
+      },
       { text: 'I asked about the color.' },
       { text: 'Reply noted.' },
     )
@@ -216,10 +276,20 @@ codexTest('keeps two active-turn answers paused until the queue resumes', async 
   await chooseSettingsOption(native.page, `model-${CODEX_ASYNC_QUESTION_MODEL}`)
   await waitForSettingsIdle(native.page)
   const start = await native.modelScript.queue(
-    { toolCalls: [codexAsyncQuestionToolCall('paused-questions', [
-      { title: 'Which color?', options: ['Red', 'Blue'] },
-      { title: 'Which shape?', options: ['Round', 'Square'] },
-    ])] },
+    {
+      toolCalls: [
+        codexAsyncQuestionToolCall('paused-questions', [
+          {
+            title: 'Which color?',
+            options: ['Red', 'Blue'],
+          },
+          {
+            title: 'Which shape?',
+            options: ['Round', 'Square'],
+          },
+        ]),
+      ],
+    },
     { text: 'The turn continues.', gate: 'paused-question-turn' },
     { text: 'Both answers were recorded.' },
   )
@@ -247,7 +317,16 @@ codexTest('rejects a file selected after a question opens', async ({ native }) =
   await chooseSettingsOption(native.page, `model-${CODEX_ASYNC_QUESTION_MODEL}`)
   await waitForSettingsIdle(native.page)
   const start = await native.modelScript.queue(
-    { toolCalls: [codexAsyncQuestionToolCall('picker-question', [{ title: 'Which color?', options: ['Red', 'Blue'] }])] },
+    {
+      toolCalls: [
+        codexAsyncQuestionToolCall('picker-question', [
+          {
+            title: 'Which color?',
+            options: ['Red', 'Blue'],
+          },
+        ]),
+      ],
+    },
     { text: 'The question can wait.' },
   )
   await sendMessage(native.page, native.modelScript.prompt('Ask about the color.'))
@@ -261,7 +340,11 @@ codexTest('rejects a file selected after a question opens', async ({ native }) =
   const opened = await openPendingQuestions(native.page)
   const fileInput = native.page.getByTestId('file-input')
   await expect(fileInput).toBeDisabled()
-  const file = { name: 'late-choice.txt', mimeType: 'text/plain', buffer: Buffer.from('A late selection.') }
+  const file = {
+    name: 'late-choice.txt',
+    mimeType: 'text/plain',
+    buffer: Buffer.from('A late selection.'),
+  }
   await chooser.setFiles(file)
   await expect(visibleOnly(native.page.getByTestId('attachment-pill'))).toHaveCount(0)
   await opened.getByTestId('control-answer-later').click()

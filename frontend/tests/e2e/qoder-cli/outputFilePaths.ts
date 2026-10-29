@@ -17,15 +17,26 @@ export function readQoderNativeOutput(snapshot: NativeMessageSnapshot, callId: s
     },
   })
   const blocks = pickObject(record.frame, 'message')?.content
-  const matching = Array.isArray(blocks) ? blocks.filter(isObject).filter(block => block.type === 'tool_result' && block.tool_use_id === callId) : []
-  const block = matching.length === 1 ? matching[0] : undefined
+  const matching = Array.isArray(blocks)
+    ? blocks.filter(isObject).filter(block => block.type === 'tool_result' && block.tool_use_id === callId)
+    : []
+  const block = matching.length === 1
+    ? matching[0]
+    : undefined
   const result = pickObject(record.frame, 'tool_use_result')
   const path = pickObject(result, 'persistedOutput')?.path
-  const pieces = typeof path === 'string' ? path.split(/[\\/]/u) : []
+  const pieces = typeof path === 'string'
+    ? path.split(/[\\/]/u)
+    : []
   if (!block || block.is_error === true || !isFilesystemPath(path) || pieces.at(-2) !== `session-${snapshot.agentSessionId}`
     || pieces.at(-3) !== 'tool-outputs' || !/^[\w-]+\.output$/u.test(pieces.at(-1) ?? '')) {
     throw new Error('The native Qoder pointer belongs to another native result or session.')
   }
   const previewText = qoderNativeToolResult([record.frame], callId).text
-  return { paths: [path], previewText, frame: record.frame, content: record.message.content }
+  return {
+    paths: [path],
+    previewText,
+    frame: record.frame,
+    content: record.message.content,
+  }
 }

@@ -25,7 +25,9 @@ export function copilotChecklistItems(checklist: string): TodoItem[] {
     const content = (item[2] ?? '').trim()
     if (!content)
       continue
-    const status = item[1] === 'x' || item[1] === 'X' ? 'completed' : 'pending'
+    const status = item[1] === 'x' || item[1] === 'X'
+      ? 'completed'
+      : 'pending'
     rows.push({ content, status, activeForm: content })
   }
   return rawTodosToItems(rows)

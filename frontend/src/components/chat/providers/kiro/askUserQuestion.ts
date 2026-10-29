@@ -43,17 +43,21 @@ interface KiroUserInputOption {
 function kiroOptions(raw: unknown): KiroUserInputOption[] {
   if (!Array.isArray(raw))
     return []
-  return raw.map(option => typeof option === 'string' ? { title: option } : option).filter(isObject).flatMap((option) => {
+  return raw.map(option => typeof option === 'string'
+    ? { title: option }
+    : option).filter(isObject).flatMap((option) => {
     const title = pickString(option, 'title')
     if (!title)
       return []
-    return [{
-      title,
-      description: pickString(option, 'description'),
-      recommended: option.recommended === true,
-      subOptionsLabel: pickString(option, 'subOptionsLabel'),
-      subOptions: kiroOptions(option.subOptions),
-    }]
+    return [
+      {
+        title,
+        description: pickString(option, 'description'),
+        recommended: option.recommended === true,
+        subOptionsLabel: pickString(option, 'subOptionsLabel'),
+        subOptions: kiroOptions(option.subOptions),
+      },
+    ]
   })
 }
 
@@ -61,8 +65,12 @@ function kiroOptions(raw: unknown): KiroUserInputOption[] {
 function questionOption(option: KiroUserInputOption): QuestionOption {
   return {
     value: option.title,
-    label: option.recommended ? `${option.title}${KIRO_RECOMMENDED_SUFFIX}` : option.title,
-    ...(option.description ? { description: option.description } : {}),
+    label: option.recommended
+      ? `${option.title}${KIRO_RECOMMENDED_SUFFIX}`
+      : option.title,
+    ...(option.description
+      ? { description: option.description }
+      : {}),
   }
 }
 
@@ -138,7 +146,9 @@ export function kiroUserInputAnswer(questions: ControlQuestion[], answerState: C
   if (!chosen)
     return null
   const subIndex = questions.findIndex((question, index) => index > 0 && question.header === chosen)
-  const sub = subIndex > 0 ? questions[subIndex] : undefined
+  const sub = subIndex > 0
+    ? questions[subIndex]
+    : undefined
   if (!sub)
     return chosen
   const leftOut = new Set(answerState.selections()[subIndex] ?? [])

@@ -30,7 +30,9 @@ function completedFrame(output = 'ORIGINAL_NATIVE_PREVIEW') {
     content: [],
     rawInput: { command: owner.command, cwd: owner.workingDirectory },
     rawOutput: { output, exitCode: 0 },
-    _meta: { terminal_exit: { terminal_id: owner.callId, exit_code: 0, signal: null } },
+    _meta: {
+      terminal_exit: { terminal_id: owner.callId, exit_code: 0, signal: null },
+    },
   }
 }
 
@@ -47,29 +49,38 @@ function pointerReceipt() {
 }
 
 function providerReceipt(pointer: unknown = pointerReceipt()) {
-  return { sessionUpdate: 'tool_call_update', toolCallId: owner.callId, status: 'completed', outputFilePath: pointer }
+  return {
+    sessionUpdate: 'tool_call_update',
+    toolCallId: owner.callId,
+    status: 'completed',
+    outputFilePath: pointer,
+  }
 }
 
 function snapshot(
   frame: unknown = completedFrame(),
-  supplement: unknown = { provider: providerReceipt() },
+  supplement: unknown = {
+    provider: providerReceipt(),
+  },
   overrides: MessageInitShape<typeof AgentChatMessageSchema> = {},
 ): NativeMessageSnapshot {
   return {
     agentId: owner.agentId,
     agentSessionId: owner.sessionId,
-    messages: [makeMessage({
-      id: 'native-completed-row',
-      seq: 1n,
-      source: MessageSource.AGENT,
-      agentSessionId: owner.sessionId,
-      spanId: owner.callId,
-      spanType: 'execute',
-      completion: MessageCompletion.COMPLETE,
-      content: rawContent(frame),
-      supplementalContent: rawContent(supplement),
-      ...overrides,
-    })],
+    messages: [
+      makeMessage({
+        id: 'native-completed-row',
+        seq: 1n,
+        source: MessageSource.AGENT,
+        agentSessionId: owner.sessionId,
+        spanId: owner.callId,
+        spanType: 'execute',
+        completion: MessageCompletion.COMPLETE,
+        content: rawContent(frame),
+        supplementalContent: rawContent(supplement),
+        ...overrides,
+      }),
+    ],
   }
 }
 
@@ -79,9 +90,14 @@ function pendingSnapshot(): NativeMessageSnapshot {
     toolCallId: owner.callId,
     kind: 'execute',
     status: 'in_progress',
-    content: [{ type: 'terminal', terminalId: owner.callId }],
+    content: [
+      { type: 'terminal', terminalId: owner.callId },
+    ],
     rawInput: { command: owner.command, cwd: owner.workingDirectory },
-  }, undefined, { completion: MessageCompletion.UNSPECIFIED, supplementalContent: new Uint8Array() })
+  }, undefined, {
+    completion: MessageCompletion.UNSPECIFIED,
+    supplementalContent: new Uint8Array(),
+  })
 }
 
 async function observeOnce(observe: () => Promise<boolean>): Promise<void> {
@@ -98,28 +114,48 @@ describe('junieOutputFilePathReady', () => {
   })
 
   it('keeps a partial native progress update pending without requiring its final fields', () => {
-    const value = snapshot({ sessionUpdate: 'tool_call_update', toolCallId: owner.callId, status: 'in_progress' }, undefined, { completion: MessageCompletion.UNSPECIFIED, supplementalContent: new Uint8Array() })
+    const value = snapshot({ sessionUpdate: 'tool_call_update', toolCallId: owner.callId, status: 'in_progress' }, undefined, {
+      completion: MessageCompletion.UNSPECIFIED,
+      supplementalContent: new Uint8Array(),
+    })
     expect(junieOutputFilePathReady(value, owner)).toBe(false)
   })
 
   it('waits for the pointer property after the completed native row arrives', () => {
-    expect(junieOutputFilePathReady(snapshot(completedFrame(), undefined, { supplementalContent: new Uint8Array() }), owner)).toBe(false)
-    expect(junieOutputFilePathReady(snapshot(completedFrame(), { provider: { sessionUpdate: 'tool_call_update', toolCallId: owner.callId, status: 'completed' } }), owner)).toBe(false)
+    expect(junieOutputFilePathReady(snapshot(completedFrame(), undefined, {
+      supplementalContent: new Uint8Array(),
+    }), owner)).toBe(false)
+    expect(junieOutputFilePathReady(snapshot(completedFrame(), {
+      provider: { sessionUpdate: 'tool_call_update', toolCallId: owner.callId, status: 'completed' },
+    }), owner)).toBe(false)
     expect(junieOutputFilePathReady(snapshot(), owner)).toBe(true)
   })
 
   it.each([null, false, 0, '', []])('settles a present malformed pointer for one strict decode: %j', (pointer) => {
-    expect(junieOutputFilePathReady(snapshot(completedFrame(), { provider: providerReceipt(pointer) }), owner)).toBe(true)
+    expect(junieOutputFilePathReady(snapshot(completedFrame(), {
+      provider: providerReceipt(pointer),
+    }), owner)).toBe(true)
   })
 
   it('refuses duplicate completed rows instead of selecting the latest row', () => {
     const value = snapshot()
-    value.messages.push(makeMessage({ id: 'second-completed-row', seq: 2n, source: MessageSource.AGENT, agentSessionId: owner.sessionId, spanId: owner.callId, spanType: 'execute', content: rawContent(completedFrame()) }))
+    value.messages.push(makeMessage({
+      id: 'second-completed-row',
+      seq: 2n,
+      source: MessageSource.AGENT,
+      agentSessionId: owner.sessionId,
+      spanId: owner.callId,
+      spanType: 'execute',
+      content: rawContent(completedFrame()),
+    }))
     expect(() => junieOutputFilePathReady(value, owner)).toThrow('duplicate completed rows')
   })
 
   it('settles an actual failed native command as failure instead of waiting for a pointer', () => {
-    const value = snapshot({ ...completedFrame(), status: 'failed' })
+    const value = snapshot({
+      ...completedFrame(),
+      status: 'failed',
+    })
     expect(() => junieOutputFilePathReady(value, owner)).toThrow('native command failed')
   })
 })
@@ -130,7 +166,9 @@ describe('waitForJunieOutputFilePaths', () => {
     const ready = snapshot()
     const originalBytes = ready.messages[0]!.content.slice()
     const originalSupplement = ready.messages[0]!.supplementalContent.slice()
-    const readSnapshot = vi.fn().mockResolvedValueOnce(pendingSnapshot()).mockResolvedValueOnce(snapshot(completedFrame(), { provider: { sessionUpdate: 'tool_call_update', toolCallId: owner.callId, status: 'completed' } })).mockResolvedValueOnce(ready)
+    const readSnapshot = vi.fn().mockResolvedValueOnce(pendingSnapshot()).mockResolvedValueOnce(snapshot(completedFrame(), {
+      provider: { sessionUpdate: 'tool_call_update', toolCallId: owner.callId, status: 'completed' },
+    })).mockResolvedValueOnce(ready)
     const result = await waitForJunieOutputFilePaths(owner, {
       readSnapshot,
       waitUntilSettled: async (observe) => {
@@ -153,7 +191,9 @@ describe('waitForJunieOutputFilePaths', () => {
 
   it.each([null, false, 0, '', []])('does not retry strict rejection of a present malformed pointer: %j', async (pointer) => {
     const reader = vi.spyOn(outputReaders, 'readJunieNativeOutputPaths')
-    const readSnapshot = vi.fn().mockResolvedValueOnce(snapshot(completedFrame(), { provider: providerReceipt(pointer) })).mockResolvedValueOnce(snapshot())
+    const readSnapshot = vi.fn().mockResolvedValueOnce(snapshot(completedFrame(), {
+      provider: providerReceipt(pointer),
+    })).mockResolvedValueOnce(snapshot())
     // A present pointer ends the wait, and the strict reader then refuses a pointer that is no object.
     await expect(waitForJunieOutputFilePaths(owner, { readSnapshot, waitUntilSettled: observeOnce })).rejects.toThrow('The Junie path receipt differs from its native command, session, or exit owner.')
     expect(readSnapshot).toHaveBeenCalledOnce()
@@ -178,7 +218,9 @@ describe('waitForJunieOutputFilePaths', () => {
     { agentSessionId: 'foreign-session' },
     { spanType: 'foreign-tool' },
   ])('does not retry another row owner: %j', async (overrides) => {
-    const readSnapshot = vi.fn().mockResolvedValue(snapshot(completedFrame(), { provider: providerReceipt() }, overrides))
+    const readSnapshot = vi.fn().mockResolvedValue(snapshot(completedFrame(), {
+      provider: providerReceipt(),
+    }, overrides))
     await expect(waitForJunieOutputFilePaths(owner, { readSnapshot, waitUntilSettled: observeOnce })).rejects.toThrow('another native owner')
     expect(readSnapshot).toHaveBeenCalledOnce()
   })
@@ -186,10 +228,40 @@ describe('waitForJunieOutputFilePaths', () => {
   // The readiness check refuses a row of another call or tool kind. A ready row with a failed exit or no output text
   // reaches the strict reader.
   it.each([
-    { label: 'call', frame: { ...completedFrame(), toolCallId: 'foreign-call' }, error: 'The Junie output path row has a different native call identity.' },
-    { label: 'tool kind', frame: { ...completedFrame(), kind: 'read' }, error: 'The Junie completed row has a different native tool kind.' },
-    { label: 'exit', frame: { ...completedFrame(), _meta: { terminal_exit: { terminal_id: owner.callId, exit_code: 7, signal: null } } }, error: 'The Junie path receipt differs from its native command, session, or exit owner.' },
-    { label: 'output', frame: { ...completedFrame(), rawOutput: { output: false } }, error: 'The Junie path receipt differs from its native command, session, or exit owner.' },
+    {
+      label: 'call',
+      frame: {
+        ...completedFrame(),
+        toolCallId: 'foreign-call',
+      },
+      error: 'The Junie output path row has a different native call identity.',
+    },
+    {
+      label: 'tool kind',
+      frame: {
+        ...completedFrame(),
+        kind: 'read',
+      },
+      error: 'The Junie completed row has a different native tool kind.',
+    },
+    {
+      label: 'exit',
+      frame: {
+        ...completedFrame(),
+        _meta: {
+          terminal_exit: { terminal_id: owner.callId, exit_code: 7, signal: null },
+        },
+      },
+      error: 'The Junie path receipt differs from its native command, session, or exit owner.',
+    },
+    {
+      label: 'output',
+      frame: {
+        ...completedFrame(),
+        rawOutput: { output: false },
+      },
+      error: 'The Junie path receipt differs from its native command, session, or exit owner.',
+    },
   ])('does not retry malformed completed native $label fields', async ({ frame, error }) => {
     const readSnapshot = vi.fn().mockResolvedValueOnce(snapshot(frame)).mockResolvedValueOnce(snapshot())
     await expect(waitForJunieOutputFilePaths(owner, { readSnapshot, waitUntilSettled: observeOnce })).rejects.toThrow(error)
@@ -200,9 +272,17 @@ describe('waitForJunieOutputFilePaths', () => {
     { command: 'foreign-command', cwd: owner.workingDirectory },
     { command: owner.command, cwd: '/foreign/project' },
   ])('refuses a self-consistent receipt for another expected command or cwd: %j', async (input) => {
-    const frame = { ...completedFrame(), rawInput: input }
-    const pointer = { ...pointerReceipt(), ...input }
-    const readSnapshot = vi.fn().mockResolvedValue(snapshot(frame, { provider: providerReceipt(pointer) }))
+    const frame = {
+      ...completedFrame(),
+      rawInput: input,
+    }
+    const pointer = {
+      ...pointerReceipt(),
+      ...input,
+    }
+    const readSnapshot = vi.fn().mockResolvedValue(snapshot(frame, {
+      provider: providerReceipt(pointer),
+    }))
     await expect(waitForJunieOutputFilePaths(owner, { readSnapshot, waitUntilSettled: observeOnce })).rejects.toThrow('expected native command or working directory')
     expect(readSnapshot).toHaveBeenCalledOnce()
   })
@@ -227,10 +307,16 @@ describe('waitForJunieOutputFilePaths', () => {
   })
 
   it.each([
-    { content: encoder.encode('malformed native JSON') },
-    { supplementalContent: encoder.encode('malformed native supplement JSON') },
+    {
+      content: encoder.encode('malformed native JSON'),
+    },
+    {
+      supplementalContent: encoder.encode('malformed native supplement JSON'),
+    },
   ])('does not retry a completed row with malformed native bytes: %j', async (overrides) => {
-    const readSnapshot = vi.fn().mockResolvedValueOnce(snapshot(completedFrame(), { provider: providerReceipt() }, overrides)).mockResolvedValueOnce(snapshot())
+    const readSnapshot = vi.fn().mockResolvedValueOnce(snapshot(completedFrame(), {
+      provider: providerReceipt(),
+    }, overrides)).mockResolvedValueOnce(snapshot())
     await expect(waitForJunieOutputFilePaths(owner, { readSnapshot, waitUntilSettled: observeOnce })).rejects.toThrow('invalid JSON')
     expect(readSnapshot).toHaveBeenCalledOnce()
   })
@@ -238,21 +324,30 @@ describe('waitForJunieOutputFilePaths', () => {
   it('preserves the waiting operation failure', async () => {
     const failure = new Error('The observation deadline failed.')
     const readSnapshot = vi.fn()
-    await expect(waitForJunieOutputFilePaths(owner, { readSnapshot, waitUntilSettled: async () => {
-      throw failure
-    } })).rejects.toBe(failure)
+    await expect(waitForJunieOutputFilePaths(owner, {
+      readSnapshot,
+      waitUntilSettled: async () => {
+        throw failure
+      },
+    })).rejects.toBe(failure)
     expect(readSnapshot).not.toHaveBeenCalled()
   })
 
   it('refuses a wait that returns without a settled observation', async () => {
     const readSnapshot = vi.fn()
-    await expect(waitForJunieOutputFilePaths(owner, { readSnapshot, waitUntilSettled: async () => {} })).rejects.toThrow('before its Worker row was ready')
+    await expect(waitForJunieOutputFilePaths(owner, {
+      readSnapshot,
+      waitUntilSettled: async () => {},
+    })).rejects.toThrow('before its Worker row was ready')
     expect(readSnapshot).not.toHaveBeenCalled()
   })
 
   it('preserves an explicitly empty native preview after readiness', async () => {
     const ready = snapshot(completedFrame(''))
-    const result = await waitForJunieOutputFilePaths(owner, { readSnapshot: async () => ready, waitUntilSettled: observeOnce })
+    const result = await waitForJunieOutputFilePaths(owner, {
+      readSnapshot: async () => ready,
+      waitUntilSettled: observeOnce,
+    })
     expect(result.receipt.previewText).toBe('')
     expect(result.receipt.paths).toEqual([path])
   })
@@ -264,13 +359,33 @@ describe('waitForJunieOutputFilePaths', () => {
       ...completedFrame('SECOND_NATIVE_PREVIEW'),
       toolCallId: secondOwner.callId,
       rawInput: { command: secondOwner.command, cwd: secondOwner.workingDirectory },
-      _meta: { terminal_exit: { terminal_id: secondOwner.callId, exit_code: 0, signal: null } },
+      _meta: {
+        terminal_exit: { terminal_id: secondOwner.callId, exit_code: 0, signal: null },
+      },
     }
-    const secondPointer = { ...pointerReceipt(), toolCallId: secondOwner.callId, command: secondOwner.command, path: secondPath }
-    const secondSnapshot = snapshot(secondFrame, { provider: { sessionUpdate: secondFrame.sessionUpdate, toolCallId: secondOwner.callId, status: secondFrame.status, outputFilePath: secondPointer } }, { id: 'second-call-result', spanId: secondOwner.callId })
+    const secondPointer = {
+      ...pointerReceipt(),
+      toolCallId: secondOwner.callId,
+      command: secondOwner.command,
+      path: secondPath,
+    }
+    const secondSnapshot = snapshot(secondFrame, {
+      provider: {
+        sessionUpdate: secondFrame.sessionUpdate,
+        toolCallId: secondOwner.callId,
+        status: secondFrame.status,
+        outputFilePath: secondPointer,
+      },
+    }, { id: 'second-call-result', spanId: secondOwner.callId })
     const [first, second] = await Promise.all([
-      waitForJunieOutputFilePaths(owner, { readSnapshot: async () => snapshot(), waitUntilSettled: observeOnce }),
-      waitForJunieOutputFilePaths(secondOwner, { readSnapshot: async () => secondSnapshot, waitUntilSettled: observeOnce }),
+      waitForJunieOutputFilePaths(owner, {
+        readSnapshot: async () => snapshot(),
+        waitUntilSettled: observeOnce,
+      }),
+      waitForJunieOutputFilePaths(secondOwner, {
+        readSnapshot: async () => secondSnapshot,
+        waitUntilSettled: observeOnce,
+      }),
     ])
     expect(first.receipt.paths).toEqual([path])
     expect(first.receipt.previewText).toBe('ORIGINAL_NATIVE_PREVIEW')
@@ -312,15 +427,31 @@ describe('waitForJunieOutputFilePaths', () => {
   it('retains strict proof and cleanup failures together', async () => {
     const cleanupFailure = new Error('The atomic release failed.')
     const operation = withCleanup(
-      () => waitForJunieOutputFilePaths(owner, { readSnapshot: async () => snapshot(completedFrame(), { provider: providerReceipt(null) }), waitUntilSettled: observeOnce }),
+      () => waitForJunieOutputFilePaths(owner, {
+        readSnapshot: async () => snapshot(completedFrame(), {
+          provider: providerReceipt(null),
+        }),
+        waitUntilSettled: observeOnce,
+      }),
       async () => {
         throw cleanupFailure
       },
     )
-    await expect(operation).rejects.toMatchObject({ errors: [expect.any(Error), cleanupFailure] })
+    await expect(operation).rejects.toMatchObject({
+      errors: [
+        expect.any(Error),
+        cleanupFailure,
+      ],
+    })
   })
 
-  it.each(['agentId', 'sessionId', 'callId', 'command', 'workingDirectory'] as const)('refuses an empty expected %s before reading', async (field) => {
+  it.each([
+    'agentId',
+    'sessionId',
+    'callId',
+    'command',
+    'workingDirectory',
+  ] as const)('refuses an empty expected %s before reading', async (field) => {
     const readSnapshot = vi.fn()
     await expect(waitForJunieOutputFilePaths({ ...owner, [field]: '' }, { readSnapshot, waitUntilSettled: observeOnce })).rejects.toThrow('exact native owner and command')
     expect(readSnapshot).not.toHaveBeenCalled()

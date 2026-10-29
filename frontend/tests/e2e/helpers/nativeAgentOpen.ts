@@ -63,7 +63,9 @@ export async function openNativeAgent(
     throw new Error('A native agent opens in an existing directory or in a new one, not in both.')
   const opened = await openProviderAgent(context.leapmuxServer, context.workspaceId, providerAgent, {
     ...options.overrides,
-    ...(options.workingDir === undefined ? { directoryPrefix: options.directoryPrefix ?? 'native-agent-' } : { workingDir: options.workingDir }),
+    ...(options.workingDir === undefined
+      ? { directoryPrefix: options.directoryPrefix ?? 'native-agent-' }
+      : { workingDir: options.workingDir }),
   })
   await openWorkspace(context.page, context.workspaceId)
   await expect.poll(() => selectedAgentTabId(context.page), { message: 'the new native agent is the selected tab' }).toBe(opened.agentId)

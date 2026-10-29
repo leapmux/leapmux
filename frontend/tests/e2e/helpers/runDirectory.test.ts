@@ -4,7 +4,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createTestDirectory, isFileNameComponent } from './runDirectory'
 
 let runDir: string
-vi.mock('./server', () => ({ getGlobalState: () => ({ tmpDir: runDir }) }))
+vi.mock('./server', () => ({
+  getGlobalState: () => ({ tmpDir: runDir }),
+}))
 
 beforeEach(() => {
   const scratch = resolve(import.meta.dirname, '../../../..', '.tmp')
@@ -25,13 +27,29 @@ describe('run-owned directories', () => {
     expect(existsSync(second)).toBe(true)
   })
 
-  it.each(['', '.', '..', '../outside', '/outside', 'folder\\outside', 'agent\0-'])('rejects a prefix that is not one filename component: %j', (prefix) => {
+  it.each([
+    '',
+    '.',
+    '..',
+    '../outside',
+    '/outside',
+    'folder\\outside',
+    'agent\0-',
+  ])('rejects a prefix that is not one filename component: %j', (prefix) => {
     expect(() => createTestDirectory(prefix)).toThrow('one filename component')
   })
 })
 
 describe('isFileNameComponent', () => {
-  it.each(['agent', 'agent-', '.hidden', 'a.b', '...', 'name with space', 'é'])('accepts one file-name component: %j', (value) => {
+  it.each([
+    'agent',
+    'agent-',
+    '.hidden',
+    'a.b',
+    '...',
+    'name with space',
+    'é',
+  ])('accepts one file-name component: %j', (value) => {
     expect(isFileNameComponent(value)).toBe(true)
   })
 

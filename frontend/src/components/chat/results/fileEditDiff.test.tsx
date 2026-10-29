@@ -6,7 +6,9 @@ import { fileEditContent, fileEditDiffFromHunks, fileEditDiffFromWholeFile, file
 import { FileEditDiffBody } from './fileEditDiff'
 
 const tokenizeAsyncMock = vi.hoisted(() => vi.fn(async (_lang: string, code: string) =>
-  code.split('\n').map(line => [{ content: line, htmlStyle: {} }]),
+  code.split('\n').map(line => [
+    { content: line, htmlStyle: {} },
+  ]),
 ))
 
 vi.mock('~/lib/shikiWorkerClient', () => ({
@@ -14,7 +16,13 @@ vi.mock('~/lib/shikiWorkerClient', () => ({
 }))
 
 const PATCH: StructuredPatchHunk[] = [
-  { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-old', '+new'] },
+  {
+    oldStart: 1,
+    oldLines: 1,
+    newStart: 1,
+    newLines: 1,
+    lines: ['-old', '+new'],
+  },
 ]
 
 /**
@@ -53,8 +61,14 @@ describe('fileEditContent', () => {
   // Whichever half it answers, the source it builds draws the same hunks the readers
   // would have picked, so the choice changes no row.
   it('draws the same hunks either way', () => {
-    const patched = { filePath: 'a.ts', ...fileEditContent(PATCH, 'old', 'new') }
-    const sided = { filePath: 'a.ts', ...fileEditContent(null, 'old', 'new') }
+    const patched = {
+      filePath: 'a.ts',
+      ...fileEditContent(PATCH, 'old', 'new'),
+    }
+    const sided = {
+      filePath: 'a.ts',
+      ...fileEditContent(null, 'old', 'new'),
+    }
     expect(fileEditDiffHunks(patched)).toEqual(PATCH)
     expect(fileEditHasDiff(patched)).toBe(true)
     expect(fileEditHasDiff(sided)).toBe(true)
@@ -92,7 +106,15 @@ describe('fileEditHasDiff', () => {
   })
 
   it('ignores malformed structuredPatch arrays instead of treating them as renderable', () => {
-    const malformed = [{ oldStart: 1, oldLines: Number.NaN, newStart: 1, newLines: 1, lines: ['-old'] }]
+    const malformed = [
+      {
+        oldStart: 1,
+        oldLines: Number.NaN,
+        newStart: 1,
+        newLines: 1,
+        lines: ['-old'],
+      },
+    ]
     expect(fileEditHasDiff(source({ structuredPatch: malformed as unknown as StructuredPatchHunk[] }))).toBe(false)
   })
 
@@ -100,7 +122,13 @@ describe('fileEditHasDiff', () => {
     const deletion = source({ oldStr: 'gone\n', newStr: '' })
     expect(fileEditHasDiff(deletion)).toBe(true)
     expect(fileEditDiffHunks(deletion)).toEqual([
-      { oldStart: 1, oldLines: 1, newStart: 1, newLines: 0, lines: ['-gone'] },
+      {
+        oldStart: 1,
+        oldLines: 1,
+        newStart: 1,
+        newLines: 0,
+        lines: ['-gone'],
+      },
     ])
   })
 })
@@ -112,31 +140,67 @@ describe('normalizeStructuredPatchHunks', () => {
 
   it('rejects non-string hunk lines', () => {
     expect(normalizeStructuredPatchHunks([
-      { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: [42] },
+      {
+        oldStart: 1,
+        oldLines: 1,
+        newStart: 1,
+        newLines: 1,
+        lines: [42],
+      },
     ])).toBeNull()
   })
 
   it('rejects empty hunk payloads', () => {
     expect(normalizeStructuredPatchHunks([
-      { oldStart: 1, oldLines: 0, newStart: 1, newLines: 0, lines: [] },
+      {
+        oldStart: 1,
+        oldLines: 0,
+        newStart: 1,
+        newLines: 0,
+        lines: [],
+      },
     ])).toBeNull()
   })
 
   it('rejects negative and non-finite hunk coordinates', () => {
     expect(normalizeStructuredPatchHunks([
-      { oldStart: -1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-old'] },
+      {
+        oldStart: -1,
+        oldLines: 1,
+        newStart: 1,
+        newLines: 1,
+        lines: ['-old'],
+      },
     ])).toBeNull()
     expect(normalizeStructuredPatchHunks([
-      { oldStart: 1, oldLines: Number.NaN, newStart: 1, newLines: 1, lines: ['-old'] },
+      {
+        oldStart: 1,
+        oldLines: Number.NaN,
+        newStart: 1,
+        newLines: 1,
+        lines: ['-old'],
+      },
     ])).toBeNull()
   })
 
   it('rejects hunks whose line counts do not match their payload', () => {
     expect(normalizeStructuredPatchHunks([
-      { oldStart: 1, oldLines: 2, newStart: 1, newLines: 1, lines: ['-old', '+new'] },
+      {
+        oldStart: 1,
+        oldLines: 2,
+        newStart: 1,
+        newLines: 1,
+        lines: ['-old', '+new'],
+      },
     ])).toBeNull()
     expect(normalizeStructuredPatchHunks([
-      { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: [' old', '+new'] },
+      {
+        oldStart: 1,
+        oldLines: 1,
+        newStart: 1,
+        newLines: 1,
+        lines: [' old', '+new'],
+      },
     ])).toBeNull()
   })
 
@@ -144,18 +208,48 @@ describe('normalizeStructuredPatchHunks', () => {
   // hunks alone states both string halves as '' -- so the row then drew nothing.
   it('drops one malformed hunk and keeps the rest of the patch', () => {
     expect(normalizeStructuredPatchHunks([
-      { oldStart: 1, oldLines: 2, newStart: 1, newLines: 1, lines: ['-old', '+new'] },
-      { oldStart: 9, oldLines: 1, newStart: 9, newLines: 1, lines: ['-two', '+three'] },
+      {
+        oldStart: 1,
+        oldLines: 2,
+        newStart: 1,
+        newLines: 1,
+        lines: ['-old', '+new'],
+      },
+      {
+        oldStart: 9,
+        oldLines: 1,
+        newStart: 9,
+        newLines: 1,
+        lines: ['-two', '+three'],
+      },
     ])).toEqual([
-      { oldStart: 9, oldLines: 1, newStart: 9, newLines: 1, lines: ['-two', '+three'] },
+      {
+        oldStart: 9,
+        oldLines: 1,
+        newStart: 9,
+        newLines: 1,
+        lines: ['-two', '+three'],
+      },
     ])
   })
 
   it('drops unified-diff no-newline marker lines from otherwise valid hunks', () => {
     expect(normalizeStructuredPatchHunks([
-      { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-old', '\\ No newline at end of file', '+new'] },
+      {
+        oldStart: 1,
+        oldLines: 1,
+        newStart: 1,
+        newLines: 1,
+        lines: ['-old', '\\ No newline at end of file', '+new'],
+      },
     ])).toEqual([
-      { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-old', '+new'] },
+      {
+        oldStart: 1,
+        oldLines: 1,
+        newStart: 1,
+        newLines: 1,
+        lines: ['-old', '+new'],
+      },
     ])
   })
 })
@@ -194,7 +288,13 @@ describe('fileEditDiffFromWholeFile', () => {
 
 describe('fileEditDiffFromHunks', () => {
   const hunks: StructuredPatchHunk[] = [
-    { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-old', '+new'] },
+    {
+      oldStart: 1,
+      oldLines: 1,
+      newStart: 1,
+      newLines: 1,
+      lines: ['-old', '+new'],
+    },
   ]
 
   // A source that states a PATCH states no sides at all: `FileEditContent` is a
@@ -213,7 +313,12 @@ describe('fileEditDiffFromHunks', () => {
   // An empty patch is NO patch: every reader already tested the length, so the source
   // states the sides half instead of a patch that draws nothing.
   it('reads an empty hunks array as no patch', () => {
-    expect(fileEditDiffFromHunks('/tmp/a.ts', [])).toEqual({ filePath: '/tmp/a.ts', structuredPatch: null, oldStr: '', newStr: '' })
+    expect(fileEditDiffFromHunks('/tmp/a.ts', [])).toEqual({
+      filePath: '/tmp/a.ts',
+      structuredPatch: null,
+      oldStr: '',
+      newStr: '',
+    })
   })
 })
 
@@ -258,11 +363,19 @@ describe('FileEditDiffBody', () => {
         source={source({
           filePath: 'example.ts',
           structuredPatch: [
-            { oldStart: 10, oldLines: 1, newStart: 10, newLines: 1, lines: [' line 10'] },
+            {
+              oldStart: 10,
+              oldLines: 1,
+              newStart: 10,
+              newLines: 1,
+              lines: [' line 10'],
+            },
           ],
           originalFile,
         })}
-        diff={{ view: () => 'unified' }}
+        diff={{
+          view: () => 'unified',
+        }}
         context={{ premeasureMode: true }}
       />
     ))

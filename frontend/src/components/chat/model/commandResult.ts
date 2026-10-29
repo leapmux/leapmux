@@ -62,7 +62,9 @@ export function commandExit(source: CommandResult): CommandExit {
     return { signal: source.signal }
   if (source.failed === true)
     return { failed: true }
-  return source.exitCode === null ? { exitCode: null } : {}
+  return source.exitCode === null
+    ? { exitCode: null }
+    : {}
 }
 
 /**
@@ -86,5 +88,8 @@ export function commandIsError(exit: CommandExit): boolean {
  */
 export function withCommandExit(command: CommandResult, exit: CommandExit): CommandResult {
   const { exitCode: _exitCode, signal: _signal, failed: _failed, ...rest } = command
-  return { ...rest, ...exit }
+  return {
+    ...rest,
+    ...exit,
+  }
 }

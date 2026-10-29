@@ -28,9 +28,13 @@ function makeResult(toolUseResult: Record<string, unknown> | undefined, content:
     type: 'user',
     message: {
       role: 'user',
-      content: [{ type: 'tool_result', tool_use_id: 'r1', content }],
+      content: [
+        { type: 'tool_result', tool_use_id: 'r1', content },
+      ],
     },
-    ...(toolUseResult ? { tool_use_result: toolUseResult } : {}),
+    ...(toolUseResult
+      ? { tool_use_result: toolUseResult }
+      : {}),
   }
 }
 
@@ -92,7 +96,10 @@ describe('opencode fetch tool_call_update rendering', () => {
       status: 'completed',
       title: 'Fetch https://example.com',
       content: [
-        { type: 'content', content: { text: 'opaque acp fetch output' } },
+        {
+          type: 'content',
+          content: { text: 'opaque acp fetch output' },
+        },
       ],
     })
     expect(container.textContent ?? '').toContain('opaque acp fetch output')

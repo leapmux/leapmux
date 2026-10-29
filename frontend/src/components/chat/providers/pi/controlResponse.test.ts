@@ -11,17 +11,30 @@ import {
 } from './controlResponse'
 
 function cr(method: string, response: Record<string, unknown> | undefined): PersistedControlResponse {
-  return { claimToken: 'claim-1', requestId: 'r', request: { method }, response }
+  return {
+    claimToken: 'claim-1',
+    requestId: 'r',
+    request: { method },
+    response,
+  }
 }
 
 describe('pi controlResponse helpers', () => {
   it('preserves saved multi-select choices when source details are unavailable', () => {
-    const state = createControlAnswerState({ selections: { 0: ['1', '2'] } })
-    expect(piAskAnswerValue(state, [{ question: 'Choose', options: [] }], { method: 'input', placeholder: '1,3' })).toBe('1,2')
+    const state = createControlAnswerState({
+      selections: {
+        0: ['1', '2'],
+      },
+    })
+    expect(piAskAnswerValue(state, [
+      { question: 'Choose', options: [] },
+    ], { method: 'input', placeholder: '1,3' })).toBe('1,2')
   })
 
   it('preserves numeric-looking custom text as typed', () => {
-    const state = createControlAnswerState({ customTexts: { 0: '1. A — custom text' } })
+    const state = createControlAnswerState({
+      customTexts: { 0: '1. A — custom text' },
+    })
     expect(piAskAnswerValue(state, [], { method: 'input', placeholder: '1,3' })).toBe('1. A — custom text')
   })
 
@@ -91,12 +104,15 @@ describe('piControlResponseSummary', () => {
     ['Stay in Plan mode', 'Rejected'],
     ['Export plan…', 'Export plan…'],
   ])('renders the plan decision %s as %s', (value, expected) => {
-    expect(piControlResponseSummary({ ...cr('select', { value }), request: {
-      type: 'extension_ui_request',
-      method: 'select',
-      title: 'Proposed plan ready. What next?',
-      options: ['Implement here', 'Start fresh and implement', 'Stay in Plan mode'],
-    } }))
+    expect(piControlResponseSummary({
+      ...cr('select', { value }),
+      request: {
+        type: 'extension_ui_request',
+        method: 'select',
+        title: 'Proposed plan ready. What next?',
+        options: ['Implement here', 'Start fresh and implement', 'Stay in Plan mode'],
+      },
+    }))
       .toEqual({ kind: 'label', text: expected })
   })
 
@@ -116,8 +132,18 @@ describe('piControlResponseSummary', () => {
   })
 
   it('preserves a select value that resembles an obsolete MCP approval choice', () => {
-    const request = { type: 'extension_ui_request', method: 'select', title: 'MCP: probe wants to run lookup\n\nArguments:\n{}', options: ['Allow once', 'Allow for session', 'Deny'] }
-    expect(piControlResponseSummary({ claimToken: 'claim-1', requestId: 'r', request, response: { value: 'Allow once' } })).toEqual({ kind: 'label', text: 'Allow once' })
+    const request = {
+      type: 'extension_ui_request',
+      method: 'select',
+      title: 'MCP: probe wants to run lookup\n\nArguments:\n{}',
+      options: ['Allow once', 'Allow for session', 'Deny'],
+    }
+    expect(piControlResponseSummary({
+      claimToken: 'claim-1',
+      requestId: 'r',
+      request,
+      response: { value: 'Allow once' },
+    })).toEqual({ kind: 'label', text: 'Allow once' })
   })
 
   it('preserves whitespace and leaves unknown methods unresolved', () => {
@@ -128,7 +154,12 @@ describe('piControlResponseSummary', () => {
 
   it('recovers the dialog from the response shape when the request is gone', () => {
     // A native response can supply its value even when the matching request is unavailable.
-    const gone = (response: Record<string, unknown>): PersistedControlResponse => ({ claimToken: 'claim-1', requestId: 'r', request: undefined, response })
+    const gone = (response: Record<string, unknown>): PersistedControlResponse => ({
+      claimToken: 'claim-1',
+      requestId: 'r',
+      request: undefined,
+      response,
+    })
     expect(piControlResponseSummary(gone({ confirmed: true }))).toEqual({ kind: 'label', text: 'Approved' })
     expect(piControlResponseSummary(gone({ confirmed: false }))).toEqual({ kind: 'label', text: 'Rejected' })
     expect(piControlResponseSummary(gone({ value: 'note' }))).toEqual({ kind: 'label', text: 'note' })

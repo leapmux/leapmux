@@ -19,7 +19,11 @@ describe('clineAgentRequest', () => {
   })
 
   it('titles a call whose task states nothing with the worker\'s title', () => {
-    for (const args of [{}, { task: '  \n ' }, { task: 3 }])
+    for (const args of [
+      {},
+      { task: '  \n ' },
+      { task: 3 },
+    ])
       expect(clineAgentRequest(args, 'c'), JSON.stringify(args)).toMatchObject({ description: CLINE_SUBAGENT_TITLE })
   })
 })
@@ -31,7 +35,16 @@ describe('clineAgentResult', () => {
 
   it('states one run with the report, keyed by the call', () => {
     expect(clineAgentResult(request, { text: 'Found it.', finishReason: CLINE_RUN_REASON.Completed })).toEqual({
-      agents: [{ description: 'Look.', registryKey: 'call_1', agentId: '', outcome: 'completed', metadata: [], body: 'Found it.' }],
+      agents: [
+        {
+          description: 'Look.',
+          registryKey: 'call_1',
+          agentId: '',
+          outcome: 'completed',
+          metadata: [],
+          body: 'Found it.',
+        },
+      ],
     })
   })
 
@@ -63,7 +76,12 @@ describe('clineAgentResult', () => {
   })
 
   it('states no report for a result that is neither a record nor text', () => {
-    for (const output of [undefined, null, 3, ['x']])
+    for (const output of [
+      undefined,
+      null,
+      3,
+      ['x'],
+    ])
       expect(clineAgentResult(request, output).agents[0], JSON.stringify(output)).toMatchObject({ outcome: 'completed', body: '' })
   })
 })

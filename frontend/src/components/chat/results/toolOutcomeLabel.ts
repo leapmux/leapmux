@@ -17,5 +17,7 @@ const OUTCOME_WORDS: Record<ToolOutcome, string> = {
  */
 export function toolOutcomeLabel(outcome: ToolOutcome, qualifier?: string | null): string {
   const detail = qualifier?.trim()
-  return detail ? `${OUTCOME_WORDS[outcome]} (${detail})` : OUTCOME_WORDS[outcome]
+  return detail
+    ? `${OUTCOME_WORDS[outcome]} (${detail})`
+    : OUTCOME_WORDS[outcome]
 }

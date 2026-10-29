@@ -58,7 +58,10 @@ describe('guardedPointerSensor', () => {
       </DragDropProvider>
     ))
 
-    return { rowEl, activeDraggableId: () => activeId }
+    return {
+      rowEl,
+      activeDraggableId: () => activeId,
+    }
   }
 
   it('does not start a drag from a stationary touch hold, however long', () => {
@@ -103,7 +106,12 @@ describe('guardedPointerSensor', () => {
   it('ignores a non-primary button', () => {
     const { rowEl, activeDraggableId } = renderProbe()
 
-    rowEl.dispatchEvent(pointerEvent('pointerdown', { x: 50, y: 50, pointerType: 'mouse', button: 2 }))
+    rowEl.dispatchEvent(pointerEvent('pointerdown', {
+      x: 50,
+      y: 50,
+      pointerType: 'mouse',
+      button: 2,
+    }))
     vi.advanceTimersByTime(ACTIVATION_DELAY_MS * 2)
 
     expect(activeDraggableId()).toBeNull()
@@ -112,8 +120,20 @@ describe('guardedPointerSensor', () => {
   it('ignores a secondary finger entirely', () => {
     const { rowEl, activeDraggableId } = renderProbe()
 
-    rowEl.dispatchEvent(pointerEvent('pointerdown', { x: 50, y: 50, pointerType: 'touch', pointerId: 2, isPrimary: false }))
-    document.dispatchEvent(pointerEvent('pointermove', { x: 50, y: 90, pointerType: 'touch', pointerId: 2, isPrimary: false }))
+    rowEl.dispatchEvent(pointerEvent('pointerdown', {
+      x: 50,
+      y: 50,
+      pointerType: 'touch',
+      pointerId: 2,
+      isPrimary: false,
+    }))
+    document.dispatchEvent(pointerEvent('pointermove', {
+      x: 50,
+      y: 90,
+      pointerType: 'touch',
+      pointerId: 2,
+      isPrimary: false,
+    }))
 
     expect(activeDraggableId()).toBeNull()
   })
@@ -168,7 +188,10 @@ describe('guardedPointerSensor', () => {
   // shared fragment moves.
   describe('embedded-UI boundary', () => {
     it('declines a press inside every element the list covers', () => {
-      for (const { label, host, target } of [...inputOrEditableHosts(), popoverHost()]) {
+      for (const { label, host, target } of [
+        ...inputOrEditableHosts(),
+        popoverHost(),
+      ]) {
         const { rowEl, activeDraggableId } = renderProbe()
         rowEl.appendChild(host)
 
@@ -242,9 +265,19 @@ describe('guardedPointerSensor', () => {
     // while only B is held.
     rowEl.dispatchEvent(pointerEvent('pointerdown', { x: 50, y: 50, pointerType: 'mouse' }))
     vi.advanceTimersByTime(100)
-    rowEl.dispatchEvent(pointerEvent('pointerdown', { x: 50, y: 50, pointerType: 'mouse', pointerId: 3 }))
+    rowEl.dispatchEvent(pointerEvent('pointerdown', {
+      x: 50,
+      y: 50,
+      pointerType: 'mouse',
+      pointerId: 3,
+    }))
     vi.advanceTimersByTime(200)
-    document.dispatchEvent(pointerEvent('pointermove', { x: 50, y: 90, pointerId: 3, pointerType: 'mouse' }))
+    document.dispatchEvent(pointerEvent('pointermove', {
+      x: 50,
+      y: 90,
+      pointerId: 3,
+      pointerType: 'mouse',
+    }))
 
     // B's own hold timer was reset by its attach; the move belongs to B and
     // activates B's row only after B's timer or B's travel -- here the move
@@ -290,17 +323,37 @@ describe('guardedPointerSensor', () => {
       </DragDropProvider>
     ))
 
-    Object.defineProperty(scroller, 'scrollHeight', { get: () => 1000, configurable: true })
-    Object.defineProperty(scroller, 'clientHeight', { get: () => 400, configurable: true })
+    Object.defineProperty(scroller, 'scrollHeight', {
+      get: () => 1000,
+      configurable: true,
+    })
+    Object.defineProperty(scroller, 'clientHeight', {
+      get: () => 400,
+      configurable: true,
+    })
     Object.defineProperty(scroller, 'scrollTop', {
       get: () => scrollTop,
       set: (next: number) => { scrollTop = Math.max(0, Math.min(next, 600)) },
       configurable: true,
     })
     scroller.getBoundingClientRect = () =>
-      ({ top: 0, bottom: 400, left: 0, right: 100, width: 100, height: 400, x: 0, y: 0, toJSON: () => ({}) })
+      ({
+        top: 0,
+        bottom: 400,
+        left: 0,
+        right: 100,
+        width: 100,
+        height: 400,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      })
 
-    return { rowEl, scroller, scrollTopOf: () => scrollTop }
+    return {
+      rowEl,
+      scroller,
+      scrollTopOf: () => scrollTop,
+    }
   }
 
   it('scrolls the row\'s own scroller while a drag rests at its edge', () => {
@@ -375,14 +428,34 @@ describe('guardedPointerSensor', () => {
     const { rowEl, activeDraggableId } = renderProbe()
 
     // The primary finger presses and starts a drag by moving.
-    rowEl.dispatchEvent(pointerEvent('pointerdown', { x: 50, y: 50, pointerType: 'touch', pointerId: 1 }))
-    document.dispatchEvent(pointerEvent('pointermove', { x: 50, y: 70, pointerType: 'touch', pointerId: 1 }))
+    rowEl.dispatchEvent(pointerEvent('pointerdown', {
+      x: 50,
+      y: 50,
+      pointerType: 'touch',
+      pointerId: 1,
+    }))
+    document.dispatchEvent(pointerEvent('pointermove', {
+      x: 50,
+      y: 70,
+      pointerType: 'touch',
+      pointerId: 1,
+    }))
     expect(activeDraggableId()).toBe('row-1')
 
     // A second finger taps elsewhere and lifts: its pointerup must not detach
     // the tracked press, or the drag below would die mid-gesture.
-    document.dispatchEvent(pointerEvent('pointerup', { x: 300, y: 300, pointerType: 'touch', pointerId: 2 }))
-    document.dispatchEvent(pointerEvent('pointermove', { x: 50, y: 90, pointerType: 'touch', pointerId: 1 }))
+    document.dispatchEvent(pointerEvent('pointerup', {
+      x: 300,
+      y: 300,
+      pointerType: 'touch',
+      pointerId: 2,
+    }))
+    document.dispatchEvent(pointerEvent('pointermove', {
+      x: 50,
+      y: 90,
+      pointerType: 'touch',
+      pointerId: 1,
+    }))
 
     expect(activeDraggableId()).toBe('row-1')
   })

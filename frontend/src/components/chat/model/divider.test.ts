@@ -8,7 +8,14 @@ import { dividerMetaFromMessage } from './divider'
  * looks at.
  */
 function parsed(inner: Record<string, unknown>) {
-  return { wrapper: null, topLevel: inner, parentObject: inner, rawText: '', supplementalContent: undefined, messageMetadata: undefined }
+  return {
+    wrapper: null,
+    topLevel: inner,
+    parentObject: inner,
+    rawText: '',
+    supplementalContent: undefined,
+    messageMetadata: undefined,
+  }
 }
 
 describe('dividerMetaFromMessage', () => {

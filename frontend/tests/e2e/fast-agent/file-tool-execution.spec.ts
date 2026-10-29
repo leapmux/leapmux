@@ -15,15 +15,32 @@ fastAgentTest.describe('Fast Agent tool execution', () => {
     const note = join(workingDir, 'note.txt')
     writeFileSync(note, 'fast-before\n')
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
 
     // The negotiated ACP filesystem replaces Fast Agent's local edit tools.
     // The model receives the host read and write tools without `edit_file`.
     // Writing an existing file returns its old and new contents as a diff.
     const start = await modelScript.queue(
-      { toolCalls: [bashToolCall(context.provider, 'fast-shell', 'echo "fast-$((40 + 2))"')] },
-      { toolCalls: [readToolCall(context.provider, 'fast-read', note)] },
-      { toolCalls: [writeToolCall(context.provider, 'fast-edit', { path: note, content: 'fast-after' })] },
+      {
+        toolCalls: [
+          bashToolCall(context.provider, 'fast-shell', 'echo "fast-$((40 + 2))"'),
+        ],
+      },
+      {
+        toolCalls: [
+          readToolCall(context.provider, 'fast-read', note),
+        ],
+      },
+      {
+        toolCalls: [
+          writeToolCall(context.provider, 'fast-edit', { path: note, content: 'fast-after' }),
+        ],
+      },
       nativeTextStep(context, 'All three tools ran.'),
     )
     await sendMessage(page, modelScript.prompt('Run the three scripted tools, then report.'))
@@ -45,5 +62,11 @@ fastAgentTest.describe('Fast Agent tool execution', () => {
 })
 
 fastAgentTest('reads and changes native files and keeps the applied diff after reload', async ({ native }) => {
-  await exerciseFileToolExecution(native, { editStep: (callId, path, _before, after) => ({ toolCalls: [writeToolCall(native.provider, callId, { path, content: `${after}\n` })] }) })
+  await exerciseFileToolExecution(native, {
+    editStep: (callId, path, _before, after) => ({
+      toolCalls: [
+        writeToolCall(native.provider, callId, { path, content: `${after}\n` }),
+      ],
+    }),
+  })
 })

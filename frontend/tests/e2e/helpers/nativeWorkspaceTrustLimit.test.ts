@@ -85,7 +85,9 @@ vi.mock('./mcpServerReceipt', async importOriginal => ({
 vi.mock('./worktree', async importOriginal => ({
   ...await importOriginal<typeof import('./worktree')>(),
   ensureGitRepositoryRoot: (directory: string) => {
-    calls.events.push(`repository root ${existsSync(join(directory, 'AGENTS.md')) ? 'after' : 'before'} the file`)
+    calls.events.push(`repository root ${existsSync(join(directory, 'AGENTS.md'))
+      ? 'after'
+      : 'before'} the file`)
   },
 }))
 
@@ -135,7 +137,16 @@ function scratchDirectory(directories: string[], prefix: string): ProviderWorkin
 }
 
 describe('exerciseNativeWorkspaceTrustLimit', () => {
-  it.each([undefined, {}, { projectConfiguration: {} }, { projectConfiguration: { prepare() {} } }])('rejects a missing actual configuration proof before browser access: %j', async (options) => {
+  it.each([
+    undefined,
+    {},
+    { projectConfiguration: {} },
+    {
+      projectConfiguration: {
+        prepare() {},
+      },
+    },
+  ])('rejects a missing actual configuration proof before browser access: %j', async (options) => {
     const context: ManagedNativeScenarioContext = {
       provider: AgentProvider.CURSOR,
       providerAgent: CURSOR,
@@ -218,7 +229,11 @@ describe('exerciseNativeWorkspaceTrustLimit', () => {
 
 describe('projectConfigurationWorker', () => {
   // The provider's `nativeLaunch` resolves the executable; `resolveNativeStartupLaunch` has the tests of that lookup.
-  const launch = { binaryName: 'native-agent', executable: '/private/native-agent', holdWhen: ['acp'] }
+  const launch = {
+    binaryName: 'native-agent',
+    executable: '/private/native-agent',
+    holdWhen: ['acp'],
+  }
 
   it('starts the stated launch and turns the project configuration back on', () => {
     const worker = projectConfigurationWorker({ NATIVE_DISABLE_PROJECT_CONFIG: 'true' }, launch, 'NATIVE_DISABLE_PROJECT_CONFIG')
@@ -228,9 +243,18 @@ describe('projectConfigurationWorker', () => {
 
   it.each([
     { label: 'an absent environment', environment: undefined },
-    { label: 'a variable the environment does not set', environment: { NATIVE_DISABLE_PROJECT_CONFIG_TYPO: 'true' } },
-    { label: 'a variable that already loads project configuration', environment: { NATIVE_DISABLE_PROJECT_CONFIG: 'false' } },
-    { label: 'a variable set to 1', environment: { NATIVE_DISABLE_PROJECT_CONFIG: '1' } },
+    {
+      label: 'a variable the environment does not set',
+      environment: { NATIVE_DISABLE_PROJECT_CONFIG_TYPO: 'true' },
+    },
+    {
+      label: 'a variable that already loads project configuration',
+      environment: { NATIVE_DISABLE_PROJECT_CONFIG: 'false' },
+    },
+    {
+      label: 'a variable set to 1',
+      environment: { NATIVE_DISABLE_PROJECT_CONFIG: '1' },
+    },
   ])('refuses $label', ({ environment }) => {
     expect(() => projectConfigurationWorker(environment, launch, 'NATIVE_DISABLE_PROJECT_CONFIG')).toThrow('NATIVE_DISABLE_PROJECT_CONFIG')
   })
@@ -247,7 +271,13 @@ describe('instructionFileConfiguration', () => {
     return {
       protocol: 'anthropic-messages',
       path: '/v1/messages',
-      body: { system, messages: [{ role: 'user', content: 'Reply once.' }, { role: 'assistant', content: assistant }] },
+      body: {
+        system,
+        messages: [
+          { role: 'user', content: 'Reply once.' },
+          { role: 'assistant', content: assistant },
+        ],
+      },
     }
   }
 
@@ -271,15 +301,22 @@ describe('instructionFileConfiguration', () => {
     const directory = scratchDirectory(directories, 'instruction-file-')
     // The body holds no instruction, so the generic reader would throw.
     calls.request = { protocol: 'anthropic-messages', path: '/v1/messages', body: {} } satisfies MockModelRequestRecord
-    const context = detachedContext({ readModelContext: () => 'server-held INSTRUCTIONMARKER' })
+    const context = detachedContext({
+      readModelContext: () => 'server-held INSTRUCTIONMARKER',
+    })
     await instructionFileConfiguration('AGENTS.md').prove(context, { directory, marker: 'INSTRUCTIONMARKER', agentId: 'agent' })
-    const absent = detachedContext({ readModelContext: () => 'server-held context without the marker' })
+    const absent = detachedContext({
+      readModelContext: () => 'server-held context without the marker',
+    })
     await expect(instructionFileConfiguration('AGENTS.md').prove(absent, { directory, marker: 'INSTRUCTIONMARKER', agentId: 'agent' })).rejects.toThrow('INSTRUCTIONMARKER')
   })
 
   it('makes the repository before it writes the file, and requires the source line', async () => {
     const directory = scratchDirectory(directories, 'instruction-file-')
-    const configuration = instructionFileConfiguration('AGENTS.md', { gitRoot: true, sourceLine: path => `Instructions from: ${path}` })
+    const configuration = instructionFileConfiguration('AGENTS.md', {
+      gitRoot: true,
+      sourceLine: path => `Instructions from: ${path}`,
+    })
     await configuration.prepare({ directory, marker: 'INSTRUCTIONMARKER' })
     expect(calls.events).toEqual(['repository root before the file'])
     expect(existsSync(join(directory, 'AGENTS.md'))).toBe(true)
@@ -296,7 +333,13 @@ describe('instructionFileConfiguration', () => {
     expect(calls.events).toEqual([])
   })
 
-  it.each(['', '.', '..', 'docs/AGENTS.md', '../AGENTS.md'])('refuses the file name %j, which is not one file name component', (fileName) => {
+  it.each([
+    '',
+    '.',
+    '..',
+    'docs/AGENTS.md',
+    '../AGENTS.md',
+  ])('refuses the file name %j, which is not one file name component', (fileName) => {
     expect(() => instructionFileConfiguration(fileName)).toThrow('one file name component')
   })
 })
@@ -316,7 +359,15 @@ describe('mcpServerProjectConfiguration', () => {
       servers.push(server)
     }).prepare({ directory, marker: 'UNUSED' })
     expect(calls.events).toEqual(['repository root before the file'])
-    expect(servers).toEqual([{ name: PROJECT_MCP_SERVER_NAME, command: process.execPath, args: [join(directory, 'mcp-echo.mjs')] }])
+    expect(servers).toEqual([
+      {
+        name: PROJECT_MCP_SERVER_NAME,
+        command: process.execPath,
+        args: [
+          join(directory, 'mcp-echo.mjs'),
+        ],
+      },
+    ])
     expect(existsSync(servers[0]!.args[0]!)).toBe(true)
   })
 
@@ -342,7 +393,15 @@ describe('ignoredMcpServerProjectConfiguration', () => {
     return {
       protocol: 'openai-chat-completions',
       path: '/v1/chat/completions',
-      body: { messages: [{ role: 'user', content: 'Reply once.' }], tools: names.map(name => ({ type: 'function', function: { name, description: '', parameters: {} } })) },
+      body: {
+        messages: [
+          { role: 'user', content: 'Reply once.' },
+        ],
+        tools: names.map(name => ({
+          type: 'function',
+          function: { name, description: '', parameters: {} },
+        })),
+      },
     }
   }
 
@@ -354,7 +413,15 @@ describe('ignoredMcpServerProjectConfiguration', () => {
       servers.push(server)
     }).prepare({ directory, marker: 'UNUSED' })
     expect(calls.events).toEqual(['repository root before the file'])
-    expect(servers).toEqual([{ name: PROJECT_MCP_SERVER_NAME, command: process.execPath, args: [join(directory, 'mcp-echo.mjs')] }])
+    expect(servers).toEqual([
+      {
+        name: PROJECT_MCP_SERVER_NAME,
+        command: process.execPath,
+        args: [
+          join(directory, 'mcp-echo.mjs'),
+        ],
+      },
+    ])
   })
 
   it('proves through one native turn that the request offers no project tool and the server wrote no receipt', async () => {
@@ -405,7 +472,12 @@ describe('exerciseMissingWorkspaceTrustRoute', () => {
         return operation
       },
     })
-    expect(calls.events).toEqual(['choose permissionMode-ask', 'idle', 'own operation', 'unsupported workspace-trust'])
+    expect(calls.events).toEqual([
+      'choose permissionMode-ask',
+      'idle',
+      'own operation',
+      'unsupported workspace-trust',
+    ])
     expect(calls.proof).toEqual({ purpose: 'workspace-trust', classify, operation })
   })
 
@@ -417,11 +489,15 @@ describe('exerciseMissingWorkspaceTrustRoute', () => {
 
 describe('outsideFileWriteOperation', () => {
   it('writes outside the working directory through the shell tool call of the provider', async () => {
-    const operation = outsideFileWriteOperation((callId, command) => ({ id: callId, name: 'Bash', arguments: { command } }))
+    const operation = outsideFileWriteOperation((callId, command) => ({
+      id: callId,
+      name: 'Bash',
+      arguments: { command },
+    }))
     expect(operation.toolCall.id).toBe('native-control-permission')
     const command = operation.toolCall.arguments?.command
     if (typeof command !== 'string')
-      throw new Error('The operation states no shell command.')
+      throw new TypeError('The operation states no shell command.')
     const file = /> '([^']+)'/.exec(command)?.[1]
     if (!file)
       throw new Error('The command writes no quoted file.')
@@ -433,7 +509,16 @@ describe('outsideFileWriteOperation', () => {
     const request: MockModelRequestRecord = {
       protocol: 'anthropic-messages',
       path: '/v1/messages',
-      body: { messages: [{ role: 'user', content: [{ type: 'tool_result', tool_use_id: 'native-control-permission', content: 'NATIVECONTROL42' }] }] },
+      body: {
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'tool_result', tool_use_id: 'native-control-permission', content: 'NATIVECONTROL42' },
+            ],
+          },
+        ],
+      },
     }
     await operation.nativeProof(request)
     writeFileSync(file, 'NATIVECONTROL41\n')

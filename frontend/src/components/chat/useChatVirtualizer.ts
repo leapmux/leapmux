@@ -255,7 +255,9 @@ export const HEIGHT_CACHE_MAX = 2400
 function resolve(v: Accessor<number> | number | undefined, fallback: number): number {
   if (v === undefined)
     return fallback
-  return typeof v === 'function' ? v() : v
+  return typeof v === 'function'
+    ? v()
+    : v
 }
 
 /** Reject a height that cannot enter the cumulative offset map. */
@@ -400,7 +402,9 @@ export interface UseChatVirtualizerResult {
  * Record each contribution on its cache entry. Eviction removes that exact value.
  */
 function fallbackEstimateContribution(height: number): number | undefined {
-  return height > 0 && height <= FALLBACK_ESTIMATE_OUTLIER_PX ? height : undefined
+  return height > 0 && height <= FALLBACK_ESTIMATE_OUTLIER_PX
+    ? height
+    : undefined
 }
 
 interface CachedMeasuredHeight {
@@ -460,7 +464,9 @@ function createHeightMedian() {
       // the pin. Walk the sorted buckets, accumulating counts, to the bucket that contains
       // that rank.
       const rank = Math.floor((total - 1) / 2)
-      const keys = [...counts.keys()].sort((a, b) => a - b)
+      const keys = [
+        ...counts.keys(),
+      ].sort((a, b) => a - b)
       let acc = 0
       let result = keys[keys.length - 1]
       for (const k of keys) {
@@ -598,7 +604,9 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
   // until its height commits, so reserving space here can't paint over the next row.
   const cachedMeasuredHeight = (item: VirtualItem): number | undefined => {
     const cached = heightCache.get(item.id)
-    return cached !== undefined && cached.key === item.heightKey ? cached.height : undefined
+    return cached !== undefined && cached.key === item.heightKey
+      ? cached.height
+      : undefined
   }
   const resolvedHeight = (item: VirtualItem): number =>
     cachedMeasuredHeight(item) ?? estimateFor(item)
@@ -691,7 +699,9 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
 
   const offsetOfId = (id: string): number | undefined => {
     const i = indexOfId(id)
-    return i >= 0 ? offsetOfIndex(i) : undefined
+    return i >= 0
+      ? offsetOfIndex(i)
+      : undefined
   }
 
   const heightOfIndex = (index: number): number => {
@@ -699,21 +709,29 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     if (index < 0 || index >= g.n)
       return estimateHeight()
     const item = g.list[index]
-    return item !== undefined ? resolvedHeight(item) : estimateHeight()
+    return item !== undefined
+      ? resolvedHeight(item)
+      : estimateHeight()
   }
 
   const heightOfId = (id: string): number => heightOfIndex(indexOfId(id))
 
   const gapAboveOf = (id: string): number => {
     const i = indexOfId(id)
-    return i > 0 ? gapAfter(geom().list, i - 1) : 0
+    return i > 0
+      ? gapAfter(geom().list, i - 1)
+      : 0
   }
 
   const currentHeightKey = (id: string): string | undefined => {
     const g = geom()
     const index = g.indexById.get(id)
-    const item = index === undefined ? undefined : g.list[index]
-    return item !== undefined ? item.heightKey : undefined
+    const item = index === undefined
+      ? undefined
+      : g.list[index]
+    return item !== undefined
+      ? item.heightKey
+      : undefined
   }
 
   const hasMeasuredHeight = (id: string): boolean => {
@@ -730,13 +748,18 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
   const heightDebugOfId = (id: string): { measured?: number } => {
     const rawMeasured = heightCache.get(id)
     const i = indexOfId(id)
-    if (i < 0)
-      return rawMeasured !== undefined ? { measured: rawMeasured.height } : {}
+    if (i < 0) {
+      return rawMeasured !== undefined
+        ? { measured: rawMeasured.height }
+        : {}
+    }
     const item = geom().list[i]
     const measured = item !== undefined && rawMeasured !== undefined && rawMeasured.key === item.heightKey
       ? rawMeasured.height
       : undefined
-    return measured !== undefined ? { measured } : {}
+    return measured !== undefined
+      ? { measured }
+      : {}
   }
 
   // Largest i in [0, n-1] with offsets[i] <= y (the row containing offset y).
@@ -781,9 +804,15 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     // compositor scrolls a frame before this range update lands; without the lead a
     // jump larger than the symmetric overscan would flash an unrendered gap until
     // the next frame caught up. A non-positive lead leaves the symmetric overscan.
-    const leadPx = lead && lead.px > 0 ? lead.px : 0
-    const overTop = over + (lead?.dir === 'older' ? leadPx : 0)
-    const overBottom = over + (lead?.dir === 'newer' ? leadPx : 0)
+    const leadPx = lead && lead.px > 0
+      ? lead.px
+      : 0
+    const overTop = over + (lead?.dir === 'older'
+      ? leadPx
+      : 0)
+    const overBottom = over + (lead?.dir === 'newer'
+      ? leadPx
+      : 0)
     // Clamp a stale-high scrollTop to the scrollable range before slicing. After a
     // trim/shrink the spacer (totalHeight = offsets[n]) drops in the same flush
     // that the DOM still reports the old, larger scrollTop; without this clamp
@@ -870,7 +899,9 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     // estimate for a first measure (read now, before this row's contribution is folded in)
     // or the previously cached height for a re-measure. Its diff from the new height is
     // exactly what shifts the offset map (and, if above the anchor, drifts the pin).
-    const assumedHeight = prevEntry !== undefined ? prevEntry.height : heightEstimate.value(kind, seed)
+    const assumedHeight = prevEntry !== undefined
+      ? prevEntry.height
+      : heightEstimate.value(kind, seed)
     const nextContribution = fallbackEstimateContribution(height)
     // A re-measure within epsilon of the prior measured height is noise: the
     // offset map doesn't change. Still refresh the row's LRU recency (delete +
@@ -893,7 +924,14 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
     // insertion order; a plain set on an existing key would keep its old, stale
     // position and risk evicting a freshly-measured row).
     heightCache.delete(id)
-    heightCache.set(id, { key: heightKey, height, kind, ...(nextContribution !== undefined ? { fallbackContribution: nextContribution } : {}) })
+    heightCache.set(id, {
+      key: heightKey,
+      height,
+      kind,
+      ...(nextContribution !== undefined
+        ? { fallbackContribution: nextContribution }
+        : {}),
+    })
     if (prevEntry === undefined) {
       if (nextContribution !== undefined)
         heightEstimate.add(kind, nextContribution)
@@ -955,7 +993,9 @@ export function useChatVirtualizer(opts: UseChatVirtualizerOptions): UseChatVirt
   ): boolean => {
     const { list, indexById } = rowIndex()
     const index = indexById.get(id)
-    const item = index === undefined ? undefined : list[index]
+    const item = index === undefined
+      ? undefined
+      : list[index]
     if (item === undefined)
       return false
     const changed = applyHeightCommit(id, height, heightKey, source, item.heightKey, kindOf(item))

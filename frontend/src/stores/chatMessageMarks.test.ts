@@ -41,7 +41,11 @@ describe('chatMessageMarks', () => {
   describe('seed', () => {
     it('replaces marks, sorts/dedupes, and records the range', () => {
       withStore((s) => {
-        s.seed('a1', [{ seq: 8n, type: C }, { seq: 2n, type: U }, { seq: 8n, type: C }], 1n, 10n)
+        s.seed('a1', [
+          { seq: 8n, type: C },
+          { seq: 2n, type: U },
+          { seq: 8n, type: C },
+        ], 1n, 10n)
         const st = s.get('a1')
         expect(st.loaded).toBe(true)
         expect(st.marks.map(m => m.seq)).toEqual([2n, 8n])
@@ -52,8 +56,13 @@ describe('chatMessageMarks', () => {
 
     it('ignores an UNSET (indeterminate) range for min/max, keeping the prior values', () => {
       withStore((s) => {
-        s.seed('a1', [{ seq: 3n, type: U }], 2n, 20n)
-        s.seed('a1', [{ seq: 3n, type: U }, { seq: 5n, type: U }], undefined, undefined)
+        s.seed('a1', [
+          { seq: 3n, type: U },
+        ], 2n, 20n)
+        s.seed('a1', [
+          { seq: 3n, type: U },
+          { seq: 5n, type: U },
+        ], undefined, undefined)
         const st = s.get('a1')
         expect(st.minSeq).toBe(2n)
         expect(st.seedMaxSeq).toBe(20n)
@@ -65,10 +74,14 @@ describe('chatMessageMarks', () => {
       withStore((s) => {
         // Worker DB error: marks came back but the min/max range is unset. Installing marks
         // against the bogus 0n floor would mis-position every dot, so keep hidden.
-        s.seed('a1', [{ seq: 5n, type: U }], undefined, undefined)
+        s.seed('a1', [
+          { seq: 5n, type: U },
+        ], undefined, undefined)
         expect(s.get('a1').loaded).toBe(false)
         // A later good reseed heals it and reveals the rail.
-        s.seed('a1', [{ seq: 5n, type: U }], 4n, 8n)
+        s.seed('a1', [
+          { seq: 5n, type: U },
+        ], 4n, 8n)
         expect(s.get('a1').loaded).toBe(true)
         expect(s.get('a1').minSeq).toBe(4n)
       })
@@ -76,22 +89,31 @@ describe('chatMessageMarks', () => {
 
     it('preserves a live mark noted BEYOND the snapshot horizon across a reseed (reconnect race)', () => {
       withStore((s) => {
-        s.seed('a1', [{ seq: 2n, type: U }], 1n, 5n)
+        s.seed('a1', [
+          { seq: 2n, type: U },
+        ], 1n, 5n)
         // A send lands live (broadcast) AFTER the worker snapshotted ListMessageMarks but
         // before its response applies -- noteMark records seq 9n, past the snapshot's max.
         s.noteMark('a1', 9n, U)
         // The slightly-stale reseed (max=5n, no 9n) must NOT drop the freshly-noted 9n dot.
-        s.seed('a1', [{ seq: 2n, type: U }], 1n, 5n)
+        s.seed('a1', [
+          { seq: 2n, type: U },
+        ], 1n, 5n)
         expect(s.get('a1').marks.map(m => m.seq)).toEqual([2n, 9n])
       })
     })
 
     it('a reseed still heals a delete WITHIN the snapshot horizon (wholesale replace at/below max)', () => {
       withStore((s) => {
-        s.seed('a1', [{ seq: 2n, type: U }, { seq: 4n, type: U }], 1n, 5n)
+        s.seed('a1', [
+          { seq: 2n, type: U },
+          { seq: 4n, type: U },
+        ], 1n, 5n)
         // While disconnected, seq 4n's message was deleted. The reseed (which read the DB
         // fresh, so 4n <= max is gone) drops it -- only marks BEYOND max are preserved.
-        s.seed('a1', [{ seq: 2n, type: U }], 1n, 5n)
+        s.seed('a1', [
+          { seq: 2n, type: U },
+        ], 1n, 5n)
         expect(s.get('a1').marks.map(m => m.seq)).toEqual([2n])
       })
     })
@@ -102,7 +124,9 @@ describe('chatMessageMarks', () => {
       withStore((s) => {
         s.seed('a1', [], 1n, 5n)
         s.noteMark('a1', 3n, C)
-        expect(s.get('a1').marks).toEqual([{ seq: 3n, type: C }])
+        expect(s.get('a1').marks).toEqual([
+          { seq: 3n, type: C },
+        ])
       })
     })
 
@@ -126,7 +150,9 @@ describe('chatMessageMarks', () => {
 
     it('does not raise minSeq for a later seq', () => {
       withStore((s) => {
-        s.seed('a1', [{ seq: 2n, type: U }], 2n, 5n)
+        s.seed('a1', [
+          { seq: 2n, type: U },
+        ], 2n, 5n)
         s.noteMark('a1', 9n, U)
         expect(s.get('a1').minSeq).toBe(2n)
       })
@@ -150,7 +176,10 @@ describe('chatMessageMarks', () => {
   describe('remove / forget', () => {
     it('remove drops a mark; forget clears the agent (and its live-revision counter) entirely', () => {
       withStore((s) => {
-        s.seed('a1', [{ seq: 2n, type: U }, { seq: 4n, type: C }], 1n, 5n)
+        s.seed('a1', [
+          { seq: 2n, type: U },
+          { seq: 4n, type: C },
+        ], 1n, 5n)
         s.remove('a1', 2n)
         expect(s.get('a1').marks.map(m => m.seq)).toEqual([4n])
         expect(s.liveRevision('a1')).toBeGreaterThan(0)
@@ -164,7 +193,9 @@ describe('chatMessageMarks', () => {
 
     it('bumps the live revision only when remove actually drops a mark, so an unmarked-row delete is not counted', () => {
       withStore((s) => {
-        s.seed('a1', [{ seq: 2n, type: U }], 1n, 5n)
+        s.seed('a1', [
+          { seq: 2n, type: U },
+        ], 1n, 5n)
         const r0 = s.liveRevision('a1')
         s.remove('a1', 2n) // present -> dropped
         const r1 = s.liveRevision('a1')

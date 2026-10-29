@@ -15,11 +15,17 @@ export function clineSpanRole(parsed: ResolvedMessageContent): ToolSpanRole {
     return 'result'
   if (!clineToolStart(parsed.parentObject))
     return 'other'
-  return retainedRowIsFinal(parsed.completion) ? 'result' : 'request'
+  return retainedRowIsFinal(parsed.completion)
+    ? 'result'
+    : 'request'
 }
 
 /** The span side one row needs beside it: a request needs its result, and a result its request. */
 export function clineRelatedMessages(parsed: ResolvedMessageContent) {
   const role = clineSpanRole(parsed)
-  return role === 'result' ? ['request'] as const : role === 'request' ? ['result'] as const : []
+  return role === 'result'
+    ? ['request'] as const
+    : role === 'request'
+      ? ['result'] as const
+      : []
 }

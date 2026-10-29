@@ -8,6 +8,8 @@ codexTest.describe('codex tool execution', () => {
     // output, so only the command's own output can put it in a tool row. The shared scenario proves the command, the
     // output and the exit code in the rows, and the output and the code in the next model request. Codex runs each
     // command in its exec cell, whose result opens with `Script completed` and `Wall time`; the row draws neither.
-    await exerciseShellToolExecution(codexExecContext(native), { absentRowText: ['Script completed', 'Wall time'] })
+    await exerciseShellToolExecution(codexExecContext(native), {
+      absentRowText: ['Script completed', 'Wall time'],
+    })
   })
 })

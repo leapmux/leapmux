@@ -45,7 +45,9 @@ const streams = vi.hoisted(() => ({ opts: undefined as unknown }))
 vi.mock('~/hooks/useWatchEventsStreams', () => ({
   useWatchEventsStreams: (opts: unknown) => {
     streams.opts = opts
-    return { abortSignalFor: () => undefined }
+    return {
+      abortSignalFor: () => undefined,
+    }
   },
 }))
 
@@ -65,7 +67,13 @@ const WORKER = 'w-1'
 function mountConnection(initial: AgentStatus) {
   const harness = installTestBridge({ workspaceId: WS })
   const { view, metadata, selection } = createTestTabStores(WS)
-  emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: 'p1', workerId: WORKER })
+  emitAddTab({
+    type: TabType.AGENT,
+    id: 'a1',
+    tileId: harness.rootTileId,
+    position: 'p1',
+    workerId: WORKER,
+  })
   metadata.patch('a1', { agentStatus: initial })
 
   let dispose!: () => void
@@ -87,13 +95,17 @@ function mountConnection(initial: AgentStatus) {
       getActiveWorkspaceId: () => WS,
     })
   })
-  streamOpts().onReplayRequested?.(WORKER, 1n, [create(WatchAgentEntrySchema, {
-    agentId: 'a1',
-    mode: WatchMode.FULL,
-    replay: WatchReplayMode.LATEST,
-    cursorSeq: 0n,
-    replayId: 1n,
-  })], new Map([['a1', 'a1']]))
+  streamOpts().onReplayRequested?.(WORKER, 1n, [
+    create(WatchAgentEntrySchema, {
+      agentId: 'a1',
+      mode: WatchMode.FULL,
+      replay: WatchReplayMode.LATEST,
+      cursorSeq: 0n,
+      replayId: 1n,
+    }),
+  ], new Map([
+    ['a1', 'a1'],
+  ]))
   return {
     dispose,
     status: () => view.getAgentTab('a1')?.agentStatus,
@@ -104,14 +116,27 @@ function mountConnection(initial: AgentStatus) {
 
 function agentEvent(event: NonNullable<MessageInitShape<typeof AgentEventSchema>['event']>, replay = false): WatchEventsResponse {
   return create(WatchEventsResponseSchema, {
-    event: { case: 'agentEvent', value: create(AgentEventSchema, { agentId: 'a1', event, replay, replayId: replay ? 1n : 0n, replayAgentId: replay ? 'a1' : '' }) },
+    event: {
+      case: 'agentEvent',
+      value: create(AgentEventSchema, {
+        agentId: 'a1',
+        event,
+        replay,
+        replayId: replay ? 1n : 0n,
+        replayAgentId: replay ? 'a1' : '',
+      }),
+    },
   })
 }
 
 function controlRequest(): NonNullable<MessageInitShape<typeof AgentEventSchema>['event']> {
   return {
     case: 'controlRequest',
-    value: { agentId: 'a1', requestId: 'req-1', payload: new TextEncoder().encode(JSON.stringify({ tool_name: 'Bash' })) },
+    value: {
+      agentId: 'a1',
+      requestId: 'req-1',
+      payload: new TextEncoder().encode(JSON.stringify({ tool_name: 'Bash' })),
+    },
   }
 }
 
@@ -127,7 +152,12 @@ describe('useWorkspaceConnection live status writers', () => {
 
     streamOpts().onEvent(WORKER, agentEvent({
       case: 'statusChange',
-      value: { agentId: 'a1', status: AgentStatus.ACTIVE, workerOnline: true, optionGroups: [] },
+      value: {
+        agentId: 'a1',
+        status: AgentStatus.ACTIVE,
+        workerOnline: true,
+        optionGroups: [],
+      },
     }))
 
     expect(status()).toBe(AgentStatus.ACTIVE)
@@ -173,14 +203,21 @@ describe('useWorkspaceConnection live status writers', () => {
  * Catalog and status have separate counts because one event can change either or both.
  */
 describe('useWorkspaceConnection live catalog writers', () => {
-  const catalog = () => [create(AvailableOptionGroupSchema, { id: 'model', currentValue: 'opus' })]
+  const catalog = () => [
+    create(AvailableOptionGroupSchema, { id: 'model', currentValue: 'opus' }),
+  ]
 
   it('counts a catalog and a status that arrive in one event, each on its own count', () => {
     const { dispose, status, epoch, catalogEpoch } = mountConnection(AgentStatus.STARTING)
 
     streamOpts().onEvent(WORKER, agentEvent({
       case: 'statusChange',
-      value: { agentId: 'a1', status: AgentStatus.ACTIVE, workerOnline: true, optionGroups: catalog() },
+      value: {
+        agentId: 'a1',
+        status: AgentStatus.ACTIVE,
+        workerOnline: true,
+        optionGroups: catalog(),
+      },
     }))
 
     expect(status()).toBe(AgentStatus.ACTIVE)
@@ -194,7 +231,12 @@ describe('useWorkspaceConnection live catalog writers', () => {
 
     streamOpts().onEvent(WORKER, agentEvent({
       case: 'statusChange',
-      value: { agentId: 'a1', status: AgentStatus.UNSPECIFIED, workerOnline: true, optionGroups: catalog() },
+      value: {
+        agentId: 'a1',
+        status: AgentStatus.UNSPECIFIED,
+        workerOnline: true,
+        optionGroups: catalog(),
+      },
     }))
 
     expect(status()).toBe(AgentStatus.ACTIVE)
@@ -208,7 +250,12 @@ describe('useWorkspaceConnection live catalog writers', () => {
 
     streamOpts().onEvent(WORKER, agentEvent({
       case: 'statusChange',
-      value: { agentId: 'a1', status: AgentStatus.INACTIVE, workerOnline: true, optionGroups: [] },
+      value: {
+        agentId: 'a1',
+        status: AgentStatus.INACTIVE,
+        workerOnline: true,
+        optionGroups: [],
+      },
     }))
 
     expect(epoch()).toBe(1)
@@ -239,7 +286,13 @@ describe('useWorkspaceConnection live catalog writers', () => {
 function mountTerminalConnection(initial: TerminalStatus | undefined) {
   const harness = installTestBridge({ workspaceId: WS })
   const { view, metadata, selection } = createTestTabStores(WS)
-  emitAddTab({ type: TabType.TERMINAL, id: 't1', tileId: harness.rootTileId, position: 'p1', workerId: WORKER })
+  emitAddTab({
+    type: TabType.TERMINAL,
+    id: 't1',
+    tileId: harness.rootTileId,
+    position: 'p1',
+    workerId: WORKER,
+  })
   if (initial !== undefined)
     metadata.patch('t1', { terminalStatus: initial })
 
@@ -271,7 +324,10 @@ function mountTerminalConnection(initial: TerminalStatus | undefined) {
 
 function terminalEvent(event: NonNullable<MessageInitShape<typeof TerminalEventSchema>['event']>): WatchEventsResponse {
   return create(WatchEventsResponseSchema, {
-    event: { case: 'terminalEvent', value: { terminalId: 't1', event } },
+    event: {
+      case: 'terminalEvent',
+      value: { terminalId: 't1', event },
+    },
   })
 }
 
@@ -298,7 +354,10 @@ describe('useWorkspaceConnection live terminal status writers', () => {
   it('counts the close of a shell', () => {
     const { dispose, status, epoch } = mountTerminalConnection(TerminalStatus.READY)
 
-    streamOpts().onEvent(WORKER, terminalEvent({ case: 'closed', value: { exitCode: 0 } }))
+    streamOpts().onEvent(WORKER, terminalEvent({
+      case: 'closed',
+      value: { exitCode: 0 },
+    }))
 
     expect(status()).toBe(TerminalStatus.EXITED)
     expect(epoch()).toBe(1)

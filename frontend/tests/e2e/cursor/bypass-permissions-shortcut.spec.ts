@@ -26,7 +26,7 @@ cursorTest('keeps native Bypass enabled and requires a new session to restore pe
       const output = await cursorNativeToolOutput(native, callId)
       expect(output.exitCode).toBe(0)
       if (typeof output.stdout !== 'string' || typeof output.stderr !== 'string')
-        throw new Error('The native Cursor command has no stdout or stderr.')
+        throw new TypeError('The native Cursor command has no stdout or stderr.')
       return { text: output.stdout + output.stderr, exitCode: 0 }
     },
   }, {
@@ -44,7 +44,9 @@ cursorTest('keeps native Bypass enabled and requires a new session to restore pe
   const channel = await getTestChannel(server.hubUrl, server.adminToken)
   const response = await channel.callWorker(server.workerId, 'UpdateAgentSettings', UpdateAgentSettingsRequestSchema, UpdateAgentSettingsResponseSchema, {
     agentId: enabled.id,
-    settings: { options: { [CURSOR_OPTION.BypassPermissions]: 'false', model: 'mock-grok' } },
+    settings: {
+      options: { [CURSOR_OPTION.BypassPermissions]: 'false', model: 'mock-grok' },
+    },
   })
   expect(response.optionSettlements[CURSOR_OPTION.BypassPermissions]?.state).toBe(AgentOptionSettlementState.CONFIRMED)
   expect(response.optionSettlements[CURSOR_OPTION.BypassPermissions]?.value).toBe('true')
@@ -54,7 +56,9 @@ cursorTest('keeps native Bypass enabled and requires a new session to restore pe
   await expectBypassLocked(native)
   await expectNativeWebFetchBypassesPermission(native, 'cursor-refused-off')
 
-  const fresh = await openProviderAgent(server, native.workspaceId, CURSOR_AGENT, { optionValues: { [CURSOR_OPTION.BypassPermissions]: 'false' } })
+  const fresh = await openProviderAgent(server, native.workspaceId, CURSOR_AGENT, {
+    optionValues: { [CURSOR_OPTION.BypassPermissions]: 'false' },
+  })
   await tabById(page, fresh.agentId).click()
   await waitForNativeSettingsHydrated(page)
   const off = await currentNativeAgent(native)
@@ -62,7 +66,11 @@ cursorTest('keeps native Bypass enabled and requires a new session to restore pe
   expect(nativeOptionValue(off, CURSOR_OPTION.BypassPermissions)).toBe('false')
   expect(await offeredSettingsOptions(page, CURSOR_OPTION.BypassPermissions)).toEqual(['false', 'true'])
   const url = 'https://cursor-restored-permission.invalid/probe'
-  const start = await modelScript.queue({ toolCalls: [cursorWebFetchPermissionToolCall('cursor-restored-permission', url)] })
+  const start = await modelScript.queue({
+    toolCalls: [
+      cursorWebFetchPermissionToolCall('cursor-restored-permission', url),
+    ],
+  })
   await sendMessage(page, modelScript.prompt('Ask permission to fetch the scripted URL in the new session with Bypass Off.'))
   await modelScript.waitForSteps(start + 1)
   await expect(await waitForControlBanner(page)).toContainText(url)
@@ -86,7 +94,9 @@ const restartTest = createProviderProcessTest({
   agent: CURSOR_AGENT,
   nativeContext,
   skipReason: CURSOR_E2E_SKIP_REASON,
-  openOptions: { optionValues: { [CURSOR_OPTION.BypassPermissions]: 'true' } },
+  openOptions: {
+    optionValues: { [CURSOR_OPTION.BypassPermissions]: 'true' },
+  },
 })
 
 restartTest('retains read-only native Bypass after a worker restart', async ({ native, separateHubWorker }) => {
@@ -96,11 +106,18 @@ restartTest('retains read-only native Bypass after a worker restart', async ({ n
 })
 
 async function expectNativeWebFetchBypassesPermission(context: ManagedNativeScenarioContext, callId: string): Promise<void> {
-  await expectNoNativeControl(context, { testId: 'control-banner', relatedProof: async () => {
-    const start = await context.modelScript.queue({ toolCalls: [cursorWebFetchPermissionToolCall(callId, `https://${callId}.invalid/probe`)] })
-    await sendMessage(context.page, context.modelScript.prompt('Fetch the scripted URL with native Bypass enabled.'))
-    await context.modelScript.waitForSteps(start + 1)
-    await waitForAgentIdle(context.page)
-    await expect(assistantBubbles(context.page).filter({ hasText: 'Cursor web fetch approved' })).toBeVisible()
-  } })
+  await expectNoNativeControl(context, {
+    testId: 'control-banner',
+    relatedProof: async () => {
+      const start = await context.modelScript.queue({
+        toolCalls: [
+          cursorWebFetchPermissionToolCall(callId, `https://${callId}.invalid/probe`),
+        ],
+      })
+      await sendMessage(context.page, context.modelScript.prompt('Fetch the scripted URL with native Bypass enabled.'))
+      await context.modelScript.waitForSteps(start + 1)
+      await waitForAgentIdle(context.page)
+      await expect(assistantBubbles(context.page).filter({ hasText: 'Cursor web fetch approved' })).toBeVisible()
+    },
+  })
 }

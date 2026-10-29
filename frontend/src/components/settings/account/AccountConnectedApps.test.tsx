@@ -67,7 +67,9 @@ describe('AccountConnectedApps', () => {
       this.open = false
     })
     vi.clearAllMocks()
-    mockList.mockResolvedValue({ tokens: [laptop] })
+    mockList.mockResolvedValue({
+      tokens: [laptop],
+    })
     mockRevoke.mockResolvedValue({})
     mockDisconnect.mockResolvedValue({ revokedCredentialCount: 1n })
   })
@@ -82,7 +84,9 @@ describe('AccountConnectedApps', () => {
   // inside it. A flat credential list made "stop this app reaching my account"
   // a repeated action whose completeness the reader had to verify by eye.
   it('groups the installations of one app under it', async () => {
-    mockList.mockResolvedValue({ tokens: [laptop, desktop, otherApp] })
+    mockList.mockResolvedValue({
+      tokens: [laptop, desktop, otherApp],
+    })
     render(() => <AccountConnectedApps />)
 
     const cli = await screen.findByTestId('connected-app-leapmux-control-cli')
@@ -101,7 +105,10 @@ describe('AccountConnectedApps', () => {
   // into a block whose single Disconnect took only one of them.
   it('keeps two apps apart when they chose the same name', async () => {
     mockList.mockResolvedValue({
-      tokens: [laptop, { ...otherApp, clientName: 'LeapMux control CLI' }],
+      tokens: [
+        laptop,
+        { ...otherApp, clientName: 'LeapMux control CLI' },
+      ],
     })
     render(() => <AccountConnectedApps />)
 
@@ -112,7 +119,9 @@ describe('AccountConnectedApps', () => {
   // An unverified app is labelled here exactly as it is on the consent screen:
   // nobody vouched for it, and that is the one signal a person has.
   it('labels an app no administrator vouched for', async () => {
-    mockList.mockResolvedValue({ tokens: [laptop, otherApp] })
+    mockList.mockResolvedValue({
+      tokens: [laptop, otherApp],
+    })
     render(() => <AccountConnectedApps />)
 
     const bot = await screen.findByTestId('connected-app-app-deploy-bot')
@@ -126,8 +135,18 @@ describe('AccountConnectedApps', () => {
   it('says which credentials administer the hub', async () => {
     mockList.mockResolvedValue({
       tokens: [
-        { ...laptop, id: 'tok-2', installationName: 'ci-bot', grantedScopes: ['admin:read'] },
-        { ...laptop, id: 'tok-3', installationName: 'plain-bot', grantedScopes: ['workspace:read'] },
+        {
+          ...laptop,
+          id: 'tok-2',
+          installationName: 'ci-bot',
+          grantedScopes: ['admin:read'],
+        },
+        {
+          ...laptop,
+          id: 'tok-3',
+          installationName: 'plain-bot',
+          grantedScopes: ['workspace:read'],
+        },
       ],
     })
     render(() => <AccountConnectedApps />)
@@ -144,7 +163,12 @@ describe('AccountConnectedApps', () => {
   // would answer a question nobody asked.
   it('lists every permission a credential holds', async () => {
     mockList.mockResolvedValue({
-      tokens: [{ ...laptop, grantedScopes: ['workspace:read', 'file:read', 'git:write'] }],
+      tokens: [
+        {
+          ...laptop,
+          grantedScopes: ['workspace:read', 'file:read', 'git:write'],
+        },
+      ],
     })
     render(() => <AccountConnectedApps />)
     const scopes = await screen.findByTestId('app-scopes-tok-1')
@@ -157,7 +181,11 @@ describe('AccountConnectedApps', () => {
   // store one, so a row without permissions is a credential this panel could
   // not read, and a confident "none" would be a lie.
   it('renders no permission list for a grant it cannot read', async () => {
-    mockList.mockResolvedValue({ tokens: [{ ...laptop, grantedScopes: [] }] })
+    mockList.mockResolvedValue({
+      tokens: [
+        { ...laptop, grantedScopes: [] },
+      ],
+    })
     render(() => <AccountConnectedApps />)
     expect(await screen.findByText('alice@laptop')).toBeInTheDocument()
     expect(screen.queryByTestId('app-scopes-tok-1')).not.toBeInTheDocument()
@@ -170,7 +198,11 @@ describe('AccountConnectedApps', () => {
   // otherwise: a "(this device)" label here could only ever come from a
   // response the hub cannot produce.
   it('never marks a listed credential as this device', async () => {
-    mockList.mockResolvedValue({ tokens: [{ ...laptop, current: true }] })
+    mockList.mockResolvedValue({
+      tokens: [
+        { ...laptop, current: true },
+      ],
+    })
     render(() => <AccountConnectedApps />)
     expect(await screen.findByText('alice@laptop')).toBeInTheDocument()
     expect(screen.queryByText('(this device)')).not.toBeInTheDocument()
@@ -187,7 +219,9 @@ describe('AccountConnectedApps', () => {
   // after a partial failure and leave the app working somewhere the reader
   // believes is disconnected.
   it('disconnects every installation of an app in one call', async () => {
-    mockList.mockResolvedValue({ tokens: [laptop, desktop, otherApp] })
+    mockList.mockResolvedValue({
+      tokens: [laptop, desktop, otherApp],
+    })
     mockDisconnect.mockResolvedValue({ revokedCredentialCount: 2n })
     render(() => <AccountConnectedApps />)
 
@@ -213,7 +247,9 @@ describe('AccountConnectedApps', () => {
   // and a reader with one installation in front of them has no other way to
   // tell whether it takes the others.
   it('says how many machines a disconnect covers', async () => {
-    mockList.mockResolvedValue({ tokens: [laptop, desktop] })
+    mockList.mockResolvedValue({
+      tokens: [laptop, desktop],
+    })
     render(() => <AccountConnectedApps />)
 
     const cli = await screen.findByTestId('connected-app-leapmux-control-cli')
@@ -225,7 +261,9 @@ describe('AccountConnectedApps', () => {
   // Revoking ends ONE installation and leaves the app connected everywhere
   // else, which is how a single laptop is signed out.
   it('revokes one installation and keeps the app connected', async () => {
-    mockList.mockResolvedValue({ tokens: [laptop, desktop] })
+    mockList.mockResolvedValue({
+      tokens: [laptop, desktop],
+    })
     render(() => <AccountConnectedApps />)
 
     const row = await screen.findByTestId('app-credential-tok-1')
@@ -263,7 +301,11 @@ describe('AccountConnectedApps', () => {
   // warn about here. `leapmux control auth credentials` is the caller that
   // can be one, and it reports `current` in its own output.
   it('does not warn about revoking itself', async () => {
-    mockList.mockResolvedValue({ tokens: [{ ...laptop, current: true }] })
+    mockList.mockResolvedValue({
+      tokens: [
+        { ...laptop, current: true },
+      ],
+    })
     render(() => <AccountConnectedApps />)
     const row = await screen.findByTestId('app-credential-tok-1')
     fireEvent.click(within(row).getByRole('button', { name: 'Revoke' }))
@@ -303,8 +345,14 @@ describe('AccountConnectedApps', () => {
   // credential the owner could not end here at all.
   it('reads every page, so a credential past the first is revocable', async () => {
     mockList
-      .mockResolvedValueOnce({ tokens: [laptop], nextCursor: 'page-2' })
-      .mockResolvedValueOnce({ tokens: [desktop], nextCursor: '' })
+      .mockResolvedValueOnce({
+        tokens: [laptop],
+        nextCursor: 'page-2',
+      })
+      .mockResolvedValueOnce({
+        tokens: [desktop],
+        nextCursor: '',
+      })
 
     render(() => <AccountConnectedApps />)
 
@@ -320,7 +368,10 @@ describe('AccountConnectedApps', () => {
   // A client loop whose only exit is a value the server chooses is a hang
   // the server can cause. A cursor that never advances stops it.
   it('stops when the cursor does not advance', async () => {
-    mockList.mockResolvedValue({ tokens: [laptop], nextCursor: 'stuck' })
+    mockList.mockResolvedValue({
+      tokens: [laptop],
+      nextCursor: 'stuck',
+    })
 
     render(() => <AccountConnectedApps />)
 
@@ -369,7 +420,11 @@ describe('AccountConnectedApps deadlines', () => {
   })
 
   it('reports when a renewing credential signs in again', async () => {
-    mockList.mockResolvedValue({ tokens: [{ ...laptop, refreshExpiresAt: renewing }] })
+    mockList.mockResolvedValue({
+      tokens: [
+        { ...laptop, refreshExpiresAt: renewing },
+      ],
+    })
     render(() => <AccountConnectedApps />)
 
     const meta = await metaOf('tok-1')
@@ -381,7 +436,9 @@ describe('AccountConnectedApps deadlines', () => {
   // Its whole life is the only deadline it has, so the row states that instead.
   it('reports when a fixed-lifetime credential stops working', async () => {
     mockList.mockResolvedValue({
-      tokens: [{ ...laptop, refreshExpiresAt: undefined, expiresAt: fixed }],
+      tokens: [
+        { ...laptop, refreshExpiresAt: undefined, expiresAt: fixed },
+      ],
     })
     render(() => <AccountConnectedApps />)
 
@@ -395,7 +452,9 @@ describe('AccountConnectedApps deadlines', () => {
   // as "expiring today" on a credential with months left.
   it('states one deadline, never two', async () => {
     mockList.mockResolvedValue({
-      tokens: [{ ...laptop, refreshExpiresAt: renewing, expiresAt: fixed }],
+      tokens: [
+        { ...laptop, refreshExpiresAt: renewing, expiresAt: fixed },
+      ],
     })
     render(() => <AccountConnectedApps />)
 
@@ -408,7 +467,9 @@ describe('AccountConnectedApps deadlines', () => {
   // deadline at all rather than an empty or a fabricated one.
   it('states no deadline for a credential that never expires', async () => {
     mockList.mockResolvedValue({
-      tokens: [{ ...laptop, refreshExpiresAt: undefined, expiresAt: undefined }],
+      tokens: [
+        { ...laptop, refreshExpiresAt: undefined, expiresAt: undefined },
+      ],
     })
     render(() => <AccountConnectedApps />)
 

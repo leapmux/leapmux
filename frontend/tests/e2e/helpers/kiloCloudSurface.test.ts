@@ -7,7 +7,12 @@ import { registerMockModelScenario, removeMockModelScenario } from './mockModelS
 import { createMockModelServer } from './mockModelServer'
 
 const authorization = { authorization: `Bearer ${MOCK_IDENTITY_TOKEN}` }
-const window = { id: 'five_hour', remainingPercent: 58, resetsAt: '2026-10-24T13:00:00.000Z', period: { unit: 'hour' as const, value: 5 } }
+const window = {
+  id: 'five_hour',
+  remainingPercent: 58,
+  resetsAt: '2026-10-24T13:00:00.000Z',
+  period: { unit: 'hour' as const, value: 5 },
+}
 
 describe('createKiloCloudSurface', () => {
   const servers: Awaited<ReturnType<typeof createMockModelServer>>[] = []
@@ -16,7 +21,9 @@ describe('createKiloCloudSurface', () => {
   })
 
   async function cloudServer(scenarioId: string) {
-    const server = await createMockModelServer({ models: ['kilo-cloud-test'] })
+    const server = await createMockModelServer({
+      models: ['kilo-cloud-test'],
+    })
     servers.push(server)
     await registerMockModelScenario(server.url, scenarioId, { steps: [] })
     const control = new URL(`${KILO_USAGE_CONTROL_PREFIX}${scenarioId}`, server.url)
@@ -27,8 +34,18 @@ describe('createKiloCloudSurface', () => {
       return url
     }
     const usage = procedure('codingPlans.getUsage', { subscriptionId: KILO_E2E_SUBSCRIPTION.id })
-    const configure = () => fetch(control, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(kiloCodingPlanUsage([window])) })
-    return { server, control, procedure, usage, configure }
+    const configure = () => fetch(control, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(kiloCodingPlanUsage([window])),
+    })
+    return {
+      server,
+      control,
+      procedure,
+      usage,
+      configure,
+    }
   }
 
   it('lists the coding plan only while a scenario owns its usage', async () => {
@@ -37,8 +54,23 @@ describe('createKiloCloudSurface', () => {
     expect(await read('codingPlans.listSubscriptions')).toEqual(kiloTrpcResult([]))
     expect(await read('byok.list', {})).toEqual(kiloTrpcResult([]))
     expect((await configure()).status).toBe(200)
-    expect(await read('codingPlans.listSubscriptions')).toEqual(kiloTrpcResult([{ ...KILO_E2E_SUBSCRIPTION, canQueryUsage: true, hasInstalledByokKey: true, status: 'active', cancelAtPeriodEnd: false }]))
-    expect(await read('byok.list', {})).toEqual(kiloTrpcResult([{ id: 'leapmux-e2e-key', provider_id: 'zai', management_source: 'coding_plan', is_enabled: true }]))
+    expect(await read('codingPlans.listSubscriptions')).toEqual(kiloTrpcResult([
+      {
+        ...KILO_E2E_SUBSCRIPTION,
+        canQueryUsage: true,
+        hasInstalledByokKey: true,
+        status: 'active',
+        cancelAtPeriodEnd: false,
+      },
+    ]))
+    expect(await read('byok.list', {})).toEqual(kiloTrpcResult([
+      {
+        id: 'leapmux-e2e-key',
+        provider_id: 'zai',
+        management_source: 'coding_plan',
+        is_enabled: true,
+      },
+    ]))
   })
 
   it('answers the scenario usage only to the mocked account and its plan, and records each request', async () => {
@@ -46,15 +78,26 @@ describe('createKiloCloudSurface', () => {
     expect((await fetch(usage, { headers: authorization })).status, 'no answer is configured yet').toBe(404)
     expect((await configure()).status).toBe(200)
     expect((await fetch(usage)).status).toBe(401)
-    expect((await fetch(procedure('codingPlans.listSubscriptions'), { headers: { authorization: 'Bearer another-token' } })).status).toBe(401)
+    expect((await fetch(procedure('codingPlans.listSubscriptions'), {
+      headers: { authorization: 'Bearer another-token' },
+    })).status).toBe(401)
     expect((await fetch(procedure('codingPlans.getUsage', { subscriptionId: 'another-plan' }), { headers: authorization })).status).toBe(400)
     expect((await fetch(procedure('codingPlans.getUsage'), { headers: authorization })).status).toBe(400)
     expect((await fetch(usage, { method: 'POST', headers: authorization })).status).toBe(405)
     const answered = await fetch(usage, { headers: authorization })
     expect(answered.status).toBe(200)
-    expect(await answered.json()).toMatchObject(kiloTrpcResult({ schemaVersion: 1, subscription: { id: KILO_E2E_SUBSCRIPTION.id, windows: [window] } }))
+    expect(await answered.json()).toMatchObject(kiloTrpcResult({
+      schemaVersion: 1,
+      subscription: {
+        id: KILO_E2E_SUBSCRIPTION.id,
+        windows: [window],
+      },
+    }))
     const state = await (await fetch(control)).json()
-    expect(state.receipts.map((receipt: { status: number, authorized: boolean }) => [receipt.status, receipt.authorized])).toEqual([[401, false], [200, true]])
+    expect(state.receipts.map((receipt: { status: number, authorized: boolean }) => [receipt.status, receipt.authorized])).toEqual([
+      [401, false],
+      [200, true],
+    ])
     expect(JSON.stringify(state)).not.toContain(MOCK_IDENTITY_TOKEN)
   })
 
@@ -68,7 +111,9 @@ describe('createKiloCloudSurface', () => {
   })
 
   it('leaves every other path to the other surfaces', async () => {
-    const surface = createKiloCloudSurface({ hasScenario: () => false }, { identityToken: MOCK_IDENTITY_TOKEN })
+    const surface = createKiloCloudSurface({
+      hasScenario: () => false,
+    }, { identityToken: MOCK_IDENTITY_TOKEN })
     for (const path of ['/api/trpc/profile.get', '/api/threads', '/v1/chat/completions']) {
       const request = new IncomingMessage(new Socket())
       request.method = 'GET'

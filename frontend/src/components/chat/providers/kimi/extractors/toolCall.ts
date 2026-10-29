@@ -80,7 +80,9 @@ export function kimiToolRow(
     return null
   const retainedFinal = !!ownStart && retainedRowIsFinal(completion)
   const start = ownStart ?? kimiEventData(request, KIMI_EVENT.ToolCallStarted)
-  const result = ownResult ?? (retainedFinal ? kimiRetainedOutput(ownStart) : kimiEventData(pairedResult, KIMI_EVENT.ToolResult))
+  const result = ownResult ?? (retainedFinal
+    ? kimiRetainedOutput(ownStart)
+    : kimiEventData(pairedResult, KIMI_EVENT.ToolResult))
   const toolCallId = pickString(ownStart ?? ownResult, 'toolCallId')
   const nativeResult = kimiEventData(originalResult, KIMI_EVENT.ToolResult)
   // The result frame states no name, and the worker stamps the call's name on every
@@ -94,12 +96,16 @@ export function kimiToolRow(
     args: pickObject(start, 'args') ?? {},
     display: kimiDisplay(start),
     result,
-    originalResult: nativeResult && pickString(nativeResult, 'toolCallId') === toolCallId ? nativeResult : result,
+    originalResult: nativeResult && pickString(nativeResult, 'toolCallId') === toolCallId
+      ? nativeResult
+      : result,
     retained: retainedFinal,
     finished,
     lifecycle: {
       frameStatus: 'unstated',
-      providerOutcome: result?.isError === true ? 'failed' : null,
+      providerOutcome: result?.isError === true
+        ? 'failed'
+        : null,
       retainedOutcome: retainedOutcome(retainedFinal ? completion : undefined),
       rowFinal: finished,
       resultFrameLanded: result !== null,
@@ -152,7 +158,10 @@ export function kimiToolFacts(row: KimiToolRow): KimiToolFacts {
     truncated: row.result?.truncated === true,
     resultAvailable: row.result !== null,
   }
-  return { ...facts, kind: kimiReclassify(facts) }
+  return {
+    ...facts,
+    kind: kimiReclassify(facts),
+  }
 }
 
 /**
@@ -184,7 +193,9 @@ function kimiResolvedInput(kind: ToolKind, row: KimiToolRow): Record<string, unk
   if (kind !== 'read' && kind !== 'write' && kind !== 'edit')
     return row.args
   const displayed = pickString(row.display, 'path')
-  return displayed ? { ...row.args, path: displayed } : row.args
+  return displayed
+    ? { ...row.args, path: displayed }
+    : row.args
 }
 
 /**
@@ -219,7 +230,9 @@ export function kimiOutput(output: unknown): { text: string, images: ImageResult
       }
       case 'audio_url':
       case 'video_url': {
-        const url = pickString(pickObject(part, part.type === 'audio_url' ? 'audioUrl' : 'videoUrl'), 'url')
+        const url = pickString(pickObject(part, part.type === 'audio_url'
+          ? 'audioUrl'
+          : 'videoUrl'), 'url')
         if (url)
           texts.push(url)
         break
@@ -228,7 +241,10 @@ export function kimiOutput(output: unknown): { text: string, images: ImageResult
         break
     }
   }
-  return { text: texts.join('\n'), images }
+  return {
+    text: texts.join('\n'),
+    images,
+  }
 }
 
 /**
@@ -245,11 +261,18 @@ const KIMI_COMMAND_TASK_FOOTER = /\ntask_id: (bash-[a-z0-9]{8})\noutput_size_byt
 
 function kimiCommandOutcomeText(text: string): string {
   const footer = KIMI_COMMAND_TASK_FOOTER.exec(text)
-  return footer && (footer[2] === undefined || footer[1] === footer[2]) ? text.slice(0, footer.index) : text
+  return footer && (footer[2] === undefined || footer[1] === footer[2])
+    ? text.slice(0, footer.index)
+    : text
 }
 
 /** The languages a command display may state, which the command body highlights. */
-const KIMI_COMMAND_LANGUAGES: ReadonlySet<string> = new Set<CommandLanguage>(['bash', 'powershell', 'javascript', 'sql'])
+const KIMI_COMMAND_LANGUAGES: ReadonlySet<string> = new Set<CommandLanguage>([
+  'bash',
+  'powershell',
+  'javascript',
+  'sql',
+])
 
 function isKimiCommandLanguage(value: string): value is CommandLanguage {
   return KIMI_COMMAND_LANGUAGES.has(value)
@@ -285,7 +308,9 @@ export const KIMI_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<KimiToolFacts> = 
     const prompt = pickString(args, 'prompt') || pickString(args, 'prompt_template')
     return {
       description: pickString(args, 'description') || pickString(facts.row.display, 'agent_name'),
-      ...(agentType ? { agentType } : {}),
+      ...(agentType
+        ? { agentType }
+        : {}),
       prompt,
     }
   },
@@ -296,22 +321,43 @@ export const KIMI_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<KimiToolFacts> = 
     const language = pickString(facts.row.display, 'language')
     return {
       command: pickString(args, 'command') || pickString(facts.row.display, 'command'),
-      ...(description ? { description } : {}),
-      ...(cwd ? { cwd } : {}),
-      ...(isKimiCommandLanguage(language) ? { language } : {}),
+      ...(description
+        ? { description }
+        : {}),
+      ...(cwd
+        ? { cwd }
+        : {}),
+      ...(isKimiCommandLanguage(language)
+        ? { language }
+        : {}),
     }
   },
   // A write states its body as `content`, which the shared entry does not read.
-  write: (args): ToolRequestByKind['write'] => ({ changes: kimiFileChanges('write', args) }),
-  edit: (args): ToolRequestByKind['edit'] => ({ changes: kimiFileChanges('edit', args), ...(args.replace_all === true ? { replaceAll: true } : {}) }),
+  write: (args): ToolRequestByKind['write'] => ({
+    changes: kimiFileChanges('write', args),
+  }),
+  edit: (args): ToolRequestByKind['edit'] => ({
+    changes: kimiFileChanges('edit', args),
+    ...(args.replace_all === true
+      ? { replaceAll: true }
+      : {}),
+  }),
   // A read states its window as `line_offset` and `n_lines`.
   read: (args): ToolRequestByKind['read'] => {
-    const offset = typeof args.line_offset === 'number' ? args.line_offset : undefined
-    const limit = typeof args.n_lines === 'number' ? args.n_lines : undefined
+    const offset = typeof args.line_offset === 'number'
+      ? args.line_offset
+      : undefined
+    const limit = typeof args.n_lines === 'number'
+      ? args.n_lines
+      : undefined
     return {
       path: pickString(args, 'path'),
-      ...(offset !== undefined ? { offset } : {}),
-      ...(limit !== undefined ? { limit } : {}),
+      ...(offset !== undefined
+        ? { offset }
+        : {}),
+      ...(limit !== undefined
+        ? { limit }
+        : {}),
     }
   },
   // The Model Context Protocol server and tool, which the wire NAME states.
@@ -320,28 +366,45 @@ export const KIMI_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<KimiToolFacts> = 
     return { args, server: identity?.server ?? '', tool: identity?.tool ?? facts.toolName }
   },
   // The parsed QUESTIONS. The shared entry states an empty list.
-  question: (args): ToolRequestByKind['question'] => ({ questions: kimiQuestionsFromToolInput(args) }),
+  question: (args): ToolRequestByKind['question'] => ({
+    questions: kimiQuestionsFromToolInput(args),
+  }),
   // The ACTION, which the tool name states.
   task: (args, facts): ToolRequestByKind['task'] => {
     const taskId = pickString(args, 'task_id')
-    return { action: KIMI_TASK_ACTIONS.get(facts.toolName) ?? 'other', ...(taskId ? { taskId } : {}) }
+    return {
+      action: KIMI_TASK_ACTIONS.get(facts.toolName) ?? 'other',
+      ...(taskId
+        ? { taskId }
+        : {}),
+    }
   },
   // Kimi's own item shape: `title` and a `done` status.
-  todo: (args): ToolRequestByKind['todo'] => ({ items: kimiTodoItems(args.todos) }),
+  todo: (args): ToolRequestByKind['todo'] => ({
+    items: kimiTodoItems(args.todos),
+  }),
   // The id and the schedule under Kimi's spellings, and the action the tool name states.
   trigger: (args, facts): ToolRequestByKind['trigger'] => {
     const base = DEFAULT_TOOL_REQUESTS.trigger(args)
     const prompt = pickString(args, 'prompt')
     return {
       ...base,
-      ...(base.name === undefined && prompt ? { name: prompt } : {}),
+      ...(base.name === undefined && prompt
+        ? { name: prompt }
+        : {}),
       action: KIMI_TRIGGER_ACTIONS.get(facts.toolName) ?? 'other',
     }
   },
   // A wait states its limit in SECONDS.
-  wait: (args): ToolRequestByKind['wait'] => (typeof args.timeout === 'number' ? { durationMs: args.timeout * 1000 } : {}),
+  wait: (args): ToolRequestByKind['wait'] => (typeof args.timeout === 'number'
+    ? { durationMs: args.timeout * 1000 }
+    : {}),
   // The mode the switch lands in, which the tool name states.
-  switch_mode: (_args, facts): ToolRequestByKind['switch_mode'] => ({ mode: facts.toolName === KIMI_TOOL.EnterPlanMode ? 'plan' : 'default' }),
+  switch_mode: (_args, facts): ToolRequestByKind['switch_mode'] => ({
+    mode: facts.toolName === KIMI_TOOL.EnterPlanMode
+      ? 'plan'
+      : 'default',
+  }),
   // A notice the agent sends the user.
   message: (args): ToolRequestByKind['message'] => ({ text: pickString(args, 'message') || pickString(args, 'body') || pickString(args, 'title') }),
 }
@@ -362,26 +425,53 @@ export const KIMI_TOOL_READERS: ToolCallSpecReaderTable<KimiToolFacts> = {
     const request = kimiRequestFor('execute', facts)
     if (!facts.resultAvailable)
       return { kind: 'execute', request }
-    const lifecycleText = facts.failed ? kimiCommandOutcomeText(facts.lifecycleText) : facts.lifecycleText
-    const trailer = facts.failed ? KIMI_EXIT_TRAILER.exec(lifecycleText) : null
-    const output = trailer && facts.text === facts.lifecycleText ? facts.text.slice(0, trailer.index) : facts.text
+    const lifecycleText = facts.failed
+      ? kimiCommandOutcomeText(facts.lifecycleText)
+      : facts.lifecycleText
+    const trailer = facts.failed
+      ? KIMI_EXIT_TRAILER.exec(lifecycleText)
+      : null
+    const output = trailer && facts.text === facts.lifecycleText
+      ? facts.text.slice(0, trailer.index)
+      : facts.text
     const stopped = facts.failed && KIMI_STOPPED_COMMAND.test(lifecycleText)
     // A command the turn cut off stated no exit code, and one that failed states it in
     // its trailer. Only a command that returned on its own succeeded.
-    const exitCode = trailer ? Number(trailer[1]) : facts.failed || facts.row.retained ? undefined : 0
+    const exitCode = trailer
+      ? Number(trailer[1])
+      : facts.failed || facts.row.retained
+        ? undefined
+        : 0
     return {
       kind: 'execute',
       request,
-      result: { commands: [{ output, ...(exitCode !== undefined ? { exitCode } : {}) }], unresolvedTerminals: [] },
-      ...(stopped ? { statusOverride: 'cancelled' as const } : {}),
+      result: {
+        commands: [
+          {
+            output,
+            ...(exitCode !== undefined
+              ? { exitCode }
+              : {}),
+          },
+        ],
+        unresolvedTerminals: [],
+      },
+      ...(stopped
+        ? { statusOverride: 'cancelled' as const }
+        : {}),
     }
   },
   read: (facts): ToolCallSpecVariant<'read'> => {
     const request = kimiRequestFor('read', facts)
     if (!facts.resultAvailable)
       return { kind: 'read', request }
-    if (facts.failed)
-      return { kind: 'read', request, result: failedResult(facts.text) }
+    if (facts.failed) {
+      return {
+        kind: 'read',
+        request,
+        result: failedResult(facts.text),
+      }
+    }
     // `N<tab>line` for each line, then a `<system>` note, which the shared reader peels
     // into an alert.
     const parts = parseReadContent(facts.text)
@@ -391,84 +481,224 @@ export const KIMI_TOOL_READERS: ToolCallSpecReaderTable<KimiToolFacts> = {
       result: {
         lines: parts.lines,
         fallbackContent: facts.text,
-        ...(parts.leading.length > 0 ? { leading: parts.leading } : {}),
-        ...(parts.trailing.length > 0 ? { trailing: parts.trailing } : {}),
+        ...(parts.leading.length > 0
+          ? { leading: parts.leading }
+          : {}),
+        ...(parts.trailing.length > 0
+          ? { trailing: parts.trailing }
+          : {}),
       },
       images: facts.images,
     }
   },
-  glob: (facts): ToolCallSpecVariant<'glob'> => ({ kind: 'glob', request: kimiRequestFor('glob', facts), ...kimiSearchResult(facts, 'glob') }),
-  grep: (facts): ToolCallSpecVariant<'grep'> => ({ kind: 'grep', request: kimiRequestFor('grep', facts), ...kimiSearchResult(facts, 'grep') }),
-  edit: (facts): ToolCallSpecVariant<'edit'> => ({ kind: 'edit', request: kimiRequestFor('edit', facts), ...kimiFileChangeResult(facts, 'edit') }),
-  write: (facts): ToolCallSpecVariant<'write'> => ({ kind: 'write', request: kimiRequestFor('write', facts), ...kimiFileChangeResult(facts, 'write') }),
+  glob: (facts): ToolCallSpecVariant<'glob'> => ({
+    kind: 'glob',
+    request: kimiRequestFor('glob', facts),
+    ...kimiSearchResult(facts, 'glob'),
+  }),
+  grep: (facts): ToolCallSpecVariant<'grep'> => ({
+    kind: 'grep',
+    request: kimiRequestFor('grep', facts),
+    ...kimiSearchResult(facts, 'grep'),
+  }),
+  edit: (facts): ToolCallSpecVariant<'edit'> => ({
+    kind: 'edit',
+    request: kimiRequestFor('edit', facts),
+    ...kimiFileChangeResult(facts, 'edit'),
+  }),
+  write: (facts): ToolCallSpecVariant<'write'> => ({
+    kind: 'write',
+    request: kimiRequestFor('write', facts),
+    ...kimiFileChangeResult(facts, 'write'),
+  }),
   fetch: (facts): ToolCallSpecVariant<'fetch'> => {
     const request = kimiRequestFor('fetch', facts)
     if (!facts.resultAvailable)
       return { kind: 'fetch', request }
-    if (facts.failed)
-      return { kind: 'fetch', request, result: failedResult(facts.text) }
-    return { kind: 'fetch', request, result: { result: facts.text } }
+    if (facts.failed) {
+      return {
+        kind: 'fetch',
+        request,
+        result: failedResult(facts.text),
+      }
+    }
+    return {
+      kind: 'fetch',
+      request,
+      result: { result: facts.text },
+    }
   },
   web_search: (facts): ToolCallSpecVariant<'web_search'> => {
     const request = kimiRequestFor('web_search', facts)
     if (!facts.resultAvailable)
       return { kind: 'web_search', request }
-    if (facts.failed)
-      return { kind: 'web_search', request, result: failedResult(facts.text) }
-    return { kind: 'web_search', request, result: { links: [], summary: facts.text } }
+    if (facts.failed) {
+      return {
+        kind: 'web_search',
+        request,
+        result: failedResult(facts.text),
+      }
+    }
+    return {
+      kind: 'web_search',
+      request,
+      result: { links: [], summary: facts.text },
+    }
   },
   todo: (facts): ToolCallSpecVariant<'todo'> => {
     // NEVER empty by accident: `kimiReclassify` answers `other` for a call with no list.
     const request = kimiRequestFor('todo', facts)
     if (!facts.resultAvailable)
       return { kind: 'todo', request }
-    if (facts.failed)
-      return { kind: 'todo', request, result: failedResult(facts.text) }
-    return { kind: 'todo', request, result: { items: request.items } }
+    if (facts.failed) {
+      return {
+        kind: 'todo',
+        request,
+        result: failedResult(facts.text),
+      }
+    }
+    return {
+      kind: 'todo',
+      request,
+      result: { items: request.items },
+    }
   },
   agent: (facts): ToolCallSpecVariant<'agent'> => {
     const request = kimiRequestFor('agent', facts)
     const title = kimiCallTitle(facts)
     if (!facts.resultAvailable)
       return { kind: 'agent', request, title }
-    if (facts.failed)
-      return { kind: 'agent', request, title, result: failedResult(facts.text) }
-    const runs = facts.toolName === KIMI_TOOL.AgentSwarm ? kimiSwarmRuns(facts.text) : kimiAgentRuns(facts.text, request.description)
-    if (runs.length > 0)
-      return { kind: 'agent', request, title, result: { agents: runs } }
-    return { kind: 'agent', request, title, ...(facts.text ? { result: unparsedResult(facts.text) } : {}) }
+    if (facts.failed) {
+      return {
+        kind: 'agent',
+        request,
+        title,
+        result: failedResult(facts.text),
+      }
+    }
+    const runs = facts.toolName === KIMI_TOOL.AgentSwarm
+      ? kimiSwarmRuns(facts.text)
+      : kimiAgentRuns(facts.text, request.description)
+    if (runs.length > 0) {
+      return {
+        kind: 'agent',
+        request,
+        title,
+        result: { agents: runs },
+      }
+    }
+    return {
+      kind: 'agent',
+      request,
+      title,
+      ...(facts.text
+        ? {
+            result: unparsedResult(facts.text),
+          }
+        : {}),
+    }
   },
   question: (facts): ToolCallSpecVariant<'question'> => {
     const request = kimiRequestFor('question', facts)
     const title = kimiCallTitle(facts)
     if (!facts.resultAvailable)
       return { kind: 'question', request, title }
-    if (facts.failed)
-      return { kind: 'question', request, title, result: failedResult(facts.text) }
+    if (facts.failed) {
+      return {
+        kind: 'question',
+        request,
+        title,
+        result: failedResult(facts.text),
+      }
+    }
     const result = kimiQuestionResult(facts.text)
-    return { kind: 'question', request, title, ...(result ? { result } : facts.text ? { result: unparsedResult(facts.text) } : {}) }
+    return {
+      kind: 'question',
+      request,
+      title,
+      ...(result
+        ? { result }
+        : facts.text
+          ? {
+              result: unparsedResult(facts.text),
+            }
+          : {}),
+    }
   },
   task: (facts): ToolCallSpecVariant<'task'> => {
     const request = kimiRequestFor('task', facts)
     const title = kimiCallTitle(facts)
     if (!facts.resultAvailable)
       return { kind: 'task', request, title }
-    if (facts.failed)
-      return { kind: 'task', request, title, result: failedResult(facts.text) }
-    return { kind: 'task', request, title, result: { outcome: 'completed', output: facts.text } }
+    if (facts.failed) {
+      return {
+        kind: 'task',
+        request,
+        title,
+        result: failedResult(facts.text),
+      }
+    }
+    return {
+      kind: 'task',
+      request,
+      title,
+      result: { outcome: 'completed', output: facts.text },
+    }
   },
-  mcp: (facts): ToolCallSpecVariant<'mcp'> => ({ kind: 'mcp', request: kimiRequestFor('mcp', facts), ...kimiGenericResult(facts) }),
-  skill: (facts): ToolCallSpecVariant<'skill'> => ({ kind: 'skill', request: kimiRequestFor('skill', facts), title: kimiCallTitle(facts), ...kimiProseResult(facts) }),
-  switch_mode: (facts): ToolCallSpecVariant<'switch_mode'> => ({ kind: 'switch_mode', request: kimiRequestFor('switch_mode', facts), title: kimiCallTitle(facts), ...kimiProseResult(facts) }),
-  trigger: (facts): ToolCallSpecVariant<'trigger'> => ({ kind: 'trigger', request: kimiRequestFor('trigger', facts), title: kimiCallTitle(facts), ...kimiProseResult(facts) }),
-  report: (facts): ToolCallSpecVariant<'report'> => ({ kind: 'report', request: kimiRequestFor('report', facts), title: kimiCallTitle(facts), ...kimiProseResult(facts) }),
-  wait: (facts): ToolCallSpecVariant<'wait'> => ({ kind: 'wait', request: kimiRequestFor('wait', facts), title: kimiCallTitle(facts), ...kimiProseResult(facts) }),
-  message: (facts): ToolCallSpecVariant<'message'> => ({ kind: 'message', request: kimiRequestFor('message', facts), title: kimiCallTitle(facts), ...kimiProseResult(facts) }),
+  mcp: (facts): ToolCallSpecVariant<'mcp'> => ({
+    kind: 'mcp',
+    request: kimiRequestFor('mcp', facts),
+    ...kimiGenericResult(facts),
+  }),
+  skill: (facts): ToolCallSpecVariant<'skill'> => ({
+    kind: 'skill',
+    request: kimiRequestFor('skill', facts),
+    title: kimiCallTitle(facts),
+    ...kimiProseResult(facts),
+  }),
+  switch_mode: (facts): ToolCallSpecVariant<'switch_mode'> => ({
+    kind: 'switch_mode',
+    request: kimiRequestFor('switch_mode', facts),
+    title: kimiCallTitle(facts),
+    ...kimiProseResult(facts),
+  }),
+  trigger: (facts): ToolCallSpecVariant<'trigger'> => ({
+    kind: 'trigger',
+    request: kimiRequestFor('trigger', facts),
+    title: kimiCallTitle(facts),
+    ...kimiProseResult(facts),
+  }),
+  report: (facts): ToolCallSpecVariant<'report'> => ({
+    kind: 'report',
+    request: kimiRequestFor('report', facts),
+    title: kimiCallTitle(facts),
+    ...kimiProseResult(facts),
+  }),
+  wait: (facts): ToolCallSpecVariant<'wait'> => ({
+    kind: 'wait',
+    request: kimiRequestFor('wait', facts),
+    title: kimiCallTitle(facts),
+    ...kimiProseResult(facts),
+  }),
+  message: (facts): ToolCallSpecVariant<'message'> => ({
+    kind: 'message',
+    request: kimiRequestFor('message', facts),
+    title: kimiCallTitle(facts),
+    ...kimiProseResult(facts),
+  }),
   // The generic card, for a tool no vocabulary lists.
-  other: (facts): ToolCallSpecVariant<'other'> => ({ kind: 'other', request: kimiRequestFor('other', facts), ...kimiGenericResult(facts) }),
+  other: (facts): ToolCallSpecVariant<'other'> => ({
+    kind: 'other',
+    request: kimiRequestFor('other', facts),
+    ...kimiGenericResult(facts),
+  }),
   // UNREACHABLE: `kimiReclassify` folds `unspecified` to `other`. The entry exists
   // because the table is total, and it states the same card at its own kind.
-  unspecified: (facts): ToolCallSpecVariant<'unspecified'> => ({ kind: 'unspecified', request: kimiRequestFor('unspecified', facts), ...kimiGenericResult(facts) }),
+  unspecified: (facts): ToolCallSpecVariant<'unspecified'> => ({
+    kind: 'unspecified',
+    request: kimiRequestFor('unspecified', facts),
+    ...kimiGenericResult(facts),
+  }),
   // The kinds no Kimi Code tool takes: `KIMI_TOOL_KINDS` maps no name to any of them.
   agents: kimiArgumentsOnly('agents'),
   chart: kimiArgumentsOnly('chart'),
@@ -486,7 +716,12 @@ export const KIMI_TOOL_READERS: ToolCallSpecReaderTable<KimiToolFacts> = {
  * call printed.
  */
 function kimiArgumentsOnly<P extends ToolKind>(kind: P): (facts: KimiToolFacts) => ToolCallSpecVariant<P> {
-  return (facts): ToolCallSpecVariant<P> => ({ kind, request: kimiRequestFor(kind, facts), title: kimiCallTitle(facts), ...kimiUnreadResult(facts) })
+  return (facts): ToolCallSpecVariant<P> => ({
+    kind,
+    request: kimiRequestFor(kind, facts),
+    title: kimiCallTitle(facts),
+    ...kimiUnreadResult(facts),
+  })
 }
 
 /** The row's header words: the call's own description, then the tool's name. */
@@ -498,28 +733,48 @@ function kimiCallTitle(facts: KimiToolFacts): string {
 function kimiUnreadResult(facts: KimiToolFacts): { result?: ToolFailureResult | UnparsedToolResult } {
   if (!facts.resultAvailable)
     return {}
-  if (facts.failed)
-    return { result: failedResult(facts.text) }
-  return facts.text ? { result: unparsedResult(facts.text) } : {}
+  if (facts.failed) {
+    return {
+      result: failedResult(facts.text),
+    }
+  }
+  return facts.text
+    ? {
+        result: unparsedResult(facts.text),
+      }
+    : {}
 }
 
 /** The result every prose kind shares: none, the failure, or the words. */
 function kimiProseResult(facts: KimiToolFacts): { result?: ProseResult | ToolFailureResult } {
   if (!facts.resultAvailable)
     return {}
-  return facts.failed ? { result: failedResult(facts.text) } : { result: proseResult(facts.text) }
+  return facts.failed
+    ? {
+        result: failedResult(facts.text),
+      }
+    : {
+        result: proseResult(facts.text),
+      }
 }
 
 /** The result the generic card states: the words and the pictures together. */
 function kimiGenericResult(facts: KimiToolFacts): { result?: GenericToolResult | ToolFailureResult } {
   if (!facts.resultAvailable)
     return {}
-  if (facts.failed)
-    return { result: failedResult(facts.text) }
+  if (facts.failed) {
+    return {
+      result: failedResult(facts.text),
+    }
+  }
   return {
     result: {
       content: [
-        ...(facts.text ? [{ type: 'text' as const, text: facts.text }] : []),
+        ...(facts.text
+          ? [
+              { type: 'text' as const, text: facts.text },
+            ]
+          : []),
         ...facts.images.map(source => ({ type: 'image' as const, source })),
       ],
     },
@@ -537,18 +792,46 @@ function kimiGenericResult(facts: KimiToolFacts): { result?: GenericToolResult |
 function kimiSearchResult(facts: KimiToolFacts, kind: 'glob' | 'grep'): { result?: SearchResult | ToolFailureResult } {
   if (!facts.resultAvailable)
     return {}
-  if (facts.failed)
-    return { result: failedResult(facts.text) }
+  if (facts.failed) {
+    return {
+      result: failedResult(facts.text),
+    }
+  }
   const lines = facts.text.split('\n').map(line => line.trimEnd()).filter(line => line !== '' && !/^<system>.*<\/system>$/.test(line))
   const empty = lines.length === 0 || /^No (?:files|matches) found\.?$/i.test(lines[0] ?? '')
   if (kind === 'glob') {
-    const filenames = empty ? [] : lines
-    return { result: { filenames, content: '', numFiles: filenames.length, numLines: 0, truncated: facts.truncated, fallbackContent: facts.text, empty } }
+    const filenames = empty
+      ? []
+      : lines
+    return {
+      result: {
+        filenames,
+        content: '',
+        numFiles: filenames.length,
+        numLines: 0,
+        truncated: facts.truncated,
+        fallbackContent: facts.text,
+        empty,
+      },
+    }
   }
   const mode = pickString(facts.input, 'output_mode')
   if (mode === 'files_with_matches') {
-    const filenames = empty ? [] : lines
-    return { result: { filenames, content: '', numFiles: filenames.length, numLines: 0, truncated: facts.truncated, fallbackContent: facts.text, empty, mode: 'files_with_matches' } }
+    const filenames = empty
+      ? []
+      : lines
+    return {
+      result: {
+        filenames,
+        content: '',
+        numFiles: filenames.length,
+        numLines: 0,
+        truncated: facts.truncated,
+        fallbackContent: facts.text,
+        empty,
+        mode: 'files_with_matches',
+      },
+    }
   }
   const files = new Set<string>()
   for (const line of lines) {
@@ -559,13 +842,17 @@ function kimiSearchResult(facts: KimiToolFacts, kind: 'glob' | 'grep'): { result
   return {
     result: {
       filenames: [...files],
-      content: empty ? '' : lines.join('\n'),
+      content: empty
+        ? ''
+        : lines.join('\n'),
       numFiles: files.size,
       numLines: empty ? 0 : lines.length,
       truncated: facts.truncated,
       fallbackContent: facts.text,
       empty,
-      ...(mode === 'count_matches' ? { mode: 'count' as const } : { mode: 'content' as const }),
+      ...(mode === 'count_matches'
+        ? { mode: 'count' as const }
+        : { mode: 'content' as const }),
     },
   }
 }
@@ -574,10 +861,19 @@ function kimiSearchResult(facts: KimiToolFacts, kind: 'glob' | 'grep'): { result
 function kimiFileChangeResult(facts: KimiToolFacts, kind: 'edit' | 'write'): { result?: FileChangeResult | ToolFailureResult | UnparsedToolResult } {
   if (!facts.resultAvailable)
     return {}
-  if (facts.failed)
-    return { result: failedResult(facts.text) }
+  if (facts.failed) {
+    return {
+      result: failedResult(facts.text),
+    }
+  }
   const changes = kimiFileChanges(kind, facts.input)
-  return changes.length > 0 ? { result: { changes } } : { result: unparsedResult(facts.text) }
+  return changes.length > 0
+    ? {
+        result: { changes },
+      }
+    : {
+        result: unparsedResult(facts.text),
+      }
 }
 
 /** The change an edit or a write asks for, from its arguments. */
@@ -585,9 +881,26 @@ export function kimiFileChanges(kind: 'edit' | 'write', args: Record<string, unk
   const filePath = pickString(args, 'path')
   if (!filePath)
     return []
-  if (kind === 'write')
-    return [{ filePath, operation: 'add', oldStr: '', newStr: pickString(args, 'content'), structuredPatch: null }]
-  return [{ filePath, operation: 'edit', oldStr: pickString(args, 'old_string'), newStr: pickString(args, 'new_string'), structuredPatch: null }]
+  if (kind === 'write') {
+    return [
+      {
+        filePath,
+        operation: 'add',
+        oldStr: '',
+        newStr: pickString(args, 'content'),
+        structuredPatch: null,
+      },
+    ]
+  }
+  return [
+    {
+      filePath,
+      operation: 'edit',
+      oldStr: pickString(args, 'old_string'),
+      newStr: pickString(args, 'new_string'),
+      structuredPatch: null,
+    },
+  ]
 }
 
 /**
@@ -603,14 +916,22 @@ export function kimiAgentRuns(text: string, description: string): AgentRun[] {
   const status = /^status: (\S+)$/m.exec(text)?.[1] ?? ''
   const agentType = /^actual_subagent_type: (\S+)$/m.exec(text)?.[1]
   const summary = /\[summary\]\n([\s\S]*?)(?:\n\nresume_hint:[\s\S]*)?$/.exec(text)?.[1]?.trim() ?? ''
-  return [{
-    description,
-    agentId,
-    outcome: kimiRunOutcome(status),
-    ...(status && kimiRunOutcome(status) === 'unknown' ? { statusLabel: status } : {}),
-    metadata: agentType ? [{ label: 'Type', value: agentType }] : [],
-    body: summary,
-  }]
+  return [
+    {
+      description,
+      agentId,
+      outcome: kimiRunOutcome(status),
+      ...(status && kimiRunOutcome(status) === 'unknown'
+        ? { statusLabel: status }
+        : {}),
+      metadata: agentType
+        ? [
+            { label: 'Type', value: agentType },
+          ]
+        : [],
+      body: summary,
+    },
+  ]
 }
 
 /**
@@ -625,7 +946,9 @@ export function kimiSwarmRuns(text: string): AgentRun[] {
       description: item || agentId,
       agentId,
       outcome: kimiRunOutcome(outcome),
-      ...(kimiRunOutcome(outcome) === 'unknown' && outcome ? { statusLabel: outcome } : {}),
+      ...(kimiRunOutcome(outcome) === 'unknown' && outcome
+        ? { statusLabel: outcome }
+        : {}),
       metadata: [],
       body: body.trim(),
     })
@@ -664,14 +987,23 @@ function kimiQuestionResult(text: string): QuestionResult | null {
   catch {
     return null
   }
-  const native = isObject(parsed) ? parsed : undefined
+  const native = isObject(parsed)
+    ? parsed
+    : undefined
   const answers = pickObject(native, 'answers')
   if (!answers)
     return null
   const note = pickString(native, 'note').trim()
   return {
-    answers: Object.entries(answers).map(([header, answer]) => ({ header, answer: typeof answer === 'string' ? answer : null })),
-    ...(note ? { note } : {}),
+    answers: Object.entries(answers).map(([header, answer]) => ({
+      header,
+      answer: typeof answer === 'string'
+        ? answer
+        : null,
+    })),
+    ...(note
+      ? { note }
+      : {}),
   }
 }
 
@@ -682,5 +1014,10 @@ export function kimiToolCall(row: KimiToolRow): ToolCall {
   const spec = readToolCallSpec(KIMI_TOOL_READERS, facts.kind, facts)
   // The tool's own name, which the icon tooltip states.
   const label = spec.label ?? (row.toolName || undefined)
-  return createToolCall(envelope, { ...spec, ...(label !== undefined ? { label } : {}) })
+  return createToolCall(envelope, {
+    ...spec,
+    ...(label !== undefined
+      ? { label }
+      : {}),
+  })
 }

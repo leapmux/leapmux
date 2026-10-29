@@ -11,5 +11,8 @@ import { ohMyPiTest } from '../ohmypi-fixtures'
 ohMyPiTest('preserves a literal private shell path with spaces and metacharacters', async ({ native }) => {
   // omp appends a `Wall time: <n> seconds` notice to every output, and `Command exited with code N` to the output of a
   // failed command. The extractor drops both, because the row already states how the call ended.
-  await exerciseShellToolExecution(native, { prepare: () => applyPermissionPreset(native.page, 'bypass'), absentRowText: ['Wall time', 'Command exited with code'] })
+  await exerciseShellToolExecution(native, {
+    prepare: () => applyPermissionPreset(native.page, 'bypass'),
+    absentRowText: ['Wall time', 'Command exited with code'],
+  })
 })

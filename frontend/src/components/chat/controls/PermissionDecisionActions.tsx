@@ -47,7 +47,9 @@ export const PermissionDecisionActions: Component<ActionsProps & {
   // agent no longer offers.
   const scopeOptions = createMemo(() => {
     const scope = layout().allowScope
-    return scope ? allowScopePillOptions(scope) : undefined
+    return scope
+      ? allowScopePillOptions(scope)
+      : undefined
   })
   const selectedScope = () => {
     const scope = layout().allowScope
@@ -99,18 +101,37 @@ export const PermissionDecisionActions: Component<ActionsProps & {
       allowChoicePill={() => {
         const options = scopeOptions()
         return !props.independentOptions && layout().positive && options
-          ? { label: 'Allow scope', options, selected: selectedScope() ?? options[0].key, onSelect: scopeChoice.setChoice }
+          ? {
+              label: 'Allow scope',
+              options,
+              selected: selectedScope() ?? options[0].key,
+              onSelect: scopeChoice.setChoice,
+            }
           : undefined
       }}
-      permissionPill={() => !props.independentOptions && layout().positive ? permissionPill() : undefined}
+      permissionPill={() => !props.independentOptions && layout().positive
+        ? permissionPill()
+        : undefined}
       // The decision slots are passed only when the layout filled them: an
       // explicit `undefined` is not assignable to an optional prop under
       // exactOptionalPropertyTypes, and the footer reads absent the same.
       {...(!props.independentOptions && layout().negative
-        ? { negativeAction: { label: decisionLabel(layout(), 'reject'), testId: 'control-deny-btn', onSelect: () => handleDecision('reject') } }
+        ? {
+            negativeAction: {
+              label: decisionLabel(layout(), 'reject'),
+              testId: 'control-deny-btn',
+              onSelect: () => handleDecision('reject'),
+            },
+          }
         : {})}
       {...(!props.independentOptions && layout().positive
-        ? { positiveAction: { label: decisionLabel(layout(), 'allow'), testId: 'control-allow-btn', onSelect: () => handleDecision('allow') } }
+        ? {
+            positiveAction: {
+              label: decisionLabel(layout(), 'allow'),
+              testId: 'control-allow-btn',
+              onSelect: () => handleDecision('allow'),
+            },
+          }
         : {})}
       additionalActions={() => props.independentOptions
         ? []

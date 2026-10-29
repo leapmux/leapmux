@@ -42,7 +42,9 @@ export async function sendScriptedTurn(page: Page, script: ModelScript, turn: Sc
   const step = await script.queue({ text: turn.answer })
   await sendMessage(page, script.prompt(turn.prompt), turn.entry)
   await script.waitForSteps(step + 1)
-  await expectAssistantAnswer(page, { answer: wholeText(turn.answer) })
+  await expectAssistantAnswer(page, {
+    answer: wholeText(turn.answer),
+  })
   await waitForAgentIdle(page)
   return step
 }

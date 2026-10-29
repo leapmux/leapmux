@@ -14,7 +14,9 @@ export async function waitForNewestModelRequest<T>(
 ): Promise<T> {
   let found: { value: T } | undefined
   await expect.poll(async () => {
-    for (const request of [...(await modelScript.status()).requests].reverse()) {
+    for (const request of [
+      ...(await modelScript.status()).requests,
+    ].reverse()) {
       const value = read(request)
       if (value !== null) {
         found = { value }

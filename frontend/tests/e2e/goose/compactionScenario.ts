@@ -11,11 +11,17 @@ import { assistantBubbles } from '../helpers/ui'
  * from a JSON block after its analysis.
  */
 export const GOOSE_COMPACTION: NativeCompactionOptions = {
-  summary: { route: 'rule', when: { user: '^Please summarize the conversation history provided in the system prompt\\.$' } },
+  summary: {
+    route: 'rule',
+    when: { user: '^Please summarize the conversation history provided in the system prompt\\.$' },
+  },
   summaryEnvelope: summary => [
     '<analysis>Keep the earlier topic.</analysis>',
     '```json',
-    JSON.stringify({ user_intent: [summary], current_work: 'Continue the test.' }),
+    JSON.stringify({
+      user_intent: [summary],
+      current_work: 'Continue the test.',
+    }),
     '```',
   ].join('\n'),
 }

@@ -56,7 +56,9 @@ describe('unit-test co-location', () => {
     // `collectFiles` answers an empty array for a directory that moved, and an
     // empty array satisfies the emptiness assertion above. Drop the skip and
     // the walk must still find the E2E specs.
-    expect(collectFiles(testsRoot, { matches: name => name.endsWith('.spec.ts') }).length)
+    expect(collectFiles(testsRoot, {
+      matches: name => name.endsWith('.spec.ts'),
+    }).length)
       .toBeGreaterThan(100)
   })
 })

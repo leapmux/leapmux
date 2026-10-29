@@ -11,7 +11,12 @@ lettaTest.describe('Letta Code bypass permissions', () => {
   // The workspace opens in Standard, which asks before a tool runs. The Bypass shortcut selects Unrestricted, which
   // answers every tool call at once. A real removal must then run with no banner, before and after a reload.
   lettaTest('the Bypass shortcut switches the session to Unrestricted', async ({ askingLettaWorkspace, page, modelScript, leapmuxServer }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingLettaWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: askingLettaWorkspace.workspaceId,
+    })
     await waitForNativeSettingsHydrated(page)
     await expectPermissionShortcuts(page, { bypass: 'offered' })
 
@@ -25,6 +30,11 @@ lettaTest.describe('Letta Code bypass permissions', () => {
 })
 
 lettaTest('approves a pending tool and the next tool when Bypass changes during a turn', async ({ askingLettaWorkspace, page, modelScript, leapmuxServer }) => {
-  const native = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingLettaWorkspace.workspaceId })
+  const native = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: askingLettaWorkspace.workspaceId,
+  })
   await exerciseMidTurnBypass(native)
 })

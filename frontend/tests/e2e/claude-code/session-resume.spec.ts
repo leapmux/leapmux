@@ -45,7 +45,9 @@ test.describe('worker restart thinking indicator', () => {
         }, () => restartWorker(separateHubWorker))
       })
     }, async () => {
-      await finishCleanup([modelScript.releaseGateIfHeld('claude-code-session-resume-hold-1')])
+      await finishCleanup([
+        modelScript.releaseGateIfHeld('claude-code-session-resume-hold-1'),
+      ])
     })
   })
 
@@ -216,14 +218,22 @@ test.describe('full Hub and Worker restart', () => {
         await expect(thinkingIndicator).not.toBeVisible()
       })
     }, async () => {
-      await finishCleanup([modelScript.releaseGateIfHeld('claude-code-session-resume-hold-2')])
+      await finishCleanup([
+        modelScript.releaseGateIfHeld('claude-code-session-resume-hold-2'),
+      ])
     })
   })
 })
 
 test.describe('settings and /clear after Worker restart', () => {
   test('should handle settings changes and /clear after worker restart', async ({ separateHubWorker, page, modelScript }, testInfo) => {
-    await withRestartWorkspace(page, separateHubWorker, { provider: CLAUDE_AGENT, prefix: 'Worker Restart Settings Test', openOptions: { optionValues: { permissionMode: 'default' } } }, async ({ workspaceId, agentId }) => {
+    await withRestartWorkspace(page, separateHubWorker, {
+      provider: CLAUDE_AGENT,
+      prefix: 'Worker Restart Settings Test',
+      openOptions: {
+        optionValues: { permissionMode: 'default' },
+      },
+    }, async ({ workspaceId, agentId }) => {
       const snapshots: { phase: string, queue: Awaited<ReturnType<typeof readNativeInputQueue>> }[] = []
       const captureQueue = async (phase: string) => {
         snapshots.push({ phase, queue: await readNativeInputQueue(separateHubWorker, agentId) })
@@ -291,7 +301,9 @@ test.describe('settings and /clear after Worker restart', () => {
       }, async () => {
         await captureQueue('before-workspace-cleanup')
         await testInfo.attach('restart-settings-input-queue', {
-          body: JSON.stringify(snapshots, (_key, value) => typeof value === 'bigint' ? value.toString() : value, 2),
+          body: JSON.stringify(snapshots, (_key, value) => typeof value === 'bigint'
+            ? value.toString()
+            : value, 2),
           contentType: 'application/json',
         })
       })
@@ -522,7 +534,9 @@ claudeTest.describe('session picker in the New Agent dialog', () => {
     // the Claude provider's session is an id, not a file path, so only that
     // form of the label is correct here.
     await (await openSessionMenu(dialog))
-      .getByRole('menuitemradio', { name: typeAHandleLabel(false) })
+      .getByRole('menuitemradio', {
+        name: typeAHandleLabel(false),
+      })
       .click()
     await expect(dialog.getByPlaceholder(/^Session ID/)).toBeVisible()
     await dialog.getByTestId('session-field-pick-from-list').click()

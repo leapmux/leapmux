@@ -14,13 +14,20 @@ import { openOutsideProjectAgent, outsideRemoval, outsideRemovalCommand, project
 // it. Each command here also removes a file beside the project, so it asks unless Bypass answers the request.
 opencodeTest('offers Bypass and runs an outside-directory command without a prompt before and after reload', async ({ authenticatedEmptyWorkspace, leapmuxServer, page, modelScript }) => {
   const { workingDir, file } = projectBesideProbe('opencode-bypass-', 'remove the first file')
-  const context = await openOutsideProjectAgent({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId }, workingDir)
+  const context = await openOutsideProjectAgent({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+  }, workingDir)
   await waitForNativeSettingsHydrated(page)
   await expectPermissionShortcuts(page, { smart: 'absent', bypass: 'offered' })
   await exerciseBypassPermissions(context, {
     settingsProof: agent => expect(nativeOptionValue(agent, OPENCODE_OPTION.AutoApprove)).toBe('true'),
     commandProof: (target, pass) => {
-      const outside = pass === 1 ? file : join(dirname(file), 'opencode-bypass-second-probe.txt')
+      const outside = pass === 1
+        ? file
+        : join(dirname(file), 'opencode-bypass-second-probe.txt')
       if (pass !== 1)
         writeFileSync(outside, 'remove the second file')
       const output = `OPENCODE_BYPASS_${pass}_`
@@ -39,7 +46,12 @@ opencodeTest('approves a pending outside-directory command and the next one when
   const { workingDir, file } = projectBesideProbe('opencode-mid-bypass-', 'remove the first file')
   const second = join(dirname(file), 'opencode-mid-bypass-second-probe.txt')
   writeFileSync(second, 'remove the second file')
-  const context = await openOutsideProjectAgent({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId }, workingDir)
+  const context = await openOutsideProjectAgent({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+  }, workingDir)
   await exerciseMidTurnBypass(context, [
     outsideRemoval(context, file, 'opencode-mid-bypass-0', 'OPENCODE_MID_BYPASS_0_'),
     outsideRemoval(context, second, 'opencode-mid-bypass-1', 'OPENCODE_MID_BYPASS_1_'),

@@ -65,7 +65,11 @@ describe('createOhMyPiEnvironment', () => {
     expect(config.modelRoles).toEqual({ default: 'unit-provider/unit-model', task: 'unit-provider/unit-model:off' })
     expect(config.disabledProviders).toEqual(expect.arrayContaining(['anthropic', 'openai', 'zai']))
     expect(config.disabledProviders).not.toContain('unit-provider')
-    expect(config).toMatchObject({ startup: { checkUpdate: false }, marketplace: { autoUpdate: 'off' }, edit: { mode: 'replace' } })
+    expect(config).toMatchObject({
+      startup: { checkUpdate: false },
+      marketplace: { autoUpdate: 'off' },
+      edit: { mode: 'replace' },
+    })
   })
 
   // omp's Cline discovery takes the nearest .clinerules from its working directory up to the root of the file system,
@@ -81,7 +85,13 @@ describe('createOhMyPiEnvironment', () => {
   it('starts the echo server over stdio', () => {
     createOhMyPiEnvironment(options())
     expect(JSON.parse(readFileSync(join(ohMyPiAgentDirectory(homeDir, 'unit-profile'), 'mcp.json'), 'utf8'))).toEqual({
-      mcpServers: { echo_probe: { type: 'stdio', command: echoServer.command, args: ['/srv/echo.mjs'] } },
+      mcpServers: {
+        echo_probe: {
+          type: 'stdio',
+          command: echoServer.command,
+          args: ['/srv/echo.mjs'],
+        },
+      },
     })
   })
 })

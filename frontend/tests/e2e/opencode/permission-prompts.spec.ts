@@ -11,7 +11,12 @@ import { exerciseOpenCodeFamilyDenial } from './permissionDenial'
 
 opencodeTest('asks before a shell command touches a file outside the working directory', async ({ authenticatedEmptyWorkspace, leapmuxServer, page, modelScript }) => {
   const { workingDir, file } = projectBesideProbe('opencode-permission-', 'remove this test file')
-  const context = await openOutsideProjectAgent({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId }, workingDir)
+  const context = await openOutsideProjectAgent({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+  }, workingDir)
   // The path leaves the working directory, so OpenCode asks its external_directory permission.
   const command = `rm ../${basename(file)}`
   await exerciseNativePermissionDecision(context, {
@@ -32,7 +37,12 @@ opencodeTest('asks before a shell command touches a file outside the working dir
 opencodeTest('keeps exact outside-directory bytes after a native Deny decision', async ({ authenticatedEmptyWorkspace, leapmuxServer, page, modelScript }) => {
   const original = `KEEP_THE_OUTSIDE_FILE_${randomUUID()}\n`
   const { workingDir, file } = projectBesideProbe('opencode-denied-permission-', original)
-  const context = await openOutsideProjectAgent({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId }, workingDir)
+  const context = await openOutsideProjectAgent({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+  }, workingDir)
   // The path leaves the working directory, so OpenCode asks its external_directory permission.
   const command = `rm ../${basename(file)}`
   await exerciseOpenCodeFamilyDenial(context, {
@@ -48,7 +58,12 @@ opencodeTest('keeps exact outside-directory bytes after a native Deny decision',
 opencodeTest('sends the reader\'s typed refusal reason as the next message', async ({ authenticatedEmptyWorkspace, leapmuxServer, page, modelScript }) => {
   const original = `KEEP_THE_OUTSIDE_FILE_${randomUUID()}\n`
   const { workingDir, file } = projectBesideProbe('opencode-reason-permission-', original)
-  const context = await openOutsideProjectAgent({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId }, workingDir)
+  const context = await openOutsideProjectAgent({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+  }, workingDir)
   const command = `rm ../${basename(file)}`
   await exerciseNativePermissionReason(context, {
     toolCall: bashToolCall(context.provider, 'opencode-reason-removal', command),
@@ -66,7 +81,12 @@ opencodeTest('an always answer covers a later removal in the same outside direct
   const { workingDir, file: first } = projectBesideProbe('opencode-always-permission-', 'remove the first file')
   const second = join(dirname(first), 'opencode-always-second.txt')
   writeFileSync(second, 'remove the second file')
-  const context = await openOutsideProjectAgent({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId }, workingDir)
+  const context = await openOutsideProjectAgent({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+  }, workingDir)
   await exerciseRememberedAllow(context, {
     scope: 'Always',
     firstCall: bashToolCall(context.provider, 'opencode-always-first', `rm ../${basename(first)}`),

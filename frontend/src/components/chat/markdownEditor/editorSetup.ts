@@ -268,7 +268,9 @@ export function buildEditor(opts: EditorSetupOptions): Promise<Editor> {
           // On the CONTENTEDITABLE, never on the wrapper. The wrapper is not
           // the editable element, so naming it names nothing: a screen reader
           // announces the region the caret lands in, which is this one.
-          ...(opts.ariaLabelledBy ? { 'aria-labelledby': opts.ariaLabelledBy } : {}),
+          ...(opts.ariaLabelledBy
+            ? { 'aria-labelledby': opts.ariaLabelledBy }
+            : {}),
         },
       }))
       // The save reads the LIVE document and the LIVE key when it comes due. It

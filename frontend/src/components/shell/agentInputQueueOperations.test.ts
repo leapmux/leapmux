@@ -39,7 +39,9 @@ function stubView(workerByAgent: Record<string, string>): TabView {
   return {
     getAgentTab: (id: string): AgentTab | undefined => {
       const workerId = workerByAgent[id]
-      return workerId === undefined ? undefined : ({ id, workerId } as AgentTab)
+      return workerId === undefined
+        ? undefined
+        : ({ id, workerId } as AgentTab)
     },
   } as unknown as TabView
 }
@@ -81,7 +83,9 @@ function setup(options: SetupOptions = {}) {
     view: stubView(options.workerByAgent ?? { 'agent-1': 'worker-1' }),
     store,
     clientId: () => 'client-1',
-    focusedAgentId: () => (options.focusedAgentId === undefined ? 'agent-1' : options.focusedAgentId),
+    focusedAgentId: () => (options.focusedAgentId === undefined
+      ? 'agent-1'
+      : options.focusedAgentId),
     forceScrollToBottom,
   })
   return { ops, store, forceScrollToBottom }
@@ -94,7 +98,9 @@ beforeEach(() => {
 describe('createAgentInputQueueOperations queue commands', () => {
   it('applies the snapshot of a successful response to the store', async () => {
     const { ops, store } = setup()
-    deleteQueuedAgentInput.mockResolvedValueOnce({ snapshot: snapshotOf('agent-1', 4n, ['q2', 'q3']) })
+    deleteQueuedAgentInput.mockResolvedValueOnce({
+      snapshot: snapshotOf('agent-1', 4n, ['q2', 'q3']),
+    })
     expect(store.get('agent-1')).toBeUndefined()
 
     await ops.deleteQueueItem(queuedItem('agent-1', 'q1'))
@@ -153,7 +159,10 @@ describe('createAgentInputQueueOperations queue commands', () => {
 
   it('hands the begin-edit response back to the caller and applies its snapshot', async () => {
     const { ops, store } = setup()
-    const response = { snapshot: snapshotOf('agent-1', 2n, ['q1']), text: 'the full draft' }
+    const response = {
+      snapshot: snapshotOf('agent-1', 2n, ['q1']),
+      text: 'the full draft',
+    }
     beginQueuedAgentInputEdit.mockResolvedValueOnce(response)
 
     const returned = await ops.beginQueueEdit(queuedItem('agent-1', 'q1'), true)
@@ -164,7 +173,10 @@ describe('createAgentInputQueueOperations queue commands', () => {
   })
 
   it('reads the focused agent once when it changes the pause state', async () => {
-    const { ops } = setup({ workerByAgent: { 'agent-7': 'worker-7' }, focusedAgentId: 'agent-7' })
+    const { ops } = setup({
+      workerByAgent: { 'agent-7': 'worker-7' },
+      focusedAgentId: 'agent-7',
+    })
     setAgentInputQueuePaused.mockResolvedValueOnce({ snapshot: undefined })
 
     await ops.setQueuePaused(true)
@@ -183,10 +195,14 @@ describe('createAgentInputQueueOperations composer send', () => {
     const { ops } = setup()
     enqueueAgentInput.mockRejectedValueOnce(new Error('answer lost'))
     enqueueAgentInput.mockResolvedValueOnce({ snapshot: undefined })
-    const files = [attachment('notes.txt')]
+    const files = [
+      attachment('notes.txt'),
+    ]
 
     await expect(ops.sendMessage('deploy it', files)).rejects.toThrow('answer lost')
-    await ops.sendMessage('deploy it', [attachment('notes.txt')])
+    await ops.sendMessage('deploy it', [
+      attachment('notes.txt'),
+    ])
 
     expect(enqueueAgentInput).toHaveBeenCalledTimes(2)
     expect(sentInputId(1)).toBe(sentInputId(0))
@@ -251,7 +267,9 @@ describe('createAgentInputQueueOperations composer send', () => {
 // omits the field.
 describe('agent input queue operations schedule', () => {
   it('sends the schedule on enqueue', async () => {
-    const { ops } = setup({ workerByAgent: { 'agent-1': 'w1' } })
+    const { ops } = setup({
+      workerByAgent: { 'agent-1': 'w1' },
+    })
     enqueueAgentInput.mockResolvedValue(snapshotOf('agent-1', 1n, []))
     await ops.sendMessage('later', undefined, '2030-01-01T09:00:00.000Z')
     expect(enqueueAgentInput).toHaveBeenCalledWith('w1', {
@@ -265,14 +283,18 @@ describe('agent input queue operations schedule', () => {
   })
 
   it('sends an empty schedule on an immediate enqueue', async () => {
-    const { ops } = setup({ workerByAgent: { 'agent-1': 'w1' } })
+    const { ops } = setup({
+      workerByAgent: { 'agent-1': 'w1' },
+    })
     enqueueAgentInput.mockResolvedValue(snapshotOf('agent-1', 1n, []))
     await ops.sendMessage('now')
     expect(enqueueAgentInput.mock.calls[0]?.[1]).toMatchObject({ scheduledAt: '' })
   })
 
   it('omits the schedule from a save that keeps it', async () => {
-    const { ops } = setup({ workerByAgent: { 'agent-1': 'w1' } })
+    const { ops } = setup({
+      workerByAgent: { 'agent-1': 'w1' },
+    })
     updateQueuedAgentInput.mockResolvedValue(snapshotOf('agent-1', 2n, []))
     await ops.updateQueueItem(queuedItem('agent-1', 'input-1'), 'edited', [], undefined)
     const request = updateQueuedAgentInput.mock.calls[0]?.[1] as Record<string, unknown>
@@ -280,7 +302,9 @@ describe('agent input queue operations schedule', () => {
   })
 
   it('sends the schedule on update, and an explicit empty string when clearing', async () => {
-    const { ops } = setup({ workerByAgent: { 'agent-1': 'w1' } })
+    const { ops } = setup({
+      workerByAgent: { 'agent-1': 'w1' },
+    })
     updateQueuedAgentInput.mockResolvedValue(snapshotOf('agent-1', 2n, []))
     const item = queuedItem('agent-1', 'input-1')
     await ops.updateQueueItem(item, 'edited', [], '2030-01-01T09:00:00.000Z')
@@ -334,7 +358,9 @@ describe('createAgentInputQueueOperations retryPendingMessage', () => {
     await expect(ops.sendMessage('later', undefined, at)).rejects.toThrow(error.message)
     expect(await ops.retryPendingMessage('later')).toBe(false)
     expect(await ops.retryPendingMessage('other', [], at)).toBe(false)
-    enqueueAgentInput.mockResolvedValueOnce({ snapshot: snapshotOf('agent-1', 1n, []) })
+    enqueueAgentInput.mockResolvedValueOnce({
+      snapshot: snapshotOf('agent-1', 1n, []),
+    })
     expect(await ops.retryPendingMessage('later', [], at)).toBe(true)
     const [first, second] = enqueueAgentInput.mock.calls.map(call => (call[1] as { inputId: string }).inputId)
     expect(second).toBe(first)
@@ -342,11 +368,17 @@ describe('createAgentInputQueueOperations retryPendingMessage', () => {
     expect(await ops.retryPendingMessage('later', [], at)).toBe(false)
   })
 
-  it.each([new Error('answer lost'), new ChannelError('rpc', 'queue full', { code: Code.InvalidArgument })])('shares one in-flight request across identical sends: %s', async (error) => {
+  it.each([
+    new Error('answer lost'),
+    new ChannelError('rpc', 'queue full', { code: Code.InvalidArgument }),
+  ])('shares one in-flight request across identical sends: %s', async (error) => {
     const { ops } = setup()
     const response = deferred<{ snapshot: undefined }>()
     enqueueAgentInput.mockReturnValue(response.promise)
-    const settled = Promise.allSettled([ops.sendMessage('later', [], at), ops.sendMessage('later', [], at)])
+    const settled = Promise.allSettled([
+      ops.sendMessage('later', [], at),
+      ops.sendMessage('later', [], at),
+    ])
     try {
       expect(enqueueAgentInput).toHaveBeenCalledTimes(1)
     }

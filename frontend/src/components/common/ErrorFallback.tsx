@@ -34,7 +34,9 @@ export interface ErrorFallbackProps {
  * which also threw away the auth session and every bit of shell state.
  */
 export const ErrorFallback: Component<ErrorFallbackProps> = (props) => {
-  const rawStack = () => (props.error instanceof Error ? props.error.stack : undefined) ?? ''
+  const rawStack = () => (props.error instanceof Error
+    ? props.error.stack
+    : undefined) ?? ''
   const [resolved, setResolved] = createSignal<string>()
 
   // A plain signal, deliberately NOT `createResource`.

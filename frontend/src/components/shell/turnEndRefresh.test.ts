@@ -35,7 +35,9 @@ describe('createTurnEndRefreshGate', () => {
 
     it('drops a turn end from another worker', () => {
       // Another machine entirely: nothing it wrote is in this tree.
-      const { gate, refresh } = makeGate({ workerIdForAgent: () => 'w-other' })
+      const { gate, refresh } = makeGate({
+        workerIdForAgent: () => 'w-other',
+      })
       gate.notify('a-1')
       vi.advanceTimersByTime(TURN_END_REFRESH_WINDOW_MS * 2)
 
@@ -43,7 +45,9 @@ describe('createTurnEndRefreshGate', () => {
     })
 
     it('refreshes when the panels resolve no worker', () => {
-      const { gate, refresh } = makeGate({ shownWorkerId: () => '' })
+      const { gate, refresh } = makeGate({
+        shownWorkerId: () => '',
+      })
       gate.notify('a-1')
 
       expect(refresh).toHaveBeenCalledTimes(1)
@@ -52,21 +56,27 @@ describe('createTurnEndRefreshGate', () => {
     it('refreshes when the ending agent resolves no worker', () => {
       // An unhydrated tab reports none. Staying quiet there would hide a real
       // change behind a lookup that had not landed yet.
-      const { gate, refresh } = makeGate({ workerIdForAgent: () => '' })
+      const { gate, refresh } = makeGate({
+        workerIdForAgent: () => '',
+      })
       gate.notify('a-1')
 
       expect(refresh).toHaveBeenCalledTimes(1)
     })
 
     it('drops a turn end from a tab that closes', () => {
-      const { gate, refresh } = makeGate({ isAgentClosing: id => id === 'a-1' })
+      const { gate, refresh } = makeGate({
+        isAgentClosing: id => id === 'a-1',
+      })
       gate.notify('a-1')
 
       expect(refresh).not.toHaveBeenCalled()
     })
 
     it('asks per agent, so a closing sibling does not silence the others', () => {
-      const { gate, refresh } = makeGate({ isAgentClosing: id => id === 'a-1' })
+      const { gate, refresh } = makeGate({
+        isAgentClosing: id => id === 'a-1',
+      })
       gate.notify('a-1')
       gate.notify('a-2')
 
@@ -79,7 +89,9 @@ describe('createTurnEndRefreshGate', () => {
       // The whole window sits between the admission and the refresh it pays
       // for. A tab torn down inside it has nothing left to refresh.
       const closing = new Set<string>()
-      const { gate, refresh } = makeGate({ isAgentClosing: id => closing.has(id) })
+      const { gate, refresh } = makeGate({
+        isAgentClosing: id => closing.has(id),
+      })
       gate.notify('a-1')
       gate.notify('a-2')
       expect(refresh).toHaveBeenCalledTimes(1)
@@ -93,7 +105,9 @@ describe('createTurnEndRefreshGate', () => {
 
     it('drops the trailing refresh when the user moves to another worker', () => {
       let shown = SHOWN_WORKER
-      const { gate, refresh } = makeGate({ shownWorkerId: () => shown })
+      const { gate, refresh } = makeGate({
+        shownWorkerId: () => shown,
+      })
       gate.notify('a-1')
       gate.notify('a-2')
 
@@ -107,7 +121,9 @@ describe('createTurnEndRefreshGate', () => {
       // `a-1` leads and is spent there, so the trailing edge asks about the two
       // that arrived inside the window. One survivor is enough.
       const closing = new Set<string>()
-      const { gate, refresh } = makeGate({ isAgentClosing: id => closing.has(id) })
+      const { gate, refresh } = makeGate({
+        isAgentClosing: id => closing.has(id),
+      })
       gate.notify('a-1')
       gate.notify('a-2')
       gate.notify('a-3')
@@ -122,7 +138,9 @@ describe('createTurnEndRefreshGate', () => {
       // The window exists to coalesce a burst. One that turns out to hold
       // nothing must not delay the next real turn end behind it.
       const closing = new Set<string>()
-      const { gate, refresh } = makeGate({ isAgentClosing: id => closing.has(id) })
+      const { gate, refresh } = makeGate({
+        isAgentClosing: id => closing.has(id),
+      })
       gate.notify('a-1')
       gate.notify('a-2')
 

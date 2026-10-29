@@ -185,7 +185,12 @@ export async function putArtifact(ns: string, source: string, value: unknown, no
     return
   try {
     const db = await openDb()
-    await db.artifacts.put({ k: artifactKey(ns, source), source, value, at: now })
+    await db.artifacts.put({
+      k: artifactKey(ns, source),
+      source,
+      value,
+      at: now,
+    })
   }
   catch {
     // Quota/private-browsing failures: persistence is an optimization only.

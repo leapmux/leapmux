@@ -49,7 +49,9 @@ export function claudeWebSearchFromToolResult(
     links,
     summary,
     // The duration rides only when the tool reported one.
-    ...(durationSeconds !== undefined ? { durationSeconds } : {}),
+    ...(durationSeconds !== undefined
+      ? { durationSeconds }
+      : {}),
   }
 }
 
@@ -70,7 +72,12 @@ export function claudeWebSearchSpec(request: WebSearchRequest, result: ClaudeToo
   if (failure)
     return { kind: 'web_search', request, result: failure }
   const source = claudeWebSearchFromToolResult(result.toolUseResult)
-  if (!source)
-    return { kind: 'web_search', request, result: unparsedResult(result.resultContent) }
+  if (!source) {
+    return {
+      kind: 'web_search',
+      request,
+      result: unparsedResult(result.resultContent),
+    }
+  }
   return { kind: 'web_search', request, result: source }
 }

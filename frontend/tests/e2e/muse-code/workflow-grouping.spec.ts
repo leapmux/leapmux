@@ -42,20 +42,36 @@ museTest('groups the child runs of one native workflow under its heading', async
   await modelScript.rule(
     {
       name: 'the first workflow child submits its word',
-      when: { body: ['Workflow child completion protocol', 'GROUP_ONE'] },
+      when: {
+        body: ['Workflow child completion protocol', 'GROUP_ONE'],
+      },
       once: true,
-      respond: { toolCalls: [museSubmitResultToolCall('grouping-child-one-submit', 'GROUP_ONE')] },
+      respond: {
+        toolCalls: [
+          museSubmitResultToolCall('grouping-child-one-submit', 'GROUP_ONE'),
+        ],
+      },
     },
     {
       name: 'the second workflow child submits its word',
-      when: { body: ['Workflow child completion protocol', 'GROUP_TWO'] },
+      when: {
+        body: ['Workflow child completion protocol', 'GROUP_TWO'],
+      },
       once: true,
-      respond: { toolCalls: [museSubmitResultToolCall('grouping-child-two-submit', 'GROUP_TWO')] },
+      respond: {
+        toolCalls: [
+          museSubmitResultToolCall('grouping-child-two-submit', 'GROUP_TWO'),
+        ],
+      },
     },
   )
   const parentAnswer = `The native workflow completed under ${WORKFLOW_NAME}.`
   const start = await modelScript.queue(
-    { toolCalls: [codeExecutionToolCall(native.provider, 'muse-grouping-workflow', workflowScript(first, second))] },
+    {
+      toolCalls: [
+        codeExecutionToolCall(native.provider, 'muse-grouping-workflow', workflowScript(first, second)),
+      ],
+    },
     { text: parentAnswer },
   )
   await sendMessage(page, modelScript.prompt('Run the native grouping workflow and report its result.'))
@@ -72,7 +88,10 @@ museTest('groups the child runs of one native workflow under its heading', async
     supplemental: nativeMessageSupplement(message),
   }))
   await testInfo.attach('native-message-snapshot', {
-    body: JSON.stringify({ agent, snapshot: { ...snapshot, messages } }, (_key, value: unknown) => {
+    body: JSON.stringify({
+      agent,
+      snapshot: { ...snapshot, messages },
+    }, (_key, value: unknown) => {
       if (typeof value === 'bigint')
         return value.toString()
       if (value instanceof Uint8Array)
@@ -91,7 +110,10 @@ museTest('groups the child runs of one native workflow under its heading', async
   await expect(children).toHaveCount(2)
   await expectRowBecomesFinal(page, children.nth(0))
   await expectRowBecomesFinal(page, children.nth(1))
-  await expectRowsInWorkflowGroup([children.nth(0), children.nth(1)], /Native code/)
+  await expectRowsInWorkflowGroup([
+    children.nth(0),
+    children.nth(1),
+  ], /Native code/)
   await expect(children.nth(0)).toHaveAttribute('data-kind', 'subagent')
   await expect(children.nth(1)).toHaveAttribute('data-kind', 'subagent')
   await expect(children.nth(0)).toHaveAttribute('data-child-agent-id', /\S+/)

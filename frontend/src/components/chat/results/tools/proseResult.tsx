@@ -9,15 +9,22 @@ import { textNeedsCollapse, useCollapsedLines } from '../useCollapsedLines'
 
 /** The body a prose result draws: markdown when the words are markdown, a plain block otherwise. */
 export function ProseResultBody(props: { result: ProseResult, view: ToolRowView }): JSX.Element {
-  const collapsed = useCollapsedLines({ text: () => props.result.text, expanded: () => props.view.expanded() })
+  const collapsed = useCollapsedLines({
+    text: () => props.result.text,
+    expanded: () => props.view.expanded(),
+  })
   return (
     <CollapsibleContent
       outputPreview
-      kind={props.result.format === 'markdown' ? 'markdown-tool-result' : 'pre'}
+      kind={props.result.format === 'markdown'
+        ? 'markdown-tool-result'
+        : 'pre'}
       text={props.result.text}
       display={collapsed.display()}
       isCollapsed={collapsed.isCollapsed()}
-      {...(props.view.context !== undefined ? { context: props.view.context } : {})}
+      {...(props.view.context !== undefined
+        ? { context: props.view.context }
+        : {})}
     />
   )
 }
@@ -58,5 +65,7 @@ export function proseRenderer<K extends ProseKind>(base: Omit<ToolKindRenderer<K
 /** One line of typed request facts, drawn while the call runs and the answer has not landed. */
 export function typedRequestLine(parts: Array<string | undefined>): JSX.Element | null {
   const line = parts.filter(Boolean).join(' · ')
-  return line ? <div class={toolInputSummary}>{line}</div> : null
+  return line
+    ? <div class={toolInputSummary}>{line}</div>
+    : null
 }

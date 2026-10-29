@@ -38,12 +38,18 @@ describe('switch_mode renderer', () => {
   // outcome word. Spelling "Sent feedback" here stated ONE tool's semantics -- Claude's
   // `ExitPlanMode` -- over every provider's mode switch.
   it('words a refusal that states nothing the way the shared header does', () => {
-    const declined = toolCallFixture('switch_mode', { status: 'declined', result: { text: 'Not yet', format: 'plain' } })
+    const declined = toolCallFixture('switch_mode', {
+      status: 'declined',
+      result: { text: 'Not yet', format: 'plain' },
+    })
     expect(switchModeRenderer.outcomeTitle?.(parsedCall(declined))).toBe('Declined')
   })
 
   it('words every other outcome the way the shared header does', () => {
-    const failed = toolCallFixture('switch_mode', { status: 'failed', result: { text: 'boom', format: 'plain' } })
+    const failed = toolCallFixture('switch_mode', {
+      status: 'failed',
+      result: { text: 'boom', format: 'plain' },
+    })
     expect(switchModeRenderer.outcomeTitle?.(parsedCall(failed))).toBe('Error')
   })
 

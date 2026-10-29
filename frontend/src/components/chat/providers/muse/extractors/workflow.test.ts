@@ -31,7 +31,11 @@ describe('museWorkflowResult', () => {
     expect(row.call.id).toBe(frame.params.item.itemId)
     expect(row.call.kind).toBe('other')
     expect(row.call.status).toBe('completed')
-    expect(row.call.result).toEqual({ content: [{ type: 'text', text: '{"marker":"MUSE_WORKFLOW_42"}' }] })
+    expect(row.call.result).toEqual({
+      content: [
+        { type: 'text', text: '{"marker":"MUSE_WORKFLOW_42"}' },
+      ],
+    })
     expect(JSON.stringify(frame)).toBe(MUSE_NATIVE_WORKFLOW_COMPLETE_FRAME)
   })
 
@@ -161,7 +165,11 @@ describe('museWorkflowResult', () => {
     })
     const call = providerToolCall(AgentProvider.MUSE_CODE, frame)
     expect(call?.status).toBe('completed')
-    expect(call?.result).toEqual({ content: [{ type: 'text', text: '' }] })
+    expect(call?.result).toEqual({
+      content: [
+        { type: 'text', text: '' },
+      ],
+    })
   })
 
   it.each([' \n Native text 文 \n ', '0'])('keeps computed output bytes without trimming them: %j', (summary) => {
@@ -175,7 +183,11 @@ describe('museWorkflowResult', () => {
     })
     const call = providerToolCall(AgentProvider.MUSE_CODE, frame)
     expect(call?.status).toBe('completed')
-    expect(call?.result).toEqual({ content: [{ type: 'text', text: summary }] })
+    expect(call?.result).toEqual({
+      content: [
+        { type: 'text', text: summary },
+      ],
+    })
   })
 
   it('returns no row for a stored active workflow', () => {

@@ -57,7 +57,16 @@ export function expectPngInRequest(request: Pick<MockModelRequestRecord, 'body' 
 /** The media type of an image part that `expectImageDataUriInRequest` can identify by the signature of its bytes. */
 export type ToolImageMediaType = 'image/png' | 'image/webp'
 
-const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A])
+const PNG_SIGNATURE = Buffer.from([
+  0x89,
+  0x50,
+  0x4E,
+  0x47,
+  0x0D,
+  0x0A,
+  0x1A,
+  0x0A,
+])
 
 /** Whether `bytes` start with the signature of `mediaType`: the PNG signature, or a RIFF chunk of the WEBP form. */
 function hasImageSignature(bytes: Buffer, mediaType: ToolImageMediaType): boolean {
@@ -75,7 +84,9 @@ function hasImageSignature(bytes: Buffer, mediaType: ToolImageMediaType): boolea
  */
 export function expectImageDataUriInRequest(request: Pick<MockModelRequestRecord, 'body' | 'protocol'>, mediaType: ToolImageMediaType): void {
   const dataUris = new RegExp(`data:${escapeRegExp(mediaType)};base64,([A-Za-z0-9+/]+=*)`, 'g')
-  const found = [...JSON.stringify(request.body).matchAll(dataUris)]
+  const found = [
+    ...JSON.stringify(request.body).matchAll(dataUris),
+  ]
     .some(match => hasImageSignature(Buffer.from(match[1] ?? '', 'base64'), mediaType))
   expect(found, `the ${request.protocol} model request carries the tool image as an image part of type ${mediaType}`).toBe(true)
 }
@@ -115,15 +126,24 @@ export async function runToolImageTurn(context: NativeScenarioContext, turn: Too
   if (!turn.workingDir)
     throw new Error('The tool image turn needs the working directory of the native agent.')
   const fileName = writeToolImage(turn.workingDir, turn.marker)
-  const image: ToolImage = { fileName, path: join(turn.workingDir, fileName) }
+  const image: ToolImage = {
+    fileName,
+    path: join(turn.workingDir, fileName),
+  }
   const call = turn.toolCall(image)
   const prompt = `Read ${fileName} and describe it.`
   const answer = `I inspected ${fileName}.`
   if (!turn.approve) {
-    const { resultRequest } = await runNativeToolTurn(context, { toolCalls: [call], prompt, answer })
+    const { resultRequest } = await runNativeToolTurn(context, {
+      toolCalls: [call],
+      prompt,
+      answer,
+    })
     return { ...image, resultRequest }
   }
-  const start = await context.modelScript.queue({ toolCalls: [call] }, nativeTextStep(context, answer))
+  const start = await context.modelScript.queue({
+    toolCalls: [call],
+  }, nativeTextStep(context, answer))
   await sendMessage(context.page, context.modelScript.prompt(prompt))
   await context.modelScript.waitForSteps(start + 1)
   await expect(await waitForControlBanner(context.page)).toContainText(fileName)
@@ -184,7 +204,14 @@ async function namedToolCall(page: Page, fileName: string): Promise<{ bubble: Lo
   const selector = await callSelector(page, callID)
   const chatContainer = await chatContainerForID(page, chatInstanceID)
   const bubble = chatContainer.locator(`[data-chat-scroll-container="true"]:visible [data-testid="message-bubble"]:visible${selector}[data-message-seq="${sequenceText}"][data-tool-row-role="${role}"]`).last()
-  return { bubble, chatContainer, callID, role, sequence: BigInt(sequenceText), status: identity.status ?? '' }
+  return {
+    bubble,
+    chatContainer,
+    callID,
+    role,
+    sequence: BigInt(sequenceText),
+    status: identity.status ?? '',
+  }
 }
 
 /** Use the browser's CSS parser to escape a native call ID for an attribute selector. */
@@ -220,7 +247,10 @@ async function readCallBubbles(chatContainer: Locator, selector: string): Promis
   return raw.map(({ sequence, role }) => {
     if (!sequence || !/^\d+$/.test(sequence))
       throw new Error('a tool bubble has no valid message sequence')
-    return { sequence: BigInt(sequence), role }
+    return {
+      sequence: BigInt(sequence),
+      role,
+    }
   })
 }
 
@@ -230,7 +260,9 @@ async function callSegment(page: Page, chatContainer: Locator, callID: string, r
   const rows = await readCallBubbles(chatContainer, selector)
   const nextRequest = rows
     .filter(row => row.role === 'request' && row.sequence > requestSequence)
-    .reduce<bigint | undefined>((next, row) => next === undefined || row.sequence < next ? row.sequence : next, undefined)
+    .reduce<bigint | undefined>((next, row) => next === undefined || row.sequence < next
+      ? row.sequence
+      : next, undefined)
   return {
     selector,
     rows: rows.filter(row => row.sequence >= requestSequence && (nextRequest === undefined || row.sequence < nextRequest)),
@@ -240,7 +272,9 @@ async function callSegment(page: Page, chatContainer: Locator, callID: string, r
 function firstResultSequence(rows: readonly CallBubble[], requestSequence: bigint): bigint | undefined {
   return rows
     .filter(row => row.role === 'result' && row.sequence > requestSequence)
-    .reduce<bigint | undefined>((first, row) => first === undefined || row.sequence < first ? row.sequence : first, undefined)
+    .reduce<bigint | undefined>((first, row) => first === undefined || row.sequence < first
+      ? row.sequence
+      : first, undefined)
 }
 
 const FINISHED_TOOL_STATUS_SET: ReadonlySet<string> = new Set(FINISHED_TOOL_STATUSES)
@@ -259,12 +293,16 @@ async function uniqueMatchingChat(page: Page, matchingRows: Locator): Promise<Lo
       return null
     return attached.map(bubble => bubble.closest('[data-testid="chat-container"]')?.getAttribute('data-chat-instance-id') ?? '')
   })
-  const chatIDs = [...new Set(rows)]
+  const chatIDs = [
+    ...new Set(rows),
+  ]
   if (chatIDs.includes(''))
     throw new Error('an MCP call row has no chat instance ID')
   if (chatIDs.length > 1)
     throw new Error('the MCP call ID matches rows in multiple visible chat tiles')
-  return chatIDs[0] ? chatContainerForID(page, chatIDs[0]) : null
+  return chatIDs[0]
+    ? chatContainerForID(page, chatIDs[0])
+    : null
 }
 
 /** The image in a named tool call, including its paired split result. */
@@ -284,10 +322,14 @@ export async function toolResultImageForName(page: Page, fileName: string): Prom
 export async function imagesForToolCall(page: Page, fileName: string): Promise<Locator> {
   const { chatContainer, callID, role, sequence } = await namedToolCall(page, fileName)
   const { selector, rows } = await callSegment(page, chatContainer, callID, sequence)
-  const resultSequence = role === 'request' ? firstResultSequence(rows, sequence) : sequence
-  const sequences = [...new Set(rows
-    .filter(row => row.sequence >= sequence && (resultSequence === undefined || row.sequence <= resultSequence))
-    .map(row => String(row.sequence)))]
+  const resultSequence = role === 'request'
+    ? firstResultSequence(rows, sequence)
+    : sequence
+  const sequences = [
+    ...new Set(rows
+      .filter(row => row.sequence >= sequence && (resultSequence === undefined || row.sequence <= resultSequence))
+      .map(row => String(row.sequence))),
+  ]
   if (sequences.length === 0)
     throw new Error('the named tool row left the active chat before its images were checked')
   const visibleSelectors = sequences.map(rowSequence => `[data-chat-scroll-container="true"]:visible [data-testid="message-bubble"]${selector}[data-message-seq="${rowSequence}"] button[aria-label="Open image"] img`)
@@ -309,7 +351,9 @@ export async function isNamedToolResultFinished(page: Page, fileName: string): P
     if (matches.length === 0)
       return ''
     const attached = matches.find(bubble => bubble.isConnected)
-    return attached ? attached.getAttribute('data-tool-status') ?? '' : null
+    return attached
+      ? attached.getAttribute('data-tool-status') ?? ''
+      : null
   })
   return FINISHED_TOOL_STATUS_SET.has(resultStatus)
 }
@@ -320,12 +364,16 @@ export async function mcpResultImage(page: Page, fileName: string, callID: strin
   const bubbleSelector = `[data-chat-scroll-container="true"]:visible [data-testid="message-bubble"]:visible${selector}`
   const startRows = page.locator(`${bubbleSelector}:is([data-tool-row-role="request"], [data-tool-row-role="update"])`)
   const resultRows = page.locator(bubbleSelector)
-    .filter({ has: page.getByText(`MCP image ${fileName}`, { exact: true }) })
+    .filter({
+      has: page.getByText(`MCP image ${fileName}`, { exact: true }),
+    })
   const chatContainer = await uniqueMatchingChat(page, startRows) ?? await uniqueMatchingChat(page, resultRows)
   if (!chatContainer)
     return noImage(page)
   const resultBubble = chatContainer.locator(bubbleSelector)
-    .filter({ has: page.getByText(`MCP image ${fileName}`, { exact: true }) })
+    .filter({
+      has: page.getByText(`MCP image ${fileName}`, { exact: true }),
+    })
     .last()
   const snapshot = await readAttached(resultBubble, 'the MCP image result', (matches, scrollerSelector) => {
     if (matches.length === 0)
@@ -335,9 +383,16 @@ export async function mcpResultImage(page: Page, fileName: string, callID: strin
       return null
     const scroller = attached.closest(scrollerSelector)
     const id = attached.getAttribute('data-tool-call-id')
-    if (!scroller || !id)
-      return { found: true, sequenceText: attached.getAttribute('data-message-seq'), latestStartText: null }
-    const sameCall = [...scroller.querySelectorAll(`[data-testid="message-bubble"][data-tool-call-id=${CSS.escape(id)}]`)]
+    if (!scroller || !id) {
+      return {
+        found: true,
+        sequenceText: attached.getAttribute('data-message-seq'),
+        latestStartText: null,
+      }
+    }
+    const sameCall = [
+      ...scroller.querySelectorAll(`[data-testid="message-bubble"][data-tool-call-id=${CSS.escape(id)}]`),
+    ]
     const requests = sameCall.filter(bubble => bubble.isConnected && bubble.getAttribute('data-tool-row-role') === 'request')
     const starts = requests.length > 0
       ? requests
@@ -354,7 +409,9 @@ export async function mcpResultImage(page: Page, fileName: string, callID: strin
     return {
       found: true,
       sequenceText: attached.getAttribute('data-message-seq'),
-      latestStartText: latestStart === null ? null : String(latestStart),
+      latestStartText: latestStart === null
+        ? null
+        : String(latestStart),
     }
   })
   if (!snapshot.found)
@@ -365,7 +422,9 @@ export async function mcpResultImage(page: Page, fileName: string, callID: strin
   if (snapshot.latestStartText !== null && BigInt(sequenceText) < BigInt(snapshot.latestStartText))
     return noImage(page)
   const stableResult = chatContainer.locator(`${bubbleSelector}[data-message-seq="${sequenceText}"]`)
-    .filter({ has: page.getByText(`MCP image ${fileName}`, { exact: true }) })
+    .filter({
+      has: page.getByText(`MCP image ${fileName}`, { exact: true }),
+    })
     .last()
   return imageInBubble(stableResult)
 }

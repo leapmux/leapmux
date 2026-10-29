@@ -15,8 +15,18 @@ deepseekHarnessTest('pauses the native goal driver and resumes its own second mo
   const secondGate = 'deepseek-goal-second'
   await withDeepseekHarnessGoalCleanup(native, owner, [firstGate, secondGate], async () => {
     await modelScript.rule(
-      { name: 'the first actual native goal round', when: { user: marker }, once: true, respond: { text: 'The first native goal round completed.', gate: firstGate } },
-      { name: 'the second actual native goal round', when: { user: marker }, once: true, respond: { text: 'The second native goal round completed.', gate: secondGate } },
+      {
+        name: 'the first actual native goal round',
+        when: { user: marker },
+        once: true,
+        respond: { text: 'The first native goal round completed.', gate: firstGate },
+      },
+      {
+        name: 'the second actual native goal round',
+        when: { user: marker },
+        once: true,
+        respond: { text: 'The second native goal round completed.', gate: secondGate },
+      },
     )
     await setGoal(page, scriptedObjective(modelScript, `Keep ${marker} until the operator clears it.`), async () => {
       await modelScript.waitForGate(firstGate)

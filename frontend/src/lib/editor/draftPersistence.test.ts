@@ -43,7 +43,9 @@ describe('draftPersistence', () => {
 
   it('persists metadata even when the draft text is empty', async () => {
     const name = `${PREFIX_COMPOSER_SCHEDULE_DRAFT}${AGENT}` as const
-    saveDraft(AGENT, '', -1, [{ name, value: '' }])
+    saveDraft(AGENT, '', -1, [
+      { name, value: '' },
+    ])
     expect(await localStorageLoad(name)).toBe('')
     expect(await localStorageLoad(`${PREFIX_EDITOR_DRAFT}${AGENT}`)).toBeUndefined()
   })

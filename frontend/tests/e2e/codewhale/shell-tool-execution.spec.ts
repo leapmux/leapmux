@@ -14,7 +14,9 @@ codewhaleTest.describe('Codewhale tool execution', () => {
     // can put it in a tool row. A command that printed its own text would match the
     // row's header whether or not the output reached the page.
     await runNativeToolTurn(native, {
-      toolCalls: [bashToolCall(native.provider, 'echo-call', 'echo "codewhale-$((40 + 2))"')],
+      toolCalls: [
+        bashToolCall(native.provider, 'echo-call', 'echo "codewhale-$((40 + 2))"'),
+      ],
       prompt: 'Run the arithmetic command and report what it printed.',
       answer: 'The command printed its number.',
     })
@@ -29,7 +31,9 @@ codewhaleTest.describe('Codewhale tool execution', () => {
     // A listing of a path that does not exist, which `ls` refuses. The runtime
     // fails the call and states the command's own error, with no exit code.
     await runNativeToolTurn(native, {
-      toolCalls: [bashToolCall(native.provider, 'ls-call', 'ls codewhale-missing-path')],
+      toolCalls: [
+        bashToolCall(native.provider, 'ls-call', 'ls codewhale-missing-path'),
+      ],
       prompt: 'List codewhale-missing-path and report the result.',
       answer: 'The listing failed.',
     })
@@ -45,5 +49,8 @@ codewhaleTest.describe('Codewhale tool execution', () => {
 codewhaleTest('preserves a literal private shell path with spaces and metacharacters', async ({ native }) => {
   // Codewhale fails the item of a command that exits nonzero, and wraps its output: `Failed to execute tool: `, the
   // output, then `Command exited with code N`. The row header states the code, and the body draws only the output.
-  await exerciseShellToolExecution(native, { prepare: () => applyPermissionPreset(native.page, 'bypass'), absentRowText: ['Failed to execute tool', 'Command exited with code'] })
+  await exerciseShellToolExecution(native, {
+    prepare: () => applyPermissionPreset(native.page, 'bypass'),
+    absentRowText: ['Failed to execute tool', 'Command exited with code'],
+  })
 })

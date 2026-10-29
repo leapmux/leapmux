@@ -133,7 +133,12 @@ export async function mintCLITokenForAdmin(source: CLITokenSource): Promise<CLIC
   // The required approval uses a browser ceremony. The fixture performs that ceremony for the CLI.
   await elevateMintedCredential(hubURL, bearer, cookie)
 
-  return { path: configDir, hubURL, bearer, userID }
+  return {
+    path: configDir,
+    hubURL,
+    bearer,
+    userID,
+  }
 }
 
 /** Run one setup step of mintCLITokenForAdmin, and name the step in its failure. */
@@ -331,7 +336,12 @@ function withHubFlag(args: string[], hubURL: string): string[] {
       break
     i++
   }
-  return [...args.slice(0, i), '--hub', hubURL, ...args.slice(i)]
+  return [
+    ...args.slice(0, i),
+    '--hub',
+    hubURL,
+    ...args.slice(i),
+  ]
 }
 
 /**
@@ -340,7 +350,15 @@ function withHubFlag(args: string[], hubURL: string): string[] {
  * Appending --hub after KEY and VALUE would make the Go parser treat it as another positional argument.
  */
 export async function setHubSetting(cfg: CLIConfigDir, key: string, value: string): Promise<void> {
-  await runCLI(cfg, ['admin', 'settings', 'set', '--hub', cfg.hubURL, key, value])
+  await runCLI(cfg, [
+    'admin',
+    'settings',
+    'set',
+    '--hub',
+    cfg.hubURL,
+    key,
+    value,
+  ])
 }
 
 /**
@@ -371,5 +389,7 @@ function hubHostForURL(hubURL: string): string {
   const host = url.hostname
   if (!host)
     throw new Error(`hubHostForURL: missing hostname in ${hubURL}`)
-  return url.port ? `${host}_${url.port}` : host
+  return url.port
+    ? `${host}_${url.port}`
+    : host
 }

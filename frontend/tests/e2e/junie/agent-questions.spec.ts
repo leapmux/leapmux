@@ -11,14 +11,16 @@ junieTest.describe('questions for Junie', () => {
     // The turn waits for approval. The next native model request must carry
     // the selected choice, while the scripted answer stays neutral.
     const { result } = await exerciseQuestionAnswer(native, {
-      questions: [{
-        question: 'Which one?',
-        header: 'Pick',
-        options: [
-          { label: 'First', description: 'The first choice.' },
-          { label: 'Second', description: 'The second choice.' },
-        ],
-      }],
+      questions: [
+        {
+          question: 'Which one?',
+          header: 'Pick',
+          options: [
+            { label: 'First', description: 'The first choice.' },
+            { label: 'Second', description: 'The second choice.' },
+          ],
+        },
+      ],
       callId: 'junie-question',
       prompt: 'Ask me which one.',
       answer: 'You picked.',
@@ -39,8 +41,24 @@ junieTest.describe('questions for Junie', () => {
 junieTest('returns multiple native form answers including multiple selection', async ({ native }) => {
   const { result } = await exerciseQuestionAnswer(native, {
     questions: [
-      { header: 'Color', question: 'Choose a native color.', options: [{ label: 'Blue', description: 'Use blue.' }, { label: 'Green', description: 'Use green.' }] },
-      { header: 'Size', question: 'Choose native sizes.', multiSelect: true, options: [{ label: 'Small', description: 'Use small.' }, { label: 'Medium', description: 'Use medium.' }, { label: 'Large', description: 'Use large.' }] },
+      {
+        header: 'Color',
+        question: 'Choose a native color.',
+        options: [
+          { label: 'Blue', description: 'Use blue.' },
+          { label: 'Green', description: 'Use green.' },
+        ],
+      },
+      {
+        header: 'Size',
+        question: 'Choose native sizes.',
+        multiSelect: true,
+        options: [
+          { label: 'Small', description: 'Use small.' },
+          { label: 'Medium', description: 'Use medium.' },
+          { label: 'Large', description: 'Use large.' },
+        ],
+      },
     ],
     reply: async (banner) => {
       await banner.getByRole('button', { name: /^Color/ }).click()
@@ -59,7 +77,16 @@ junieTest('returns multiple native form answers including multiple selection', a
 
 junieTest('returns a custom answer from its native elicitation form', async ({ native }) => {
   const { result } = await exerciseQuestionAnswer(native, {
-    questions: [{ header: 'Color', question: 'Choose a native color.', options: [{ label: 'Blue', description: 'Use blue.' }, { label: 'Green', description: 'Use green.' }] }],
+    questions: [
+      {
+        header: 'Color',
+        question: 'Choose a native color.',
+        options: [
+          { label: 'Blue', description: 'Use blue.' },
+          { label: 'Green', description: 'Use green.' },
+        ],
+      },
+    ],
     reply: async (banner) => {
       await banner.getByLabel('Other', { exact: true }).fill('Custom color 0 界')
       await controlButton(native.page, 'allow').click()
@@ -72,7 +99,16 @@ junieTest('returns a custom answer from its native elicitation form', async ({ n
 
 junieTest('cancels its native elicitation form without choosing an offered answer', async ({ native }) => {
   const { result } = await exerciseQuestionAnswer(native, {
-    questions: [{ header: 'Color', question: 'Choose a native color.', options: [{ label: 'Blue', description: 'Use blue.' }, { label: 'Green', description: 'Use green.' }] }],
+    questions: [
+      {
+        header: 'Color',
+        question: 'Choose a native color.',
+        options: [
+          { label: 'Blue', description: 'Use blue.' },
+          { label: 'Green', description: 'Use green.' },
+        ],
+      },
+    ],
     reply: async () => {
       await controlActions(native.page).getByTestId('control-more-actions').click()
       await native.page.getByTestId('control-cancel-btn').filter({ visible: true }).click()

@@ -20,7 +20,12 @@ describe('readTauriVersions', () => {
     expect(Object.keys(versions.npm).every(name => /^@tauri-apps\/[^/]+$/.test(name))).toBe(true)
   })
   it('keeps nested package identities out of direct pairs and preserves every locked version', () => {
-    const versions = tauriVersions(JSON.stringify({ packages: { '@tauri-apps/api': ['@tauri-apps/api@2.11.1'], '@tauri-apps/plugin-clipboard-manager/@tauri-apps/api': ['@tauri-apps/api@2.10.1'] } }), '[[package]]\nname = "tauri"\nversion = "2.11.3"\n', '[dependencies]\ntauri = "2"\n')
+    const versions = tauriVersions(JSON.stringify({
+      packages: {
+        '@tauri-apps/api': ['@tauri-apps/api@2.11.1'],
+        '@tauri-apps/plugin-clipboard-manager/@tauri-apps/api': ['@tauri-apps/api@2.10.1'],
+      },
+    }), '[[package]]\nname = "tauri"\nversion = "2.11.3"\n', '[dependencies]\ntauri = "2"\n')
     expect(versions.npm).toEqual({ '@tauri-apps/api': '2.11.1' })
     expect(versions.occurrences.npm['@tauri-apps/api']).toEqual(['2.10.1', '2.11.1'])
   })
@@ -32,15 +37,37 @@ function tauriFixture({ core = false, proposedCore = '2.11.0' } = {}) {
   fixtures.push(fixture)
   const trusted = resolve(fixture, 'trusted')
   const proposed = resolve(fixture, 'proposed')
-  const lock = (version, coreVersion = '2.11.0') => JSON.stringify({ packages: { ...(core ? { '@tauri-apps/api': [`@tauri-apps/api@${coreVersion.replace(/^[~^=]/, '')}`] } : {}), '@tauri-apps/plugin-opener': [`@tauri-apps/plugin-opener@${version.replace(/^[~^=]/, '')}`] } })
+  const lock = (version, coreVersion = '2.11.0') => JSON.stringify({
+    packages: {
+      ...(core
+        ? {
+            '@tauri-apps/api': [`@tauri-apps/api@${coreVersion.replace(/^[~^=]/, '')}`],
+          }
+        : {}),
+      '@tauri-apps/plugin-opener': [`@tauri-apps/plugin-opener@${version.replace(/^[~^=]/, '')}`],
+    },
+  })
   for (const directory of [trusted, proposed]) {
     mkdirSync(resolve(directory, 'frontend'), { recursive: true })
     mkdirSync(resolve(directory, 'desktop/rust'), { recursive: true })
     mkdirSync(resolve(directory, '.tmp'))
     writeFileSync(resolve(directory, 'frontend/bun.lock'), lock('2.5.0'))
-    writeFileSync(resolve(directory, 'frontend/package.json'), JSON.stringify({ dependencies: { ...(core ? { '@tauri-apps/api': '^2.11.0' } : {}), '@tauri-apps/plugin-opener': '^2.5.0' } }))
+    writeFileSync(resolve(directory, 'frontend/package.json'), JSON.stringify({
+      dependencies: {
+        ...(core
+          ? { '@tauri-apps/api': '^2.11.0' }
+          : {}),
+        '@tauri-apps/plugin-opener': '^2.5.0',
+      },
+    }))
     writeFileSync(resolve(directory, 'desktop/rust/Cargo.toml'), `[dependencies]\n${core ? 'tauri = "2"\n' : ''}tauri-plugin-opener = "2"\n`)
-    writeFileSync(resolve(directory, 'desktop/rust/Cargo.lock'), `${core ? `[[package]]\nname = "tauri"\nversion = "${directory === trusted ? '2.11.0' : proposedCore}"\n` : ''}[[package]]\nname = "tauri-plugin-opener"\nversion = "${directory === trusted ? '2.5.0' : '2.6.0'}"\n`)
+    writeFileSync(resolve(directory, 'desktop/rust/Cargo.lock'), `${core
+      ? `[[package]]\nname = "tauri"\nversion = "${directory === trusted
+        ? '2.11.0'
+        : proposedCore}"\n`
+      : ''}[[package]]\nname = "tauri-plugin-opener"\nversion = "${directory === trusted
+      ? '2.5.0'
+      : '2.6.0'}"\n`)
   }
   writeFileSync(resolve(trusted, '.tmp/renovate-prepared.json'), JSON.stringify({ alerts: [] }))
   writeFileSync(resolve(trusted, 'renovate.json'), readFileSync(resolve(root, 'renovate.json')))
@@ -50,15 +77,42 @@ function tauriFixture({ core = false, proposedCore = '2.11.0' } = {}) {
 describe('reconcileTauri', () => {
   it('does not modify an earlier pair when a later pair has no compatible target', async () => {
     const { proposed, trusted } = tauriFixture({ core: true, proposedCore: '2.12.0' })
-    const files = ['frontend/package.json', 'frontend/bun.lock', 'desktop/rust/Cargo.toml', 'desktop/rust/Cargo.lock']
+    const files = [
+      'frontend/package.json',
+      'frontend/bun.lock',
+      'desktop/rust/Cargo.toml',
+      'desktop/rust/Cargo.lock',
+    ]
     const before = files.map(file => readFileSync(resolve(proposed, file), 'utf8'))
     const publishedAt = new Date(Date.now() - 4 * 86400000).toISOString()
     const calls = []
-    await expect(reconcileTauri({ root: proposed, trusted, upgrades: [{ depName: 'tauri', newVersion: '2.12.0' }, { depName: 'tauri-plugin-opener', newVersion: '2.6.0' }], request: async url => Response.json(url.includes('/dependencies')
-      ? { dependencies: [] }
-      : url.includes('registry.npmjs.org')
-        ? { time: url.includes('plugin-opener') ? {} : { '2.12.0': publishedAt } }
-        : { versions: [{ num: url.includes('plugin-opener') ? '2.6.0' : '2.12.0', created_at: publishedAt }] }), run: (...args) => calls.push(args) })).rejects.toThrow('compatible')
+    await expect(reconcileTauri({
+      root: proposed,
+      trusted,
+      upgrades: [
+        { depName: 'tauri', newVersion: '2.12.0' },
+        { depName: 'tauri-plugin-opener', newVersion: '2.6.0' },
+      ],
+      request: async url => Response.json(url.includes('/dependencies')
+        ? { dependencies: [] }
+        : url.includes('registry.npmjs.org')
+          ? {
+              time: url.includes('plugin-opener')
+                ? {}
+                : { '2.12.0': publishedAt },
+            }
+          : {
+              versions: [
+                {
+                  num: url.includes('plugin-opener')
+                    ? '2.6.0'
+                    : '2.12.0',
+                  created_at: publishedAt,
+                },
+              ],
+            }),
+      run: (...args) => calls.push(args),
+    })).rejects.toThrow('compatible')
     expect(files.map(file => readFileSync(resolve(proposed, file), 'utf8'))).toEqual(before)
     expect(calls).toEqual([])
   })
@@ -70,13 +124,33 @@ describe('reconcileTauri', () => {
     const response = url => Response.json(url.includes('/dependencies')
       ? { dependencies: [] }
       : url.includes('registry.npmjs.org')
-        ? { time: { [url.includes('plugin-opener') ? '2.6.0' : '2.12.0']: publishedAt } }
-        : { versions: [{ num: url.includes('plugin-opener') ? '2.6.0' : '2.12.0', created_at: publishedAt }] })
-    const running = reconcileTauri({ root: proposed, trusted, request: url => released ? response(url) : new Promise(resolve => pending.push({ url, resolve })), run: (command) => {
-      expect(command).toBe('bun')
-      const manifest = JSON.parse(readFileSync(resolve(proposed, 'frontend/package.json'), 'utf8'))
-      writeFileSync(resolve(proposed, 'frontend/bun.lock'), lock(manifest.dependencies['@tauri-apps/plugin-opener'], manifest.dependencies['@tauri-apps/api']))
-    } })
+        ? {
+            time: { [url.includes('plugin-opener')
+              ? '2.6.0'
+              : '2.12.0']: publishedAt },
+          }
+        : {
+            versions: [
+              {
+                num: url.includes('plugin-opener')
+                  ? '2.6.0'
+                  : '2.12.0',
+                created_at: publishedAt,
+              },
+            ],
+          })
+    const running = reconcileTauri({
+      root: proposed,
+      trusted,
+      request: url => released
+        ? response(url)
+        : new Promise(resolve => pending.push({ url, resolve })),
+      run: (command) => {
+        expect(command).toBe('bun')
+        const manifest = JSON.parse(readFileSync(resolve(proposed, 'frontend/package.json'), 'utf8'))
+        writeFileSync(resolve(proposed, 'frontend/bun.lock'), lock(manifest.dependencies['@tauri-apps/plugin-opener'], manifest.dependencies['@tauri-apps/api']))
+      },
+    })
     await Promise.resolve()
     const simultaneous = pending.length
     released = true
@@ -88,24 +162,51 @@ describe('reconcileTauri', () => {
     const { proposed, trusted, lock } = tauriFixture({ core: true })
     const publishedAt = new Date(Date.now() - 4 * 86400000).toISOString()
     const request = async url => Response.json(url.includes('/dependencies')
-      ? { dependencies: url.includes('plugin-opener') ? [{ crate_id: 'tauri', req: '2.12', kind: 'normal', optional: false }] : [] }
+      ? {
+          dependencies: url.includes('plugin-opener')
+            ? [
+                {
+                  crate_id: 'tauri',
+                  req: '2.12',
+                  kind: 'normal',
+                  optional: false,
+                },
+              ]
+            : [],
+        }
       : url.includes('registry.npmjs.org')
-        ? { time: Object.fromEntries((url.includes('plugin-opener') ? ['2.7.0'] : ['2.11.0', '2.12.0']).map(version => [version, publishedAt])) }
-        : { versions: (url.includes('plugin-opener') ? ['2.6.0', '2.7.0'] : ['2.11.0', '2.12.0']).map(num => ({ num, created_at: publishedAt })) })
+        ? {
+            time: Object.fromEntries((url.includes('plugin-opener')
+              ? ['2.7.0']
+              : ['2.11.0', '2.12.0']).map(version => [version, publishedAt])),
+          }
+        : {
+            versions: (url.includes('plugin-opener')
+              ? ['2.6.0', '2.7.0']
+              : ['2.11.0', '2.12.0']).map(num => ({ num, created_at: publishedAt })),
+          })
     const calls = []
-    await reconcileTauri({ root: proposed, trusted, upgrades: [{ depName: 'tauri-plugin-opener', newVersion: '2.6.0' }], request, run: (command, args) => {
-      calls.push(command)
-      if (command === 'cargo') {
-        expect(args).toEqual(['update', '--workspace'])
-        expect(Bun.TOML.parse(readFileSync(resolve(proposed, 'desktop/rust/Cargo.toml'), 'utf8')).dependencies).toEqual({ 'tauri': '=2.12.0', 'tauri-plugin-opener': '=2.7.0' })
-        writeFileSync(resolve(proposed, 'desktop/rust/Cargo.lock'), '[[package]]\nname = "tauri"\nversion = "2.12.0"\n[[package]]\nname = "tauri-plugin-opener"\nversion = "2.7.0"\n')
-      }
-      else {
-        expect(command).toBe('bun')
-        const manifest = JSON.parse(readFileSync(resolve(proposed, 'frontend/package.json'), 'utf8'))
-        writeFileSync(resolve(proposed, 'frontend/bun.lock'), lock(manifest.dependencies['@tauri-apps/plugin-opener'], manifest.dependencies['@tauri-apps/api']))
-      }
-    } })
+    await reconcileTauri({
+      root: proposed,
+      trusted,
+      upgrades: [
+        { depName: 'tauri-plugin-opener', newVersion: '2.6.0' },
+      ],
+      request,
+      run: (command, args) => {
+        calls.push(command)
+        if (command === 'cargo') {
+          expect(args).toEqual(['update', '--workspace'])
+          expect(Bun.TOML.parse(readFileSync(resolve(proposed, 'desktop/rust/Cargo.toml'), 'utf8')).dependencies).toEqual({ 'tauri': '=2.12.0', 'tauri-plugin-opener': '=2.7.0' })
+          writeFileSync(resolve(proposed, 'desktop/rust/Cargo.lock'), '[[package]]\nname = "tauri"\nversion = "2.12.0"\n[[package]]\nname = "tauri-plugin-opener"\nversion = "2.7.0"\n')
+        }
+        else {
+          expect(command).toBe('bun')
+          const manifest = JSON.parse(readFileSync(resolve(proposed, 'frontend/package.json'), 'utf8'))
+          writeFileSync(resolve(proposed, 'frontend/bun.lock'), lock(manifest.dependencies['@tauri-apps/plugin-opener'], manifest.dependencies['@tauri-apps/api']))
+        }
+      },
+    })
     const manifest = JSON.parse(readFileSync(resolve(proposed, 'frontend/package.json'), 'utf8'))
     expect(manifest.dependencies['@tauri-apps/api']).toBe('2.12.0')
     expect(manifest.dependencies['@tauri-apps/plugin-opener']).toBe('2.7.0')
@@ -113,53 +214,108 @@ describe('reconcileTauri', () => {
   })
   it('rejects a prepared security target that remains inside another affected range before writing', async () => {
     const { proposed, trusted } = tauriFixture()
-    const vulnerability = { package: { name: 'tauri-plugin-opener', ecosystem: 'rust' }, vulnerable_version_range: '>= 2.6.0, < 2.6.2', first_patched_version: { identifier: '2.6.2' } }
-    writeFileSync(resolve(trusted, '.tmp/renovate-prepared.json'), JSON.stringify({ alerts: [{ state: 'open', dependency: { manifest_path: 'desktop/rust/Cargo.lock' }, security_vulnerability: vulnerability }], securityTargets: { '@tauri-apps/plugin-opener': '2.6.3', 'tauri-plugin-opener': '2.6.0' } }))
+    const vulnerability = {
+      package: { name: 'tauri-plugin-opener', ecosystem: 'rust' },
+      vulnerable_version_range: '>= 2.6.0, < 2.6.2',
+      first_patched_version: { identifier: '2.6.2' },
+    }
+    writeFileSync(resolve(trusted, '.tmp/renovate-prepared.json'), JSON.stringify({
+      alerts: [
+        {
+          state: 'open',
+          dependency: { manifest_path: 'desktop/rust/Cargo.lock' },
+          security_vulnerability: vulnerability,
+        },
+      ],
+      securityTargets: { '@tauri-apps/plugin-opener': '2.6.3', 'tauri-plugin-opener': '2.6.0' },
+    }))
     const before = readFileSync(resolve(proposed, 'frontend/package.json'), 'utf8')
-    await expect(reconcileTauri({ root: proposed, trusted, security: true, request: async () => {
-      throw new Error('Unexpected request.')
-    }, run: () => {
-      throw new Error('Unexpected execution.')
-    } })).rejects.toThrow('vulnerable')
+    await expect(reconcileTauri({
+      root: proposed,
+      trusted,
+      security: true,
+      request: async () => {
+        throw new Error('Unexpected request.')
+      },
+      run: () => {
+        throw new Error('Unexpected execution.')
+      },
+    })).rejects.toThrow('vulnerable')
     expect(readFileSync(resolve(proposed, 'frontend/package.json'), 'utf8')).toBe(before)
   })
   it('adds an exact JavaScript companion when Cargo moves to a new minor', async () => {
     const { proposed, trusted, lock } = tauriFixture()
     const publishedAt = new Date(Date.now() - 4 * 86400000).toISOString()
-    await reconcileTauri({ root: proposed, trusted, request: async url => Response.json(url.includes('/dependencies')
-      ? { dependencies: [] }
-      : url.includes('registry.npmjs.org')
-        ? { time: { '2.5.0': publishedAt, '2.6.3': publishedAt } }
-        : { versions: [{ num: '2.5.0', created_at: publishedAt }, { num: '2.6.0', created_at: publishedAt }] }), run: (command, args) => {
-      expect(command).toBe('bun')
-      expect(args).toEqual(['install', '--ignore-scripts'])
-      const manifest = JSON.parse(readFileSync(resolve(proposed, 'frontend/package.json'), 'utf8'))
-      expect(manifest.dependencies['@tauri-apps/plugin-opener']).toBe('2.6.3')
-      writeFileSync(resolve(proposed, 'frontend/bun.lock'), lock(manifest.dependencies['@tauri-apps/plugin-opener']))
-    } })
+    await reconcileTauri({
+      root: proposed,
+      trusted,
+      request: async url => Response.json(url.includes('/dependencies')
+        ? { dependencies: [] }
+        : url.includes('registry.npmjs.org')
+          ? {
+              time: { '2.5.0': publishedAt, '2.6.3': publishedAt },
+            }
+          : {
+              versions: [
+                { num: '2.5.0', created_at: publishedAt },
+                { num: '2.6.0', created_at: publishedAt },
+              ],
+            }),
+      run: (command, args) => {
+        expect(command).toBe('bun')
+        expect(args).toEqual(['install', '--ignore-scripts'])
+        const manifest = JSON.parse(readFileSync(resolve(proposed, 'frontend/package.json'), 'utf8'))
+        expect(manifest.dependencies['@tauri-apps/plugin-opener']).toBe('2.6.3')
+        writeFileSync(resolve(proposed, 'frontend/bun.lock'), lock(manifest.dependencies['@tauri-apps/plugin-opener']))
+      },
+    })
     const versions = tauriVersions(readFileSync(resolve(proposed, 'frontend/bun.lock'), 'utf8'), readFileSync(resolve(proposed, 'desktop/rust/Cargo.lock'), 'utf8'))
     expect(() => assertTauriCompatibility(versions)).not.toThrow()
   })
   it('does not downgrade an explicit proposal to an older compatible minor', async () => {
     const { proposed, trusted } = tauriFixture()
     const publishedAt = new Date(Date.now() - 4 * 86400000).toISOString()
-    await expect(reconcileTauri({ root: proposed, trusted, upgrades: [{ depName: 'tauri-plugin-opener', newVersion: '2.6.0' }], request: async url => Response.json(url.includes('/dependencies')
-      ? { dependencies: [] }
-      : url.includes('registry.npmjs.org')
-        ? { time: { '2.5.0': publishedAt } }
-        : { versions: [{ num: '2.5.0', created_at: publishedAt }, { num: '2.6.0', created_at: publishedAt }] }), run: () => { throw new Error('Unexpected mutation.') } })).rejects.toThrow('No compatible Tauri graph')
+    await expect(reconcileTauri({
+      root: proposed,
+      trusted,
+      upgrades: [
+        { depName: 'tauri-plugin-opener', newVersion: '2.6.0' },
+      ],
+      request: async url => Response.json(url.includes('/dependencies')
+        ? { dependencies: [] }
+        : url.includes('registry.npmjs.org')
+          ? {
+              time: { '2.5.0': publishedAt },
+            }
+          : {
+              versions: [
+                { num: '2.5.0', created_at: publishedAt },
+                { num: '2.6.0', created_at: publishedAt },
+              ],
+            }),
+      run: () => { throw new Error('Unexpected mutation.') },
+    })).rejects.toThrow('No compatible Tauri graph')
   })
   it('uses the prepared security pair without choosing a different release during execution', async () => {
     const { proposed, trusted, lock } = tauriFixture()
-    writeFileSync(resolve(trusted, '.tmp/renovate-prepared.json'), JSON.stringify({ alerts: [], securityTargets: { '@tauri-apps/plugin-opener': '2.6.3', 'tauri-plugin-opener': '2.6.0' } }))
-    await reconcileTauri({ root: proposed, trusted, security: true, request: async () => {
-      throw new Error('Unexpected registry read.')
-    }, run: (command) => {
-      expect(command).toBe('bun')
-      const manifest = JSON.parse(readFileSync(resolve(proposed, 'frontend/package.json'), 'utf8'))
-      expect(manifest.dependencies['@tauri-apps/plugin-opener']).toBe('2.6.3')
-      writeFileSync(resolve(proposed, 'frontend/bun.lock'), lock(manifest.dependencies['@tauri-apps/plugin-opener']))
-    } })
+    writeFileSync(resolve(trusted, '.tmp/renovate-prepared.json'), JSON.stringify({
+      alerts: [],
+      securityTargets: { '@tauri-apps/plugin-opener': '2.6.3', 'tauri-plugin-opener': '2.6.0' },
+    }))
+    await reconcileTauri({
+      root: proposed,
+      trusted,
+      security: true,
+      request: async () => {
+        throw new Error('Unexpected registry read.')
+      },
+      run: (command) => {
+        expect(command).toBe('bun')
+        const manifest = JSON.parse(readFileSync(resolve(proposed, 'frontend/package.json'), 'utf8'))
+        expect(manifest.dependencies['@tauri-apps/plugin-opener']).toBe('2.6.3')
+        writeFileSync(resolve(proposed, 'frontend/bun.lock'), lock(manifest.dependencies['@tauri-apps/plugin-opener']))
+      },
+    })
   })
 })
 
@@ -196,14 +352,36 @@ describe('assertTauriCompatibility', () => {
   })
   it('checks core and plugin pairs while permitting independent CLI and Rust-only plugin versions', () => {
     const npm = { '@tauri-apps/api': '2.11.1', '@tauri-apps/plugin-opener': '2.5.4', '@tauri-apps/cli': '2.13.0' }
-    const cargo = { 'tauri': '2.11.9', 'tauri-plugin-opener': '2.5.2', 'tauri-build': '2.9.0', 'tauri-plugin-dialog': '2.8.0' }
+    const cargo = {
+      'tauri': '2.11.9',
+      'tauri-plugin-opener': '2.5.2',
+      'tauri-build': '2.9.0',
+      'tauri-plugin-dialog': '2.8.0',
+    }
     expect(() => assertTauriCompatibility({ npm, cargo })).not.toThrow()
-    expect(() => assertTauriCompatibility({ npm, cargo: { ...cargo, 'tauri-plugin-opener': '2.6.0' } })).toThrow('mismatch')
-    expect(() => assertTauriCompatibility({ npm: { ...npm, '@tauri-apps/api': '3.11.1' }, cargo })).toThrow('mismatch')
+    expect(() => assertTauriCompatibility({
+      npm,
+      cargo: { ...cargo, 'tauri-plugin-opener': '2.6.0' },
+    })).toThrow('mismatch')
+    expect(() => assertTauriCompatibility({
+      npm: { ...npm, '@tauri-apps/api': '3.11.1' },
+      cargo,
+    })).toThrow('mismatch')
   })
   it('extracts actual resolved versions from both lockfile formats', () => {
     const result = tauriVersions('{ "packages": { "@tauri-apps/api": ["@tauri-apps/api@2.11.1", "", {}, "hash"], }, }', '[[package]]\nname = "tauri"\nversion = "2.11.3"\n')
-    expect(result).toEqual({ npm: { '@tauri-apps/api': '2.11.1' }, cargo: { tauri: '2.11.3' }, occurrences: { npm: { '@tauri-apps/api': ['2.11.1'] }, cargo: { tauri: ['2.11.3'] } } })
+    expect(result).toEqual({
+      npm: { '@tauri-apps/api': '2.11.1' },
+      cargo: { tauri: '2.11.3' },
+      occurrences: {
+        npm: {
+          '@tauri-apps/api': ['2.11.1'],
+        },
+        cargo: {
+          tauri: ['2.11.3'],
+        },
+      },
+    })
   })
   it('uses the direct Cargo requirement when another major exists transitively', () => {
     const bun = '{ "packages": { "@tauri-apps/api": ["@tauri-apps/api@2.11.1"] } }'

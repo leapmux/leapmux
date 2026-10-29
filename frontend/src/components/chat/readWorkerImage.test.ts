@@ -5,7 +5,9 @@ import { MAX_FILE_IMAGE_BYTES } from '~/lib/imageBlocks'
 import { pngBase64 } from '~/test-support/pngFixture'
 import { readWorkerImage } from './readWorkerImage'
 
-vi.mock('~/api/workerRpc', () => ({ readFile: vi.fn() }))
+vi.mock('~/api/workerRpc', () => ({
+  readFile: vi.fn(),
+}))
 const read = vi.mocked(readFile)
 const data = pngBase64(12, 8)
 const content = base64ToUint8Array(data)
@@ -27,9 +29,18 @@ describe('worker image reads', () => {
   it('reads a complete image once and supplies its MIME type and dimensions', async () => {
     read.mockResolvedValue(response())
     const image = await readWorkerImage('worker', '/image', undefined, signal)
-    expect(image).toMatchObject({ filePath: '/image', mimeType: 'image/png', data, dimensions: { width: 12, height: 8 } })
+    expect(image).toMatchObject({
+      filePath: '/image',
+      mimeType: 'image/png',
+      data,
+      dimensions: { width: 12, height: 8 },
+    })
     expect(read).toHaveBeenCalledOnce()
-    expect(read).toHaveBeenCalledWith('worker', expect.objectContaining({ path: '/image', limit: BigInt(MAX_FILE_IMAGE_BYTES), metaOnlyIfTruncated: true }), { signal })
+    expect(read).toHaveBeenCalledWith('worker', expect.objectContaining({
+      path: '/image',
+      limit: BigInt(MAX_FILE_IMAGE_BYTES),
+      metaOnlyIfTruncated: true,
+    }), { signal })
   })
 
   it.each([
@@ -50,13 +61,24 @@ describe('worker image reads', () => {
       return response(content.slice(offset, offset + 8))
     })
     expect((await readWorkerImage('worker', '/image.png', undefined, signal)).data).toBe(data)
-    expect(read.mock.calls.slice(1).map(call => Number(call[1].offset))).toEqual(Array.from({ length: Math.ceil(content.length / 8) }, (_, index) => index * 8))
+    expect(read.mock.calls.slice(1).map(call => Number(call[1].offset))).toEqual(Array.from({
+      length: Math.ceil(content.length / 8),
+    }, (_, index) => index * 8))
   })
 
   it.each([
-    [response(new Uint8Array(), BigInt(MAX_FILE_IMAGE_BYTES + 1)), 'too large'],
-    [response(new Uint8Array(), 0n), 'empty'],
-    [response(content, -1n), 'invalid size'],
+    [
+      response(new Uint8Array(), BigInt(MAX_FILE_IMAGE_BYTES + 1)),
+      'too large',
+    ],
+    [
+      response(new Uint8Array(), 0n),
+      'empty',
+    ],
+    [
+      response(content, -1n),
+      'invalid size',
+    ],
   ])('rejects unusable file metadata', async (value, reason) => {
     read.mockResolvedValue(value)
     await expect(readWorkerImage('worker', '/image.png', undefined, signal)).rejects.toThrow(reason)

@@ -15,25 +15,46 @@ qwenTest.describe('Qwen Code tool execution', () => {
   // YOLO, so no permission request stands between the scripted calls and the
   // rows this test reads. `qwen-code/permissions.spec.ts` covers the requests.
   qwenTest('runs a command, an edit with its diff, a read and a to-do list', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, QWEN_AGENT, { optionValues: { [OPTION_ID_PERMISSION_MODE]: 'yolo' } })
+    const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, QWEN_AGENT, {
+      optionValues: { [OPTION_ID_PERMISSION_MODE]: 'yolo' },
+    })
     const note = join(createNativeToolDirectory(workingDir), 'note.txt')
     writeFileSync(note, 'qwen-before\n')
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await expectSettingsChip(page, 'YOLO')
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
 
     // The read comes first: Qwen refuses to edit a file this session has not read.
     const start = await runNativeToolSteps(context, {
       steps: [
-        { toolCalls: [bashToolCall(context.provider, 'qwen-shell', 'echo "qwen-$((40 + 2))"')] },
-        { toolCalls: [readToolCall(context.provider, 'qwen-read', note)] },
-        { toolCalls: [editToolCall(context.provider, 'qwen-edit', { path: note, before: 'qwen-before', after: 'qwen-after' })] },
         {
-          toolCalls: [updateTodosToolCall(context.provider, 'qwen-todos', [
-            { step: 'Run the shell command', status: 'completed' },
-            { step: 'Edit the note', status: 'completed' },
-            { step: 'Report the result', status: 'in_progress' },
-          ])],
+          toolCalls: [
+            bashToolCall(context.provider, 'qwen-shell', 'echo "qwen-$((40 + 2))"'),
+          ],
+        },
+        {
+          toolCalls: [
+            readToolCall(context.provider, 'qwen-read', note),
+          ],
+        },
+        {
+          toolCalls: [
+            editToolCall(context.provider, 'qwen-edit', { path: note, before: 'qwen-before', after: 'qwen-after' }),
+          ],
+        },
+        {
+          toolCalls: [
+            updateTodosToolCall(context.provider, 'qwen-todos', [
+              { step: 'Run the shell command', status: 'completed' },
+              { step: 'Edit the note', status: 'completed' },
+              { step: 'Report the result', status: 'in_progress' },
+            ]),
+          ],
         },
       ],
       prompt: 'Run the four scripted tools, then report.',

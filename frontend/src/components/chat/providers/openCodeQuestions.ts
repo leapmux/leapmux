@@ -66,7 +66,9 @@ export function sendOpenCodeQuestionResponse(
     if (selected.length > 0)
       return selected
     const customText = answerState.customTexts()[index]?.trim()
-    return customText ? [customText] : []
+    return customText
+      ? [customText]
+      : []
   })
   return sendJsonRpcResult(onRespond, requestId, { [OPENCODE_ANSWER_FIELD.Answers]: answers })
 }

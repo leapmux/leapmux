@@ -9,19 +9,43 @@ import { ampExtractRow } from './row'
 import '~/components/chat/providers'
 
 const provider = AgentProvider.AMP
-const noSpan: ToolSpanContext = { request: undefined, result: undefined, role: 'result', visibleRows: { request: false, result: true } }
-
-function extract(parent: Record<string, unknown>, kind: string, span: ToolSpanContext = noSpan) {
-  const resolved = resolveMessageForRendering({ rawText: '', topLevel: parent, parentObject: parent, wrapper: null }, provider)
-  return ampExtractRow({ category: { kind } as never, resolved, span })
+const noSpan: ToolSpanContext = {
+  request: undefined,
+  result: undefined,
+  role: 'result',
+  visibleRows: { request: false, result: true },
 }
 
-const assistant = (content: unknown[]) => ({ type: 'assistant', message: { role: 'assistant', content }, session_id: 'T-1' })
+function extract(parent: Record<string, unknown>, kind: string, span: ToolSpanContext = noSpan) {
+  const resolved = resolveMessageForRendering({
+    rawText: '',
+    topLevel: parent,
+    parentObject: parent,
+    wrapper: null,
+  }, provider)
+  return ampExtractRow({
+    category: { kind } as never,
+    resolved,
+    span,
+  })
+}
+
+function assistant(content: unknown[]) {
+  return {
+    type: 'assistant',
+    message: { role: 'assistant', content },
+    session_id: 'T-1',
+  }
+}
 
 describe('ampExtractRow', () => {
   it('reads the text and the thinking of an assistant row', () => {
-    expect(extract(assistant([{ type: 'text', text: 'done' }]), 'assistant_text')).toEqual({ kind: 'assistant-text', text: 'done' })
-    expect(extract(assistant([{ type: 'thinking', thinking: '**Planning**' }]), 'assistant_thinking')).toEqual({ kind: 'assistant-thinking', text: '**Planning**' })
+    expect(extract(assistant([
+      { type: 'text', text: 'done' },
+    ]), 'assistant_text')).toEqual({ kind: 'assistant-text', text: 'done' })
+    expect(extract(assistant([
+      { type: 'thinking', thinking: '**Planning**' },
+    ]), 'assistant_thinking')).toEqual({ kind: 'assistant-thinking', text: '**Planning**' })
     expect(extract(assistant([]), 'assistant_text')).toEqual({ kind: 'hidden' })
   })
 
@@ -38,20 +62,28 @@ describe('ampExtractRow', () => {
     const mine = input(ampToolUseRow('shell_command', { command: 'printf a' }, 'TU-a'), undefined, provider)
     const sibling = input(ampToolUseRow('shell_command', { command: 'printf b' }, 'TU-b'), undefined, provider)
     const paired = extract(result, 'tool_result', { ...noSpan, request: mine })
-    expect(paired?.kind === 'tool' ? paired.call.request : null).toMatchObject({ command: 'printf a' })
+    expect(paired?.kind === 'tool'
+      ? paired.call.request
+      : null).toMatchObject({ command: 'printf a' })
     const unpaired = extract(result, 'tool_result', { ...noSpan, request: sibling })
     // A result whose call the store did not resolve draws as a tool with no name.
-    expect(unpaired?.kind === 'tool' ? unpaired.call.kind : null).toBe('mcp')
+    expect(unpaired?.kind === 'tool'
+      ? unpaired.call.kind
+      : null).toBe('mcp')
   })
 
   it('draws a running call as the request side, and its landed result on it', () => {
     const call = ampToolUseRow('shell_command', { command: 'ls' }, 'TU-a')
     const running = extract(call, 'tool_use', { ...noSpan, role: 'request' })
     expect(running).toMatchObject({ kind: 'tool', role: 'request' })
-    expect(running?.kind === 'tool' ? running.call.status : null).toBe('unstated')
+    expect(running?.kind === 'tool'
+      ? running.call.status
+      : null).toBe('unstated')
     const landed = input(ampToolResultRow('{"output":"x","exitCode":0}', false, 'TU-a'), undefined, provider)
     const answered = extract(call, 'tool_use', { ...noSpan, role: 'request', result: landed })
-    expect(answered?.kind === 'tool' ? answered.call.status : null).toBe('completed')
+    expect(answered?.kind === 'tool'
+      ? answered.call.status
+      : null).toBe('completed')
   })
 
   it('answers null for a tool category on a row that is not a tool row', () => {
@@ -67,9 +99,18 @@ describe('amp tool rows', () => {
   it('reads a call that a stopped turn left behind as cancelled', () => {
     const call = providerToolCall(provider, ampToolUseRow('shell_command', { command: 'sleep 40' }), { role: 'result' })
     expect(call?.status).toBe('unstated')
-    const retained = resolveMessageForRendering({ ...input(ampToolUseRow('shell_command', { command: 'sleep 40' }), undefined, provider), completion: MessageCompletion.INTERRUPTED }, provider)
-    const row = ampExtractRow({ category: { kind: 'tool_result' }, resolved: retained, span: noSpan })
-    expect(row?.kind === 'tool' ? [row.role, row.call.status] : null).toEqual(['result', 'cancelled'])
+    const retained = resolveMessageForRendering({
+      ...input(ampToolUseRow('shell_command', { command: 'sleep 40' }), undefined, provider),
+      completion: MessageCompletion.INTERRUPTED,
+    }, provider)
+    const row = ampExtractRow({
+      category: { kind: 'tool_result' },
+      resolved: retained,
+      span: noSpan,
+    })
+    expect(row?.kind === 'tool'
+      ? [row.role, row.call.status]
+      : null).toEqual(['result', 'cancelled'])
   })
 
   it('reads a refusal as declined and a cancellation as cancelled', () => {
@@ -87,13 +128,17 @@ describe('amp tool rows', () => {
     const request = input(ampToolUseRow('mcp__github__search_code', { q: 'x' }), undefined, provider)
     const call = providerToolCall(provider, ampToolResultRow('found 3'), { request })
     expect(call?.kind).toBe('mcp')
-    expect(call?.kind === 'mcp' ? call.request : null).toMatchObject({ server: 'github', tool: 'search_code' })
+    expect(call?.kind === 'mcp'
+      ? call.request
+      : null).toMatchObject({ server: 'github', tool: 'search_code' })
   })
 
   it('draws a tool no table lists as the generic card with its words', () => {
     const request = input(ampToolUseRow('upload_thread_file', { path: '/a' }), undefined, provider)
     const call = providerToolCall(provider, ampToolResultRow('Uploaded.'), { request })
     expect(call?.kind).toBe('mcp')
-    expect(call?.kind === 'mcp' ? call.request : null).toMatchObject({ server: '', tool: 'upload_thread_file' })
+    expect(call?.kind === 'mcp'
+      ? call.request
+      : null).toMatchObject({ server: '', tool: 'upload_thread_file' })
   })
 })

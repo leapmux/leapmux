@@ -45,7 +45,10 @@ test.describe('file-tab E2EE worker round-trip', () => {
       'RegisterTabPayload',
       RegisterTabPayloadRequestSchema,
       RegisterTabPayloadResponseSchema,
-      { tabId, payload: fileTabPayload(filePath, '') },
+      {
+        tabId,
+        payload: fileTabPayload(filePath, ''),
+      },
     )
 
     // 2. Get returns the path.

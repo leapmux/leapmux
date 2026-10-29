@@ -36,19 +36,38 @@ export function lettaLoopError(marker: string, isFinal: boolean): Record<string,
     date: '2026-10-04T23:54:35.364Z',
     message_type: 'loop_error',
     run_id: RUN_ID,
-    message: JSON.stringify({ error: { error: { type: 'local_backend_error', message: text, detail: text }, run_id: RUN_ID } }, null, 2),
+    message: JSON.stringify({
+      error: {
+        error: { type: 'local_backend_error', message: text, detail: text },
+        run_id: RUN_ID,
+      },
+    }, null, 2),
     stop_reason: 'error',
     is_terminal: isFinal,
-    api_error: { message_type: 'error_message', message: text, error_type: 'local_backend_error', run_id: RUN_ID, detail: text },
+    api_error: {
+      message_type: 'error_message',
+      message: text,
+      error_type: 'local_backend_error',
+      run_id: RUN_ID,
+      detail: text,
+    },
   }
 }
 
 /** A mixed notification input with an unrecognized snapshot before a readable error. */
 export function lettaMixedErrorThread(marker: string = LETTA_MODEL_ERROR_MARKER): Record<string, unknown>[] {
-  return [lettaSubagentSnapshot(), lettaLoopError(marker, true)]
+  return [
+    lettaSubagentSnapshot(),
+    lettaLoopError(marker, true),
+  ]
 }
 
 /** A failed turn carries the same native error body that its loop error stated. */
 export function lettaFailedTurn(marker: string = LETTA_MODEL_ERROR_MARKER): Record<string, unknown> {
-  return { type: 'turn_finished', turn_id: 'failed-turn', stop_reason: 'error', error: lettaLoopError(marker, true).message }
+  return {
+    type: 'turn_finished',
+    turn_id: 'failed-turn',
+    stop_reason: 'error',
+    error: lettaLoopError(marker, true).message,
+  }
 }

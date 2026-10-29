@@ -28,7 +28,9 @@ export function storedFunctionArgs(raw: unknown): Record<string, unknown> {
     return {}
   try {
     const parsed: unknown = JSON.parse(raw)
-    return isObject(parsed) ? parsed : { arguments: raw }
+    return isObject(parsed)
+      ? parsed
+      : { arguments: raw }
   }
   catch {
     return { arguments: raw }

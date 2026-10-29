@@ -47,7 +47,9 @@ const OAuthCompleteSignupPage: Component = () => {
       return
     }
     try {
-      const resp = await authClient.getPendingOAuthSignup({ signupToken: signupToken() })
+      const resp = await authClient.getPendingOAuthSignup({
+        signupToken: signupToken(),
+      })
       setDisplayName(resp.displayName)
       setEmail(resp.email)
       setProviderSuppliedEmail(resp.email !== '')
@@ -169,7 +171,9 @@ const OAuthCompleteSignupPage: Component = () => {
             </Show>
             <button type="submit" disabled={submitting() || !username() || captcha.blocksSubmit()}>
               <Show when={submitting()}><Spinner /></Show>
-              {submitting() ? 'Creating account...' : 'Create account'}
+              {submitting()
+                ? 'Creating account...'
+                : 'Create account'}
             </button>
           </form>
           <div class={styles.authFooter}>

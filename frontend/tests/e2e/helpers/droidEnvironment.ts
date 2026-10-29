@@ -72,7 +72,14 @@ function droidSettings(options: DroidEnvironmentOptions): Record<string, unknown
   return {
     customModels: [
       primary,
-      { ...primary, model: options.alternate.model, id: options.alternate.handle, index: 1, displayName: 'Alternate Mock Model', provider: options.alternate.provider ?? 'generic-chat-completion-api' },
+      {
+        ...primary,
+        model: options.alternate.model,
+        id: options.alternate.handle,
+        index: 1,
+        displayName: 'Alternate Mock Model',
+        provider: options.alternate.provider ?? 'generic-chat-completion-api',
+      },
     ],
     sessionDefaultSettings: {
       model: options.primary.handle,

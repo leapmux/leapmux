@@ -16,7 +16,20 @@ const LAUNCHED = [
 const spawn = childSpawnCall('Read the child note and report its marker.')
 
 function assistantCall(call: MockModelToolCall): Record<string, unknown> {
-  return { role: 'assistant', content: null, tool_calls: [{ id: call.id, type: 'function', function: { name: call.name, arguments: JSON.stringify(call.arguments) } }] }
+  return {
+    role: 'assistant',
+    content: null,
+    tool_calls: [
+      {
+        id: call.id,
+        type: 'function',
+        function: {
+          name: call.name,
+          arguments: JSON.stringify(call.arguments),
+        },
+      },
+    ],
+  }
 }
 
 function taskResult(id: string): Record<string, unknown> {
@@ -28,13 +41,22 @@ function rootRequest(...messages: Record<string, unknown>[]): MockModelRequestRe
     protocol: 'openai-chat-completions',
     path: '/v1/chat/completions',
     stepIndex: 1,
-    body: { messages: [{ role: 'user', content: 'Delegate the note inspection to a background child.' }, ...messages] },
+    body: {
+      messages: [
+        { role: 'user', content: 'Delegate the note inspection to a background child.' },
+        ...messages,
+      ],
+    },
   }
 }
 
 describe('childSpawnCall', () => {
   it('sends a background Task under the call_ ID that Droid keeps', () => {
-    expect(spawn).toMatchObject({ id: 'call_droid-spawn', name: 'Task', arguments: { description: 'Inspect the child note', await: false } })
+    expect(spawn).toMatchObject({
+      id: 'call_droid-spawn',
+      name: 'Task',
+      arguments: { description: 'Inspect the child note', await: false },
+    })
   })
 })
 
@@ -62,6 +84,9 @@ describe('childSpawnResult', () => {
   })
 
   it('refuses a request with no messages', () => {
-    expect(() => childSpawnResult({ ...rootRequest(), body: {} }, spawn)).toThrow('actual Chat model messages')
+    expect(() => childSpawnResult({
+      ...rootRequest(),
+      body: {},
+    }, spawn)).toThrow('actual Chat model messages')
   })
 })

@@ -21,15 +21,33 @@ function writeHookProject(workingDir: string): string {
   const marker = join(workingDir, 'hook-marker.txt')
   mkdirSync(join(workingDir, '.zcode'), { recursive: true })
   writeFileSync(join(workingDir, '.zcode', 'config.json'), JSON.stringify({
-    hooks: { enabled: true, events: { UserPromptSubmit: [{ hooks: [{ type: 'command', command: `echo ran >> '${marker}'` }] }] } },
+    hooks: {
+      enabled: true,
+      events: {
+        UserPromptSubmit: [
+          {
+            hooks: [
+              { type: 'command', command: `echo ran >> '${marker}'` },
+            ],
+          },
+        ],
+      },
+    },
   }))
   return marker
 }
 
 // ZCode's trust controls a project's hooks, and nothing else: an instruction file loads without a question.
 zcodeTest('starts and reads a private project without a workspace trust request', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-  await exerciseNativeWorkspaceTrustLimit(context, { projectConfiguration: instructionFileConfiguration('AGENTS.md') })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+  })
+  await exerciseNativeWorkspaceTrustLimit(context, {
+    projectConfiguration: instructionFileConfiguration('AGENTS.md'),
+  })
 })
 
 // ZCode runs a project's hooks only after the user trusts them, and it shows its hook review only to a subscriber of
@@ -43,7 +61,12 @@ for (const decision of ['allow', 'deny'] as const) {
     const marker = writeHookProject(workingDir)
     await openProviderAgent(leapmuxServer, workspaceId, ZCODE_AGENT, { workingDir })
     await openWorkspace(page, workspaceId)
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId,
+    })
     const before = await currentNativeAgent(context)
 
     await sendNativeAnswer(context, 'Reply once before the hook trust decision.', FIRST_TURN_ANSWER)

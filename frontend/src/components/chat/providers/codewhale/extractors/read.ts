@@ -27,8 +27,12 @@ export function codewhaleReadRequest(args: Record<string, unknown>): ReadRequest
   const limit = pickNumber(args, 'limit')
   return {
     path: pickFirstString(args, TOOL_FILE_PATH_KEYS) || codewhaleHandleText(args.handle) || pickString(args, 'ref') || pickString(args, 'id'),
-    ...(offset !== null ? { offset } : {}),
-    ...(limit !== null ? { limit } : {}),
+    ...(offset !== null
+      ? { offset }
+      : {}),
+    ...(limit !== null
+      ? { limit }
+      : {}),
   }
 }
 
@@ -40,7 +44,9 @@ function codewhaleHandleText(handle: unknown): string {
     return ''
   const session = pickString(handle, 'session_id')
   const name = pickString(handle, 'name')
-  return session && name ? `${session}/${name}` : name
+  return session && name
+    ? `${session}/${name}`
+    : name
 }
 
 /**
@@ -52,8 +58,19 @@ function codewhaleHandleText(handle: unknown): string {
  */
 export function codewhaleReadResult(text: string, request: ReadRequest): ReadFileResult {
   const notice = PAGING_NOTICE.exec(text)
-  const content = notice ? text.slice(0, notice.index) : text
-  const startLine = request.offset !== undefined && Number.isSafeInteger(request.offset) && request.offset > 0 ? request.offset : 1
+  const content = notice
+    ? text.slice(0, notice.index)
+    : text
+  const startLine = request.offset !== undefined && Number.isSafeInteger(request.offset) && request.offset > 0
+    ? request.offset
+    : 1
   const result = readFileResultFromContent({ content, startLine })
-  return notice?.[1] ? { ...result, trailing: [{ label: 'Notice', text: notice[1] }] } : result
+  return notice?.[1]
+    ? {
+        ...result,
+        trailing: [
+          { label: 'Notice', text: notice[1] },
+        ],
+      }
+    : result
 }

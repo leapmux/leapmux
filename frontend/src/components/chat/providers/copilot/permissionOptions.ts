@@ -71,8 +71,12 @@ export function copilotDecisionOption(
   const optionId = DECISION_OPTION_IDS[decision]
   if (optionId === undefined)
     return undefined
-  const kind = Object.hasOwn(DECISION_KINDS, decision) ? DECISION_KINDS[decision] : ''
-  const offered = payload ? copilotPermissionOptions(payload) : []
+  const kind = Object.hasOwn(DECISION_KINDS, decision)
+    ? DECISION_KINDS[decision]
+    : ''
+  const offered = payload
+    ? copilotPermissionOptions(payload)
+    : []
   return offered.find(option => option.optionId === optionId)
     ?? { optionId, kind: kind ?? '' }
 }

@@ -94,11 +94,15 @@ export async function withPrivateNativeWorkspace<Server extends PrivateWorkerHub
     rmSync(runDirectory, { recursive: true, force: true })
     throw error
   }
-  const hub: Server = prepared.agentEnv === undefined ? leapmuxServer : { ...leapmuxServer, agentEnv: prepared.agentEnv }
+  const hub: Server = prepared.agentEnv === undefined
+    ? leapmuxServer
+    : { ...leapmuxServer, agentEnv: prepared.agentEnv }
   await withNativeWorker(hub, {
     dataDirPrefix: `${options.prefix}-worker`,
     workerName: options.workerName,
-    ...(prepared.env === undefined ? {} : { env: prepared.env }),
+    ...(prepared.env === undefined
+      ? {}
+      : { env: prepared.env }),
     privateDirectories: [runDirectory],
   }, async ({ server }) => {
     await withTestWorkspace(server, options.prefix, async (workspace) => {
@@ -109,7 +113,15 @@ export async function withPrivateNativeWorkspace<Server extends PrivateWorkerHub
       const agent = await currentNativeAgent({ page, leapmuxServer: server })
       if (agent.id !== agentId)
         throw new Error(`The page shows agent ${agent.id}, not the agent ${agentId} that the private workspace opened.`)
-      await use({ workspaceId: workspace.workspaceId, server, agentId, workingDir, agent, runDirectory, setup: prepared.setup })
+      await use({
+        workspaceId: workspace.workspaceId,
+        server,
+        agentId,
+        workingDir,
+        agent,
+        runDirectory,
+        setup: prepared.setup,
+      })
     })
   })
 }

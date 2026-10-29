@@ -16,11 +16,17 @@ export function ohMyPiSpanRole(parsed: ResolvedMessageContent): ToolSpanRole {
     return 'result'
   if (type !== OH_MY_PI_EVENT.ToolExecutionStart)
     return 'other'
-  return retainedRowIsFinal(parsed.completion) ? 'result' : 'request'
+  return retainedRowIsFinal(parsed.completion)
+    ? 'result'
+    : 'request'
 }
 
 /** The span side one row needs beside it: a request needs its result, and a result its request. */
 export function ohMyPiRelatedMessages(parsed: ResolvedMessageContent) {
   const role = ohMyPiSpanRole(parsed)
-  return role === 'result' ? ['request'] as const : role === 'request' ? ['result'] as const : []
+  return role === 'result'
+    ? ['request'] as const
+    : role === 'request'
+      ? ['result'] as const
+      : []
 }

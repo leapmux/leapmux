@@ -53,7 +53,15 @@ function makeFakeStream(): { handle: unknown, control: FakeStream } {
 
 function encodeTabRenamed(tabId: string): Uint8Array {
   const evt = create(WorkerPrivateEventSchema, {
-    event: { case: 'tabRenamed', value: { tabId, tabType: TabType.UNSPECIFIED, title: 'T', originClientId: 'c' } },
+    event: {
+      case: 'tabRenamed',
+      value: {
+        tabId,
+        tabType: TabType.UNSPECIFIED,
+        title: 'T',
+        originClientId: 'c',
+      },
+    },
   })
   return toBinary(WorkerPrivateEventSchema, evt)
 }
@@ -104,7 +112,10 @@ describe('openWorkerPrivateEventStream reconnect backoff', () => {
   }
 
   it('backs off exponentially on repeated failures and resets after a healthy message', async () => {
-    const stop = openWorkerPrivateEventStream({ workerId: 'w', onTabRenamed: () => {} })
+    const stop = openWorkerPrivateEventStream({
+      workerId: 'w',
+      onTabRenamed: () => {},
+    })
     await tick(0)
     expect(stream).toHaveBeenCalledTimes(1)
 
@@ -148,7 +159,10 @@ describe('openWorkerPrivateEventStream reconnect backoff', () => {
   })
 
   it('teardown calls cancel on the stream handle (#337)', async () => {
-    const stop = openWorkerPrivateEventStream({ workerId: 'w', onTabRenamed: () => {} })
+    const stop = openWorkerPrivateEventStream({
+      workerId: 'w',
+      onTabRenamed: () => {},
+    })
     await tick(0)
     expect(streamAt(0).cancel).toHaveBeenCalledTimes(0)
     stop()
@@ -160,7 +174,10 @@ describe('openWorkerPrivateEventStream reconnect backoff', () => {
     // so onEnd/onError never fire and the loop's first `await new Promise`
     // never resolved — the closure stayed alive until a transport error
     // eventually fired. teardown must wake the parked loop directly.
-    const stop = openWorkerPrivateEventStream({ workerId: 'w', onTabRenamed: () => {} })
+    const stop = openWorkerPrivateEventStream({
+      workerId: 'w',
+      onTabRenamed: () => {},
+    })
     await tick(0)
     expect(stream).toHaveBeenCalledTimes(1)
 
@@ -177,7 +194,10 @@ describe('openWorkerPrivateEventStream reconnect backoff', () => {
   })
 
   it('stops reconnecting after teardown', async () => {
-    const stop = openWorkerPrivateEventStream({ workerId: 'w', onTabRenamed: () => {} })
+    const stop = openWorkerPrivateEventStream({
+      workerId: 'w',
+      onTabRenamed: () => {},
+    })
     await tick(0)
     expect(stream).toHaveBeenCalledTimes(1)
 
@@ -200,7 +220,10 @@ describe('openWorkerPrivateEventStream reconnect backoff', () => {
     }))
 
     const renamed: string[] = []
-    const stop = openWorkerPrivateEventStream({ workerId: 'w', onTabRenamed: (e: { tabId: string }) => renamed.push(e.tabId) })
+    const stop = openWorkerPrivateEventStream({
+      workerId: 'w',
+      onTabRenamed: (e: { tabId: string }) => renamed.push(e.tabId),
+    })
     await tick(0)
     // Still awaiting the channel open: no stream registered yet.
     expect(stream).toHaveBeenCalledTimes(0)

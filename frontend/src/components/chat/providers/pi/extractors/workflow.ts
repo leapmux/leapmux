@@ -10,14 +10,26 @@ function workflowLaunch(payload: Record<string, unknown>) {
   const id = pickString(result?.details, 'taskId')
   const match = /^Workflow "([\s\S]+)" started in the background\.\nTask ID: ([^\r\n]+)\n(?:Script: ([^\r\n]+)\n)?/.exec(result?.text ?? '')
   // A match always carries the title and task-id groups; only the optional script group can be absent.
-  return { id, title: match && match[2] === id ? (match[1] ?? '').trim() : '', scriptPath: match && match[2] === id ? match[3] ?? '' : '' }
+  return {
+    id,
+    title: match && match[2] === id
+      ? (match[1] ?? '').trim()
+      : '',
+    scriptPath: match && match[2] === id
+      ? match[3] ?? ''
+      : '',
+  }
 }
 
 export function piWorkflowRequest(payload: Record<string, unknown>, request?: ParsedMessageContent, result?: ParsedMessageContent): AgentRequest {
   const args = piExtractTool(piPairedRequest(payload, request)?.parentObject)?.args ?? piExtractTool(payload)?.args ?? {}
   const launch = workflowLaunch(piPairedResult(payload, result)?.parentObject ?? payload)
   const metadata: NonNullable<AgentRequest['metadata']> = []
-  for (const [key, label] of [['scriptPath', 'Script'], ['name', 'Saved workflow'], ['resumeFromRunId', 'Previous run']] as const) {
+  for (const [key, label] of [
+    ['scriptPath', 'Script'],
+    ['name', 'Saved workflow'],
+    ['resumeFromRunId', 'Previous run'],
+  ] as const) {
     const value = pickString(args, key)
     if (value)
       metadata.push({ label, value })
@@ -27,7 +39,9 @@ export function piWorkflowRequest(payload: Record<string, unknown>, request?: Pa
     metadata.push({ label: 'Arguments', value: argsJson })
   return {
     description: launch.title || pickString(args, 'name') || pickString(args, 'scriptPath') || 'Run workflow',
-    prompt: pickString(args, 'scriptPath') ? '' : pickString(args, 'script'),
+    prompt: pickString(args, 'scriptPath')
+      ? ''
+      : pickString(args, 'script'),
     promptLabel: 'Script',
     promptFormat: 'pre',
     metadata,
@@ -49,10 +63,14 @@ export function piWorkflowResult(payload: Record<string, unknown>, request?: Par
     description: source.description,
     agentId: launch.id,
     // `registryKey` rides only when the launch stated a task id, never as an explicit undefined.
-    ...(launch.id ? { registryKey: launch.id } : {}),
+    ...(launch.id
+      ? { registryKey: launch.id }
+      : {}),
     statusLabel: running ? 'running' : 'failed',
     outcome: running ? 'running' : 'failed',
     metadata,
-    body: running && launch.title ? '' : tool?.result?.text ?? '',
+    body: running && launch.title
+      ? ''
+      : tool?.result?.text ?? '',
   }
 }

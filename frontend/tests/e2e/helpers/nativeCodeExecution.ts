@@ -22,7 +22,9 @@ export async function openNativeCatalogTurn(
   context: ManagedNativeScenarioContext,
   options: NativeAgentOpenOptions = {},
 ): Promise<MockModelRequestRecord> {
-  await openNativeAgent(context, options.workingDir === undefined ? { ...options, directoryPrefix: options.directoryPrefix ?? 'native-code-limit-' } : options)
+  await openNativeAgent(context, options.workingDir === undefined
+    ? { ...options, directoryPrefix: options.directoryPrefix ?? 'native-code-limit-' }
+    : options)
   return sendNativeAnswer(context, 'Reply once while the native tool catalog remains available.', 'The actual native catalog turn completed.')
 }
 
@@ -38,8 +40,18 @@ export function nativeJavaScriptTextCases(marker: string): readonly NativeScript
   if (!/^[a-z0-9]+$/i.test(marker))
     throw new Error('A native JavaScript marker requires letters and digits.')
   return [
-    { label: 'output', source: `text(${JSON.stringify(marker)} + (40 + 2));`, expected: `${marker}42`, failed: false },
-    { label: 'failure', source: `throw new Error(${JSON.stringify(marker)} + (70 + 7));`, expected: `${marker}77`, failed: true },
+    {
+      label: 'output',
+      source: `text(${JSON.stringify(marker)} + (40 + 2));`,
+      expected: `${marker}42`,
+      failed: false,
+    },
+    {
+      label: 'failure',
+      source: `throw new Error(${JSON.stringify(marker)} + (70 + 7));`,
+      expected: `${marker}77`,
+      failed: true,
+    },
   ]
 }
 

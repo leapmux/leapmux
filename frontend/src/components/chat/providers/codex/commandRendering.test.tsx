@@ -18,7 +18,9 @@ afterEach(() => {
 const tokenizeAsyncCalls = vi.hoisted(() => vi.fn())
 const tokenizeAsyncMock = vi.hoisted(() => vi.fn(async (lang: string, code: string) => {
   tokenizeAsyncCalls(lang, code)
-  return code.split('\n').map(line => [{ content: line, className: 'sk-codex-command-test' }])
+  return code.split('\n').map(line => [
+    { content: line, className: 'sk-codex-command-test' },
+  ])
 }))
 
 vi.mock('~/lib/shikiWorkerClient', () => ({
@@ -49,13 +51,50 @@ function renderCodexItem(item: Record<string, unknown>, context?: MessageContent
 
 describe('codex native exec rendering', () => {
   it.each([false, true])('renders the exact native result and its failure state: %s', async (failed) => {
-    const request = { threadId: 'native-thread', turnId: 'native-turn', item: { type: 'custom_tool_call', call_id: 'native-exec', name: 'exec', input: failed ? 'throw new Error("Native thrown: " + (70 + 7));' : 'text("Native computed: " + (40 + 2));', status: 'completed' } }
+    const request = {
+      threadId: 'native-thread',
+      turnId: 'native-turn',
+      item: {
+        type: 'custom_tool_call',
+        call_id: 'native-exec',
+        name: 'exec',
+        input: failed ? 'throw new Error("Native thrown: " + (70 + 7));' : 'text("Native computed: " + (40 + 2));',
+        status: 'completed',
+      },
+    }
     const expected = failed ? 'Error: Native thrown: 77' : 'Native computed: 42'
-    const result = { threadId: 'native-thread', turnId: 'native-turn', item: { type: 'custom_tool_call_output', call_id: 'native-exec', output: [{ type: 'input_text', text: `Script ${failed ? 'failed' : 'completed'}\nWall time 0.0 seconds\nOutput:\n` }, { type: 'input_text', text: expected }] } }
-    const scenario = createTranscriptScenario({ archive: [
-      makeTranscriptMessage({ id: 'native-request', provider: AgentProvider.CODEX, spanId: 'native-exec', spanType: 'exec', agentSessionId: 'native-session', content: request }, 1n),
-      makeTranscriptMessage({ id: 'native-result', provider: AgentProvider.CODEX, spanId: 'native-exec', spanType: 'exec', agentSessionId: 'native-session', content: result }, 2n),
-    ] })
+    const result = {
+      threadId: 'native-thread',
+      turnId: 'native-turn',
+      item: {
+        type: 'custom_tool_call_output',
+        call_id: 'native-exec',
+        output: [
+          { type: 'input_text', text: `Script ${failed ? 'failed' : 'completed'}\nWall time 0.0 seconds\nOutput:\n` },
+          { type: 'input_text', text: expected },
+        ],
+      },
+    }
+    const scenario = createTranscriptScenario({
+      archive: [
+        makeTranscriptMessage({
+          id: 'native-request',
+          provider: AgentProvider.CODEX,
+          spanId: 'native-exec',
+          spanType: 'exec',
+          agentSessionId: 'native-session',
+          content: request,
+        }, 1n),
+        makeTranscriptMessage({
+          id: 'native-result',
+          provider: AgentProvider.CODEX,
+          spanId: 'native-exec',
+          spanType: 'exec',
+          agentSessionId: 'native-session',
+          content: result,
+        }, 2n),
+      ],
+    })
     const { container } = scenario.renderBubble('native-result')
     await waitFor(() => expect(container).toHaveTextContent(expected))
     expect(scenario.toolRow('native-result').call.status).toBe(failed ? 'failed' : 'completed')
@@ -64,15 +103,54 @@ describe('codex native exec rendering', () => {
 
   it('renders one decoded image from native exec output', async () => {
     const data = pngBase64(12, 8)
-    const request = { threadId: 'native-thread', turnId: 'native-turn', item: { type: 'custom_tool_call', call_id: 'native-image-exec', name: 'exec', input: 'image(nativeImage);', status: 'completed' } }
-    const result = { threadId: 'native-thread', turnId: 'native-turn', item: { type: 'custom_tool_call_output', call_id: 'native-image-exec', output: [{ type: 'input_text', text: 'Script completed\nWall time 0.0 seconds\nOutput:\n' }, { type: 'input_image', image_url: `data:image/png;base64,${data}` }] } }
-    const scenario = createTranscriptScenario({ archive: [
-      makeTranscriptMessage({ id: 'native-image-request', provider: AgentProvider.CODEX, spanId: 'native-image-exec', spanType: 'exec', agentSessionId: 'native-session', content: request }, 1n),
-      makeTranscriptMessage({ id: 'native-image-result', provider: AgentProvider.CODEX, spanId: 'native-image-exec', spanType: 'exec', agentSessionId: 'native-session', content: result }, 2n),
-    ] })
+    const request = {
+      threadId: 'native-thread',
+      turnId: 'native-turn',
+      item: {
+        type: 'custom_tool_call',
+        call_id: 'native-image-exec',
+        name: 'exec',
+        input: 'image(nativeImage);',
+        status: 'completed',
+      },
+    }
+    const result = {
+      threadId: 'native-thread',
+      turnId: 'native-turn',
+      item: {
+        type: 'custom_tool_call_output',
+        call_id: 'native-image-exec',
+        output: [
+          { type: 'input_text', text: 'Script completed\nWall time 0.0 seconds\nOutput:\n' },
+          { type: 'input_image', image_url: `data:image/png;base64,${data}` },
+        ],
+      },
+    }
+    const scenario = createTranscriptScenario({
+      archive: [
+        makeTranscriptMessage({
+          id: 'native-image-request',
+          provider: AgentProvider.CODEX,
+          spanId: 'native-image-exec',
+          spanType: 'exec',
+          agentSessionId: 'native-session',
+          content: request,
+        }, 1n),
+        makeTranscriptMessage({
+          id: 'native-image-result',
+          provider: AgentProvider.CODEX,
+          spanId: 'native-image-exec',
+          spanType: 'exec',
+          agentSessionId: 'native-session',
+          content: result,
+        }, 2n),
+      ],
+    })
     const { container } = scenario.renderBubble('native-image-result')
     await waitFor(() => expect(container.querySelectorAll('img')).toHaveLength(1))
-    expect(scenario.toolRow('native-image-result').call.images).toMatchObject([{ url: `data:image/png;base64,${data}` }])
+    expect(scenario.toolRow('native-image-result').call.images).toMatchObject([
+      { url: `data:image/png;base64,${data}` },
+    ])
     expect(container.textContent).not.toContain(data)
   })
 })
@@ -117,8 +195,18 @@ describe('codex command actions', () => {
       processId: '79860',
       status: 'inProgress',
       commandActions: [
-        { type: 'read', command: 'sed -n \'1,5p\' src/main.ts', name: 'main.ts', path: '/repo/src/main.ts' },
-        { type: 'search', command: 'rg -n \'needle\' src', query: 'needle', path: 'src' },
+        {
+          type: 'read',
+          command: 'sed -n \'1,5p\' src/main.ts',
+          name: 'main.ts',
+          path: '/repo/src/main.ts',
+        },
+        {
+          type: 'search',
+          command: 'rg -n \'needle\' src',
+          query: 'needle',
+          path: 'src',
+        },
       ],
     }, { workingDir: '/repo' })
 
@@ -134,7 +222,9 @@ describe('codex command actions', () => {
       type: 'commandExecution',
       command: 'compound command',
       status: 'inProgress',
-      commandActions: [{ type: 'unknown', command: 'printf visible-action' }],
+      commandActions: [
+        { type: 'unknown', command: 'printf visible-action' },
+      ],
     })
 
     await waitFor(() => expect(tokenizeAsyncCalls).toHaveBeenCalledWith('bash', 'printf visible-action'))
@@ -147,7 +237,14 @@ describe('codex command actions', () => {
       type: 'commandExecution',
       command: 'compound command',
       status: 'inProgress',
-      commandActions: [{ type: 'read', command: 'sed -n \'1,5p\' src/main.ts', name: 'main.ts', path: '/repo/src/main.ts' }],
+      commandActions: [
+        {
+          type: 'read',
+          command: 'sed -n \'1,5p\' src/main.ts',
+          name: 'main.ts',
+          path: '/repo/src/main.ts',
+        },
+      ],
     }, { workingDir: '/repo' })
     const title = container.querySelector('[data-testid="execute-title"]')
 

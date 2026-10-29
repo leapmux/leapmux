@@ -6,24 +6,54 @@ describe('hasDiracResumeCheckpoint', () => {
   const row = { id: 'current-task', ulid: 'session' }
 
   it('requires the current task and session while allowing older tasks', () => {
-    expect(hasDiracResumeCheckpoint(runtime, [{ id: 'old-task', ulid: 'session' }, row], 'session')).toBe(true)
+    expect(hasDiracResumeCheckpoint(runtime, [
+      { id: 'old-task', ulid: 'session' },
+      row,
+    ], 'session')).toBe(true)
   })
 
   it('rejects a task ID that appears under another session also', () => {
-    expect(hasDiracResumeCheckpoint(runtime, [{ ...row, ulid: 'another-session' }, row], 'session')).toBe(false)
-    expect(hasDiracResumeCheckpoint(runtime, [row, { ...row, ulid: 'another-session' }], 'session')).toBe(false)
+    expect(hasDiracResumeCheckpoint(runtime, [
+      { ...row, ulid: 'another-session' },
+      row,
+    ], 'session')).toBe(false)
+    expect(hasDiracResumeCheckpoint(runtime, [
+      row,
+      { ...row, ulid: 'another-session' },
+    ], 'session')).toBe(false)
   })
 
-  it.each([null, {}, { taskId: '' }, { taskId: ' ' }, { taskId: 0 }, { taskId: -1 }])('rejects an invalid runtime %j', (value) => {
+  it.each([
+    null,
+    {},
+    { taskId: '' },
+    { taskId: ' ' },
+    { taskId: 0 },
+    { taskId: -1 },
+  ])('rejects an invalid runtime %j', (value) => {
     expect(hasDiracResumeCheckpoint(value, [row], 'session')).toBe(false)
   })
 
-  it.each([null, {}, [], [null], [row, row], [{ ...row, id: 'another' }], [{ ...row, ulid: 'another' }]])('rejects an absent or ambiguous checkpoint %j', (history) => {
+  it.each([
+    null,
+    {},
+    [],
+    [null],
+    [row, row],
+    [
+      { ...row, id: 'another' },
+    ],
+    [
+      { ...row, ulid: 'another' },
+    ],
+  ])('rejects an absent or ambiguous checkpoint %j', (history) => {
     expect(hasDiracResumeCheckpoint(runtime, history, 'session')).toBe(false)
   })
 
   it.each(['', ' '])('rejects an empty session ID %j', (sessionId) => {
-    expect(hasDiracResumeCheckpoint(runtime, [{ ...row, ulid: sessionId }], sessionId)).toBe(false)
+    expect(hasDiracResumeCheckpoint(runtime, [
+      { ...row, ulid: sessionId },
+    ], sessionId)).toBe(false)
   })
 })
 

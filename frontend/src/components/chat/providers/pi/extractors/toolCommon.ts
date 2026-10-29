@@ -77,8 +77,16 @@ export function piExtractTool(payload: Record<string, unknown> | null | undefine
     toolCallId,
     toolName,
     args,
-    ...(result ? { result: piToolResult(result) } : {}),
-    ...(partial ? { partialResult: piToolResult(partial) } : {}),
+    ...(result
+      ? {
+          result: piToolResult(result),
+        }
+      : {}),
+    ...(partial
+      ? {
+          partialResult: piToolResult(partial),
+        }
+      : {}),
     isError: payload.isError === true,
   }
   toolCache.set(payload, tool)

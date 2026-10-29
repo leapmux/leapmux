@@ -31,7 +31,10 @@ function museQuestionRequest(modes: string[] = ['single']): ControlRequest {
           id: `native-question-${index}`,
           header: '',
           question: 'Choose the native answer',
-          options: [{ label: 'One' }, { label: 'Two' }],
+          options: [
+            { label: 'One' },
+            { label: 'Two' },
+          ],
           selection: { mode },
         })),
       },
@@ -46,7 +49,19 @@ function limitedMuseQuestionRequest(): ControlRequest {
     params: {
       sessionId: 'native-session',
       userInputId: 'native-input',
-      questions: [{ id: 'native-question-0', header: '', question: 'Choose the native answer', options: [{ label: 'One' }, { label: 'Two' }, { label: 'Three' }], selection: { mode: 'multiple', minSelections: 2, maxSelections: 2 } }],
+      questions: [
+        {
+          id: 'native-question-0',
+          header: '',
+          question: 'Choose the native answer',
+          options: [
+            { label: 'One' },
+            { label: 'Two' },
+            { label: 'Three' },
+          ],
+          selection: { mode: 'multiple', minSelections: 2, maxSelections: 2 },
+        },
+      ],
     },
   }
   return request
@@ -54,13 +69,27 @@ function limitedMuseQuestionRequest(): ControlRequest {
 
 describe('the Muse question selection limits', () => {
   it.each([
-    { label: 'partial selection', selections: ['One'], allowed: false },
-    { label: 'complete selection', selections: ['One', 'Two'], allowed: true },
-    { label: 'excessive restored selection', selections: ['One', 'Two', 'Three'], allowed: false },
+    {
+      label: 'partial selection',
+      selections: ['One'],
+      allowed: false,
+    },
+    {
+      label: 'complete selection',
+      selections: ['One', 'Two'],
+      allowed: true,
+    },
+    {
+      label: 'excessive restored selection',
+      selections: ['One', 'Two', 'Three'],
+      allowed: false,
+    },
   ])('checks the $label through the registered provider and shared actions', async ({ selections, allowed }) => {
     const request = limitedMuseQuestionRequest()
     const original = structuredClone(request)
-    const state = createControlAnswerState({ selections: { 0: selections } })
+    const state = createControlAnswerState({
+      selections: { 0: selections },
+    })
     const respond = vi.fn().mockResolvedValue(undefined)
     render(() => (
       <>
@@ -74,7 +103,15 @@ describe('the Muse question selection limits', () => {
       expect(submit).not.toBeDisabled()
       fireEvent.click(submit)
       await vi.waitFor(() => expect(respond).toHaveBeenCalledOnce())
-      expect(JSON.parse(new TextDecoder().decode(respond.mock.calls[0]?.[0]))).toEqual({ jsonrpc: '2.0', id: request.requestId, result: { answers: [{ questionId: 'native-question-0', selectedLabels: selections }] } })
+      expect(JSON.parse(new TextDecoder().decode(respond.mock.calls[0]?.[0]))).toEqual({
+        jsonrpc: '2.0',
+        id: request.requestId,
+        result: {
+          answers: [
+            { questionId: 'native-question-0', selectedLabels: selections },
+          ],
+        },
+      })
     }
     else {
       expect(submit).toBeDisabled()
@@ -88,11 +125,21 @@ describe('the Muse question selection limits', () => {
   it('keeps valid selections and the pending request after a native refusal', async () => {
     const request = limitedMuseQuestionRequest()
     const original = structuredClone(request)
-    const state = createControlAnswerState({ selections: { 0: ['One', 'Two'] } })
+    const state = createControlAnswerState({
+      selections: {
+        0: ['One', 'Two'],
+      },
+    })
     const resetEditor = vi.fn()
     const respond = vi.fn().mockRejectedValue(new ControlResponseDeliveryError(ControlResponseState.READY, 'The native question refuses these selections'))
     render(() => {
-      const handling = useControlResponseHandling({ agentId: request.agentId, agent: { agentProvider: AgentProvider.MUSE_CODE }, controlRequests: [request], onControlResponse: respond, onSendMessage: vi.fn() }, state, () => undefined, resetEditor)
+      const handling = useControlResponseHandling({
+        agentId: request.agentId,
+        agent: { agentProvider: AgentProvider.MUSE_CODE },
+        controlRequests: [request],
+        onControlResponse: respond,
+        onSendMessage: vi.fn(),
+      }, state, () => undefined, resetEditor)
       return (
         <>
           <ControlRequestContent request={handling.activeControlRequest()} answerState={state} agentProvider={AgentProvider.MUSE_CODE} />
@@ -115,14 +162,36 @@ describe('the Muse question selection limits', () => {
 
 describe('the Muse question actions', () => {
   it.each([
-    { label: 'empty text', modes: ['single'], text: '', canSubmit: false },
-    { label: 'whitespace-only text', modes: ['multiple'], text: ' \t\n', canSubmit: false },
-    { label: 'typed text', modes: ['single'], text: '  Native text 界\n', canSubmit: true },
-    { label: 'multiple empty pages', modes: ['single', 'multiple'], text: '', canSubmit: false },
+    {
+      label: 'empty text',
+      modes: ['single'],
+      text: '',
+      canSubmit: false,
+    },
+    {
+      label: 'whitespace-only text',
+      modes: ['multiple'],
+      text: ' \t\n',
+      canSubmit: false,
+    },
+    {
+      label: 'typed text',
+      modes: ['single'],
+      text: '  Native text 界\n',
+      canSubmit: true,
+    },
+    {
+      label: 'multiple empty pages',
+      modes: ['single', 'multiple'],
+      text: '',
+      canSubmit: false,
+    },
   ])('checks $label through the actual provider capability', async ({ modes, text, canSubmit }) => {
     const request = museQuestionRequest(modes)
     const original = structuredClone(request)
-    const state = createControlAnswerState({ customTexts: { 0: text } })
+    const state = createControlAnswerState({
+      customTexts: { 0: text },
+    })
     const respond = vi.fn().mockResolvedValue(undefined)
     const triggerSend = vi.fn()
     render(() => <ControlRequestActions request={request} answerState={state} agentProvider={AgentProvider.MUSE_CODE} onRespond={respond} hasEditorContent={false} onTriggerSend={triggerSend} />)
@@ -143,22 +212,49 @@ describe('the Muse question actions', () => {
     expect(JSON.parse(new TextDecoder().decode(respond.mock.calls[0]?.[0]))).toEqual({
       jsonrpc: '2.0',
       id: request.requestId,
-      result: { answers: modes.map((_, index) => ({ questionId: `native-question-${index}`, freeText: index === 0 ? text : '' })) },
+      result: {
+        answers: modes.map((_, index) => ({
+          questionId: `native-question-${index}`,
+          freeText: index === 0
+            ? text
+            : '',
+        })),
+      },
     })
     expect(request).toEqual(original)
   })
 
   it.each([
-    { mode: 'single', selections: ['One'], answer: { selectedLabel: 'One' } },
-    { mode: 'multiple', selections: ['One', 'Two'], answer: { selectedLabels: ['One', 'Two'] } },
+    {
+      mode: 'single',
+      selections: ['One'],
+      answer: { selectedLabel: 'One' },
+    },
+    {
+      mode: 'multiple',
+      selections: ['One', 'Two'],
+      answer: {
+        selectedLabels: ['One', 'Two'],
+      },
+    },
   ])('preserves the native $mode selection form', async ({ mode, selections, answer }) => {
     const request = museQuestionRequest([mode])
-    const state = createControlAnswerState({ selections: { 0: selections } })
+    const state = createControlAnswerState({
+      selections: { 0: selections },
+    })
     const respond = vi.fn().mockResolvedValue(undefined)
     render(() => <ControlRequestActions request={request} answerState={state} agentProvider={AgentProvider.MUSE_CODE} onRespond={respond} hasEditorContent={false} onTriggerSend={vi.fn()} />)
     fireEvent.click(screen.getByTestId('control-submit-btn'))
     await vi.waitFor(() => expect(respond).toHaveBeenCalledOnce())
-    expect(JSON.parse(new TextDecoder().decode(respond.mock.calls[0]?.[0]))).toEqual({ jsonrpc: '2.0', id: request.requestId, result: { answers: [{ questionId: 'native-question-0', ...answer }] } })
+    expect(JSON.parse(new TextDecoder().decode(respond.mock.calls[0]?.[0]))).toEqual({
+      jsonrpc: '2.0',
+      id: request.requestId,
+      result: {
+        answers: [
+          { questionId: 'native-question-0', ...answer },
+        ],
+      },
+    })
   })
 
   it('keeps explicit cancellation separate from empty text', async () => {
@@ -168,7 +264,11 @@ describe('the Muse question actions', () => {
     render(() => <ControlRequestActions request={request} answerState={state} agentProvider={AgentProvider.MUSE_CODE} onRespond={respond} hasEditorContent={false} onTriggerSend={vi.fn()} />)
     fireEvent.click(screen.getByTestId('control-stop-btn'))
     await vi.waitFor(() => expect(respond).toHaveBeenCalledOnce())
-    expect(JSON.parse(new TextDecoder().decode(respond.mock.calls[0]?.[0]))).toEqual({ jsonrpc: '2.0', id: request.requestId, result: { cancelled: true, reason: 'User stopped' } })
+    expect(JSON.parse(new TextDecoder().decode(respond.mock.calls[0]?.[0]))).toEqual({
+      jsonrpc: '2.0',
+      id: request.requestId,
+      result: { cancelled: true, reason: 'User stopped' },
+    })
   })
 
   it('preserves the empty answer and pending request after delivery refusal', async () => {
@@ -179,7 +279,13 @@ describe('the Muse question actions', () => {
     const respond = vi.fn().mockRejectedValue(new ControlResponseDeliveryError(ControlResponseState.READY, 'The native question rejects this answer'))
     let sendAnswer: (() => Promise<void>) | undefined
     render(() => {
-      const handling = useControlResponseHandling({ agentId: request.agentId, agent: { agentProvider: AgentProvider.MUSE_CODE }, controlRequests: [request], onControlResponse: respond, onSendMessage: vi.fn() }, state, () => undefined, resetEditor)
+      const handling = useControlResponseHandling({
+        agentId: request.agentId,
+        agent: { agentProvider: AgentProvider.MUSE_CODE },
+        controlRequests: [request],
+        onControlResponse: respond,
+        onSendMessage: vi.fn(),
+      }, state, () => undefined, resetEditor)
       sendAnswer = () => museAskUserQuestion.sendAnswer(request, handling.respondTo(request), museQuestions(request.payload), state)
       return (
         <>
@@ -196,7 +302,15 @@ describe('the Muse question actions', () => {
     await expect(sendAnswer!()).rejects.toThrow('The native question rejects this answer')
     expect(screen.getByRole('alert')).toHaveTextContent('The native question rejects this answer')
     expect(respond).toHaveBeenCalledOnce()
-    expect(JSON.parse(new TextDecoder().decode(respond.mock.calls[0]?.[1]))).toEqual({ jsonrpc: '2.0', id: request.requestId, result: { answers: [{ questionId: 'native-question-0', freeText: '' }] } })
+    expect(JSON.parse(new TextDecoder().decode(respond.mock.calls[0]?.[1]))).toEqual({
+      jsonrpc: '2.0',
+      id: request.requestId,
+      result: {
+        answers: [
+          { questionId: 'native-question-0', freeText: '' },
+        ],
+      },
+    })
     expect(state.responsePending()).toBe(false)
     expect(state.customTexts()[0] ?? '').toBe('')
     expect(state.selections()).toEqual({})
@@ -212,7 +326,13 @@ describe('the Muse question actions', () => {
     const resetEditor = vi.fn()
     const respond = vi.fn().mockRejectedValue(new ControlResponseDeliveryError(ControlResponseState.READY, 'The native question rejects this answer'))
     render(() => {
-      const handling = useControlResponseHandling({ agentId: request.agentId, agent: { agentProvider: AgentProvider.MUSE_CODE }, controlRequests: [request], onControlResponse: respond, onSendMessage: vi.fn() }, state, () => undefined, resetEditor)
+      const handling = useControlResponseHandling({
+        agentId: request.agentId,
+        agent: { agentProvider: AgentProvider.MUSE_CODE },
+        controlRequests: [request],
+        onControlResponse: respond,
+        onSendMessage: vi.fn(),
+      }, state, () => undefined, resetEditor)
       return (
         <>
           <ControlRequestContent request={handling.activeControlRequest()} answerState={state} agentProvider={AgentProvider.MUSE_CODE} />
@@ -223,7 +343,9 @@ describe('the Muse question actions', () => {
     await vi.waitFor(() => expect(state.ready()).toBe(true))
     state.setCustomTexts({ 0: '  Native typed answer 界\n' })
     expect(screen.getByTestId('control-submit-btn')).not.toBeDisabled()
-    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    vi.useFakeTimers({
+      toFake: ['setTimeout', 'clearTimeout'],
+    })
     try {
       fireEvent.click(screen.getByTestId('control-submit-btn'))
       await vi.waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('The native question rejects this answer'))
@@ -248,17 +370,63 @@ describe('the Muse question actions', () => {
 
 describe('a pending Muse request with unreadable native choices or questions', () => {
   it.each([
-    { label: 'numeric choices', kind: 'approval', value: 0, errorText: 'choices are invalid' },
-    { label: 'unknown decision', kind: 'approval', value: [{ choiceId: 'native', label: 'Native choice', decision: 'futureDecision', scope: 'once' }], errorText: 'no denial choice' },
-    { label: 'unknown scope', kind: 'approval', value: [{ choiceId: 'native', label: 'Native choice', decision: 'denied', scope: 'futureScope' }], errorText: 'no denial choice' },
-    { label: 'numeric questions', kind: 'question', value: 0, errorText: 'LeapMux cannot read this answer' },
+    {
+      label: 'numeric choices',
+      kind: 'approval',
+      value: 0,
+      errorText: 'choices are invalid',
+    },
+    {
+      label: 'unknown decision',
+      kind: 'approval',
+      value: [
+        {
+          choiceId: 'native',
+          label: 'Native choice',
+          decision: 'futureDecision',
+          scope: 'once',
+        },
+      ],
+      errorText: 'no denial choice',
+    },
+    {
+      label: 'unknown scope',
+      kind: 'approval',
+      value: [
+        {
+          choiceId: 'native',
+          label: 'Native choice',
+          decision: 'denied',
+          scope: 'futureScope',
+        },
+      ],
+      errorText: 'no denial choice',
+    },
+    {
+      label: 'numeric questions',
+      kind: 'question',
+      value: 0,
+      errorText: 'LeapMux cannot read this answer',
+    },
   ])('keeps the pending request usable for $label', async ({ kind, value, errorText }) => {
     const params = kind === 'approval'
-      ? { sessionId: 'session', approvalId: 'approval', currentRequirementId: { approvalId: 'approval', sourceIndex: 0 }, availableChoices: value }
+      ? {
+          sessionId: 'session',
+          approvalId: 'approval',
+          currentRequirementId: { approvalId: 'approval', sourceIndex: 0 },
+          availableChoices: value,
+        }
       : { sessionId: 'session', userInputId: 'question', questions: value }
-    const method = kind === 'approval' ? 'approval/requested' : 'userInput/requested'
+    const method = kind === 'approval'
+      ? 'approval/requested'
+      : 'userInput/requested'
     const original = `{"method":${JSON.stringify(method)},"params":${JSON.stringify(params)},"futureNumber":9007199254740993}`
-    const request: ControlRequest = { agentId: 'muse-agent', requestId: 'native-pending', payload: JSON.parse(original), originalPayload: new TextEncoder().encode(original) }
+    const request: ControlRequest = {
+      agentId: 'muse-agent',
+      requestId: 'native-pending',
+      payload: JSON.parse(original),
+      originalPayload: new TextEncoder().encode(original),
+    }
     const state = createControlAnswerState()
     const interrupt = vi.fn()
     const resetEditor = vi.fn()
@@ -313,7 +481,10 @@ it.each([
   { state: ControlResponseState.PENDING, action: 'Check status', notice: 'LeapMux has a saved response but no delivery receipt yet.' },
   { state: ControlResponseState.UNSPECIFIED, action: 'Check status', notice: 'Check the response state before sending an answer.' },
 ])('uses a recording-only action for response state $state', async ({ state, action, notice }) => {
-  const request: ControlRequest = { ...questionRequest(), responseState: state }
+  const request: ControlRequest = {
+    ...questionRequest(),
+    responseState: state,
+  }
   const answerState = createControlAnswerState()
   const respond = vi.fn().mockResolvedValue(undefined)
   const record = vi.fn().mockResolvedValue(undefined)
@@ -335,7 +506,12 @@ it.each([
 
 it('copies native control JSON without rounding numeric literals or losing repeated keys', async () => {
   const original = '{"id":9007199254740993,"request":{"tool_name":"Bash","input":{"value":1,"value":2,"large":9007199254740993}}}'
-  const request = { requestId: 'request-1', agentId: 'agent-1', payload: JSON.parse(original), originalPayload: new TextEncoder().encode(original) }
+  const request = {
+    requestId: 'request-1',
+    agentId: 'agent-1',
+    payload: JSON.parse(original),
+    originalPayload: new TextEncoder().encode(original),
+  }
   const copy = vi.spyOn(clipboard, 'copyTextToClipboard').mockResolvedValue(true)
   try {
     const { getByTestId } = render(() => <ControlRequestContent request={request} answerState={createControlAnswerState()} agentProvider={AgentProvider.CLAUDE_CODE} />)
@@ -352,10 +528,23 @@ it('copies native control JSON without rounding numeric literals or losing repea
 })
 
 it.each([
-  { original: new TextEncoder().encode('{unfinished'), expected: '{unfinished' },
-  { original: new Uint8Array([0xFF, 0xFE]), expected: '//4=' },
+  {
+    original: new TextEncoder().encode('{unfinished'),
+    expected: '{unfinished',
+  },
+  {
+    original: new Uint8Array([0xFF, 0xFE]),
+    expected: '//4=',
+  },
 ])('preserves unavailable JSON in the copy action: $expected', async ({ original, expected }) => {
-  const request = { requestId: 'request-1', agentId: 'agent-1', payload: { request: { tool_name: 'Bash' } }, originalPayload: original }
+  const request = {
+    requestId: 'request-1',
+    agentId: 'agent-1',
+    payload: {
+      request: { tool_name: 'Bash' },
+    },
+    originalPayload: original,
+  }
   const copy = vi.spyOn(clipboard, 'copyTextToClipboard').mockResolvedValue(true)
   try {
     const { getByTestId } = render(() => <ControlRequestContent request={request} answerState={createControlAnswerState()} agentProvider={AgentProvider.CLAUDE_CODE} />)
@@ -387,7 +576,15 @@ function questionRequest(): ControlRequest {
       request: {
         tool_name: 'AskUserQuestion',
         input: {
-          questions: [{ question: 'Which database?', options: [{ label: 'Postgres' }, { label: 'MySQL' }] }],
+          questions: [
+            {
+              question: 'Which database?',
+              options: [
+                { label: 'Postgres' },
+                { label: 'MySQL' },
+              ],
+            },
+          ],
         },
       },
     },
@@ -402,7 +599,10 @@ describe('ControlRequestBanner takes the surface from its caller', () => {
     render(() => (
       <banner.ControlRequestActions
         request={{ agentId: 'agent', requestId: 'choice', payload: {} }}
-        controlSurface={{ kind: 'permission', permission: { options: [], independentOptions: true } }}
+        controlSurface={{
+          kind: 'permission',
+          permission: { options: [], independentOptions: true },
+        }}
         answerState={createControlAnswerState()}
         hasEditorContent={false}
         onRespond={vi.fn()}
@@ -432,7 +632,10 @@ describe('ControlRequestBanner takes the surface from its caller', () => {
     render(() => (
       <banner.ControlRequestContent
         request={questionRequest()}
-        controlSurface={{ kind: 'permission', permission: { options: [] } }}
+        controlSurface={{
+          kind: 'permission',
+          permission: { options: [] },
+        }}
         answerState={createControlAnswerState()}
         agentProvider={AgentProvider.CLAUDE_CODE}
       />
@@ -445,7 +648,10 @@ describe('ControlRequestBanner takes the surface from its caller', () => {
     render(() => (
       <banner.ControlRequestActions
         request={questionRequest()}
-        controlSurface={{ kind: 'permission', permission: { options: [] } }}
+        controlSurface={{
+          kind: 'permission',
+          permission: { options: [] },
+        }}
         answerState={createControlAnswerState()}
         agentProvider={AgentProvider.CLAUDE_CODE}
         onRespond={vi.fn().mockResolvedValue(undefined)}
@@ -463,7 +669,10 @@ describe('ControlRequestBanner takes the surface from its caller', () => {
     render(() => (
       <banner.ControlRequestActions
         request={questionRequest()}
-        controlSurface={{ kind: 'dialog', dialog: { title: 'Pick a branch', variant: 'confirm' } }}
+        controlSurface={{
+          kind: 'dialog',
+          dialog: { title: 'Pick a branch', variant: 'confirm' },
+        }}
         answerState={createControlAnswerState()}
         agentProvider={AgentProvider.CLAUDE_CODE}
         onRespond={vi.fn().mockResolvedValue(undefined)}
@@ -481,8 +690,20 @@ describe('ControlRequestBanner takes the surface from its caller', () => {
     const onRespond = vi.fn().mockResolvedValue(undefined)
     render(() => (
       <banner.ControlRequestActions
-        request={{ requestId: 'dialog-1', agentId: 'a1', payload: { type: 'extension_ui_request', id: 'dialog-1', method: 'input', title: 'Pick a branch' } }}
-        controlSurface={{ kind: 'dialog', dialog: { title: 'Pick a branch', prefill: 'main', variant: 'input' } }}
+        request={{
+          requestId: 'dialog-1',
+          agentId: 'a1',
+          payload: {
+            type: 'extension_ui_request',
+            id: 'dialog-1',
+            method: 'input',
+            title: 'Pick a branch',
+          },
+        }}
+        controlSurface={{
+          kind: 'dialog',
+          dialog: { title: 'Pick a branch', prefill: 'main', variant: 'input' },
+        }}
         answerState={createControlAnswerState()}
         agentProvider={AgentProvider.PI}
         onRespond={onRespond}
@@ -504,7 +725,12 @@ describe('ControlRequestBanner takes the surface from its caller', () => {
     render(() => (
       <banner.ControlRequestActions
         request={planRequest()}
-        controlSurface={{ kind: 'plan', choices: [{ id: 'Revise', label: 'Request revisions', approves: false }] }}
+        controlSurface={{
+          kind: 'plan',
+          choices: [
+            { id: 'Revise', label: 'Request revisions', approves: false },
+          ],
+        }}
         answerState={createControlAnswerState()}
         agentProvider={AgentProvider.CLAUDE_CODE}
         onRespond={vi.fn().mockResolvedValue(undefined)}
@@ -772,7 +998,9 @@ it('describes what the disabled submit waits for, and drops the description once
   expect(described).toBeTruthy()
   expect(document.getElementById(described!)).toHaveTextContent('Choose an option, or type a custom answer below.')
 
-  answerState.setSelections({ 0: ['Postgres'] })
+  answerState.setSelections({
+    0: ['Postgres'],
+  })
   expect(submit).toBeEnabled()
   expect(submit).not.toHaveAttribute('aria-describedby')
 })

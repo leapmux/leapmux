@@ -52,15 +52,24 @@ const ALL_MESSAGE_SOURCES = [
 // ---------------------------------------------------------------------------
 
 function assistantMsg(content: unknown[]) {
-  return { type: 'assistant', message: { content } }
+  return {
+    type: 'assistant',
+    message: { content },
+  }
 }
 
 function userMsg(content: unknown) {
-  return { type: 'user', message: { content } }
+  return {
+    type: 'user',
+    message: { content },
+  }
 }
 
 function wrapper(firstMessage: Record<string, unknown>) {
-  return { old_seqs: [], messages: [firstMessage] }
+  return {
+    old_seqs: [],
+    messages: [firstMessage],
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -74,7 +83,9 @@ describe('classifyMessage', () => {
     it('classifies wrapper with settings_changed first message', () => {
       const result = classifyMessage(input(undefined, wrapper({
         type: 'settings_changed',
-        changes: { model: { old: 'a', new: 'b' } },
+        changes: {
+          model: { old: 'a', new: 'b' },
+        },
       })))
       expect(result.kind).toBe('notification')
     })
@@ -101,24 +112,35 @@ describe('classifyMessage', () => {
     })
 
     it('classifies wrapper with non-allowed rate_limit as a notification', () => {
-      const result = classifyMessage(input(undefined, wrapper({ type: 'rate_limit_event', rate_limit_info: { status: 'rate_limited' } })))
+      const result = classifyMessage(input(undefined, wrapper({
+        type: 'rate_limit_event',
+        rate_limit_info: { status: 'rate_limited' },
+      })))
       expect(result.kind).toBe('notification')
     })
 
     it('classifies wrapper with only allowed rate_limit as hidden', () => {
-      const result = classifyMessage(input(undefined, wrapper({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed' } })))
+      const result = classifyMessage(input(undefined, wrapper({
+        type: 'rate_limit_event',
+        rate_limit_info: { status: 'allowed' },
+      })))
       expect(result.kind).toBe('hidden')
     })
 
     it('filters allowed rate_limit from mixed notification thread', () => {
       const msgs = [
         { type: 'context_cleared' },
-        { type: 'rate_limit_event', rate_limit_info: { status: 'allowed' } },
+        {
+          type: 'rate_limit_event',
+          rate_limit_info: { status: 'allowed' },
+        },
       ]
       const result = classifyMessage(input(undefined, { old_seqs: [], messages: msgs }))
       expect(result.kind).toBe('notification')
       if (result.kind === 'notification') {
-        expect(result.entries).toStrictEqual([{ kind: 'context-cleared' }])
+        expect(result.entries).toStrictEqual([
+          { kind: 'context-cleared' },
+        ])
       }
     })
 
@@ -151,11 +173,17 @@ describe('classifyMessage', () => {
     })
 
     it('returns parsed entries in the notification category', () => {
-      const msgs = [{ type: 'context_cleared' }, { type: 'interrupted' }]
+      const msgs = [
+        { type: 'context_cleared' },
+        { type: 'interrupted' },
+      ]
       const result = classifyMessage(input(undefined, { old_seqs: [], messages: msgs }))
       expect(result.kind).toBe('notification')
       if (result.kind === 'notification') {
-        expect(result.entries).toStrictEqual([{ kind: 'context-cleared' }, { kind: 'text', text: 'Interrupted' }])
+        expect(result.entries).toStrictEqual([
+          { kind: 'context-cleared' },
+          { kind: 'text', text: 'Interrupted' },
+        ])
       }
     })
   })
@@ -202,7 +230,12 @@ describe('classifyMessage', () => {
 
     it('carries attachments through, since they are part of the same payload', () => {
       const result = classifyMessage(input(
-        { content: 'see this', attachments: [{ filename: 'a.png' }] },
+        {
+          content: 'see this',
+          attachments: [
+            { filename: 'a.png' },
+          ],
+        },
         null,
         AgentProvider.UNSPECIFIED,
         MessageSource.USER,
@@ -234,7 +267,12 @@ describe('classifyMessage', () => {
       // is still a string, so this is a real user row -- and the one whose payload
       // most looks like an absent field.
       const result = classifyMessage(input(
-        { content: '', attachments: [{ filename: 'diagram.png' }] },
+        {
+          content: '',
+          attachments: [
+            { filename: 'diagram.png' },
+          ],
+        },
         null,
         AgentProvider.UNSPECIFIED,
         MessageSource.USER,
@@ -281,7 +319,12 @@ describe('classifyMessage', () => {
 
     it('keeps a CodeBuddy attachment row visible after provider hydration', () => {
       const result = classifyMessage(input(
-        { content: 'Inspect this file.', attachments: [{ filename: 'codebuddy-blob.bin' }] },
+        {
+          content: 'Inspect this file.',
+          attachments: [
+            { filename: 'codebuddy-blob.bin' },
+          ],
+        },
         null,
         AgentProvider.CODEBUDDY,
         MessageSource.USER,
@@ -363,18 +406,26 @@ describe('classifyMessage', () => {
     it('classifies settings_changed as notification', () => {
       const result = classifyMessage(input({
         type: 'settings_changed',
-        changes: { model: { old: 'a', new: 'b' } },
+        changes: {
+          model: { old: 'a', new: 'b' },
+        },
       }))
       expect(result.kind).toBe('notification')
     })
 
     it('classifies non-allowed rate_limit as notification', () => {
-      const result = classifyMessage(input({ type: 'rate_limit_event', rate_limit_info: { rateLimitType: 'five_hour', status: 'rate_limited' } }))
+      const result = classifyMessage(input({
+        type: 'rate_limit_event',
+        rate_limit_info: { rateLimitType: 'five_hour', status: 'rate_limited' },
+      }))
       expect(result.kind).toBe('notification')
     })
 
     it('classifies allowed rate_limit as hidden', () => {
-      const result = classifyMessage(input({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed' } }))
+      const result = classifyMessage(input({
+        type: 'rate_limit_event',
+        rate_limit_info: { status: 'allowed' },
+      }))
       expect(result.kind).toBe('hidden')
     })
   })
@@ -400,9 +451,14 @@ describe('classifyMessage', () => {
 
   it('classifies separate control-response metadata for every provider', () => {
     for (const provider of ALL_PROVIDERS) {
-      const message = makeControlResponseMessage(provider, { result: { decision: 'accept' } })
+      const message = makeControlResponseMessage(provider, {
+        result: { decision: 'accept' },
+      })
       const parsed = parseMessageContent(message)
-      expect(classifyMessage({ ...resolveMessageForRendering(parsed, provider), agentProvider: provider }).kind).toBe('control_response')
+      expect(classifyMessage({
+        ...resolveMessageForRendering(parsed, provider),
+        agentProvider: provider,
+      }).kind).toBe('control_response')
     }
   })
 
@@ -410,13 +466,21 @@ describe('classifyMessage', () => {
     // The row is persisted standalone, never inside a thread, so the shared classifier guards on
     // !wrapper to preserve each plugin's wrapper-first precedence: a thread whose first message
     // happens to look synthetic still classifies as its plugin's kind, not control_response.
-    const row = { isSynthetic: true, controlResponse: { provider: 'X', response: {} } }
-    const wrapped = input(row, { old_seqs: [], messages: [row] }, AgentProvider.CLAUDE_CODE)
+    const row = {
+      isSynthetic: true,
+      controlResponse: { provider: 'X', response: {} },
+    }
+    const wrapped = input(row, {
+      old_seqs: [],
+      messages: [row],
+    }, AgentProvider.CLAUDE_CODE)
     expect(classifyMessage(wrapped).kind).not.toBe('control_response')
   })
 
   it('does not classify non-synthetic with controlResponse', () => {
-    const result = classifyMessage(input({ controlResponse: { provider: 'CLAUDE_CODE', response: {} } }))
+    const result = classifyMessage(input({
+      controlResponse: { provider: 'CLAUDE_CODE', response: {} },
+    }))
     expect(result.kind).not.toBe('control_response')
   })
 
@@ -431,7 +495,11 @@ describe('classifyMessage', () => {
     // The classification states the KIND and nothing else: the tool block itself
     // is the provider's own bytes, which the extractor reads from the payload.
     it('classifies tool_use', () => {
-      const toolUseBlock = { type: 'tool_use', name: 'Bash', input: { command: 'ls' } }
+      const toolUseBlock = {
+        type: 'tool_use',
+        name: 'Bash',
+        input: { command: 'ls' },
+      }
       expect(classifyMessage(input(assistantMsg([toolUseBlock])))).toEqual({ kind: 'tool_use' })
     })
 
@@ -450,7 +518,9 @@ describe('classifyMessage', () => {
     })
 
     it('classifies assistant_text', () => {
-      const result = classifyMessage(input(assistantMsg([{ type: 'text', text: 'hello' }])))
+      const result = classifyMessage(input(assistantMsg([
+        { type: 'text', text: 'hello' },
+      ])))
       expect(result.kind).toBe('assistant_text')
     })
 
@@ -463,7 +533,9 @@ describe('classifyMessage', () => {
 
     it('classifies assistant_thinking', () => {
       const result = classifyMessage(input(
-        assistantMsg([{ type: 'thinking', thinking: 'reasoning here', signature: 'sig' }]),
+        assistantMsg([
+          { type: 'thinking', thinking: 'reasoning here', signature: 'sig' },
+        ]),
       ))
       expect(result.kind).toBe('assistant_thinking')
     })
@@ -479,7 +551,10 @@ describe('classifyMessage', () => {
     })
 
     it('returns unknown for assistant with non-array content', () => {
-      const result = classifyMessage(input({ type: 'assistant', message: { content: 'string' } }))
+      const result = classifyMessage(input({
+        type: 'assistant',
+        message: { content: 'string' },
+      }))
       expect(result.kind).toBe('unknown')
     })
 
@@ -489,7 +564,9 @@ describe('classifyMessage', () => {
     })
 
     it('classifies a tool_use block that states no name', () => {
-      expect(classifyMessage(input(assistantMsg([{ type: 'tool_use' }])))).toEqual({ kind: 'tool_use' })
+      expect(classifyMessage(input(assistantMsg([
+        { type: 'tool_use' },
+      ])))).toEqual({ kind: 'tool_use' })
     })
   })
 
@@ -503,7 +580,9 @@ describe('classifyMessage', () => {
 
     it('classifies tool_result', () => {
       const result = classifyMessage(input(
-        userMsg([{ type: 'tool_result', content: 'result' }]),
+        userMsg([
+          { type: 'tool_result', content: 'result' },
+        ]),
       ))
       expect(result.kind).toBe('tool_result')
     })
@@ -519,7 +598,9 @@ describe('classifyMessage', () => {
     })
 
     it('returns unknown for user with array content but no tool_result', () => {
-      const result = classifyMessage(input(userMsg([{ type: 'text', text: 'hi' }])))
+      const result = classifyMessage(input(userMsg([
+        { type: 'text', text: 'hi' },
+      ])))
       expect(result.kind).toBe('unknown')
     })
   })
@@ -570,10 +651,17 @@ describe('classifyMessage', () => {
     })
 
     it('carries every final status through unchanged', () => {
-      for (const status of ['completed', 'failed', 'stopped', 'interrupted']) {
+      for (const status of [
+        'completed',
+        'failed',
+        'stopped',
+        'interrupted',
+      ]) {
         const parent = { type: 'subagent_report', text: 'Native child report', status }
         const result = classifyMessage(input(parent))
-        expect(result.kind === 'notification' && result.entries).toEqual([{ kind: 'subagent-report', text: 'Native child report', status }])
+        expect(result.kind === 'notification' && result.entries).toEqual([
+          { kind: 'subagent-report', text: 'Native child report', status },
+        ])
       }
     })
 
@@ -619,7 +707,9 @@ describe('classifyMessage', () => {
     it('yields to a notification thread wrapper', () => {
       const result = classifyMessage(input(statusNotice, wrapper({ type: 'interrupted' })))
       expect(result.kind).toBe('notification')
-      expect(result.kind === 'notification' && result.entries).toEqual([{ kind: 'text', text: 'Interrupted' }])
+      expect(result.kind === 'notification' && result.entries).toEqual([
+        { kind: 'text', text: 'Interrupted' },
+      ])
     })
   })
 })
@@ -776,14 +866,22 @@ describe('messageRowChromeClass', () => {
     // The bubble's negative margin and the row's widening must cover the same
     // rows; a tool row sent by the user renders a metaMessage, not a bubble, so
     // widening it would be pointless and could clip nothing into view.
-    for (const kind of ['tool_use', 'tool_result', 'hidden', 'notification'] as const) {
+    for (const kind of [
+      'tool_use',
+      'tool_result',
+      'hidden',
+      'notification',
+    ] as const) {
       expect(messageRowChromeClass(kind, MessageSource.USER)).toBe('')
       expect(isMirroredMessageRow(kind, MessageSource.USER)).toBe(false)
     }
   })
 
   it('gives a widened row NO band chrome -- it paints no strip of its own', () => {
-    for (const [kind, source] of [['result_divider', MessageSource.AGENT], ['user_text', MessageSource.USER]] as const) {
+    for (const [kind, source] of [
+      ['result_divider', MessageSource.AGENT],
+      ['user_text', MessageSource.USER],
+    ] as const) {
       const classes = messageRowChromeClass(kind, source).split(' ')
       expect(classes).not.toContain(chatStyles.bandRow)
       expect(classes).not.toContain(chatStyles.bandRowThought)
@@ -791,7 +889,18 @@ describe('messageRowChromeClass', () => {
   })
 
   it('returns an empty string for every row that stays inside the gutter', () => {
-    for (const kind of ['tool_use', 'tool_result', 'user_text', 'user_content', 'plan_execution', 'notification', 'control_response', 'hidden', 'unsupported_provider', 'unknown'] as const) {
+    for (const kind of [
+      'tool_use',
+      'tool_result',
+      'user_text',
+      'user_content',
+      'plan_execution',
+      'notification',
+      'control_response',
+      'hidden',
+      'unsupported_provider',
+      'unknown',
+    ] as const) {
       expect(messageRowChromeClass(kind, MessageSource.AGENT)).toBe('')
     }
   })
@@ -801,7 +910,16 @@ describe('messageRowChromeClass', () => {
     // disagreement would paint gray behind a bubble or leave a band unpainted.
     // result_divider and a user row bleed WITHOUT being bands, so this checks
     // the band class specifically, not "chrome is non-empty".
-    for (const kind of ['assistant_text', 'assistant_thinking', 'result_divider', 'tool_use', 'user_text', 'plan_execution', 'notification', 'unknown'] as const) {
+    for (const kind of [
+      'assistant_text',
+      'assistant_thinking',
+      'result_divider',
+      'tool_use',
+      'user_text',
+      'plan_execution',
+      'notification',
+      'unknown',
+    ] as const) {
       const isBand = messageRowChromeClass(kind, MessageSource.AGENT).split(' ').includes(chatStyles.bandRow)
       expect(messageBubbleClass(kind, MessageSource.AGENT) === chatStyles.bandMessage).toBe(isBand)
     }
@@ -859,7 +977,9 @@ describe('messageRowChrome', () => {
   it('agrees with messageRowChromeClass over the whole domain', () => {
     for (const kind of ALL_MESSAGE_KINDS) {
       for (const source of ALL_MESSAGE_SOURCES) {
-        const expected = [messageRowChromeClass(kind, source)].filter(Boolean).join(' ')
+        const expected = [
+          messageRowChromeClass(kind, source),
+        ].filter(Boolean).join(' ')
         expect(messageRowChrome('', kind, source).class).toBe(expected)
       }
     }

@@ -34,7 +34,9 @@ function createFlakyHighlighter(failures: number): LazyHighlighter {
       attempts += 1
       // A simulated transient chunk-import failure resolves 'failed' (not 'unsupported'),
       // exactly as the real highlighter reports a droppable/retryable load.
-      const load: Promise<LanguageLoadResult> = attempts <= failures ? Promise.resolve('failed') : real.ensureLanguage(lang)
+      const load: Promise<LanguageLoadResult> = attempts <= failures
+        ? Promise.resolve('failed')
+        : real.ensureLanguage(lang)
       const tracked = load.then((result) => {
         inFlight.delete(lang)
         return result
@@ -78,7 +80,12 @@ function rangeOf(deco: unknown): { from: number, to: number } {
 describe('createLazyShikiParser', () => {
   it('returns no decorations for an unknown language', () => {
     const parser = createLazyShikiParser(createLazyOnigurumaHighlighter())
-    const result = parser({ content: 'x', language: 'not-a-language', pos: 0, size: 3 })
+    const result = parser({
+      content: 'x',
+      language: 'not-a-language',
+      pos: 0,
+      size: 3,
+    })
     expect(Array.isArray(result)).toBe(true)
     expect(result).toHaveLength(0)
   })
@@ -92,7 +99,12 @@ describe('createLazyShikiParser', () => {
     const hl = createLazyOnigurumaHighlighter()
     const parser = createLazyShikiParser(hl)
     const content = 'const x = 1'
-    const opts = { content, language: 'javascript', pos: 0, size: content.length + 2 }
+    const opts = {
+      content,
+      language: 'javascript',
+      pos: 0,
+      size: content.length + 2,
+    }
 
     // First call: highlighter/grammar not ready yet -> a promise to re-run later.
     const first = parser(opts)
@@ -118,7 +130,12 @@ describe('createLazyShikiParser', () => {
     const hl = createFlakyHighlighter(1)
     const parser = createLazyShikiParser(hl)
     const content = 'const x = 1'
-    const opts = { content, language: 'javascript', pos: 0, size: content.length + 2 }
+    const opts = {
+      content,
+      language: 'javascript',
+      pos: 0,
+      size: content.length + 2,
+    }
 
     // First call: load fails transiently -> a promise that resolves (no throw).
     const first = parser(opts)
@@ -144,7 +161,12 @@ describe('createLazyShikiParser', () => {
     // a bound the parser would re-await forever. Drive it past the retry cap.
     const hl = createFlakyHighlighter(Number.POSITIVE_INFINITY)
     const parser = createLazyShikiParser(hl)
-    const opts = { content: 'const x = 1', language: 'javascript', pos: 0, size: 13 }
+    const opts = {
+      content: 'const x = 1',
+      language: 'javascript',
+      pos: 0,
+      size: 13,
+    }
 
     // Keep re-running until the parser gives up and returns a plain (array) result.
     let result = parser(opts)
@@ -181,7 +203,12 @@ describe('createLazyShikiParser', () => {
     }
     const parser = createLazyShikiParser(hl)
     const content = 'const x = 1'
-    const opts = { content, language: 'javascript', pos: 0, size: content.length + 2 }
+    const opts = {
+      content,
+      language: 'javascript',
+      pos: 0,
+      size: content.length + 2,
+    }
 
     // Drive this mount past its retry budget: each awaited re-run fails the load and bumps
     // `failures`, until the parser gives up and renders plain ([]).
@@ -214,10 +241,19 @@ describe('createLazyShikiParser', () => {
     // defeating the retry budget entirely.
     const hl = createFlakyHighlighter(1) // first shared load fails, then succeeds
     const parser = createLazyShikiParser(hl)
-    const block = (pos: number) => ({ content: 'const x = 1', language: 'javascript', pos, size: 13 })
+    const block = (pos: number) => ({
+      content: 'const x = 1',
+      language: 'javascript',
+      pos,
+      size: 13,
+    })
 
     // Pass 1: three blocks, grammar not loaded -> three promises sharing one load.
-    const promises = [parser(block(0)), parser(block(20)), parser(block(40))]
+    const promises = [
+      parser(block(0)),
+      parser(block(20)),
+      parser(block(40)),
+    ]
     for (const p of promises)
       expect(p).toBeInstanceOf(Promise)
     await Promise.all(promises)
@@ -243,7 +279,12 @@ describe('createLazyShikiParser', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     try {
       const parser = createLazyShikiParser(createThrowingTokenizeHighlighter())
-      const result = parser({ content: 'const x = 1', language: 'javascript', pos: 0, size: 13 })
+      const result = parser({
+        content: 'const x = 1',
+        language: 'javascript',
+        pos: 0,
+        size: 13,
+      })
       expect(Array.isArray(result)).toBe(true)
       expect(result).toHaveLength(0)
       expect(warn).toHaveBeenCalledWith(
@@ -266,7 +307,12 @@ describe('createLazyShikiParser', () => {
     const content = 'function f() {\n  return 42\n}'
     // size = textContent length + 2 (the code_block open/close tokens), matching how
     // prosemirror-highlight invokes the parser for a node.
-    const opts = { content, language: 'javascript', pos: 5, size: content.length + 2 }
+    const opts = {
+      content,
+      language: 'javascript',
+      pos: 5,
+      size: content.length + 2,
+    }
 
     await parser(opts) // warm the grammar
     const decos = parser(opts) as unknown[]
@@ -292,8 +338,12 @@ describe('refreshEditorHighlight', () => {
   it('swaps the highlight plugin for a fresh instance', async () => {
     const { refreshEditorHighlight } = await import('~/components/chat/markdownEditor/editorSetup')
 
-    const highlight = createHighlightPlugin({ parser: () => [] })
-    const other = new Plugin({ key: new PluginKey('unrelated') })
+    const highlight = createHighlightPlugin({
+      parser: () => [],
+    })
+    const other = new Plugin({
+      key: new PluginKey('unrelated'),
+    })
     let reconfigured: readonly Plugin[] | undefined
     const view = {
       composing: false,
@@ -326,7 +376,11 @@ describe('refreshEditorHighlight', () => {
       composing: true,
       dom,
       state: {
-        plugins: [createHighlightPlugin({ parser: () => [] })],
+        plugins: [
+          createHighlightPlugin({
+            parser: () => [],
+          }),
+        ],
         reconfigure: () => {
           reconfigured += 1
           return {}
@@ -368,7 +422,10 @@ describe('lazyShikiParser theme registration failure', () => {
   function failingHighlighter(attempts: { n: number }) {
     return {
       getHighlighter: () => ({
-        codeToTokens: () => ({ tokens: [[]], rootStyle: '' }),
+        codeToTokens: () => ({
+          tokens: [[]],
+          rootStyle: '',
+        }),
       }),
       isLanguageLoaded: () => true,
       ensureLanguage: async () => 'loaded' as const,
@@ -384,7 +441,12 @@ describe('lazyShikiParser theme registration failure', () => {
   it('gives up after a bounded number of attempts instead of retrying forever', async () => {
     const attempts = { n: 0 }
     const parse = createLazyShikiParser(failingHighlighter(attempts))
-    const opts = { content: 'const x = 1', language: 'ts', pos: 0, size: 13 }
+    const opts = {
+      content: 'const x = 1',
+      language: 'ts',
+      pos: 0,
+      size: 13,
+    }
 
     // Each pass returns the load; awaiting it is what a re-run does.
     for (let i = 0; i < 10; i++) {
@@ -404,7 +466,12 @@ describe('lazyShikiParser theme registration failure', () => {
   it('does not reject, so the plugin refreshes instead of logging and dropping', async () => {
     const attempts = { n: 0 }
     const parse = createLazyShikiParser(failingHighlighter(attempts))
-    const result = parse({ content: 'const x = 1', language: 'ts', pos: 0, size: 13 })
+    const result = parse({
+      content: 'const x = 1',
+      language: 'ts',
+      pos: 0,
+      size: 13,
+    })
 
     expect(Array.isArray(result)).toBe(false)
     // A rejection here is the defect: prosemirror-highlight logs it and does

@@ -74,7 +74,9 @@ export const NetworkAccessControl: CustomEditorComponent = (props) => {
     if (typeof value !== 'object' || value === null)
       return []
     const addresses = (value as { addresses?: unknown }).addresses
-    return Array.isArray(addresses) ? addresses.filter(a => typeof a === 'string') : []
+    return Array.isArray(addresses)
+      ? addresses.filter(a => typeof a === 'string')
+      : []
   }
 
   const refresh = async () => {
@@ -133,7 +135,9 @@ export const NetworkAccessControl: CustomEditorComponent = (props) => {
     // the overlap.
     const defaultPort = portOf(status()?.defaultAddress ?? '')
     setDirty(true)
-    setState('rows', state.rows.length, newRow(ANY_HOST, isValidPort(defaultPort) ? defaultPort : '4327'))
+    setState('rows', state.rows.length, newRow(ANY_HOST, isValidPort(defaultPort)
+      ? defaultPort
+      : '4327'))
   }
 
   /**
@@ -212,10 +216,14 @@ export const NetworkAccessControl: CustomEditorComponent = (props) => {
         // had just emptied. The latch is what keeps the retry from re-hashing
         // and revoking credentials for a password the account already holds.
         if (needsPassword() && !passwordStored() && passwordCanSubmit(pwProps)) {
-          await userClient.changePassword({ newPassword: password() })
+          await userClient.changePassword({
+            newPassword: password(),
+          })
           setPasswordStored(true)
         }
-        await props.binding.set({ addresses: rows().map(toAddress) })
+        await props.binding.set({
+          addresses: rows().map(toAddress),
+        })
         setPassword('')
         setConfirmPassword('')
         setPasswordStored(false)
@@ -241,7 +249,11 @@ export const NetworkAccessControl: CustomEditorComponent = (props) => {
         // apply, including one that stored none: the alternative reads the
         // `passwordStored` latch before the reset below clears it, and one
         // cheap read on a hand-driven admin action does not earn that ordering.
-        await Promise.allSettled([refresh(), loadSystemInfo(true), auth.refreshUser()])
+        await Promise.allSettled([
+          refresh(),
+          loadSystemInfo(true),
+          auth.refreshUser(),
+        ])
         return 'Network access updated.'
       },
     })
@@ -353,7 +365,9 @@ export const NetworkAccessControl: CustomEditorComponent = (props) => {
       <div class={actionsFooter}>
         <button type="button" class="outline" onClick={cancel} disabled={busy()}>Cancel</button>
         <button type="button" onClick={() => void apply()} disabled={!canApply()}>
-          {busy() ? 'Applying...' : 'Apply'}
+          {busy()
+            ? 'Applying...'
+            : 'Apply'}
         </button>
       </div>
     </div>
@@ -436,7 +450,9 @@ function InterfaceMenu(props: {
   status: GetListenStatusResponse | null
   onSelect: (host: string) => void
 }) {
-  const label = () => (props.host === ANY_HOST ? 'All interfaces' : props.host)
+  const label = () => (props.host === ANY_HOST
+    ? 'All interfaces'
+    : props.host)
   return (
     <DropdownMenu
       trigger={triggerProps => (
@@ -472,7 +488,9 @@ function InterfaceMenu(props: {
                   // accessible name, rather than beside it: whether an address
                   // is loopback is what decides if publishing it demands a
                   // password, so it must reach a screen reader too.
-                  label={addr.loopback ? `${addr.ip} (loopback)` : addr.ip}
+                  label={addr.loopback
+                    ? `${addr.ip} (loopback)`
+                    : addr.ip}
                   checked={props.host === addr.ip}
                   onSelect={() => props.onSelect(addr.ip)}
                 />

@@ -36,6 +36,8 @@ export function qoderAskUserQuestions(payload: Record<string, unknown>): Control
     // Only a real `true` opens the multiple-choice control: the field is a
     // boolean on the wire, and anything else a model writes is not one.
     const { multiSelect, ...rest } = question
-    return multiSelect === true ? { ...rest, multiSelect: true } : rest
+    return multiSelect === true
+      ? { ...rest, multiSelect: true }
+      : rest
   })
 }

@@ -21,7 +21,10 @@ export function clientMessageWithPrompt(text: string): Uint8Array {
  * `RequestContext` with one `CursorRule` for each rule.
  */
 export function cursorRequestContextReply(id: number, rules: readonly { path: string, content: string }[]): Uint8Array {
-  const context = concatBytes(rules.map(rule => encodeLengthDelimited(2, concatBytes([encodeStringField(1, rule.path), encodeStringField(2, rule.content)]))))
+  const context = concatBytes(rules.map(rule => encodeLengthDelimited(2, concatBytes([
+    encodeStringField(1, rule.path),
+    encodeStringField(2, rule.content),
+  ]))))
   return encodeLengthDelimited(2, concatBytes([
     encodeVarintField(1, id),
     encodeLengthDelimited(10, encodeLengthDelimited(1, encodeLengthDelimited(1, context))),
@@ -52,8 +55,20 @@ export function cursorSubagentReplyFixture(id: number, outcome: Uint8Array, exec
 /** The success result of a native subagent, with the fields that the options state. */
 export function cursorSubagentSuccessFixture(options: { agentID?: string, finalMessage?: string, toolCallCount?: number } = {}): Uint8Array {
   return encodeLengthDelimited(1, concatBytes([
-    ...(options.agentID !== undefined ? [encodeStringField(1, options.agentID)] : []),
-    ...(options.finalMessage !== undefined ? [encodeStringField(2, options.finalMessage)] : []),
-    ...(options.toolCallCount !== undefined ? [encodeVarintField(3, options.toolCallCount)] : []),
+    ...(options.agentID !== undefined
+      ? [
+          encodeStringField(1, options.agentID),
+        ]
+      : []),
+    ...(options.finalMessage !== undefined
+      ? [
+          encodeStringField(2, options.finalMessage),
+        ]
+      : []),
+    ...(options.toolCallCount !== undefined
+      ? [
+          encodeVarintField(3, options.toolCallCount),
+        ]
+      : []),
   ]))
 }

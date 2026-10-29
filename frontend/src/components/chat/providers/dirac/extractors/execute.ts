@@ -17,7 +17,9 @@ export function diracCommandExit(tool: Record<string, unknown>): CommandExit | u
   const code = raw.exitCode
   if (typeof code === 'number' && Number.isSafeInteger(code))
     return { exitCode: code }
-  return code === null ? { exitCode: null } : {}
+  return code === null
+    ? { exitCode: null }
+    : {}
 }
 
 /** Keep the shared result and add Dirac's exit to its one inline command. */
@@ -33,10 +35,24 @@ export function diracExecuteSpec(facts: ACPToolFacts, base: () => ToolCallSpec):
   if (exit === undefined || command === undefined)
     return spec
   const raw = pickObject(facts.tool, 'rawOutput')
-  const text = typeof raw?.output === 'string' ? raw.output : undefined
+  const text = typeof raw?.output === 'string'
+    ? raw.output
+    : undefined
   const prefix = exit.exitCode === 0
     ? 'Command executed successfully (exit code 0).\nOutput:\n'
-    : typeof exit.exitCode === 'number' ? `Command failed with exit code ${exit.exitCode}.\nOutput:\n` : undefined
-  const output = text !== undefined && prefix !== undefined && text.startsWith(prefix) ? text.slice(prefix.length) : command.output
-  return { ...spec, result: { ...spec.result, commands: [withCommandExit({ ...command, output }, exit)] } }
+    : typeof exit.exitCode === 'number'
+      ? `Command failed with exit code ${exit.exitCode}.\nOutput:\n`
+      : undefined
+  const output = text !== undefined && prefix !== undefined && text.startsWith(prefix)
+    ? text.slice(prefix.length)
+    : command.output
+  return {
+    ...spec,
+    result: {
+      ...spec.result,
+      commands: [
+        withCommandExit({ ...command, output }, exit),
+      ],
+    },
+  }
 }

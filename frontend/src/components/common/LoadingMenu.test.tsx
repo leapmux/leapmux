@@ -127,7 +127,9 @@ describe('the one-of-N menu (LoadingMenu)', () => {
   // under the user's own query would trap them with no way to clear it.
   it('stays enabled when the FILTER empties the list, not the options', () => {
     renderMenu({ filter: true, value: 'b' })
-    fireEvent.input(screen.getByTestId('loading-menu-filter'), { target: { value: 'no-such-option' } })
+    fireEvent.input(screen.getByTestId('loading-menu-filter'), {
+      target: { value: 'no-such-option' },
+    })
     expect(menuOptions(MENU)).toEqual([])
     expect(menuTrigger(MENU)).not.toBeDisabled()
     expect(menuTriggerText(MENU)).toContain('Beta')
@@ -193,20 +195,26 @@ describe('the one-of-N menu (LoadingMenu)', () => {
 
     it('narrows the list, matching without regard to case', () => {
       renderMenu({ options: many, filter: true })
-      fireEvent.input(screen.getByTestId('loading-menu-filter'), { target: { value: 'ALPHA' } })
+      fireEvent.input(screen.getByTestId('loading-menu-filter'), {
+        target: { value: 'ALPHA' },
+      })
       expect(menuOptions(MENU)).toEqual(['Alpha', 'Alphabet'])
     })
 
     it('says so rather than showing an empty menu', () => {
       renderMenu({ options: many, filter: true })
-      fireEvent.input(screen.getByTestId('loading-menu-filter'), { target: { value: 'zzz' } })
+      fireEvent.input(screen.getByTestId('loading-menu-filter'), {
+        target: { value: 'zzz' },
+      })
       expect(menuOptions(MENU)).toEqual([])
       expect(screen.getByText('No matches')).toBeInTheDocument()
     })
 
     it('commits a value picked out of a filtered list', () => {
       const { onChange } = renderMenu({ options: many, filter: true })
-      fireEvent.input(screen.getByTestId('loading-menu-filter'), { target: { value: 'bet' } })
+      fireEvent.input(screen.getByTestId('loading-menu-filter'), {
+        target: { value: 'bet' },
+      })
       pickMenuValue(MENU, 'ab')
       expect(onChange).toHaveBeenCalledWith('ab')
     })
@@ -214,7 +222,13 @@ describe('the one-of-N menu (LoadingMenu)', () => {
 
   describe('the detail column', () => {
     const dated = [
-      { value: 'a', label: 'Alpha', detail: { text: () => '3d ago' } },
+      {
+        value: 'a',
+        label: 'Alpha',
+        detail: {
+          text: () => '3d ago',
+        },
+      },
       { value: 'b', label: 'Beta' },
     ]
 
@@ -236,7 +250,16 @@ describe('the one-of-N menu (LoadingMenu)', () => {
     // `SessionSelect` supplies a live `RelativeTime` here.
     it('prefers the caller-rendered detail over its text', () => {
       renderMenu({
-        options: [{ value: 'a', label: 'Alpha', detail: { text: () => '3d ago', render: () => <em>three days</em> } }],
+        options: [
+          {
+            value: 'a',
+            label: 'Alpha',
+            detail: {
+              text: () => '3d ago',
+              render: () => <em>three days</em>,
+            },
+          },
+        ],
       })
       // The renderer is deferred to the first OPEN; the text stands until then.
       expect(screen.getByTestId('loading-menu-option-a').textContent).toContain('3d ago')
@@ -252,7 +275,16 @@ describe('the one-of-N menu (LoadingMenu)', () => {
       const drawDetail = vi.fn(() => <em>three days</em>)
       renderMenu({
         value: 'a',
-        options: [{ value: 'a', label: 'Alpha', detail: { text: () => '3d ago', render: drawDetail } }],
+        options: [
+          {
+            value: 'a',
+            label: 'Alpha',
+            detail: {
+              text: () => '3d ago',
+              render: drawDetail,
+            },
+          },
+        ],
       })
       // ONCE while closed: the trigger is always on screen, and the row's own
       // copy waits for the open that reveals it.
@@ -281,7 +313,9 @@ describe('the one-of-N menu (LoadingMenu)', () => {
     // have dropped the "sessions from days ago" search with it.
     it('filters on the detail as well as the label', () => {
       renderMenu({ options: dated, filter: true })
-      fireEvent.input(screen.getByTestId('loading-menu-filter'), { target: { value: '3d' } })
+      fireEvent.input(screen.getByTestId('loading-menu-filter'), {
+        target: { value: '3d' },
+      })
       expect(menuOptionValues(MENU)).toEqual(['a'])
     })
   })
@@ -291,7 +325,11 @@ describe('the one-of-N menu (LoadingMenu)', () => {
   it('gives the whole label on hover once a row clips it', () => {
     vi.useFakeTimers()
     try {
-      renderMenu({ options: [{ value: 'a', label: 'A label far wider than the row that holds it' }] })
+      renderMenu({
+        options: [
+          { value: 'a', label: 'A label far wider than the row that holds it' },
+        ],
+      })
       openMenu(MENU)
       const label = screen.getByTestId('loading-menu-option-a-label')
       stubClipped(label)
@@ -308,7 +346,12 @@ describe('the one-of-N menu (LoadingMenu)', () => {
   it('gives the whole trigger label on hover once the field clips it', () => {
     vi.useFakeTimers()
     try {
-      renderMenu({ value: 'a', options: [{ value: 'a', label: 'A picked option far wider than the field' }] })
+      renderMenu({
+        value: 'a',
+        options: [
+          { value: 'a', label: 'A picked option far wider than the field' },
+        ],
+      })
       const label = menuTrigger(MENU).querySelector<HTMLElement>(`.${clippedText}`)!
       stubClipped(label)
       expect(hoverForTooltip(label)?.textContent).toBe('A picked option far wider than the field')
@@ -327,8 +370,22 @@ describe('the one-of-N menu (LoadingMenu)', () => {
     const drawDetail = vi.fn(() => <em>three days</em>)
     renderMenu({
       options: [
-        { value: 'a', label: 'Alpha', detail: { text: () => '3d ago', render: drawDetail } },
-        { value: 'b', label: 'Beta', detail: { text: () => '5d ago', render: drawDetail } },
+        {
+          value: 'a',
+          label: 'Alpha',
+          detail: {
+            text: () => '3d ago',
+            render: drawDetail,
+          },
+        },
+        {
+          value: 'b',
+          label: 'Beta',
+          detail: {
+            text: () => '5d ago',
+            render: drawDetail,
+          },
+        },
       ],
     })
 
@@ -384,7 +441,9 @@ describe('LoadingMenu keyboard contract', () => {
   }
 
   const items = () =>
-    [...screen.getByTestId(MENU).querySelectorAll<HTMLElement>('[role="menuitemradio"]')]
+    [
+      ...screen.getByTestId(MENU).querySelectorAll<HTMLElement>('[role="menuitemradio"]'),
+    ]
 
   const focusedLabel = () => (document.activeElement as HTMLElement | null)?.textContent?.trim()
 
@@ -499,14 +558,23 @@ describe('LoadingMenu filter threshold', () => {
   })
 
   it('shows none for a list a reader takes in at a glance', () => {
-    renderMenu({ options: [{ value: 'a', label: 'Alpha' }] })
+    renderMenu({
+      options: [
+        { value: 'a', label: 'Alpha' },
+      ],
+    })
     expect(screen.queryByTestId('loading-menu-filter')).toBeNull()
   })
 
   it('lets the caller override in both directions', () => {
     // `BranchSelect` states it although its repository may hold three branches
     // today; a caller that knows its list stays short can refuse it.
-    const { unmount } = renderMenu({ options: [{ value: 'a', label: 'Alpha' }], filter: true })
+    const { unmount } = renderMenu({
+      options: [
+        { value: 'a', label: 'Alpha' },
+      ],
+      filter: true,
+    })
     expect(screen.queryByTestId('loading-menu-filter')).not.toBeNull()
     unmount()
 

@@ -136,7 +136,9 @@ function canvas2dStub(): CanvasRenderingContext2D {
 }
 
 HTMLCanvasElement.prototype.getContext = ((kind: string) =>
-  kind === '2d' ? canvas2dStub() : null) as typeof HTMLCanvasElement.prototype.getContext
+  kind === '2d'
+    ? canvas2dStub()
+    : null) as typeof HTMLCanvasElement.prototype.getContext
 
 // jsdom does not implement ResizeObserver; provide an inert stub so
 // components that observe layout changes render without throwing.
@@ -174,7 +176,10 @@ if (typeof (HTMLElement.prototype as Partial<PopoverProto>).showPopover !== 'fun
   const proto = HTMLElement.prototype as PopoverProto
   const beforeToggle = (element: HTMLElement, oldState: string, newState: string) => {
     const event = new Event('beforetoggle', { cancelable: newState === 'open' })
-    Object.defineProperties(event, { oldState: { value: oldState }, newState: { value: newState } })
+    Object.defineProperties(event, {
+      oldState: { value: oldState },
+      newState: { value: newState },
+    })
     return element.dispatchEvent(event)
   }
   proto.showPopover = function showPopover(this: HTMLElement) {

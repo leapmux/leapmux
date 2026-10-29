@@ -153,7 +153,9 @@ export function createEditorLayout(refs: EditorLayoutRefs): EditorLayout {
     const stats = docStats()
     // -1 means "no measurement needed": multi-line content expands whatever its
     // width, and measuring forces a synchronous layout.
-    return stats.multiLine ? -1 : measureContentWidth(stats.text)
+    return stats.multiLine
+      ? -1
+      : measureContentWidth(stats.text)
   })
 
   createComputed(() => {
@@ -254,5 +256,11 @@ export function createEditorLayout(refs: EditorLayoutRefs): EditorLayout {
     })
   }
 
-  return { contentExpanded, rightPad, actionsHeight, setDocStats, observe }
+  return {
+    contentExpanded,
+    rightPad,
+    actionsHeight,
+    setDocStats,
+    observe,
+  }
 }

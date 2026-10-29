@@ -21,10 +21,20 @@ export function museMcpSpec(input: MuseMcpFacts): ToolCallSpec<'mcp'> {
       ? {
           metadata: [
             { label: 'Native status', value: input.status || 'Unspecified' },
-            ...(input.output ? [{ label: 'Native output', value: input.output }] : []),
+            ...(input.output
+              ? [
+                  { label: 'Native output', value: input.output },
+                ]
+              : []),
           ],
         }
       : {}),
-    ...(input.facts.resultFrameLanded ? { result: failed ? failedResult(input.output) : unparsedResult(input.output) } : {}),
+    ...(input.facts.resultFrameLanded
+      ? {
+          result: failed
+            ? failedResult(input.output)
+            : unparsedResult(input.output),
+        }
+      : {}),
   }
 }

@@ -56,8 +56,12 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
   const { submit: { submitting, error, formHandler }, worker, gitMode, pathInfo } = useWorkerDialog({
     submit: { fallback: 'Failed to create agent' },
     worker: {
-      ...(props.defaultWorkerId !== undefined ? { preselectedWorkerId: props.defaultWorkerId } : {}),
-      ...(props.defaultWorkingDir !== undefined ? { defaultWorkingDir: props.defaultWorkingDir } : {}),
+      ...(props.defaultWorkerId !== undefined
+        ? { preselectedWorkerId: props.defaultWorkerId }
+        : {}),
+      ...(props.defaultWorkingDir !== undefined
+        ? { defaultWorkingDir: props.defaultWorkingDir }
+        : {}),
     },
     pathInfo: { remapWorktreeRoot: true },
   })
@@ -70,16 +74,27 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
   const [startupChoice, setStartupChoice] = createSignal<{ provider: AgentProvider, values: Record<string, string> }>()
   const startupGroups = createMemo(() => {
     const provider = agentProvider()
-    return provider === undefined ? [] : providerFor(provider)?.configuration?.startupOptionGroups ?? []
+    return provider === undefined
+      ? []
+      : providerFor(provider)?.configuration?.startupOptionGroups ?? []
   })
   const startupValues = () => {
     const choice = startupChoice()
-    return choice && choice.provider === agentProvider() ? choice.values : {}
+    return choice && choice.provider === agentProvider()
+      ? choice.values
+      : {}
   }
   const setStartupValue = (id: string, value: string) => {
     const provider = agentProvider()
-    if (provider !== undefined)
-      setStartupChoice({ provider, values: { ...startupValues(), [id]: value } })
+    if (provider !== undefined) {
+      setStartupChoice({
+        provider,
+        values: {
+          ...startupValues(),
+          [id]: value,
+        },
+      })
+    }
   }
   // A provider change DISCARDS the choice, so a switch away and back lands on
   // the new provider's defaults: each group belongs to one provider, and a
@@ -102,7 +117,9 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
     const reason = blockedReason()
     return isAgentCreateDisabled({
       submitting: submitting.loading(),
-      ...(reason !== undefined ? { blockedReason: reason } : {}),
+      ...(reason !== undefined
+        ? { blockedReason: reason }
+        : {}),
       workerId: worker.workerId(),
       workingDir: worker.workingDir(),
       noProviders: noProviders(),
@@ -134,9 +151,16 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
       workerId: worker.workerId(),
       workingDir: worker.workingDir(),
       ...openAgentRequestOptions(provider),
-      options: { ...openAgentRequestOptions(provider).options, ...resolveStartupOptionValues(startupGroups(), startupValues()) },
+      options: {
+        ...openAgentRequestOptions(provider).options,
+        ...resolveStartupOptionValues(startupGroups(), startupValues()),
+      },
       ...gitMode.toGitFields(),
-      ...(sessionId.trimmed() ? { agentSessionId: sessionId.trimmed() } : {}),
+      ...(sessionId.trimmed()
+        ? {
+            agentSessionId: sessionId.trimmed(),
+          }
+        : {}),
     })
     if (resp.agent) {
       recordProviderUse(provider)
@@ -169,8 +193,12 @@ export const NewAgentDialog: Component<NewAgentDialogProps> = (props) => {
           <AgentProviderSelector
             value={agentProvider}
             onChange={setAgentProvider}
-            {...(props.availableProviders !== undefined ? { availableProviders: props.availableProviders } : {})}
-            {...(props.onRefreshProviders !== undefined ? { onRefresh: props.onRefreshProviders } : {})}
+            {...(props.availableProviders !== undefined
+              ? { availableProviders: props.availableProviders }
+              : {})}
+            {...(props.onRefreshProviders !== undefined
+              ? { onRefresh: props.onRefreshProviders }
+              : {})}
           />
         </DialogTopRow>
         <TitleInput state={title} />

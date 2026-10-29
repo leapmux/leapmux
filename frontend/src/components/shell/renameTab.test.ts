@@ -49,8 +49,12 @@ function deps(tab?: Tab): RenameTabDeps & { patch: ReturnType<typeof vi.fn> } {
   return {
     patch,
     view: {
-      getAgentTab: () => (tab?.type === TabType.AGENT ? tab as AgentTab : undefined),
-      getTerminalTab: () => (tab?.type === TabType.TERMINAL ? tab as TerminalTab : undefined),
+      getAgentTab: () => (tab?.type === TabType.AGENT
+        ? tab as AgentTab
+        : undefined),
+      getTerminalTab: () => (tab?.type === TabType.TERMINAL
+        ? tab as TerminalTab
+        : undefined),
     },
     metadata: { patch },
   }
@@ -173,7 +177,13 @@ describe('renameTab', () => {
   })
 
   it('leaves a FILE tab alone, because its title is its path', () => {
-    const tab = { type: TabType.FILE, id: 'f1', workspaceId: 'ws-1', position: 'c', filePath: '/tmp/x.ts' } as Tab
+    const tab = {
+      type: TabType.FILE,
+      id: 'f1',
+      workspaceId: 'ws-1',
+      position: 'c',
+      filePath: '/tmp/x.ts',
+    } as Tab
     const d = deps()
 
     renameTab(d, tab, 'Something else')

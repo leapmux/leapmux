@@ -21,10 +21,18 @@ import { claudeWorkflowLaunch, claudeWorkflowModelOutcome, claudeWorkflowOutput,
 import { nativeContext } from './scenarios'
 
 claudeTest('executes native Workflow code and preserves the computed result and script error', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }, testInfo) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+  })
   const catalogRequest = await openNativeCatalogTurn(context, { directoryPrefix: 'native-workflow-code-' })
   expect(nativeModelToolNames(catalogRequest)).toContain('Workflow')
-  await testInfo.attach('claude-workflow-catalog', { body: JSON.stringify(catalogRequest, null, 2), contentType: 'application/json' })
+  await testInfo.attach('claude-workflow-catalog', {
+    body: JSON.stringify(catalogRequest, null, 2),
+    contentType: 'application/json',
+  })
   const agent = await currentNativeAgent(context)
   const marker = uniqueMarker('NATIVEWORKFLOW')
   // Workflow completion can start another parent turn after the launch turn ends.
@@ -32,10 +40,17 @@ claudeTest('executes native Workflow code and preserves the computed result and 
   const runs: { launch: ClaudeWorkflowLaunch, failed: boolean }[] = []
   for (const { callId, source, expected, failed } of nativeWorkflowScripts(marker)) {
     expect(source).not.toContain(expected)
-    const evidence: Record<string, unknown> = { callId, source, agentId: agent.id, agentSessionId: agent.agentSessionId }
+    const evidence: Record<string, unknown> = {
+      callId,
+      source,
+      agentId: agent.id,
+      agentSessionId: agent.agentSessionId,
+    }
     await withCleanup(async () => {
       await runNativeToolTurn(context, {
-        toolCalls: [codeExecutionToolCall(context.provider, callId, source)],
+        toolCalls: [
+          codeExecutionToolCall(context.provider, callId, source),
+        ],
         prompt: `Run the native Workflow ${failed ? 'error' : 'output'} script.`,
         answer: 'The native Workflow launch turn ended.',
       })
@@ -44,7 +59,9 @@ claudeTest('executes native Workflow code and preserves the computed result and 
       evidence.tasks = (await readNativeSidebarSnapshot(context, agent.id)).backgroundTasks
       const launches = initial.messages.map(nativeMessageBody).flatMap((value) => {
         const launch = claudeWorkflowLaunch(value, callId)
-        return launch ? [launch] : []
+        return launch
+          ? [launch]
+          : []
       })
       if (launches.length !== 1)
         throw new Error(`The Claude Workflow has ${launches.length} exact native launch receipts.`)
@@ -69,7 +86,10 @@ claudeTest('executes native Workflow code and preserves the computed result and 
       const tasks = (await readNativeSidebarSnapshot(context, agent.id)).backgroundTasks
       const task = tasks.find(value => value.id === launch.taskId)
       evidence.task = task
-      await testInfo.attach(`claude-workflow-${failed ? 'error' : 'output'}-native-pre-full-output`, { body: JSON.stringify(evidence, null, 2), contentType: 'application/json' })
+      await testInfo.attach(`claude-workflow-${failed ? 'error' : 'output'}-native-pre-full-output`, {
+        body: JSON.stringify(evidence, null, 2),
+        contentType: 'application/json',
+      })
       const config = leapmuxServer.agentEnv.CLAUDE_CONFIG_DIR
       if (!config)
         throw new Error('The private Claude configuration directory is absent.')
@@ -102,7 +122,10 @@ claudeTest('executes native Workflow code and preserves the computed result and 
         evidence.outputText = outputText
         evidence.output = claudeWorkflowOutputFile(outputText, outcome.status)
       }
-      await testInfo.attach(`claude-workflow-${failed ? 'error' : 'output'}-native`, { body: JSON.stringify(evidence, null, 2), contentType: 'application/json' })
+      await testInfo.attach(`claude-workflow-${failed ? 'error' : 'output'}-native`, {
+        body: JSON.stringify(evidence, null, 2),
+        contentType: 'application/json',
+      })
       expect(task?.kind).toBe(BackgroundTaskKind.WORKFLOW)
       expect(initial.agentSessionId).toBe(agent.agentSessionId)
       expect(task?.status).toBe(failed ? BackgroundTaskStatus.FAILED : BackgroundTaskStatus.SUCCEEDED)
@@ -125,12 +148,23 @@ claudeTest('executes native Workflow code and preserves the computed result and 
     }, async () => {
       const results = await Promise.allSettled([
         modelScript.status(),
-        readNativeMessageSnapshot(context, agent.id).then(snapshot => ({ agentId: snapshot.agentId, agentSessionId: snapshot.agentSessionId, messages: snapshot.messages.map(nativeMessageBody) })),
+        readNativeMessageSnapshot(context, agent.id).then(snapshot => ({
+          agentId: snapshot.agentId,
+          agentSessionId: snapshot.agentSessionId,
+          messages: snapshot.messages.map(nativeMessageBody),
+        })),
         readNativeSidebarSnapshot(context, agent.id).then(snapshot => snapshot.backgroundTasks),
       ])
-      evidence.finalReads = results.map(result => result.status === 'fulfilled' ? result.value : String(result.reason))
-      await testInfo.attach(`claude-workflow-${failed ? 'error' : 'output'}-diagnostics`, { body: JSON.stringify(evidence, null, 2), contentType: 'application/json' })
-      const errors = results.flatMap(result => result.status === 'rejected' ? [result.reason] : [])
+      evidence.finalReads = results.map(result => result.status === 'fulfilled'
+        ? result.value
+        : String(result.reason))
+      await testInfo.attach(`claude-workflow-${failed ? 'error' : 'output'}-diagnostics`, {
+        body: JSON.stringify(evidence, null, 2),
+        contentType: 'application/json',
+      })
+      const errors = results.flatMap(result => result.status === 'rejected'
+        ? [result.reason]
+        : [])
       if (errors.length > 0)
         throw new AggregateError(errors, 'The Claude Workflow diagnostic reads failed.')
     })
@@ -138,7 +172,13 @@ claudeTest('executes native Workflow code and preserves the computed result and 
   await page.reload()
   const reloaded = await readNativeMessageSnapshot(context, agent.id)
   const tasks = (await readNativeSidebarSnapshot(context, agent.id)).backgroundTasks
-  await testInfo.attach('claude-workflow-reloaded', { body: JSON.stringify({ messages: reloaded.messages.map(nativeMessageBody), tasks }, null, 2), contentType: 'application/json' })
+  await testInfo.attach('claude-workflow-reloaded', {
+    body: JSON.stringify({
+      messages: reloaded.messages.map(nativeMessageBody),
+      tasks,
+    }, null, 2),
+    contentType: 'application/json',
+  })
   expect(reloaded.agentSessionId).toBe(agent.agentSessionId)
   await expandBackgroundTasksSection(page)
   for (const run of runs) {

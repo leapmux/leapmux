@@ -31,7 +31,9 @@ const REMINDER_ALERT_VARIANT: Record<ReminderSeverity, AlertVariant> = {
 }
 
 function reminderVariant(severity: ReminderSeverity | undefined): AlertVariant | undefined {
-  return severity === undefined ? undefined : REMINDER_ALERT_VARIANT[severity]
+  return severity === undefined
+    ? undefined
+    : REMINDER_ALERT_VARIANT[severity]
 }
 
 export function ReadFileResultBody(props: {
@@ -47,7 +49,9 @@ export function ReadFileResultBody(props: {
   // states a refused read's reason instead of nothing.
   const hasParsedLines = () => props.source.lines !== null && props.source.lines.length > 0
   const { isCollapsed, displayItems } = useCollapsedItems<NumberedFileLine>({ items, expanded })
-  const collapsedClass = () => hasParsedLines() && isCollapsed() ? ` ${toolResultCollapsed}` : ''
+  const collapsedClass = () => hasParsedLines() && isCollapsed()
+    ? ` ${toolResultCollapsed}`
+    : ''
 
   return (
     <div class={`${toolMessage}${collapsedClass()}`}>
@@ -57,28 +61,63 @@ export function ReadFileResultBody(props: {
         <For each={props.source.leading ?? []}>
           {(r) => {
             const variant = reminderVariant(r.severity)
-            return <Alert {...(variant !== undefined ? { variant } : {})} label={r.label}>{r.text}</Alert>
+            return (
+              <Alert
+                {...(variant !== undefined
+                  ? { variant }
+                  : {})}
+                label={r.label}
+              >
+                {r.text}
+              </Alert>
+            )
           }}
         </For>
       </Show>
       <Show
         when={hasParsedLines() && items().length > 0}
-        fallback={<CollapsibleContent outputPreview={Boolean(props.source.fallbackContent)} kind="pre" text={fallbackText()} display={fallback.display()} isCollapsed={fallback.isCollapsed()} {...(props.context !== undefined ? { context: props.context } : {})} />}
+        fallback={(
+          <CollapsibleContent
+            outputPreview={Boolean(props.source.fallbackContent)}
+            kind="pre"
+            text={fallbackText()}
+            display={fallback.display()}
+            isCollapsed={fallback.isCollapsed()}
+            {...(props.context !== undefined
+              ? { context: props.context }
+              : {})}
+          />
+        )}
       >
         <ReadResultView
           outputPreview
           lines={displayItems()}
-          {...(props.path !== undefined ? { filePath: props.path } : {})}
-          {...(props.context?.premeasureMode !== undefined ? { premeasureMode: props.context?.premeasureMode } : {})}
+          {...(props.path !== undefined
+            ? { filePath: props.path }
+            : {})}
+          {...(props.context?.premeasureMode !== undefined
+            ? { premeasureMode: props.context?.premeasureMode }
+            : {})}
           syntaxHighlightingPaused={shouldPauseSyntaxHighlighting(props.context)}
-          {...(props.context?.textSelectionActive !== undefined ? { textSelectionActive: props.context?.textSelectionActive } : {})}
+          {...(props.context?.textSelectionActive !== undefined
+            ? { textSelectionActive: props.context?.textSelectionActive }
+            : {})}
         />
       </Show>
       <Show when={expanded()}>
         <For each={props.source.trailing ?? []}>
           {(r) => {
             const variant = reminderVariant(r.severity)
-            return <Alert {...(variant !== undefined ? { variant } : {})} label={r.label}>{r.text}</Alert>
+            return (
+              <Alert
+                {...(variant !== undefined
+                  ? { variant }
+                  : {})}
+                label={r.label}
+              >
+                {r.text}
+              </Alert>
+            )
           }}
         </For>
       </Show>

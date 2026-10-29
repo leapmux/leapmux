@@ -10,27 +10,37 @@ const COMMAND = '"session_id"\\s*:\\s*([0-9]+)'
 export function codexAsyncExecRules(steeringText?: string): MockModelRule[] {
   const wait = {
     captures: { codeCell: CELL },
-    toolCalls: [codexWaitCellToolCall('await-native-cell', '{{codeCell}}')],
+    toolCalls: [
+      codexWaitCellToolCall('await-native-cell', '{{codeCell}}'),
+    ],
   }
   const rules: MockModelRule[] = [
     {
       name: 'codex-await-code-cell',
       priority: 'high',
-      when: { protocol: 'openai-responses', lastMessage: { type: OUTPUT_TYPE, text: `^${CELL}` } },
+      when: {
+        protocol: 'openai-responses',
+        lastMessage: { type: OUTPUT_TYPE, text: `^${CELL}` },
+      },
       respond: wait,
     },
     {
       name: 'codex-await-command-session',
       priority: 'high',
-      when: { protocol: 'openai-responses', lastMessage: { type: OUTPUT_TYPE, text: COMMAND } },
+      when: {
+        protocol: 'openai-responses',
+        lastMessage: { type: OUTPUT_TYPE, text: COMMAND },
+      },
       respond: {
         captures: { commandSession: COMMAND },
-        toolCalls: [codexExecToolCall('await-native-command', [
-          'const sessionId = Number("{{commandSession}}");',
-          'if (!Number.isSafeInteger(sessionId)) throw new Error("The native command session ID is not a safe integer.");',
-          'const result = await tools.write_stdin({ session_id: sessionId, chars: "", yield_time_ms: 10000 });',
-          'text(JSON.stringify(result));',
-        ].join('\n'))],
+        toolCalls: [
+          codexExecToolCall('await-native-command', [
+            'const sessionId = Number("{{commandSession}}");',
+            'if (!Number.isSafeInteger(sessionId)) throw new Error("The native command session ID is not a safe integer.");',
+            'const result = await tools.write_stdin({ session_id: sessionId, chars: "", yield_time_ms: 10000 });',
+            'text(JSON.stringify(result));',
+          ].join('\n')),
+        ],
       },
     },
   ]

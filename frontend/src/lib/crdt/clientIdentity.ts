@@ -110,8 +110,12 @@ export function createClientIdentity(): ClientIdentity {
   // webviews do. Without one there is no duplicate-tab handshake and the
   // incumbent's id simply stands.
   let channel = tryCreateBroadcastChannel(CHANNEL_NAME)
-  if (channel === null)
-    return { clientId, dispose: () => {} }
+  if (channel === null) {
+    return {
+      clientId,
+      dispose: () => {},
+    }
+  }
 
   // Minted in memory AFTER any sessionStorage copy, so a duplicated tab and its
   // source always disagree here even though they agree on clientId.
@@ -123,7 +127,9 @@ export function createClientIdentity(): ClientIdentity {
         type,
         clientId: clientId(),
         instance,
-        ...(replyTo !== undefined ? { replyTo } : {}),
+        ...(replyTo !== undefined
+          ? { replyTo }
+          : {}),
       } satisfies ClaimMessage)
     }
     catch {

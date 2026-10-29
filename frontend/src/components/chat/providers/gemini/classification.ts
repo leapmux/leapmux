@@ -16,7 +16,11 @@ function geminiNativeCategory(input: ClassificationInput): MessageCategory | nul
     return { kind: 'hidden' }
   if (part.kind === 'thought')
     return { kind: 'assistant_thinking' }
-  return { kind: message.type === 'user' ? 'user_text' : 'assistant_text' }
+  return {
+    kind: message.type === 'user'
+      ? 'user_text'
+      : 'assistant_text',
+  }
 }
 
 /** Preserve the captured ACP classifier as the fallback for native child rows. */

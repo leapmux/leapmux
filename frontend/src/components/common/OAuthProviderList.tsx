@@ -13,7 +13,9 @@ interface OAuthProviderListProps {
 
 export const OAuthProviderList: Component<OAuthProviderListProps> = (props) => {
   const url = (provider: OAuthProviderInfo) =>
-    props.buildUrl ? props.buildUrl(provider) : provider.loginUrl
+    props.buildUrl
+      ? props.buildUrl(provider)
+      : provider.loginUrl
 
   return (
     <>

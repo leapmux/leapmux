@@ -51,19 +51,64 @@ afterEach(() => {
 
 describe('wordBounds', () => {
   it.each([
-    ['inside a word', 'hello world', 7, 'world'],
-    ['at a word start', 'hello world', 6, 'world'],
-    ['at index zero', 'hello world', 0, 'hello'],
+    [
+      'inside a word',
+      'hello world',
+      7,
+      'world',
+    ],
+    [
+      'at a word start',
+      'hello world',
+      6,
+      'world',
+    ],
+    [
+      'at index zero',
+      'hello world',
+      0,
+      'hello',
+    ],
     // A finger aimed at the right half of the last letter lands on the boundary
     // AFTER it, which belongs to the space. The word before wins.
-    ['on the space after a word', 'hello world', 5, 'hello'],
-    ['at the very end of the text', 'hello world', 11, 'world'],
+    [
+      'on the space after a word',
+      'hello world',
+      5,
+      'hello',
+    ],
+    [
+      'at the very end of the text',
+      'hello world',
+      11,
+      'world',
+    ],
     // Intl.Segmenter's word rules, which is the whole reason this uses it:
     // an underscore joins, a hyphen splits, and Korean needs no spaces at all.
-    ['across an underscore', 'foo_bar-baz', 1, 'foo_bar'],
-    ['after a hyphen', 'foo_bar-baz', 9, 'baz'],
-    ['in a script that writes no spaces', '안녕하세요 세계', 1, '안녕하세요'],
-    ['on a number', 'exit code 137 now', 11, '137'],
+    [
+      'across an underscore',
+      'foo_bar-baz',
+      1,
+      'foo_bar',
+    ],
+    [
+      'after a hyphen',
+      'foo_bar-baz',
+      9,
+      'baz',
+    ],
+    [
+      'in a script that writes no spaces',
+      '안녕하세요 세계',
+      1,
+      '안녕하세요',
+    ],
+    [
+      'on a number',
+      'exit code 137 now',
+      11,
+      '137',
+    ],
   ])('takes the word %s', (_case, text, index, expected) => {
     const bounds = wordBounds(text, index)
     expect(bounds).not.toBeNull()
@@ -187,7 +232,10 @@ describe('paragraphRangeAt', () => {
   it('takes the line before a caret that sits exactly on the break', () => {
     const root = mount('<pre class="pre">first\nsecond</pre>')
     const node = textNodeWith(root, 'first')
-    expect(paragraphRangeAt({ node, offset: node.data.indexOf('\n') }, root)?.toString()).toBe('first')
+    expect(paragraphRangeAt({
+      node,
+      offset: node.data.indexOf('\n'),
+    }, root)?.toString()).toBe('first')
   })
 
   it('trims the white space that does not show', () => {
@@ -288,7 +336,9 @@ describe('selectionInside', () => {
       anchorNode: textNode,
       focusNode: textNode,
       toString: () => '',
-      getRangeAt: () => ({ toString: () => 'selected text' }) as unknown as Range,
+      getRangeAt: () => ({
+        toString: () => 'selected text',
+      }) as unknown as Range,
     } as unknown as Selection)
 
     expect(selectionInside(root)).not.toBeNull()
@@ -309,20 +359,35 @@ describe('pointIsInsideSelection', () => {
 
   it('reports a point on the highlight', () => {
     const root = mount('<p class="block">selected</p>')
-    selectWithRect(root.firstElementChild!, { left: 10, right: 90, top: 20, bottom: 40 })
+    selectWithRect(root.firstElementChild!, {
+      left: 10,
+      right: 90,
+      top: 20,
+      bottom: 40,
+    })
     expect(pointIsInsideSelection(50, 30)).toBe(true)
   })
 
   it('counts the edges of a rect as inside', () => {
     const root = mount('<p class="block">selected</p>')
-    selectWithRect(root.firstElementChild!, { left: 10, right: 90, top: 20, bottom: 40 })
+    selectWithRect(root.firstElementChild!, {
+      left: 10,
+      right: 90,
+      top: 20,
+      bottom: 40,
+    })
     expect(pointIsInsideSelection(10, 20)).toBe(true)
     expect(pointIsInsideSelection(90, 40)).toBe(true)
   })
 
   it('reports a point beside the highlight', () => {
     const root = mount('<p class="block">selected</p>')
-    selectWithRect(root.firstElementChild!, { left: 10, right: 90, top: 20, bottom: 40 })
+    selectWithRect(root.firstElementChild!, {
+      left: 10,
+      right: 90,
+      top: 20,
+      bottom: 40,
+    })
     expect(pointIsInsideSelection(120, 30)).toBe(false)
     expect(pointIsInsideSelection(50, 80)).toBe(false)
   })
@@ -331,7 +396,12 @@ describe('pointIsInsideSelection', () => {
   // below its last line, so a finger reaching for one lands outside every rect.
   it('takes a tolerance for a finger reaching past the edge', () => {
     const root = mount('<p class="block">selected</p>')
-    selectWithRect(root.firstElementChild!, { left: 10, right: 90, top: 20, bottom: 40 })
+    selectWithRect(root.firstElementChild!, {
+      left: 10,
+      right: 90,
+      top: 20,
+      bottom: 40,
+    })
     expect(pointIsInsideSelection(100, 30, 24)).toBe(true)
     expect(pointIsInsideSelection(50, 60, 24)).toBe(true)
     // ...and no further than it was told.

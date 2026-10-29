@@ -41,7 +41,9 @@ export function acpPermissionOptions(payload: Record<string, unknown>): Permissi
     return {
       optionId: pickString(option, 'optionId'),
       kind: pickString(option, 'kind'),
-      ...(name !== '' ? { name } : {}),
+      ...(name !== ''
+        ? { name }
+        : {}),
     }
   })
 }
@@ -65,7 +67,9 @@ export function acpPermissionPrompt(input: ControlExtractionInput): PermissionPr
   // a request read as a non-permission would answer it with the wrong envelope.
   if (!original && options.length === 0)
     return null
-  const toolCall: Record<string, unknown> = original ? resolveACPToolCall(original, input.request?.parentObject) : {}
+  const toolCall: Record<string, unknown> = original
+    ? resolveACPToolCall(original, input.request?.parentObject)
+    : {}
   const kind = pickString(toolCall, 'kind')
   const permission: PermissionPrompt = {
     title: pickString(toolCall, 'title') || kind,
@@ -92,7 +96,9 @@ export function acpPermissionPrompt(input: ControlExtractionInput): PermissionPr
  */
 export function acpExtractControl(input: ControlExtractionInput): ExtractedControlRequest | null {
   const permission = acpPermissionPrompt(input)
-  return permission ? { kind: 'permission', permission } : null
+  return permission
+    ? { kind: 'permission', permission }
+    : null
 }
 
 /**

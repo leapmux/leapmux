@@ -175,7 +175,9 @@ function useSidebarDrag(opts: {
     const handle = e.currentTarget as HTMLElement
     const startX = e.clientX
     const startWidth = opts.getWidth()
-    const sign = opts.direction === 'left' ? 1 : -1
+    const sign = opts.direction === 'left'
+      ? 1
+      : -1
     let claimed = false
     drag.start({
       onMove: (ev) => {
@@ -240,7 +242,9 @@ function useSidebarSide(opts: {
     setWidth(widthBeforeCollapse)
     opts.onSave()
   }
-  const toggle = () => (collapsed() ? expand() : collapse())
+  const toggle = () => (collapsed()
+    ? expand()
+    : collapse())
 
   const drag = useSidebarDrag({
     getWidth: width,
@@ -252,11 +256,17 @@ function useSidebarSide(opts: {
     direction: opts.side,
   })
 
-  const pxStyle = () => `${collapsed() ? opts.collapsedSizePx : width()}px`
+  const pxStyle = () => `${collapsed()
+    ? opts.collapsedSizePx
+    : width()}px`
 
   const applyAutoCollapseDecision = (decision: AutoCollapseDecision) => {
-    const wantCollapse = opts.side === 'left' ? decision.collapseLeft : decision.collapseRight
-    const wantExpand = opts.side === 'left' ? decision.expandLeft : decision.expandRight
+    const wantCollapse = opts.side === 'left'
+      ? decision.collapseLeft
+      : decision.collapseRight
+    const wantExpand = opts.side === 'left'
+      ? decision.expandLeft
+      : decision.expandRight
     if (wantCollapse) {
       widthBeforeCollapse = width()
       setAutoCollapsed(true)
@@ -310,8 +320,12 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
     if (!id)
       return
     const state: SidebarState = {
-      leftSize: leftSide.collapsed() ? leftSide.getWidthBeforeCollapse() : leftSide.width(),
-      rightSize: rightSide.collapsed() ? rightSide.getWidthBeforeCollapse() : rightSide.width(),
+      leftSize: leftSide.collapsed()
+        ? leftSide.getWidthBeforeCollapse()
+        : leftSide.width(),
+      rightSize: rightSide.collapsed()
+        ? rightSide.getWidthBeforeCollapse()
+        : rightSide.width(),
       leftCollapsed: leftSide.collapsed(),
       rightCollapsed: rightSide.collapsed(),
       autoCollapsedLeft: leftSide.autoCollapsed(),
@@ -408,8 +422,12 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
           {props.createLeftSidebar({
             isCollapsed: leftSide.collapsed,
             onExpand: leftSide.expand,
-            ...(savedSidebar?.leftOpenSections !== undefined ? { initialOpenSections: savedSidebar.leftOpenSections } : {}),
-            ...(savedSidebar?.leftSectionSizes !== undefined ? { initialSectionSizes: savedSidebar.leftSectionSizes } : {}),
+            ...(savedSidebar?.leftOpenSections !== undefined
+              ? { initialOpenSections: savedSidebar.leftOpenSections }
+              : {}),
+            ...(savedSidebar?.leftSectionSizes !== undefined
+              ? { initialSectionSizes: savedSidebar.leftSectionSizes }
+              : {}),
             onStateChange: (open, sizes) => {
               leftOpenSections = open
               leftSectionSizes = sizes
@@ -449,8 +467,12 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
             )}
           >
             <ChatDropZone
-              {...(props.onFileDrop !== undefined ? { onDrop: props.onFileDrop } : {})}
-              {...(props.fileDropDisabled !== undefined ? { disabled: props.fileDropDisabled } : {})}
+              {...(props.onFileDrop !== undefined
+                ? { onDrop: props.onFileDrop }
+                : {})}
+              {...(props.fileDropDisabled !== undefined
+                ? { disabled: props.fileDropDisabled }
+                : {})}
             >
               {/*
                   Key TilingLayout on the active workspace id so the
@@ -469,7 +491,9 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
                   root={props.layoutStore.state.root}
                   renderTile={props.renderTile}
                   onRatioChange={props.onRatioChange}
-                  {...(props.onGridRatiosChange !== undefined ? { onGridRatiosChange: props.onGridRatiosChange } : {})}
+                  {...(props.onGridRatiosChange !== undefined
+                    ? { onGridRatiosChange: props.onGridRatiosChange }
+                    : {})}
                 />
               </Show>
               {props.editorPanel}
@@ -496,8 +520,12 @@ export const DesktopLayout: Component<DesktopLayoutProps> = (props) => {
           {props.createRightSidebar({
             isCollapsed: rightSide.collapsed,
             onExpand: rightSide.expand,
-            ...(savedSidebar?.rightOpenSections !== undefined ? { initialOpenSections: savedSidebar.rightOpenSections } : {}),
-            ...(savedSidebar?.rightSectionSizes !== undefined ? { initialSectionSizes: savedSidebar.rightSectionSizes } : {}),
+            ...(savedSidebar?.rightOpenSections !== undefined
+              ? { initialOpenSections: savedSidebar.rightOpenSections }
+              : {}),
+            ...(savedSidebar?.rightSectionSizes !== undefined
+              ? { initialSectionSizes: savedSidebar.rightSectionSizes }
+              : {}),
             onStateChange: (open, sizes) => {
               rightOpenSections = open
               rightSectionSizes = sizes

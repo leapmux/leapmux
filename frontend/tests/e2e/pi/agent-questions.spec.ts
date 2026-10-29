@@ -11,14 +11,16 @@ for (const answerKind of ['custom', 'selected']) {
     // The EXTENSION is real -- it is what turns the tool call into a control
     // request and carries the answer back. Only the decision to ask is scripted.
     const { result } = await exerciseQuestionAnswer(native, {
-      questions: [{
-        question: 'Choose a style',
-        header: 'Style',
-        options: [
-          { label: 'Alpha', description: 'Use the first style.' },
-          { label: 'Beta', description: 'Use the second style.' },
-        ],
-      }],
+      questions: [
+        {
+          question: 'Choose a style',
+          header: 'Style',
+          options: [
+            { label: 'Alpha', description: 'Use the first style.' },
+            { label: 'Beta', description: 'Use the second style.' },
+          ],
+        },
+      ],
       callId: 'style-question',
       prompt: 'Ask me which style to use.',
       answer: 'Recorded the style.',
@@ -31,9 +33,13 @@ for (const answerKind of ['custom', 'selected']) {
         }
         : chooseQuestionOption('Beta', native),
     })
-    expect(result).toContain(answerKind === 'custom' ? 'A custom style' : 'Beta')
+    expect(result).toContain(answerKind === 'custom'
+      ? 'A custom style'
+      : 'Beta')
     expect(result).not.toContain('Alpha')
-    await expect(assistantBubbles(page).filter({ hasText: 'User has answered your questions:' })).toContainText(answerKind === 'custom' ? 'A custom style' : 'Beta')
+    await expect(assistantBubbles(page).filter({ hasText: 'User has answered your questions:' })).toContainText(answerKind === 'custom'
+      ? 'A custom style'
+      : 'Beta')
     await expect(chatScrollContainer(page).getByText('User declined to answer questions', { exact: true })).toHaveCount(0)
   })
 }
@@ -41,14 +47,36 @@ for (const answerKind of ['custom', 'selected']) {
 piTest('preserves answers across sequential native questions and reloads', async ({ native }) => {
   // The RPC extension sends one dialog per question. Multiple selection uses its numeric input protocol.
   const questions = [
-    { header: 'Color', question: 'Choose a native color.', options: [{ label: 'Blue', description: 'Use blue.' }, { label: 'Green', description: 'Use green.' }] },
-    { header: 'Size', question: 'Choose native sizes.', multiSelect: true, options: [{ label: 'Small', description: 'Use small.' }, { label: 'Medium', description: 'Use medium.' }, { label: 'Large', description: 'Use large.' }] },
+    {
+      header: 'Color',
+      question: 'Choose a native color.',
+      options: [
+        { label: 'Blue', description: 'Use blue.' },
+        { label: 'Green', description: 'Use green.' },
+      ],
+    },
+    {
+      header: 'Size',
+      question: 'Choose native sizes.',
+      multiSelect: true,
+      options: [
+        { label: 'Small', description: 'Use small.' },
+        { label: 'Medium', description: 'Use medium.' },
+        { label: 'Large', description: 'Use large.' },
+      ],
+    },
   ]
   const { result } = await exerciseQuestionAnswer(native, {
     questions,
     reply: async () => {
       for (const [index, question] of questions.entries()) {
-        await chooseQuestionPages(native, [question], [{ labels: index === 0 ? ['Green'] : ['Large', 'Small'] }])(await waitForControlBanner(native.page))
+        await chooseQuestionPages(native, [question], [
+          {
+            labels: index === 0
+              ? ['Green']
+              : ['Large', 'Small'],
+          },
+        ])(await waitForControlBanner(native.page))
       }
     },
   })

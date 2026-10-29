@@ -60,7 +60,9 @@ const MAX_SANE_DIMENSION_PX = 65535
  */
 export function sniffImageDimensionsFromDataUrl(dataUrl: string): ImageDimensions | null {
   const parsed = parseDataImageUrl(dataUrl)
-  return parsed ? sniffImageDimensionsFromBase64(parsed.base64) : null
+  return parsed
+    ? sniffImageDimensionsFromBase64(parsed.base64)
+    : null
 }
 
 /** Sniff intrinsic dimensions from a bare base64 payload. */
@@ -79,7 +81,9 @@ export function sniffImageDimensionsFromBase64(base64: string): ImageDimensions 
     if (!jpegBytes)
       return null
     const jpeg = parseJpeg(jpegBytes)
-    return jpeg ? sane(jpeg) : null
+    return jpeg
+      ? sane(jpeg)
+      : null
   }
   // ISOBMFF (AVIF/HEIF): an `ftyp` box type at offset 4.
   if (head.length >= 12 && head[4] === 0x66 && head[5] === 0x74 && head[6] === 0x79 && head[7] === 0x70) {
@@ -87,7 +91,9 @@ export function sniffImageDimensionsFromBase64(base64: string): ImageDimensions 
     if (!boxBytes)
       return null
     const isobmff = parseIsobmff(boxBytes)
-    return isobmff ? sane(isobmff) : null
+    return isobmff
+      ? sane(isobmff)
+      : null
   }
   return null
 }
@@ -163,7 +169,16 @@ function readU32BE(b: Uint8Array, at: number): number {
 function parsePng(b: Uint8Array): ImageDimensions | null {
   if (b.length < 24)
     return null
-  const SIG = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
+  const SIG = [
+    0x89,
+    0x50,
+    0x4E,
+    0x47,
+    0x0D,
+    0x0A,
+    0x1A,
+    0x0A,
+  ]
   for (let i = 0; i < SIG.length; i++) {
     if (b[i] !== SIG[i])
       return null
@@ -173,7 +188,10 @@ function parsePng(b: Uint8Array): ImageDimensions | null {
     return null
   if (readU32BE(b, 8) !== 13)
     return null
-  return { width: readU32BE(b, 16), height: readU32BE(b, 20) }
+  return {
+    width: readU32BE(b, 16),
+    height: readU32BE(b, 20),
+  }
 }
 
 /** GIF: "GIF87a"/"GIF89a", then the logical screen descriptor (LE16 pair). */
@@ -184,7 +202,10 @@ function parseGif(b: Uint8Array): ImageDimensions | null {
     return null
   if ((b[4] !== 0x37 && b[4] !== 0x39) || b[5] !== 0x61)
     return null
-  return { width: readU16LE(b, 6), height: readU16LE(b, 8) }
+  return {
+    width: readU16LE(b, 6),
+    height: readU16LE(b, 8),
+  }
 }
 
 /**
@@ -300,7 +321,17 @@ interface IsobmffBox {
 }
 
 /** Brands whose files use the HEIF image structure this parser understands. */
-const ISOBMFF_IMAGE_BRANDS = new Set(['avif', 'avis', 'heic', 'heix', 'hevc', 'hevx', 'mif1', 'msf1', 'miaf'])
+const ISOBMFF_IMAGE_BRANDS = new Set([
+  'avif',
+  'avis',
+  'heic',
+  'heix',
+  'hevc',
+  'hevx',
+  'mif1',
+  'msf1',
+  'miaf',
+])
 
 /**
  * Walk the child boxes of [start, end). Stops cleanly at the end of the
@@ -334,7 +365,12 @@ function walkBoxes(b: Uint8Array, start: number, end: number): IsobmffBox[] {
       break
     if (boxEnd > limit)
       break
-    boxes.push({ type, start: pos, payload: pos + headerLen, end: boxEnd })
+    boxes.push({
+      type,
+      start: pos,
+      payload: pos + headerLen,
+      end: boxEnd,
+    })
     if (boxEnd <= pos)
       break
     pos = boxEnd
@@ -385,7 +421,10 @@ function parseIsobmff(b: Uint8Array): ImageDimensions | null {
     // FullBox: version/flags, then width/height as u32.
     if (box.payload + 12 > Math.min(box.end, b.length))
       return null
-    return { width: readU32BE(b, box.payload + 4), height: readU32BE(b, box.payload + 8) }
+    return {
+      width: readU32BE(b, box.payload + 4),
+      height: readU32BE(b, box.payload + 8),
+    }
   }
   const irotSwaps = (box: IsobmffBox): boolean | null => {
     if (box.payload + 1 > Math.min(box.end, b.length))
@@ -416,7 +455,9 @@ function parseIsobmff(b: Uint8Array): ImageDimensions | null {
   const swaps = irotSwaps(irot)
   if (swaps === null)
     return null
-  return swaps ? { width: dims.height, height: dims.width } : dims
+  return swaps
+    ? { width: dims.height, height: dims.width }
+    : dims
 }
 
 /**
@@ -437,7 +478,9 @@ function resolvePrimaryItemProperties(
     return null
   if (pitmVersion >= 1 && pitm.payload + 8 > Math.min(pitm.end, b.length))
     return null
-  const primaryId = pitmVersion === 0 ? readU16BE(b, pitm.payload + 4) : readU32BE(b, pitm.payload + 4)
+  const primaryId = pitmVersion === 0
+    ? readU16BE(b, pitm.payload + 4)
+    : readU32BE(b, pitm.payload + 4)
 
   for (const ipma of walkBoxes(b, iprp.payload, iprp.end)) {
     if (ipma.type !== 'ipma')
@@ -453,10 +496,14 @@ function resolvePrimaryItemProperties(
     const entryCount = readU32BE(b, ipma.payload + 4)
     let at = ipma.payload + 8
     for (let entry = 0; entry < entryCount; entry++) {
-      const idLen = version < 1 ? 2 : 4
+      const idLen = version < 1
+        ? 2
+        : 4
       if (at + idLen + 1 > ipmaEnd)
         return null
-      const itemId = version < 1 ? readU16BE(b, at) : readU32BE(b, at)
+      const itemId = version < 1
+        ? readU16BE(b, at)
+        : readU32BE(b, at)
       at += idLen
       const associationCount = b[at]
       if (associationCount === undefined)
@@ -467,7 +514,9 @@ function resolvePrimaryItemProperties(
         const assocLen = wideIndices ? 2 : 1
         if (at + assocLen > ipmaEnd)
           return null
-        indices.push(wideIndices ? readU16BE(b, at) & 0x7FFF : (b[at] ?? 0) & 0x7F)
+        indices.push(wideIndices
+          ? readU16BE(b, at) & 0x7FFF
+          : (b[at] ?? 0) & 0x7F)
         at += assocLen
       }
       if (itemId === primaryId) {
@@ -509,8 +558,12 @@ function parseExifOrientation(b: Uint8Array, start: number, end: number): number
   const big = b[tiff] === 0x4D && b[tiff + 1] === 0x4D
   if (!little && !big)
     return null
-  const u16 = (at: number) => little ? readU16LE(b, at) : readU16BE(b, at)
-  const u32 = (at: number) => (little ? readU32LE(b, at) : readU32BE(b, at))
+  const u16 = (at: number) => little
+    ? readU16LE(b, at)
+    : readU16BE(b, at)
+  const u32 = (at: number) => (little
+    ? readU32LE(b, at)
+    : readU32BE(b, at))
   if (u16(tiff + 2) !== 42)
     return null
   const ifdOffset = u32(tiff + 4)
@@ -529,7 +582,9 @@ function parseExifOrientation(b: Uint8Array, start: number, end: number): number
     if (u16(entry + 2) !== 3)
       return null
     const value = u16(entry + 8)
-    return value >= 1 && value <= 8 ? value : null
+    return value >= 1 && value <= 8
+      ? value
+      : null
   }
   return null
 }

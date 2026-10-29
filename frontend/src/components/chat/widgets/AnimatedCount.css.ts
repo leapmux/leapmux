@@ -45,8 +45,14 @@ export const numberGhost = style({
   visibility: 'hidden',
 })
 
-const fadeIn = keyframes({ from: { opacity: 0 }, to: { opacity: 1 } })
-const fadeOut = keyframes({ from: { opacity: 1 }, to: { opacity: 0 } })
+const fadeIn = keyframes({
+  from: { opacity: 0 },
+  to: { opacity: 1 },
+})
+const fadeOut = keyframes({
+  from: { opacity: 1 },
+  to: { opacity: 0 },
+})
 
 // The optional star-power effect applies a Mario-star pulse. Two animations layer on the root: a hue
 // cycle through the spectrum (the rainbow) and a faster scale+glow throb (the
@@ -115,12 +121,15 @@ export const liveLayer = style({
 
 // A snapshot of the prior value — the live layer's layout plus a fade-out —
 // drawn over the live layer during a format change.
-export const exitingLayer = style([liveLayer, {
-  'animation': `${fadeOut} var(--transition) forwards`,
-  '@media': {
-    '(prefers-reduced-motion: reduce)': { animation: 'none', opacity: 0 },
+export const exitingLayer = style([
+  liveLayer,
+  {
+    'animation': `${fadeOut} var(--transition) forwards`,
+    '@media': {
+      '(prefers-reduced-motion: reduce)': { animation: 'none', opacity: 0 },
+    },
   },
-}])
+])
 
 // One digit position: a window onto a 0-9 strip, clipped by overflow:hidden.
 // Its width and height come from an in-flow hidden sizer digit (see columnSizer)
@@ -161,16 +170,22 @@ const cellLine = {
   textAlign: 'center',
 } as const
 
-export const stripCell = style([cellLine, {
+export const stripCell = style([
+  cellLine,
+  {
   // block (not the span default of inline) so the strip's cells stack vertically
   // at CELL intervals — the whole premise of the translateY roll. As inline text
   // they flow into one horizontal "0123456789" line and the roll slides it out
   // of view for every non-zero digit.
-  display: 'block',
-}])
+    display: 'block',
+  },
+])
 
 // Non-digit characters (the decimal point and the k/M unit), sized like a cell
 // so they share the columns' line.
-export const staticChar = style([cellLine, {
-  display: 'inline-block',
-}])
+export const staticChar = style([
+  cellLine,
+  {
+    display: 'inline-block',
+  },
+])

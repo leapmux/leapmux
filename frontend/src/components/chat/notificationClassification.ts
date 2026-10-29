@@ -23,7 +23,9 @@ export function classifyNotifications(
   empty: EmptyNotificationPolicy = 'notification',
 ): MessageCategory {
   const entries = messages.flatMap(message =>
-    isObject(message) ? notificationEntriesForReader(message, agentProvider, providerReader) : [])
+    isObject(message)
+      ? notificationEntriesForReader(message, agentProvider, providerReader)
+      : [])
   return entries.length > 0 || empty === 'notification'
     ? { kind: 'notification', entries }
     : { kind: 'hidden' }

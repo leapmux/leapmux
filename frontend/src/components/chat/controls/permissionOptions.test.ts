@@ -246,11 +246,23 @@ describe('resolvePermissionOption', () => {
   it('upgrades Deny to the reject_always of the scope that the selected pill states', () => {
     const layout = layoutPermissionOptions([
       option('once', 'allow_once'),
-      { ...option('always_session', 'allow_always'), scope: 'session' },
-      { ...option('always_user', 'allow_always'), scope: 'user' },
+      {
+        ...option('always_session', 'allow_always'),
+        scope: 'session',
+      },
+      {
+        ...option('always_user', 'allow_always'),
+        scope: 'user',
+      },
       option('reject', 'reject_once'),
-      { ...option('deny_session', 'reject_always'), scope: 'session' },
-      { ...option('deny_user', 'reject_always'), scope: 'user' },
+      {
+        ...option('deny_session', 'reject_always'),
+        scope: 'session',
+      },
+      {
+        ...option('deny_user', 'reject_always'),
+        scope: 'user',
+      },
     ])
 
     expect(resolvePermissionOption(layout, 'reject', 'once')?.optionId).toBe('reject')
@@ -264,10 +276,19 @@ describe('resolvePermissionOption', () => {
     // Deny must not keep a rule at a scope that the reader did not select.
     const layout = layoutPermissionOptions([
       option('once', 'allow_once'),
-      { ...option('always_session', 'allow_always'), scope: 'session' },
-      { ...option('always_user', 'allow_always'), scope: 'user' },
+      {
+        ...option('always_session', 'allow_always'),
+        scope: 'session',
+      },
+      {
+        ...option('always_user', 'allow_always'),
+        scope: 'user',
+      },
       option('reject', 'reject_once'),
-      { ...option('deny_session', 'reject_always'), scope: 'session' },
+      {
+        ...option('deny_session', 'reject_always'),
+        scope: 'session',
+      },
     ])
 
     expect(resolvePermissionOption(layout, 'reject', 'always_user')?.optionId).toBe('reject')
@@ -279,11 +300,20 @@ describe('resolvePermissionOption', () => {
   it('prefers the reject_always of the pill\'s scope to one that states no scope', () => {
     const layout = layoutPermissionOptions([
       option('once', 'allow_once'),
-      { ...option('always_session', 'allow_always'), scope: 'session' },
-      { ...option('always_user', 'allow_always'), scope: 'user' },
+      {
+        ...option('always_session', 'allow_always'),
+        scope: 'session',
+      },
+      {
+        ...option('always_user', 'allow_always'),
+        scope: 'user',
+      },
       option('reject', 'reject_once'),
       option('deny', 'reject_always'),
-      { ...option('deny_session', 'reject_always'), scope: 'session' },
+      {
+        ...option('deny_session', 'reject_always'),
+        scope: 'session',
+      },
     ])
 
     expect(layout.rememberRejects?.map(o => o.optionId)).toEqual(['deny', 'deny_session'])
@@ -300,7 +330,10 @@ describe('resolvePermissionOption', () => {
       option('once', 'allow_once'),
       option('always', 'allow_always'),
       option('reject', 'reject_once'),
-      { ...option('deny_session', 'reject_always'), scope: 'session' },
+      {
+        ...option('deny_session', 'reject_always'),
+        scope: 'session',
+      },
     ])
 
     expect(resolvePermissionOption(layout, 'reject', 'always')?.optionId).toBe('reject')
@@ -311,7 +344,10 @@ describe('resolvePermissionOption', () => {
   it('upgrades Deny to a reject_always that states no scope for each always pill', () => {
     const layout = layoutPermissionOptions([
       option('once', 'allow_once'),
-      { ...option('always_user', 'allow_always'), scope: 'user' },
+      {
+        ...option('always_user', 'allow_always'),
+        scope: 'user',
+      },
       option('reject', 'reject_once'),
       option('deny', 'reject_always'),
     ])
@@ -322,11 +358,23 @@ describe('resolvePermissionOption', () => {
   it('keeps a scoped reject_always that no pill reaches as its own button', () => {
     const layout = layoutPermissionOptions([
       option('once', 'allow_once'),
-      { ...option('always_session', 'allow_always'), scope: 'session' },
+      {
+        ...option('always_session', 'allow_always'),
+        scope: 'session',
+      },
       option('reject', 'reject_once'),
-      { ...option('deny_session', 'reject_always'), scope: 'session' },
-      { ...option('deny_project', 'reject_always'), scope: 'project' },
-      { ...option('deny_session_again', 'reject_always'), scope: 'session' },
+      {
+        ...option('deny_session', 'reject_always'),
+        scope: 'session',
+      },
+      {
+        ...option('deny_project', 'reject_always'),
+        scope: 'project',
+      },
+      {
+        ...option('deny_session_again', 'reject_always'),
+        scope: 'session',
+      },
     ])
 
     expect(layout.rememberRejects?.map(o => o.optionId)).toEqual(['deny_session'])
@@ -336,9 +384,15 @@ describe('resolvePermissionOption', () => {
   it('keeps a first reject_always of a scope that no pill states as its own button', () => {
     const layout = layoutPermissionOptions([
       option('once', 'allow_once'),
-      { ...option('always_user', 'allow_always'), scope: 'user' },
+      {
+        ...option('always_user', 'allow_always'),
+        scope: 'user',
+      },
       option('reject', 'reject_once'),
-      { ...option('deny_project', 'reject_always'), scope: 'project' },
+      {
+        ...option('deny_project', 'reject_always'),
+        scope: 'project',
+      },
     ])
 
     expect(resolvePermissionOption(layout, 'reject', 'always_user')?.optionId).toBe('reject')
@@ -409,10 +463,22 @@ describe('allowScopeLabel', () => {
   })
 
   it('prefers the scope that the plugin states over the name', () => {
-    expect(allowScopeLabel({ ...option('k_session', 'allow_always', 'Always allow in the project folder'), scope: 'session' })).toBe('Session')
-    expect(allowScopeLabel({ ...option('k_workspace', 'allow_always', 'Always allow in this workspace'), scope: 'workspace' })).toBe('Workspace')
-    expect(allowScopeLabel({ ...option('k_project', 'allow_always', 'Keep it'), scope: 'project' })).toBe('Project')
-    expect(allowScopeLabel({ ...option('k_user', 'allow_always', 'Always allow for this session everywhere'), scope: 'user' })).toBe('Always')
+    expect(allowScopeLabel({
+      ...option('k_session', 'allow_always', 'Always allow in the project folder'),
+      scope: 'session',
+    })).toBe('Session')
+    expect(allowScopeLabel({
+      ...option('k_workspace', 'allow_always', 'Always allow in this workspace'),
+      scope: 'workspace',
+    })).toBe('Workspace')
+    expect(allowScopeLabel({
+      ...option('k_project', 'allow_always', 'Keep it'),
+      scope: 'project',
+    })).toBe('Project')
+    expect(allowScopeLabel({
+      ...option('k_user', 'allow_always', 'Always allow for this session everywhere'),
+      scope: 'user',
+    })).toBe('Always')
   })
 
   it('reads no scope keyword out of the call text after the first colon', () => {
@@ -468,16 +534,27 @@ describe('allowScopePillOptions', () => {
 
   it('refuses a scope that cannot be a pill group', () => {
     expect(allowScopePillOptions([])).toBeUndefined()
-    const six = Array.from({ length: 6 }, (_, i) => option(`w${i}`, i === 0 ? 'allow_once' : 'allow_always'))
+    const six = Array.from({ length: 6 }, (_, i) => option(`w${i}`, i === 0
+      ? 'allow_once'
+      : 'allow_always'))
     expect(allowScopePillOptions(six)).toBeUndefined()
   })
 
   it('labels each pill by the scope that its plugin states', () => {
     expect(allowScopePillOptions([
       option('once', 'allow_once', 'Yes'),
-      { ...option('session', 'allow_always', 'Always allow for this session'), scope: 'session' },
-      { ...option('workspace', 'allow_always', 'Always allow in this workspace'), scope: 'workspace' },
-      { ...option('user', 'allow_always', 'Always allow everywhere'), scope: 'user' },
+      {
+        ...option('session', 'allow_always', 'Always allow for this session'),
+        scope: 'session',
+      },
+      {
+        ...option('workspace', 'allow_always', 'Always allow in this workspace'),
+        scope: 'workspace',
+      },
+      {
+        ...option('user', 'allow_always', 'Always allow everywhere'),
+        scope: 'user',
+      },
     ])).toEqual([
       { key: 'once', label: 'Once' },
       { key: 'session', label: 'Session' },
@@ -491,8 +568,14 @@ describe('allowScopePillOptions', () => {
   it('shows two options that state one scope their own names', () => {
     expect(allowScopePillOptions([
       option('once', 'allow_once', 'Allow once'),
-      { ...option('session_a', 'allow_always', 'Allow reads for this session'), scope: 'session' },
-      { ...option('session_b', 'allow_always', 'Allow writes for this session'), scope: 'session' },
+      {
+        ...option('session_a', 'allow_always', 'Allow reads for this session'),
+        scope: 'session',
+      },
+      {
+        ...option('session_b', 'allow_always', 'Allow writes for this session'),
+        scope: 'session',
+      },
     ])).toEqual([
       { key: 'once', label: 'Once' },
       { key: 'session_a', label: 'Allow reads for this session' },

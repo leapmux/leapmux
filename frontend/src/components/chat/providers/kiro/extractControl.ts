@@ -59,11 +59,21 @@ export type KiroAlwaysDenyID = keyof typeof KIRO_ALWAYS_DENY
  */
 function kiroAlwaysRuleOptions(own: PermissionOption, rules: Readonly<Record<string, KiroAlwaysRule>>, scopes: { wider: boolean, workspace: boolean }): PermissionOption[] {
   return Object.entries(rules).flatMap(([optionId, { name, scope }]): PermissionOption[] => {
-    if (optionId === own.optionId)
-      return [{ ...own, name, scope }]
+    if (optionId === own.optionId) {
+      return [
+        { ...own, name, scope },
+      ]
+    }
     if (!scopes.wider || (scope === 'workspace' && !scopes.workspace))
       return []
-    return [{ optionId, kind: own.kind, name, scope }]
+    return [
+      {
+        optionId,
+        kind: own.kind,
+        name,
+        scope,
+      },
+    ]
   })
 }
 
@@ -119,7 +129,10 @@ export function kiroExtractControl(input: ControlExtractionInput): ExtractedCont
   if (!shared || shared.kind !== 'permission')
     return shared
   const meta = kiroMeta(pickObject(input.payload, 'params'))
-  const permission = { ...shared.permission, options: kiroPermissionOptions(shared.permission.options, meta) }
+  const permission = {
+    ...shared.permission,
+    options: kiroPermissionOptions(shared.permission.options, meta),
+  }
   if (pickString(meta, 'type') === KIRO_TURN_APPROVAL) {
     const files = turnApprovalFiles(meta)
     return {
@@ -133,7 +146,12 @@ export function kiroExtractControl(input: ControlExtractionInput): ExtractedCont
     }
   }
   const command = pickString(meta, 'command')
-  return { kind: 'permission', permission: command && !permission.command ? { ...permission, command } : permission }
+  return {
+    kind: 'permission',
+    permission: command && !permission.command
+      ? { ...permission, command }
+      : permission,
+  }
 }
 
 /**

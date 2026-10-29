@@ -24,8 +24,16 @@ clineTest.describe('Cline workflow grouping', () => {
     })))
     // The queue holds two spawn steps, two run steps, and the final answer.
     const start = await modelScript.queue(
-      ...teammates.map(({ agentId }) => ({ toolCalls: [clineSpawnTeammateToolCall(`spawn-${agentId}`, agentId, 'Answer the delegated task.')] })),
-      ...teammates.map(({ agentId, marker }) => ({ toolCalls: [clineRunTeammateTaskToolCall(`run-${agentId}`, agentId, modelScript.prompt(`Reply with ${marker}.`))] })),
+      ...teammates.map(({ agentId }) => ({
+        toolCalls: [
+          clineSpawnTeammateToolCall(`spawn-${agentId}`, agentId, 'Answer the delegated task.'),
+        ],
+      })),
+      ...teammates.map(({ agentId, marker }) => ({
+        toolCalls: [
+          clineRunTeammateTaskToolCall(`run-${agentId}`, agentId, modelScript.prompt(`Reply with ${marker}.`)),
+        ],
+      })),
       { text: 'Both teammate runs were queued.' },
     )
     await modelScript.fallback({ text: 'The teammate runs finished.' })
@@ -56,7 +64,10 @@ clineTest.describe('Cline workflow grouping', () => {
     await expandBackgroundTasksSection(page)
     const runs = backgroundTaskRows(page, { kind: 'workflow' })
     await expect(runs).toHaveCount(2)
-    const teammateRuns = teammates.map(({ agentId }) => ({ agentId, run: runs.filter({ hasText: agentId }).first() }))
+    const teammateRuns = teammates.map(({ agentId }) => ({
+      agentId,
+      run: runs.filter({ hasText: agentId }).first(),
+    }))
     for (const { agentId, run } of teammateRuns) {
       await expect(messageBubbles(page).filter({ hasText: `${agentId} started a run` }).first()).toBeVisible()
       await expectRowBecomesFinal(page, run)

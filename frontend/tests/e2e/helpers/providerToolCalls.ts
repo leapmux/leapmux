@@ -40,28 +40,43 @@ import { quotePosixShellArgument } from './shellArguments'
 
 /** End a Muse workflow child's result contract through its native tool. */
 export function museSubmitResultToolCall(id: string, text: string): MockModelToolCall {
-  return { id, name: MUSE_TOOL.SubmitResult, namespace: MUSE_TOOL_NAMESPACE, arguments: { text, notes: null } }
+  return {
+    id,
+    name: MUSE_TOOL.SubmitResult,
+    namespace: MUSE_TOOL_NAMESPACE,
+    arguments: { text, notes: null },
+  }
 }
 
 /** Start a Muse native child without a generated workflow. */
 export function museSpawnChildToolCall(id: string, commandId: string, objective: string): MockModelToolCall {
-  return { id, name: MUSE_TOOL.SubagentSpawn, namespace: MUSE_TOOL_NAMESPACE, arguments: {
-    command_id: commandId,
-    role: 'reviewer',
-    task_name: 'parent-input-proof',
-    objective,
-  } }
+  return {
+    id,
+    name: MUSE_TOOL.SubagentSpawn,
+    namespace: MUSE_TOOL_NAMESPACE,
+    arguments: {
+      command_id: commandId,
+      role: 'reviewer',
+      task_name: 'parent-input-proof',
+      objective,
+    },
+  }
 }
 
 /** Deliver a model instruction through Muse's native parent tool. */
 export function museSendChildMessageToolCall(id: string, commandId: string, subagentId: string, message: string, mode: 'queue' | 'followup'): MockModelToolCall {
-  return { id, name: MUSE_PARENT_INPUT.Tool, namespace: MUSE_TOOL_NAMESPACE, arguments: {
-    command_id: commandId,
-    subagent_id: subagentId,
-    message,
-    mode,
-    interrupt: false,
-  } }
+  return {
+    id,
+    name: MUSE_PARENT_INPUT.Tool,
+    namespace: MUSE_TOOL_NAMESPACE,
+    arguments: {
+      command_id: commandId,
+      subagent_id: subagentId,
+      message,
+      mode,
+      interrupt: false,
+    },
+  }
 }
 
 /**
@@ -98,7 +113,11 @@ export const KIRO_CHILD_AGENT = 'context-gatherer'
 
 /** Build the native Claude report call without changing any report text. */
 export function claudeSubagentHandbackToolCall(id: string, message: string): MockModelToolCall {
-  return { id, name: CLAUDE_SUBAGENT_HANDBACK_TOOL, arguments: { message } }
+  return {
+    id,
+    name: CLAUDE_SUBAGENT_HANDBACK_TOOL,
+    arguments: { message },
+  }
 }
 
 /** The required native catalog shape from Claude Code 2.1.284. */
@@ -107,7 +126,9 @@ export function claudeSubagentHandbackToolDefinition() {
     name: CLAUDE_SUBAGENT_HANDBACK_TOOL,
     input_schema: {
       type: 'object',
-      properties: { message: { type: 'string' } },
+      properties: {
+        message: { type: 'string' },
+      },
       required: ['message'],
       additionalProperties: false,
     },
@@ -395,7 +416,14 @@ function cursorTodoItem({ id, content, status }: CursorTodoRequest): Record<stri
 export function cursorMergeTodosToolCall(id: string, items: readonly CursorTodoRequest[]): MockModelToolCall {
   if (items.length === 0)
     throw new Error('A native Cursor to-do merge requires at least one item: Cursor sends no frame for an empty merge.')
-  return { id, name: CURSOR_UPDATE_TODOS_TOOL, arguments: { todos: items.map(cursorTodoItem), merge: true } }
+  return {
+    id,
+    name: CURSOR_UPDATE_TODOS_TOOL,
+    arguments: {
+      todos: items.map(cursorTodoItem),
+      merge: true,
+    },
+  }
 }
 
 /**
@@ -414,7 +442,9 @@ function identifierFrom(description: string): string {
   // Codex and Copilot require a nonempty name.
   // An empty description or punctuation alone produces no identifier, which causes the native spawn to fail.
   // The stable fallback keeps the call valid and makes a failed test easy to find.
-  return identifier === '' ? 'scripted_subagent' : identifier
+  return identifier === ''
+    ? 'scripted_subagent'
+    : identifier
 }
 
 /**
@@ -422,7 +452,9 @@ function identifierFrom(description: string): string {
  * every other marker reads as pending, so the checklist states no other status.
  */
 function markdownChecklist(tool: string, steps: readonly TodoStep[]): string {
-  return steps.map(step => `- [${acceptedTodoStatus(tool, BASE_TODO_STATUSES, step.status) === 'completed' ? 'x' : ' '}] ${step.step}`).join('\n')
+  return steps.map(step => `- [${acceptedTodoStatus(tool, BASE_TODO_STATUSES, step.status) === 'completed'
+    ? 'x'
+    : ' '}] ${step.step}`).join('\n')
 }
 
 const COPILOT_SQL_TODO_STATUSES = [...BASE_TODO_STATUSES, 'blocked'] as const satisfies readonly TodoStatus[]
@@ -434,12 +466,18 @@ function copilotSqlTodosToolCall(id: string, steps: readonly TodoStep[]): MockMo
     if (!step.step.trim() || step.step.includes('\0'))
       throw new Error('The Copilot to-do title must be nonblank and contain no null byte.')
     const title = step.step.replaceAll('\'', '\'\'')
-    return `('todo-${index + 1}', '${title}', '', '${status === 'completed' ? 'done' : status}')`
+    return `('todo-${index + 1}', '${title}', '', '${status === 'completed'
+      ? 'done'
+      : status}')`
   })
   const statements = ['DELETE FROM todo_deps', 'DELETE FROM todos']
   if (rows.length > 0)
     statements.push(`INSERT INTO todos (id, title, description, status) VALUES ${rows.join(', ')}`)
-  return { id, name: COPILOT_TOOL.Sql, arguments: { description: 'Replace session to-dos', query: `${statements.join('; ')};` } }
+  return {
+    id,
+    name: COPILOT_TOOL.Sql,
+    arguments: { description: 'Replace session to-dos', query: `${statements.join('; ')};` },
+  }
 }
 
 /**
@@ -500,7 +538,9 @@ function diracSubagentsToolCall(id: string, requests: readonly SubagentRequest[]
   return {
     id,
     name: 'use_subagents',
-    arguments: { subagents: requests.map(({ description, prompt }) => ({ task_title: description, prompt })) },
+    arguments: {
+      subagents: requests.map(({ description, prompt }) => ({ task_title: description, prompt })),
+    },
   }
 }
 
@@ -514,7 +554,9 @@ function openCodeFamilyTodoCall(id: string, steps: TodoStep[]): MockModelToolCal
         content: step,
         status: acceptedTodoStatus('OpenCode family todowrite', OPENCODE_FAMILY_TODO_STATUSES, status),
         priority: 'medium',
-        activeForm: status === 'in_progress' ? `Working on: ${step}` : step,
+        activeForm: status === 'in_progress'
+          ? `Working on: ${step}`
+          : step,
       })),
     },
   }
@@ -556,7 +598,9 @@ export function codexWaitAgentToolCall(id: string, timeoutMs?: number): MockMode
     id,
     name: 'wait_agent',
     namespace: CODEX_COLLABORATION_NAMESPACE,
-    arguments: timeoutMs === undefined ? {} : { timeout_ms: timeoutMs },
+    arguments: timeoutMs === undefined
+      ? {}
+      : { timeout_ms: timeoutMs },
   }
 }
 
@@ -574,7 +618,11 @@ export function codexExecToolCall(id: string, source: string): MockModelToolCall
 export function codexWaitCellToolCall(id: string, cellId: string): MockModelToolCall {
   if (!id.trim() || !cellId.trim())
     throw new Error('A native Codex cell wait requires a call ID and cell ID.')
-  return { id, name: 'wait', arguments: { cell_id: cellId } }
+  return {
+    id,
+    name: 'wait',
+    arguments: { cell_id: cellId },
+  }
 }
 
 /**
@@ -610,11 +658,15 @@ function updateFilePatch({ path, before, after }: EditRequest): string {
 
 /** An apply_patch text that creates the file at `path` with `content`. */
 function addFilePatch({ path, content }: WriteRequest): string {
-  const lines = content === '' ? [] : content.split('\n')
+  const lines = content === ''
+    ? []
+    : content.split('\n')
   if (content.endsWith('\n'))
     lines.pop()
   const added = lines.map(line => `+${line}`).join('\n')
-  return `*** Begin Patch\n*** Add File: ${path}\n${added ? `${added}\n` : ''}*** End Patch`
+  return `*** Begin Patch\n*** Add File: ${path}\n${added
+    ? `${added}\n`
+    : ''}*** End Patch`
 }
 
 /**
@@ -634,7 +686,16 @@ export function ampShellCommandStatusToolCall(id: string, pid: number, timeoutMs
     throw new RangeError('The native Amp shell_command_status call requires the positive PID of a command.')
   if (timeoutMs !== undefined && (!Number.isSafeInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > AMP_SHELL_WAIT_LIMIT_MS))
     throw new RangeError(`The native Amp shell_command_status wait must be an integer from 0 to ${AMP_SHELL_WAIT_LIMIT_MS} milliseconds.`)
-  return { id, name: AMP_SHELL_TOOL.ShellCommandStatus, arguments: { pid, ...(timeoutMs === undefined ? {} : { timeout_ms: timeoutMs }) } }
+  return {
+    id,
+    name: AMP_SHELL_TOOL.ShellCommandStatus,
+    arguments: {
+      pid,
+      ...(timeoutMs === undefined
+        ? {}
+        : { timeout_ms: timeoutMs }),
+    },
+  }
 }
 
 function codexCommandCall(id: string, request: { cmd: string, sandbox_permissions?: string, justification?: string }): MockModelToolCall {
@@ -661,18 +722,53 @@ function codexUpdateGoalToolCall(id: string, status: 'complete' | 'blocked'): Mo
 
 const TOOL_VOCABULARY = {
   [AgentProvider.CLAUDE_CODE]: {
-    bash: (id, command) => ({ id, name: 'Bash', arguments: { command, description: 'Run the scripted command' } }),
-    edit: (id, { path, before, after }) => ({ id, name: 'Edit', arguments: { file_path: path, old_string: before, new_string: after } }),
-    write: (id, { path, content }) => ({ id, name: 'Write', arguments: { file_path: path, content } }),
-    read: (id, path) => ({ id, name: 'Read', arguments: { file_path: path } }),
+    bash: (id, command) => ({
+      id,
+      name: 'Bash',
+      arguments: { command, description: 'Run the scripted command' },
+    }),
+    edit: (id, { path, before, after }) => ({
+      id,
+      name: 'Edit',
+      arguments: { file_path: path, old_string: before, new_string: after },
+    }),
+    write: (id, { path, content }) => ({
+      id,
+      name: 'Write',
+      arguments: { file_path: path, content },
+    }),
+    read: (id, path) => ({
+      id,
+      name: 'Read',
+      arguments: { file_path: path },
+    }),
     enterPlanMode: id => ({ id, name: 'EnterPlanMode', arguments: {} }),
-    exitPlanMode: (id, plan) => ({ id, name: 'ExitPlanMode', arguments: { plan } }),
+    exitPlanMode: (id, plan) => ({
+      id,
+      name: 'ExitPlanMode',
+      arguments: { plan },
+    }),
     exitPlanModeFromFile: null,
-    askUserQuestion: questionBuilder((id, questions) => ({ id, name: 'AskUserQuestion', arguments: { questions: questions.map(withMultiSelect) } })),
+    askUserQuestion: questionBuilder((id, questions) => ({
+      id,
+      name: 'AskUserQuestion',
+      arguments: {
+        questions: questions.map(withMultiSelect),
+      },
+    })),
     // Claude Code 2.1.289 in stream-JSON mode offers `run_in_background`, and a child runs in the background when the
     // call omits it ("Agents run in the background by default"). The E2E children report through a completion
     // notification ("Async agent launched successfully."), so the default here is that native default.
-    spawnSubagent: (id, { description, prompt, background }) => ({ id, name: 'Agent', arguments: { description, prompt, subagent_type: 'general-purpose', run_in_background: background ?? true } }),
+    spawnSubagent: (id, { description, prompt, background }) => ({
+      id,
+      name: 'Agent',
+      arguments: {
+        description,
+        prompt,
+        subagent_type: 'general-purpose',
+        run_in_background: background ?? true,
+      },
+    }),
     spawnSubagentBatch: null,
     // The native Bash tool uses run_in_background to detach the command.
     // The CLI description states: "You can use the `run_in_background` parameter to run the command in the background."
@@ -694,7 +790,9 @@ const TOOL_VOCABULARY = {
         todos: steps.map(step => ({
           content: step.step,
           status: acceptedTodoStatus('Claude Code TodoWrite', BASE_TODO_STATUSES, step.status),
-          activeForm: step.status === 'in_progress' ? `Working on: ${step.step}` : step.step,
+          activeForm: step.status === 'in_progress'
+            ? `Working on: ${step.step}`
+            : step.step,
         })),
       },
     }),
@@ -704,17 +802,42 @@ const TOOL_VOCABULARY = {
     completeGoal: null,
     blockGoal: null,
     mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp__${server}__${tool}`, arguments: input }),
-    codeExecution: (id, source) => ({ id, name: 'Workflow', arguments: { script: source } }),
+    codeExecution: (id, source) => ({
+      id,
+      name: 'Workflow',
+      arguments: { script: source },
+    }),
     workflowTools: ['Workflow'],
   },
   [AgentProvider.CODEWHALE]: {
-    bash: (id, command) => ({ id, name: 'bash', arguments: { command } }),
+    bash: (id, command) => ({
+      id,
+      name: 'bash',
+      arguments: { command },
+    }),
     // The edit tool accepts a replacement list.
     // Each replacement matches the original file.
     // The path resolves against the workspace.
-    edit: (id, { path, before, after }) => ({ id, name: 'edit', arguments: { path, edits: [{ oldText: before, newText: after }] } }),
-    write: (id, { path, content }) => ({ id, name: 'write', arguments: { path, content } }),
-    read: (id, path) => ({ id, name: 'read', arguments: { path } }),
+    edit: (id, { path, before, after }) => ({
+      id,
+      name: 'edit',
+      arguments: {
+        path,
+        edits: [
+          { oldText: before, newText: after },
+        ],
+      },
+    }),
+    write: (id, { path, content }) => ({
+      id,
+      name: 'write',
+      arguments: { path, content },
+    }),
+    read: (id, path) => ({
+      id,
+      name: 'read',
+      arguments: { path },
+    }),
     // Plan mode is a thread setting, and no tool enters or leaves it.
     enterPlanMode: null,
     exitPlanMode: null,
@@ -745,21 +868,36 @@ const TOOL_VOCABULARY = {
     spawnSubagent: (id, { description, prompt, background }) => ({
       id,
       name: 'agent',
-      arguments: { action: 'start', name: identifierFrom(description), type: 'explore', prompt, detached: background ?? false },
+      arguments: {
+        action: 'start',
+        name: identifierFrom(description),
+        type: 'explore',
+        prompt,
+        detached: background ?? false,
+      },
     }),
     spawnSubagentBatch: null,
     // The bash tool refuses a background argument.
     // Use the deferred task_shell_start tool for a background command.
     // The first call loads its schema.
     // Script the second call to start the command.
-    backgroundBash: (id, command) => ({ id, name: 'task_shell_start', arguments: { command } }),
+    backgroundBash: (id, command) => ({
+      id,
+      name: 'task_shell_start',
+      arguments: { command },
+    }),
     // `todo_write` replaces the whole list, and its rows say `content` where the
     // shared shape says `step`. The schema of the 0.10.1 source also states `cancelled`; no probe of the installed
     // 0.10.0 confirmed it, so the builder takes the three statuses alone.
     updateTodos: (id, steps) => ({
       id,
       name: 'todo_write',
-      arguments: { todos: steps.map(step => ({ content: step.step, status: acceptedTodoStatus('Codewhale todo_write', BASE_TODO_STATUSES, step.status) })) },
+      arguments: {
+        todos: steps.map(step => ({
+          content: step.step,
+          status: acceptedTodoStatus('Codewhale todo_write', BASE_TODO_STATUSES, step.status),
+        })),
+      },
     }),
     // A goal is a thread setting that LeapMux writes, so the model creates none.
     createGoal: null,
@@ -767,9 +905,17 @@ const TOOL_VOCABULARY = {
     // The complete status requires a verification receipt that this scripted turn cannot supply.
     // The test uses blocked to end the loop.
     completeGoal: null,
-    blockGoal: (id, reason) => ({ id, name: 'update_goal', arguments: { status: 'blocked', blocker: reason } }),
+    blockGoal: (id, reason) => ({
+      id,
+      name: 'update_goal',
+      arguments: { status: 'blocked', blocker: reason },
+    }),
     mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp_${server}_${tool}`, arguments: input }),
-    codeExecution: (id, source) => ({ id, name: CODEWHALE_TOOL.ExecuteTools, arguments: { code: source } }),
+    codeExecution: (id, source) => ({
+      id,
+      name: CODEWHALE_TOOL.ExecuteTools,
+      arguments: { code: source },
+    }),
     workflowTools: [CODEWHALE_TOOL.Workflow],
   },
   [AgentProvider.CODEX]: {
@@ -806,7 +952,10 @@ const TOOL_VOCABULARY = {
       id,
       name: 'spawn_agent',
       namespace: CODEX_COLLABORATION_NAMESPACE,
-      arguments: { task_name: identifierFrom(description), message: prompt },
+      arguments: {
+        task_name: identifierFrom(description),
+        message: prompt,
+      },
     }),
     spawnSubagentBatch: null,
     // Codex calls update_plan through exec to update the to-do list.
@@ -815,7 +964,10 @@ const TOOL_VOCABULARY = {
     backgroundBash: null,
     updateTodos: (id, steps) => codexExecToolCall(
       id,
-      `await tools.update_plan({ plan: ${JSON.stringify(steps.map(step => ({ step: step.step, status: acceptedTodoStatus('Codex update_plan', BASE_TODO_STATUSES, step.status) })))} })`,
+      `await tools.update_plan({ plan: ${JSON.stringify(steps.map(step => ({
+        step: step.step,
+        status: acceptedTodoStatus('Codex update_plan', BASE_TODO_STATUSES, step.status),
+      })))} })`,
     ),
     // LeapMux sets a Codex goal through the side band (`thread/goal/set`), not through the model's create_goal.
     createGoal: null,
@@ -832,11 +984,19 @@ const TOOL_VOCABULARY = {
     workflowTools: null,
   },
   [AgentProvider.GITHUB_COPILOT]: {
-    bash: (id, command) => ({ id, name: 'bash', arguments: { command, description: 'Run the scripted command' } }),
+    bash: (id, command) => ({
+      id,
+      name: 'bash',
+      arguments: { command, description: 'Run the scripted command' },
+    }),
     // Copilot changes files through its freeform apply_patch tool, which reads the patch grammar of Codex and Amp.
     edit: (id, request) => copilotApplyPatchToolCall(id, updateFilePatch(request)),
     write: (id, request) => copilotApplyPatchToolCall(id, addFilePatch(request)),
-    read: (id, path) => ({ id, name: 'view', arguments: { path } }),
+    read: (id, path) => ({
+      id,
+      name: 'view',
+      arguments: { path },
+    }),
     // Copilot drives plan mode through its session-mode option group.
     enterPlanMode: null,
     exitPlanMode: (id, plan) => ({
@@ -856,7 +1016,10 @@ const TOOL_VOCABULARY = {
       return {
         id,
         name: 'ask_user',
-        arguments: { question: question.question, choices: question.options.map(option => option.label) },
+        arguments: {
+          question: question.question,
+          choices: question.options.map(option => option.label),
+        },
       }
     }),
     // The native task tool requires four fields:
@@ -873,7 +1036,13 @@ const TOOL_VOCABULARY = {
     spawnSubagent: (id, { description, prompt, background }) => ({
       id,
       name: 'task',
-      arguments: { agent_type: 'explore', name: identifierFrom(description), description, prompt, mode: background ? 'background' : 'sync' },
+      arguments: {
+        agent_type: 'explore',
+        name: identifierFrom(description),
+        description,
+        prompt,
+        mode: background ? 'background' : 'sync',
+      },
     }),
     spawnSubagentBatch: null,
     backgroundBash: null,
@@ -882,7 +1051,11 @@ const TOOL_VOCABULARY = {
     // The session goal is the autopilot objective, and the model ends its task through task_complete, whose one field
     // is a summary (Copilot CLI 1.0.87). An independent reviewer then decides the outcome: completed, continue, or
     // blocked. The model can state no blocked goal.
-    completeGoal: id => ({ id, name: COPILOT_TOOL.TaskComplete, arguments: { summary: 'The scripted goal is complete.' } }),
+    completeGoal: id => ({
+      id,
+      name: COPILOT_TOOL.TaskComplete,
+      arguments: { summary: 'The scripted goal is complete.' },
+    }),
     blockGoal: null,
     mcpTool: (id, { server, tool, input }) => ({ id, name: `${server}-${tool}`, arguments: input }),
     codeExecution: null,
@@ -891,10 +1064,26 @@ const TOOL_VOCABULARY = {
   [AgentProvider.CURSOR]: {
     // Cursor receives protobuf events through its Connect Run stream.
     // The mock uses provider-owned codecs for each supported call.
-    bash: (id, command) => ({ id, name: CURSOR_EXECUTION_TOOLS.bash, arguments: { command } }),
-    edit: (id, { path, before, after }) => ({ id, name: CURSOR_EXECUTION_TOOLS.edit, arguments: { path, before, after } }),
-    write: (id, { path, content }) => ({ id, name: CURSOR_EXECUTION_TOOLS.write, arguments: { path, content } }),
-    read: (id, path) => ({ id, name: CURSOR_EXECUTION_TOOLS.read, arguments: { path } }),
+    bash: (id, command) => ({
+      id,
+      name: CURSOR_EXECUTION_TOOLS.bash,
+      arguments: { command },
+    }),
+    edit: (id, { path, before, after }) => ({
+      id,
+      name: CURSOR_EXECUTION_TOOLS.edit,
+      arguments: { path, before, after },
+    }),
+    write: (id, { path, content }) => ({
+      id,
+      name: CURSOR_EXECUTION_TOOLS.write,
+      arguments: { path, content },
+    }),
+    read: (id, path) => ({
+      id,
+      name: CURSOR_EXECUTION_TOOLS.read,
+      arguments: { path },
+    }),
     enterPlanMode: null,
     exitPlanMode: null,
     exitPlanModeFromFile: null,
@@ -911,9 +1100,15 @@ const TOOL_VOCABULARY = {
         id,
         name: CURSOR_TASK_TOOL,
         arguments: { description, prompt, report: report ?? '' },
-        ...(completionGate !== undefined ? { completionGate } : {}),
-        ...(taskProgress !== undefined ? { taskProgress } : {}),
-        ...(nativeExecution !== undefined ? { nativeExecution } : {}),
+        ...(completionGate !== undefined
+          ? { completionGate }
+          : {}),
+        ...(taskProgress !== undefined
+          ? { taskProgress }
+          : {}),
+        ...(nativeExecution !== undefined
+          ? { nativeExecution }
+          : {}),
       }
     },
     spawnSubagentBatch: null,
@@ -926,7 +1121,11 @@ const TOOL_VOCABULARY = {
       id,
       name: CURSOR_UPDATE_TODOS_TOOL,
       arguments: {
-        todos: steps.map((step, index) => cursorTodoItem({ id: String(index + 1), content: step.step, status: step.status })),
+        todos: steps.map((step, index) => cursorTodoItem({
+          id: String(index + 1),
+          content: step.step,
+          status: step.status,
+        })),
         merge: false,
       },
     }),
@@ -942,16 +1141,36 @@ const TOOL_VOCABULARY = {
     workflowTools: null,
   },
   [AgentProvider.GOOSE]: {
-    bash: (id, command) => ({ id, name: 'shell', arguments: { command } }),
-    edit: (id, { path, before, after }) => ({ id, name: 'edit', arguments: { path, before, after } }),
-    write: (id, { path, content }) => ({ id, name: 'write', arguments: { path, content } }),
-    read: (id, path) => ({ id, name: 'read', arguments: { path } }),
+    bash: (id, command) => ({
+      id,
+      name: 'shell',
+      arguments: { command },
+    }),
+    edit: (id, { path, before, after }) => ({
+      id,
+      name: 'edit',
+      arguments: { path, before, after },
+    }),
+    write: (id, { path, content }) => ({
+      id,
+      name: 'write',
+      arguments: { path, content },
+    }),
+    read: (id, path) => ({
+      id,
+      name: 'read',
+      arguments: { path },
+    }),
     // No plan-mode tool in its declaration.
     enterPlanMode: null,
     exitPlanMode: null,
     exitPlanModeFromFile: null,
     askUserQuestion: null,
-    spawnSubagent: (id, { description, prompt }) => ({ id, name: 'delegate', arguments: { instructions: prompt, description } }),
+    spawnSubagent: (id, { description, prompt }) => ({
+      id,
+      name: 'delegate',
+      arguments: { instructions: prompt, description },
+    }),
     spawnSubagentBatch: null,
     backgroundBash: null,
     // The Goose todo extension accepts a Markdown checklist, such as - [x] done.
@@ -967,17 +1186,37 @@ const TOOL_VOCABULARY = {
     completeGoal: null,
     blockGoal: null,
     mcpTool: (id, { server, tool, input }) => ({ id, name: `${server}__${tool}`, arguments: input }),
-    codeExecution: (id, source) => ({ id, name: 'execute_javascript', arguments: { code: source } }),
+    codeExecution: (id, source) => ({
+      id,
+      name: 'execute_javascript',
+      arguments: { code: source },
+    }),
     workflowTools: null,
   },
   [AgentProvider.KIMI_CODE]: {
     // Kimi Code supplies each tool's JSON Schema in its model request.
     // The schemas set additionalProperties=false.
     // An extra argument causes the native call to fail.
-    bash: (id, command) => ({ id, name: 'Bash', arguments: { command } }),
-    edit: (id, { path, before, after }) => ({ id, name: 'Edit', arguments: { path, old_string: before, new_string: after } }),
-    write: (id, { path, content }) => ({ id, name: 'Write', arguments: { path, content } }),
-    read: (id, path) => ({ id, name: 'Read', arguments: { path } }),
+    bash: (id, command) => ({
+      id,
+      name: 'Bash',
+      arguments: { command },
+    }),
+    edit: (id, { path, before, after }) => ({
+      id,
+      name: 'Edit',
+      arguments: { path, old_string: before, new_string: after },
+    }),
+    write: (id, { path, content }) => ({
+      id,
+      name: 'Write',
+      arguments: { path, content },
+    }),
+    read: (id, path) => ({
+      id,
+      name: 'Read',
+      arguments: { path },
+    }),
     enterPlanMode: id => ({ id, name: 'EnterPlanMode', arguments: {} }),
     // Kimi's `ExitPlanMode` states no plan. It raises the plan file, so the
     // operation above cannot carry the plan that its caller passes.
@@ -987,7 +1226,9 @@ const TOOL_VOCABULARY = {
     exitPlanModeFromFile: (id, approaches) => ({
       id,
       name: 'ExitPlanMode',
-      arguments: { options: approaches.map(({ label, description }) => ({ label, description })) },
+      arguments: {
+        options: approaches.map(({ label, description }) => ({ label, description })),
+      },
     }),
     // Use the native multi_select field.
     // An option accepts only its label and description.
@@ -1009,7 +1250,16 @@ const TOOL_VOCABULARY = {
     // Kimi Code 2.1.1 takes `run_in_background`, and a child runs in the foreground when the call omits it. A background
     // child needs the TaskList, TaskOutput and TaskStop tools active; without them Kimi refuses the call with
     // BACKGROUND_AGENT_UNAVAILABLE.
-    spawnSubagent: (id, { description, prompt, background }) => ({ id, name: 'Agent', arguments: { description, prompt, subagent_type: 'coder', run_in_background: background ?? false } }),
+    spawnSubagent: (id, { description, prompt, background }) => ({
+      id,
+      name: 'Agent',
+      arguments: {
+        description,
+        prompt,
+        subagent_type: 'coder',
+        run_in_background: background ?? false,
+      },
+    }),
     spawnSubagentBatch: null,
     // The schema requires `description` when `run_in_background` is true.
     backgroundBash: (id, command) => ({
@@ -1024,24 +1274,53 @@ const TOOL_VOCABULARY = {
       arguments: {
         todos: steps.map((step) => {
           const status = acceptedTodoStatus('Kimi Code TodoList', BASE_TODO_STATUSES, step.status)
-          return { title: step.step, status: status === 'completed' ? 'done' : status }
+          return {
+            title: step.step,
+            status: status === 'completed'
+              ? 'done'
+              : status,
+          }
         }),
       },
     }),
     // Outside Never Ask, the server raises a goal-start approval for this call.
-    createGoal: (id, objective) => ({ id, name: 'CreateGoal', arguments: { objective } }),
+    createGoal: (id, objective) => ({
+      id,
+      name: 'CreateGoal',
+      arguments: { objective },
+    }),
     // `status` takes `active`, `complete` or `blocked`.
-    completeGoal: id => ({ id, name: 'UpdateGoal', arguments: { status: 'complete' } }),
+    completeGoal: id => ({
+      id,
+      name: 'UpdateGoal',
+      arguments: { status: 'complete' },
+    }),
     blockGoal: null,
     mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp__${server}__${tool}`, arguments: input }),
     codeExecution: null,
     workflowTools: [KIMI_TOOL.AgentSwarm],
   },
   [AgentProvider.KILO]: {
-    bash: (id, command) => ({ id, name: 'bash', arguments: { command, description: 'Run the scripted command' } }),
-    edit: (id, { path, before, after }) => ({ id, name: 'edit', arguments: { filePath: path, oldString: before, newString: after } }),
-    write: (id, { path, content }) => ({ id, name: 'write', arguments: { filePath: path, content } }),
-    read: (id, path) => ({ id, name: 'read', arguments: { filePath: path } }),
+    bash: (id, command) => ({
+      id,
+      name: 'bash',
+      arguments: { command, description: 'Run the scripted command' },
+    }),
+    edit: (id, { path, before, after }) => ({
+      id,
+      name: 'edit',
+      arguments: { filePath: path, oldString: before, newString: after },
+    }),
+    write: (id, { path, content }) => ({
+      id,
+      name: 'write',
+      arguments: { filePath: path, content },
+    }),
+    read: (id, path) => ({
+      id,
+      name: 'read',
+      arguments: { filePath: path },
+    }),
     // No plan-mode tool in its declaration.
     enterPlanMode: null,
     exitPlanMode: null,
@@ -1063,7 +1342,11 @@ const TOOL_VOCABULARY = {
     completeGoal: null,
     blockGoal: null,
     mcpTool: (id, { server, tool, input }) => ({ id, name: `${server}_${tool}`, arguments: input }),
-    codeExecution: (id, source) => ({ id, name: 'execute', arguments: { code: source } }),
+    codeExecution: (id, source) => ({
+      id,
+      name: 'execute',
+      arguments: { code: source },
+    }),
     workflowTools: null,
   },
   // MiMo Code 0.1.15 supplies snake_case input fields in its native schemas.
@@ -1073,12 +1356,28 @@ const TOOL_VOCABULARY = {
   // - actor starts a subagent.
   [AgentProvider.MIMO_CODE]: {
     // `description` is REQUIRED by the schema, and MiMo refuses a call without it.
-    bash: (id, command) => ({ id, name: 'bash', arguments: { command, description: 'Run the scripted command' } }),
+    bash: (id, command) => ({
+      id,
+      name: 'bash',
+      arguments: { command, description: 'Run the scripted command' },
+    }),
     // MiMo refuses an edit of a file that the session did not read first, so a spec
     // scripts a read of the file before the edit.
-    edit: (id, { path, before, after }) => ({ id, name: 'edit', arguments: { file_path: path, old_string: before, new_string: after } }),
-    write: (id, { path, content }) => ({ id, name: 'write', arguments: { file_path: path, content } }),
-    read: (id, path) => ({ id, name: 'read', arguments: { file_path: path } }),
+    edit: (id, { path, before, after }) => ({
+      id,
+      name: 'edit',
+      arguments: { file_path: path, old_string: before, new_string: after },
+    }),
+    write: (id, { path, content }) => ({
+      id,
+      name: 'write',
+      arguments: { file_path: path, content },
+    }),
+    read: (id, path) => ({
+      id,
+      name: 'read',
+      arguments: { file_path: path },
+    }),
     // Plan mode is a primary agent that a prompt runs on, not a tool.
     enterPlanMode: null,
     // `plan_exit` takes no argument. The plan is a file that the plan agent writes
@@ -1107,7 +1406,16 @@ const TOOL_VOCABULARY = {
     spawnSubagent: (id, { description, prompt, background }) => ({
       id,
       name: 'actor',
-      arguments: { operation: { action: background === true ? 'spawn' : 'run', subagent_type: 'general', description, prompt } },
+      arguments: {
+        operation: {
+          action: background === true
+            ? 'spawn'
+            : 'run',
+          subagent_type: 'general',
+          description,
+          prompt,
+        },
+      },
     }),
     spawnSubagentBatch: null,
     backgroundBash: null,
@@ -1119,14 +1427,34 @@ const TOOL_VOCABULARY = {
     completeGoal: null,
     blockGoal: null,
     mcpTool: (id, { server, tool, input }) => ({ id, name: `${server}_${tool}`, arguments: input }),
-    codeExecution: (id, source) => ({ id, name: 'exec', arguments: { code: source } }),
+    codeExecution: (id, source) => ({
+      id,
+      name: 'exec',
+      arguments: { code: source },
+    }),
     workflowTools: [MIMO_TOOL.Workflow],
   },
   [AgentProvider.OPENCODE]: {
-    bash: (id, command) => ({ id, name: 'bash', arguments: { command } }),
-    edit: (id, { path, before, after }) => ({ id, name: 'edit', arguments: { filePath: path, oldString: before, newString: after } }),
-    write: (id, { path, content }) => ({ id, name: 'write', arguments: { filePath: path, content } }),
-    read: (id, path) => ({ id, name: 'read', arguments: { filePath: path } }),
+    bash: (id, command) => ({
+      id,
+      name: 'bash',
+      arguments: { command },
+    }),
+    edit: (id, { path, before, after }) => ({
+      id,
+      name: 'edit',
+      arguments: { filePath: path, oldString: before, newString: after },
+    }),
+    write: (id, { path, content }) => ({
+      id,
+      name: 'write',
+      arguments: { filePath: path, content },
+    }),
+    read: (id, path) => ({
+      id,
+      name: 'read',
+      arguments: { filePath: path },
+    }),
     // No plan-mode tool in its declaration.
     enterPlanMode: null,
     exitPlanMode: null,
@@ -1148,15 +1476,46 @@ const TOOL_VOCABULARY = {
     completeGoal: null,
     blockGoal: null,
     mcpTool: (id, { server, tool, input }) => ({ id, name: `${server}_${tool}`, arguments: input }),
-    codeExecution: (id, source) => ({ id, name: 'execute', arguments: { code: source } }),
+    codeExecution: (id, source) => ({
+      id,
+      name: 'execute',
+      arguments: { code: source },
+    }),
     workflowTools: null,
   },
   [AgentProvider.PI]: {
-    bash: (id, command) => ({ id, name: 'bash', arguments: { command } }),
-    edit: (id, { path, before, after }) => ({ id, name: 'edit', arguments: { path, edits: [{ oldText: before, newText: after }] } }),
-    write: (id, { path, content }) => ({ id, name: 'write', arguments: { path, content } }),
-    read: (id, path) => ({ id, name: 'read', arguments: { path } }),
-    askUserQuestion: questionBuilder((id, questions) => ({ id, name: 'ask_user_question', arguments: { questions: questions.map(withMultiSelect) } })),
+    bash: (id, command) => ({
+      id,
+      name: 'bash',
+      arguments: { command },
+    }),
+    edit: (id, { path, before, after }) => ({
+      id,
+      name: 'edit',
+      arguments: {
+        path,
+        edits: [
+          { oldText: before, newText: after },
+        ],
+      },
+    }),
+    write: (id, { path, content }) => ({
+      id,
+      name: 'write',
+      arguments: { path, content },
+    }),
+    read: (id, path) => ({
+      id,
+      name: 'read',
+      arguments: { path },
+    }),
+    askUserQuestion: questionBuilder((id, questions) => ({
+      id,
+      name: 'ask_user_question',
+      arguments: {
+        questions: questions.map(withMultiSelect),
+      },
+    })),
     // The session mode selects plan mode.
     // No model tool enters it.
     // The plan_mode_complete tool leaves plan mode and carries the plan text.
@@ -1164,30 +1523,78 @@ const TOOL_VOCABULARY = {
     // The extension refuses the call outside plan mode.
     // Open the agent in plan mode before that scripted call.
     enterPlanMode: null,
-    exitPlanMode: (id, plan) => ({ id, name: 'plan_mode_complete', arguments: { plan } }),
+    exitPlanMode: (id, plan) => ({
+      id,
+      name: 'plan_mode_complete',
+      arguments: { plan },
+    }),
     exitPlanModeFromFile: null,
     // The `Agent` tool of @tintinweb/pi-subagents 0.19.0 runs a child in the background when the call omits
     // `run_in_background` (`backgroundByDefault`), and with `false` the call blocks and returns the child's output.
-    spawnSubagent: (id, { description, prompt, background }) => ({ id, name: 'Agent', arguments: { description, prompt, subagent_type: 'general-purpose', run_in_background: background ?? true } }),
+    spawnSubagent: (id, { description, prompt, background }) => ({
+      id,
+      name: 'Agent',
+      arguments: {
+        description,
+        prompt,
+        subagent_type: 'general-purpose',
+        run_in_background: background ?? true,
+      },
+    }),
     spawnSubagentBatch: null,
     backgroundBash: null,
     updateTodos: null,
     // pi-goal-x 0.31.9 ends a goal through update_goal. It offers the tool only while a goal is active, paused or
     // budget-limited. `complete` runs its completion audit first, and `blocked` requires the reason at run time.
-    createGoal: (id, objective) => ({ id, name: 'create_goal', arguments: { objective } }),
-    completeGoal: id => ({ id, name: 'update_goal', arguments: { status: 'complete' } }),
-    blockGoal: (id, reason) => ({ id, name: 'update_goal', arguments: { status: 'blocked', reason: requireReason('Pi update_goal', reason) } }),
-    mcpTool: (id, { server, tool, input }) => ({ id, name: piNativeMcpToolName(server, tool), arguments: input }),
+    createGoal: (id, objective) => ({
+      id,
+      name: 'create_goal',
+      arguments: { objective },
+    }),
+    completeGoal: id => ({
+      id,
+      name: 'update_goal',
+      arguments: { status: 'complete' },
+    }),
+    blockGoal: (id, reason) => ({
+      id,
+      name: 'update_goal',
+      arguments: {
+        status: 'blocked',
+        reason: requireReason('Pi update_goal', reason),
+      },
+    }),
+    mcpTool: (id, { server, tool, input }) => ({
+      id,
+      name: piNativeMcpToolName(server, tool),
+      arguments: input,
+    }),
     codeExecution: (id, source) => piCodemodeToolCall(id, source),
     workflowTools: [PI_TOOL.SubagentWorkflow],
   },
   [AgentProvider.GROK_BUILD]: {
     // Read off the tool schemas in Grok Build 1.0.41's own model request:
     // `description` is REQUIRED beside `command`.
-    bash: (id, command) => ({ id, name: 'run_terminal_command', arguments: { command, description: 'Run the scripted command' } }),
-    edit: (id, { path, before, after }) => ({ id, name: 'search_replace', arguments: { file_path: path, old_string: before, new_string: after } }),
-    write: (id, { path, content }) => ({ id, name: 'write', arguments: { file_path: path, content } }),
-    read: (id, path) => ({ id, name: 'read_file', arguments: { target_file: path } }),
+    bash: (id, command) => ({
+      id,
+      name: 'run_terminal_command',
+      arguments: { command, description: 'Run the scripted command' },
+    }),
+    edit: (id, { path, before, after }) => ({
+      id,
+      name: 'search_replace',
+      arguments: { file_path: path, old_string: before, new_string: after },
+    }),
+    write: (id, { path, content }) => ({
+      id,
+      name: 'write',
+      arguments: { file_path: path, content },
+    }),
+    read: (id, path) => ({
+      id,
+      name: 'read_file',
+      arguments: { target_file: path },
+    }),
     enterPlanMode: id => ({ id, name: 'enter_plan_mode', arguments: {} }),
     // The native exit_plan_mode tool accepts no arguments.
     // Grok reads the Markdown plan file when the model calls it.
@@ -1199,63 +1606,145 @@ const TOOL_VOCABULARY = {
     askUserQuestion: questionBuilder((id, questions) => ({
       id,
       name: 'ask_user_question',
-      arguments: { questions: questions.map(({ question, options, multiSelect }) => ({ question, options, multi_select: multiSelect ?? false })) },
+      arguments: {
+        questions: questions.map(({ question, options, multiSelect }) => ({ question, options, multi_select: multiSelect ?? false })),
+      },
     })),
-    spawnSubagent: (id, { description, prompt, background }) => ({ id, name: 'spawn_subagent', arguments: { prompt, description, background: background ?? false } }),
+    spawnSubagent: (id, { description, prompt, background }) => ({
+      id,
+      name: 'spawn_subagent',
+      arguments: { prompt, description, background: background ?? false },
+    }),
     spawnSubagentBatch: null,
-    backgroundBash: (id, command) => ({ id, name: 'run_terminal_command', arguments: { command, description: 'Run the scripted command in the background', background: true } }),
+    backgroundBash: (id, command) => ({
+      id,
+      name: 'run_terminal_command',
+      arguments: { command, description: 'Run the scripted command in the background', background: true },
+    }),
     // `merge: false` replaces the list, so the scripted steps are the whole list.
     updateTodos: (id, steps) => ({
       id,
       name: 'todo_write',
-      arguments: { merge: false, todos: steps.map((step, index) => ({ id: String(index + 1), content: step.step, status: acceptedTodoStatus('Grok Build todo_write', BASE_TODO_STATUSES, step.status) })) },
+      arguments: {
+        merge: false,
+        todos: steps.map((step, index) => ({
+          id: String(index + 1),
+          content: step.step,
+          status: acceptedTodoStatus('Grok Build todo_write', BASE_TODO_STATUSES, step.status),
+        })),
+      },
     }),
     createGoal: null,
     completeGoal: null,
     blockGoal: null,
-    mcpTool: (id, { server, tool, input }) => ({ id, name: 'use_tool', arguments: { tool_name: `${server}__${tool}`, tool_input: input } }),
+    mcpTool: (id, { server, tool, input }) => ({
+      id,
+      name: 'use_tool',
+      arguments: { tool_name: `${server}__${tool}`, tool_input: input },
+    }),
     codeExecution: null,
     workflowTools: ['workflow'],
   },
   [AgentProvider.QWEN_CODE]: {
     // Read off the tool schemas in Qwen Code 0.24.4's own model request.
-    bash: (id, command) => ({ id, name: 'run_shell_command', arguments: { command, description: 'Run the scripted command' } }),
-    edit: (id, { path, before, after }) => ({ id, name: 'edit', arguments: { file_path: path, old_string: before, new_string: after } }),
-    write: (id, { path, content }) => ({ id, name: 'write_file', arguments: { file_path: path, content } }),
-    read: (id, path) => ({ id, name: 'read_file', arguments: { file_path: path } }),
+    bash: (id, command) => ({
+      id,
+      name: 'run_shell_command',
+      arguments: { command, description: 'Run the scripted command' },
+    }),
+    edit: (id, { path, before, after }) => ({
+      id,
+      name: 'edit',
+      arguments: { file_path: path, old_string: before, new_string: after },
+    }),
+    write: (id, { path, content }) => ({
+      id,
+      name: 'write_file',
+      arguments: { file_path: path, content },
+    }),
+    read: (id, path) => ({
+      id,
+      name: 'read_file',
+      arguments: { file_path: path },
+    }),
     enterPlanMode: id => ({ id, name: 'enter_plan_mode', arguments: {} }),
-    exitPlanMode: (id, plan) => ({ id, name: 'exit_plan_mode', arguments: { plan } }),
+    exitPlanMode: (id, plan) => ({
+      id,
+      name: 'exit_plan_mode',
+      arguments: { plan },
+    }),
     exitPlanModeFromFile: null,
-    askUserQuestion: questionBuilder((id, questions) => ({ id, name: 'ask_user_question', arguments: { questions: questions.map(withMultiSelect) } })),
+    askUserQuestion: questionBuilder((id, questions) => ({
+      id,
+      name: 'ask_user_question',
+      arguments: {
+        questions: questions.map(withMultiSelect),
+      },
+    })),
     // Qwen 0.24 defaults to a background agent run.
     // Set run_in_background explicitly to select the intended path.
     spawnSubagent: (id, { description, prompt, background }) => ({
       id,
       name: 'agent',
-      arguments: { description, prompt, subagent_type: 'general-purpose', run_in_background: background ?? false },
+      arguments: {
+        description,
+        prompt,
+        subagent_type: 'general-purpose',
+        run_in_background: background ?? false,
+      },
     }),
     spawnSubagentBatch: null,
-    backgroundBash: (id, command) => ({ id, name: 'run_shell_command', arguments: { command, description: 'Run the scripted command in the background', is_background: true } }),
+    backgroundBash: (id, command) => ({
+      id,
+      name: 'run_shell_command',
+      arguments: { command, description: 'Run the scripted command in the background', is_background: true },
+    }),
     updateTodos: (id, steps) => ({
       id,
       name: 'todo_write',
-      arguments: { todos: steps.map((step, index) => ({ id: String(index + 1), content: step.step, status: acceptedTodoStatus('Qwen Code todo_write', BASE_TODO_STATUSES, step.status) })) },
+      arguments: {
+        todos: steps.map((step, index) => ({
+          id: String(index + 1),
+          content: step.step,
+          status: acceptedTodoStatus('Qwen Code todo_write', BASE_TODO_STATUSES, step.status),
+        })),
+      },
     }),
     createGoal: null,
     completeGoal: null,
     blockGoal: null,
     mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp__${server}__${tool}`, arguments: input }),
-    codeExecution: (id, source) => ({ id, name: 'exec', arguments: { source } }),
+    codeExecution: (id, source) => ({
+      id,
+      name: 'exec',
+      arguments: { source },
+    }),
     workflowTools: [QWEN_TOOL.Workflow],
   },
   // Kiro's own tool names and argument shapes, read off the requests of its v3
   // engine (`v3_*` probes): the file tools take `path` and `text`, and the
   // replacement takes `oldStr` and `newStr`.
   [AgentProvider.KIRO]: {
-    bash: (id, command) => ({ id, name: 'execute_bash', arguments: { command, description: 'Run the scripted command' } }),
-    edit: (id, { path, before, after }) => ({ id, name: 'str_replace', arguments: { path, oldStr: before, newStr: after } }),
-    write: (id, { path, content }) => ({ id, name: 'fs_write', arguments: { path, text: content } }),
-    read: (id, path) => ({ id, name: 'read_file', arguments: { path } }),
+    bash: (id, command) => ({
+      id,
+      name: 'execute_bash',
+      arguments: { command, description: 'Run the scripted command' },
+    }),
+    edit: (id, { path, before, after }) => ({
+      id,
+      name: 'str_replace',
+      arguments: { path, oldStr: before, newStr: after },
+    }),
+    write: (id, { path, content }) => ({
+      id,
+      name: 'fs_write',
+      arguments: { path, text: content },
+    }),
+    read: (id, path) => ({
+      id,
+      name: 'read_file',
+      arguments: { path },
+    }),
     // Kiro enters plan mode through its mode, not through a tool. Its plan mode
     // leaves through `switch_to_execution`, which raises no approval: see
     // `kiroSwitchToExecutionToolCall`.
@@ -1276,12 +1765,20 @@ const TOOL_VOCABULARY = {
       return {
         id,
         name: 'user_input',
-        arguments: { question: question.question, options: question.options.map(({ label, description }) => ({ title: label, description })), reason: 'general-question' },
+        arguments: {
+          question: question.question,
+          options: question.options.map(({ label, description }) => ({ title: label, description })),
+          reason: 'general-question',
+        },
       }
     }),
     // `name` states an agent that Kiro bundles, and `explanation` is the reason the
     // row states.
-    spawnSubagent: (id, { description, prompt }) => ({ id, name: 'invoke_sub_agent', arguments: { name: KIRO_CHILD_AGENT, prompt, explanation: description } }),
+    spawnSubagent: (id, { description, prompt }) => ({
+      id,
+      name: 'invoke_sub_agent',
+      arguments: { name: KIRO_CHILD_AGENT, prompt, explanation: description },
+    }),
     spawnSubagentBatch: null,
     // Kiro's Control Process tool starts a background process.
     // No native probe identified its model-facing name.
@@ -1294,17 +1791,29 @@ const TOOL_VOCABULARY = {
     updateTodos: (id, steps) => ({
       id,
       name: 'todo_list',
-      arguments: { command: 'create', tasks: steps.map(({ step }) => ({ task_description: step })), task_list_description: 'The scripted task list' },
+      arguments: {
+        command: 'create',
+        tasks: steps.map(({ step }) => ({ task_description: step })),
+        task_list_description: 'The scripted task list',
+      },
     }),
     // A goal is Kiro's `/goal` command, which the user sends; no model tool starts one.
     createGoal: null,
     // A step of the goal workflow reports success through `send_message`, which ends
     // the goal's loop.
-    completeGoal: id => ({ id, name: 'send_message', arguments: { message: 'The goal is verified.', severity: 'success' } }),
+    completeGoal: id => ({
+      id,
+      name: 'send_message',
+      arguments: { message: 'The goal is verified.', severity: 'success' },
+    }),
     // An error from send_message fails the goal workflow step.
     // That error also fails the round and the workflow run.
     // Kiro reports the failed run and blocks the goal.
-    blockGoal: (id, reason) => ({ id, name: 'send_message', arguments: { message: reason, severity: 'error' } }),
+    blockGoal: (id, reason) => ({
+      id,
+      name: 'send_message',
+      arguments: { message: reason, severity: 'error' },
+    }),
     // Kiro offers each tool of a server to the model as `mcp_<server>_<tool>`, with
     // the tool's own arguments.
     mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp_${server}_${tool}`, arguments: input }),
@@ -1318,10 +1827,26 @@ const TOOL_VOCABULARY = {
   // The default hashline mode requires a hash from a prior native file read.
   // The fixed scripted edit cannot compute that hash.
   [AgentProvider.OH_MY_PI]: {
-    bash: (id, command) => ({ id, name: 'bash', arguments: { command } }),
-    edit: (id, { path, before, after }) => ({ id, name: 'edit', arguments: { path, old_string: before, new_string: after } }),
-    write: (id, { path, content }) => ({ id, name: 'write', arguments: { path, content } }),
-    read: (id, path) => ({ id, name: 'read', arguments: { path } }),
+    bash: (id, command) => ({
+      id,
+      name: 'bash',
+      arguments: { command },
+    }),
+    edit: (id, { path, before, after }) => ({
+      id,
+      name: 'edit',
+      arguments: { path, old_string: before, new_string: after },
+    }),
+    write: (id, { path, content }) => ({
+      id,
+      name: 'write',
+      arguments: { path, content },
+    }),
+    read: (id, path) => ({
+      id,
+      name: 'read',
+      arguments: { path },
+    }),
     // omp's plan mode is a terminal feature; RPC reaches no plan-mode tool.
     enterPlanMode: null,
     exitPlanMode: null,
@@ -1336,7 +1861,9 @@ const TOOL_VOCABULARY = {
           question: question.question,
           header: question.header,
           options: question.options,
-          ...(question.multiSelect ? { multi: true } : {}),
+          ...(question.multiSelect
+            ? { multi: true }
+            : {}),
         })),
       },
     })),
@@ -1346,25 +1873,61 @@ const TOOL_VOCABULARY = {
     // The `async` flag of bash backgrounds the command (omp 18.6.0), and a later `async-result` message reports its end.
     // omp offers the flag only while its `async.enabled` setting is on, and the E2E profile turns that setting off:
     // the call needs a profile that turns it on.
-    backgroundBash: (id, command) => ({ id, name: 'bash', arguments: { command, async: true } }),
+    backgroundBash: (id, command) => ({
+      id,
+      name: 'bash',
+      arguments: { command, async: true },
+    }),
     // The todo init command creates a list with phases.
     // Oh My Pi sets the first task to in_progress.
     // The init schema accepts no status field, so the builder cannot select the initial statuses.
     // `ohMyPiTodoToolCall` states each later change of status.
-    updateTodos: (id, steps) => ({ id, name: 'todo', arguments: { op: 'init', list: [{ phase: OH_MY_PI_TODO_PHASE, items: steps.map(step => step.step) }] } }),
+    updateTodos: (id, steps) => ({
+      id,
+      name: 'todo',
+      arguments: {
+        op: 'init',
+        list: [
+          {
+            phase: OH_MY_PI_TODO_PHASE,
+            items: steps.map(step => step.step),
+          },
+        ],
+      },
+    }),
     // omp starts goal mode from its terminal UI only; RPC offers no goal tool.
     createGoal: null,
     completeGoal: null,
     blockGoal: null,
     mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp__${server}_${tool}`, arguments: input }),
-    codeExecution: (id, source) => ({ id, name: 'eval', arguments: { language: 'js', code: source } }),
+    codeExecution: (id, source) => ({
+      id,
+      name: 'eval',
+      arguments: { language: 'js', code: source },
+    }),
     workflowTools: null,
   },
   [AgentProvider.REASONIX]: {
-    bash: (id, command) => ({ id, name: 'bash', arguments: { command } }),
-    edit: (id, { path, before, after }) => ({ id, name: 'edit_file', arguments: { path, old_string: before, new_string: after } }),
-    write: (id, { path, content }) => ({ id, name: 'write_file', arguments: { path, content } }),
-    read: (id, path) => ({ id, name: 'read_file', arguments: { path } }),
+    bash: (id, command) => ({
+      id,
+      name: 'bash',
+      arguments: { command },
+    }),
+    edit: (id, { path, before, after }) => ({
+      id,
+      name: 'edit_file',
+      arguments: { path, old_string: before, new_string: after },
+    }),
+    write: (id, { path, content }) => ({
+      id,
+      name: 'write_file',
+      arguments: { path, content },
+    }),
+    read: (id, path) => ({
+      id,
+      name: 'read_file',
+      arguments: { path },
+    }),
     // No plan-mode tool in its declaration.
     enterPlanMode: null,
     exitPlanMode: null,
@@ -1404,29 +1967,85 @@ const TOOL_VOCABULARY = {
         todos: steps.map(({ step, status }) => ({
           content: step,
           status: acceptedTodoStatus('Reasonix todo_write', BASE_TODO_STATUSES, status),
-          activeForm: status === 'in_progress' ? `Working on: ${step}` : step,
+          activeForm: status === 'in_progress'
+            ? `Working on: ${step}`
+            : step,
         })),
       },
     }),
     // A goal is the objective of a Goal-mode turn. The model's update_goal reports its disposition.
     createGoal: null,
-    completeGoal: id => ({ id, name: 'update_goal', arguments: { status: 'complete' } }),
-    blockGoal: (id, reason) => ({ id, name: 'update_goal', arguments: { status: 'blocked', reason: requireReason('Reasonix update_goal', reason) } }),
-    mcpTool: (id, { server, tool, input }) => ({ id, name: 'use_capability', arguments: { action: 'call', capability_id: `mcp-tool:${server}/${tool}`, arguments: input } }),
-    codeExecution: (id, source) => ({ id, name: 'run_script', arguments: { script: source } }),
+    completeGoal: id => ({
+      id,
+      name: 'update_goal',
+      arguments: { status: 'complete' },
+    }),
+    blockGoal: (id, reason) => ({
+      id,
+      name: 'update_goal',
+      arguments: {
+        status: 'blocked',
+        reason: requireReason('Reasonix update_goal', reason),
+      },
+    }),
+    mcpTool: (id, { server, tool, input }) => ({
+      id,
+      name: 'use_capability',
+      arguments: { action: 'call', capability_id: `mcp-tool:${server}/${tool}`, arguments: input },
+    }),
+    codeExecution: (id, source) => ({
+      id,
+      name: 'run_script',
+      arguments: { script: source },
+    }),
     workflowTools: null,
   },
   [AgentProvider.ZCODE]: {
-    bash: (id, command) => ({ id, name: 'Bash', arguments: { command, description: 'Run the scripted command' } }),
-    edit: (id, { path, before, after }) => ({ id, name: 'Edit', arguments: { file_path: path, old_string: before, new_string: after } }),
-    write: (id, { path, content }) => ({ id, name: 'Write', arguments: { file_path: path, content } }),
-    read: (id, path) => ({ id, name: 'Read', arguments: { file_path: path } }),
+    bash: (id, command) => ({
+      id,
+      name: 'Bash',
+      arguments: { command, description: 'Run the scripted command' },
+    }),
+    edit: (id, { path, before, after }) => ({
+      id,
+      name: 'Edit',
+      arguments: { file_path: path, old_string: before, new_string: after },
+    }),
+    write: (id, { path, content }) => ({
+      id,
+      name: 'Write',
+      arguments: { file_path: path, content },
+    }),
+    read: (id, path) => ({
+      id,
+      name: 'Read',
+      arguments: { file_path: path },
+    }),
     enterPlanMode: id => ({ id, name: 'EnterPlanMode', arguments: {} }),
-    exitPlanMode: (id, plan) => ({ id, name: 'ExitPlanMode', arguments: { plan } }),
+    exitPlanMode: (id, plan) => ({
+      id,
+      name: 'ExitPlanMode',
+      arguments: { plan },
+    }),
     exitPlanModeFromFile: null,
-    askUserQuestion: questionBuilder((id, questions) => ({ id, name: 'AskUserQuestion', arguments: { questions: questions.map(withMultiSelect) } })),
+    askUserQuestion: questionBuilder((id, questions) => ({
+      id,
+      name: 'AskUserQuestion',
+      arguments: {
+        questions: questions.map(withMultiSelect),
+      },
+    })),
     // ZCode 3.14.4's Agent takes `run_in_background`, and a child runs in the foreground when the call omits it.
-    spawnSubagent: (id, { description, prompt, background }) => ({ id, name: 'Agent', arguments: { description, prompt, subagent_type: 'general-purpose', run_in_background: background ?? false } }),
+    spawnSubagent: (id, { description, prompt, background }) => ({
+      id,
+      name: 'Agent',
+      arguments: {
+        description,
+        prompt,
+        subagent_type: 'general-purpose',
+        run_in_background: background ?? false,
+      },
+    }),
     spawnSubagentBatch: null,
     // The SAME Bash tool, with the `run_in_background` flag of its runtime schema. ZCode refuses the flag in an
     // off-peak turn ("Idle-time tasks do not support background commands").
@@ -1455,7 +2074,11 @@ const TOOL_VOCABULARY = {
     completeGoal: null,
     blockGoal: null,
     mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp__${server}__${tool}`, arguments: input }),
-    codeExecution: (id, source) => ({ id, name: 'mcp__node_repl__js', arguments: { code: source, title: 'Run the native script' } }),
+    codeExecution: (id, source) => ({
+      id,
+      name: 'mcp__node_repl__js',
+      arguments: { code: source, title: 'Run the native script' },
+    }),
     workflowTools: [ZCODE_TOOL.CreateWorkflow],
   },
   // Amp's tool code and native probes define these calls.
@@ -1467,12 +2090,32 @@ const TOOL_VOCABULARY = {
     // and the turn continues while the command runs on. A command that a scenario holds
     // must stay in its call until the scenario releases it, so the call asks for Amp's
     // largest wait. A quick command still returns when it exits.
-    bash: (id, command) => ({ id, name: AMP_SHELL_TOOL.ShellCommand, arguments: { command, timeout_ms: AMP_SHELL_WAIT_LIMIT_MS } }),
+    bash: (id, command) => ({
+      id,
+      name: AMP_SHELL_TOOL.ShellCommand,
+      arguments: { command, timeout_ms: AMP_SHELL_WAIT_LIMIT_MS },
+    }),
     // Amp's agent modes edit through one `*** Begin Patch` text, the format that
     // Codex reads also. The path is absolute, as Amp's own edits state it.
-    edit: (id, request) => ({ id, name: AMP_TOOL_NAME.ApplyPatch, arguments: { patchText: updateFilePatch(request) } }),
-    write: (id, request) => ({ id, name: AMP_TOOL_NAME.ApplyPatch, arguments: { patchText: addFilePatch(request) } }),
-    read: (id, path) => ({ id, name: AMP_TOOL_NAME.Read, arguments: { path } }),
+    edit: (id, request) => ({
+      id,
+      name: AMP_TOOL_NAME.ApplyPatch,
+      arguments: {
+        patchText: updateFilePatch(request),
+      },
+    }),
+    write: (id, request) => ({
+      id,
+      name: AMP_TOOL_NAME.ApplyPatch,
+      arguments: {
+        patchText: addFilePatch(request),
+      },
+    }),
+    read: (id, path) => ({
+      id,
+      name: AMP_TOOL_NAME.Read,
+      arguments: { path },
+    }),
     // Amp has no plan mode, and the worker disables its question tool: a question
     // in stream-JSON mode ends the session.
     enterPlanMode: null,
@@ -1481,32 +2124,66 @@ const TOOL_VOCABULARY = {
     askUserQuestion: null,
     // `Task` runs on Amp's server. The mock's Amp surface answers the child's turn
     // from the scenario its prompt marks.
-    spawnSubagent: (id, { description, prompt }) => ({ id, name: AMP_SUBAGENT_TOOL.Task, arguments: { description, prompt } }),
+    spawnSubagent: (id, { description, prompt }) => ({
+      id,
+      name: AMP_SUBAGENT_TOOL.Task,
+      arguments: { description, prompt },
+    }),
     spawnSubagentBatch: null,
     // Amp moves the command to the background after timeout_ms.
     // `ampShellCommandStatusToolCall` reads a backgrounded command again by its PID.
     // A zero wait can return before Amp records the spawned process.
     // Use one second so the native result identifies the process.
-    backgroundBash: (id, command) => ({ id, name: AMP_SHELL_TOOL.ShellCommand, arguments: { command, timeout_ms: 1_000 } }),
+    backgroundBash: (id, command) => ({
+      id,
+      name: AMP_SHELL_TOOL.ShellCommand,
+      arguments: { command, timeout_ms: 1_000 },
+    }),
     // Amp's agent modes have no to-do tool, and Amp has no session goal.
     updateTodos: null,
     createGoal: null,
     completeGoal: null,
     blockGoal: null,
     mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp__${server}__${tool}`, arguments: input }),
-    codeExecution: (id, source) => ({ id, name: AMP_CODE_EXEC_TOOL, arguments: { code: source } }),
+    codeExecution: (id, source) => ({
+      id,
+      name: AMP_CODE_EXEC_TOOL,
+      arguments: { code: source },
+    }),
     workflowTools: null,
   },
   // Cline's own tool names and argument shapes, read off the tool schemas in the
   // model requests of Cline 3.0.64's hub. Each schema sets `additionalProperties:
   // false`, so an extra field fails the call.
   [AgentProvider.CLINE]: {
-    bash: (id, command) => ({ id, name: CLINE_TOOL.RunCommands, arguments: { commands: [command] } }),
+    bash: (id, command) => ({
+      id,
+      name: CLINE_TOOL.RunCommands,
+      arguments: {
+        commands: [command],
+      },
+    }),
     // One `editor` tool replaces text, inserts it, or creates a missing file. The
     // path is absolute, as the schema asks.
-    edit: (id, { path, before, after }) => ({ id, name: CLINE_TOOL_NAME.Editor, arguments: { path, old_text: before, new_text: after } }),
-    write: (id, { path, content }) => ({ id, name: CLINE_TOOL_NAME.Editor, arguments: { path, new_text: content } }),
-    read: (id, path) => ({ id, name: CLINE_TOOL_NAME.ReadFiles, arguments: { files: [{ path }] } }),
+    edit: (id, { path, before, after }) => ({
+      id,
+      name: CLINE_TOOL_NAME.Editor,
+      arguments: { path, old_text: before, new_text: after },
+    }),
+    write: (id, { path, content }) => ({
+      id,
+      name: CLINE_TOOL_NAME.Editor,
+      arguments: { path, new_text: content },
+    }),
+    read: (id, path) => ({
+      id,
+      name: CLINE_TOOL_NAME.ReadFiles,
+      arguments: {
+        files: [
+          { path },
+        ],
+      },
+    }),
     // Plan mode is a session mode, and no tool enters it.
     enterPlanMode: null,
     // The native switch_to_act_mode tool accepts no arguments.
@@ -1527,7 +2204,14 @@ const TOOL_VOCABULARY = {
         throw new Error('Cline\'s ask_question has no multi-select question')
       if (question.options.length < 2 || question.options.length > 5)
         throw new Error('Cline\'s ask_question takes 2 to 5 options')
-      return { id, name: CLINE_TOOL.AskQuestion, arguments: { question: question.question, options: question.options.map(({ label }) => label) } }
+      return {
+        id,
+        name: CLINE_TOOL.AskQuestion,
+        arguments: {
+          question: question.question,
+          options: question.options.map(({ label }) => label),
+        },
+      }
     }),
     // The native spawn_agent tool accepts a system prompt and task.
     // It accepts no separate label.
@@ -1556,17 +2240,52 @@ const TOOL_VOCABULARY = {
     // CodeBuddy uses Claude Code 2.1.220 tool-call shapes.
     // Each call uses an Anthropic tool_use block.
     // Its permission reply differs: CodeBuddy uses allowed where Claude uses behavior.
-    bash: (id, command) => ({ id, name: 'Bash', arguments: { command, description: 'Run the scripted command' } }),
-    edit: (id, { path, before, after }) => ({ id, name: 'Edit', arguments: { file_path: path, old_string: before, new_string: after } }),
-    write: (id, { path, content }) => ({ id, name: 'Write', arguments: { file_path: path, content } }),
-    read: (id, path) => ({ id, name: 'Read', arguments: { file_path: path } }),
+    bash: (id, command) => ({
+      id,
+      name: 'Bash',
+      arguments: { command, description: 'Run the scripted command' },
+    }),
+    edit: (id, { path, before, after }) => ({
+      id,
+      name: 'Edit',
+      arguments: { file_path: path, old_string: before, new_string: after },
+    }),
+    write: (id, { path, content }) => ({
+      id,
+      name: 'Write',
+      arguments: { file_path: path, content },
+    }),
+    read: (id, path) => ({
+      id,
+      name: 'Read',
+      arguments: { file_path: path },
+    }),
     enterPlanMode: id => ({ id, name: 'EnterPlanMode', arguments: {} }),
-    exitPlanMode: (id, plan) => ({ id, name: 'ExitPlanMode', arguments: { plan } }),
+    exitPlanMode: (id, plan) => ({
+      id,
+      name: 'ExitPlanMode',
+      arguments: { plan },
+    }),
     exitPlanModeFromFile: null,
-    askUserQuestion: questionBuilder((id, questions) => ({ id, name: 'AskUserQuestion', arguments: { questions: questions.map(withMultiSelect) } })),
+    askUserQuestion: questionBuilder((id, questions) => ({
+      id,
+      name: 'AskUserQuestion',
+      arguments: {
+        questions: questions.map(withMultiSelect),
+      },
+    })),
     // CodeBuddy Code 2.160.0's Agent takes `run_in_background` unless CODEBUDDY_CODE_DISABLE_BACKGROUND_TASKS is set,
     // which the E2E environment does not set. A child runs in the foreground when the call omits the flag.
-    spawnSubagent: (id, { description, prompt, background }) => ({ id, name: 'Agent', arguments: { description, prompt, subagent_type: 'general-purpose', run_in_background: background ?? false } }),
+    spawnSubagent: (id, { description, prompt, background }) => ({
+      id,
+      name: 'Agent',
+      arguments: {
+        description,
+        prompt,
+        subagent_type: 'general-purpose',
+        run_in_background: background ?? false,
+      },
+    }),
     spawnSubagentBatch: null,
     backgroundBash: (id, command) => ({
       id,
@@ -1582,30 +2301,61 @@ const TOOL_VOCABULARY = {
       name: 'TodoWrite',
       arguments: {
         oldTodos: [],
-        newTodos: steps.map(({ step, status }) => ({ content: step, activeForm: step, status: acceptedTodoStatus('CodeBuddy Code TodoWrite', BASE_TODO_STATUSES, status) })),
+        newTodos: steps.map(({ step, status }) => ({
+          content: step,
+          activeForm: step,
+          status: acceptedTodoStatus('CodeBuddy Code TodoWrite', BASE_TODO_STATUSES, status),
+        })),
       },
     }),
     // `CreateGoal` takes the goal as `condition`, not `objective`.
-    createGoal: (id, objective) => ({ id, name: 'CreateGoal', arguments: { condition: objective } }),
+    createGoal: (id, objective) => ({
+      id,
+      name: 'CreateGoal',
+      arguments: { condition: objective },
+    }),
     // `UpdateGoal` REPLACES the condition; there is no complete or block verb.
     // `/goal clear` is the user's route and has no tool form.
     completeGoal: null,
     blockGoal: null,
     mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp__${server}__${tool}`, arguments: input }),
-    codeExecution: (id, source) => ({ id, name: 'DeferExecuteTool', arguments: { toolName: 'REPL', params: { code: source } } }),
+    codeExecution: (id, source) => ({
+      id,
+      name: 'DeferExecuteTool',
+      arguments: {
+        toolName: 'REPL',
+        params: { code: source },
+      },
+    }),
     workflowTools: ['Workflow'],
   },
   [AgentProvider.JUNIE]: {
     // Junie's tools are OpenAI function calls. `bash` takes the command; the
     // tool description states that each call is wrapped in `bash -c`.
-    bash: (id, command) => ({ id, name: 'bash', arguments: { command } }),
+    bash: (id, command) => ({
+      id,
+      name: 'bash',
+      arguments: { command },
+    }),
     // `search_replace` is Junie's single-hunk edit: `search` is the block to
     // find, `replace` its replacement.
-    edit: (id, { path, before, after }) => ({ id, name: 'search_replace', arguments: { file_path: path, search: before, replace: after } }),
+    edit: (id, { path, before, after }) => ({
+      id,
+      name: 'search_replace',
+      arguments: { file_path: path, search: before, replace: after },
+    }),
     // `create` writes a new file; the path key is `filename`.
-    write: (id, { path, content }) => ({ id, name: 'create', arguments: { filename: path, content } }),
+    write: (id, { path, content }) => ({
+      id,
+      name: 'create',
+      arguments: { filename: path, content },
+    }),
     // `open_entire_file` reads a file in full.
-    read: (id, path) => ({ id, name: 'open_entire_file', arguments: { path } }),
+    read: (id, path) => ({
+      id,
+      name: 'open_entire_file',
+      arguments: { path },
+    }),
     // Plan mode is a config option (`mode: plan`), not a tool: the `plan`
     // slash command is a `setConfigOption` action.
     enterPlanMode: null,
@@ -1640,7 +2390,11 @@ const TOOL_VOCABULARY = {
     spawnSubagentBatch: null,
     // The SAME `bash` tool, with the `background` flag the tool description
     // documents for long-running processes.
-    backgroundBash: (id, command) => ({ id, name: 'bash', arguments: { command, background: true } }),
+    backgroundBash: (id, command) => ({
+      id,
+      name: 'bash',
+      arguments: { command, background: true },
+    }),
     // No to-do tool: the plan entries serve that role.
     updateTodos: null,
     // Goals are a CLI flag (`--goal`), not a tool.
@@ -1653,7 +2407,11 @@ const TOOL_VOCABULARY = {
     workflowTools: null,
   },
   [AgentProvider.LETTA]: {
-    bash: (id, command) => ({ id, name: 'Bash', arguments: { command, description: 'Run the scripted command' } }),
+    bash: (id, command) => ({
+      id,
+      name: 'Bash',
+      arguments: { command, description: 'Run the scripted command' },
+    }),
     edit: (id, request) => ({
       id,
       name: 'Edit',
@@ -1664,7 +2422,11 @@ const TOOL_VOCABULARY = {
       name: 'Write',
       arguments: { file_path: request.path, content: request.content },
     }),
-    read: (id, path) => ({ id, name: 'Read', arguments: { file_path: path } }),
+    read: (id, path) => ({
+      id,
+      name: 'Read',
+      arguments: { file_path: path },
+    }),
     enterPlanMode: null,
     exitPlanMode: null,
     exitPlanModeFromFile: null,
@@ -1687,7 +2449,11 @@ const TOOL_VOCABULARY = {
     spawnSubagent: (id, { description, prompt, background }) => {
       if (background === false)
         throw new Error('Letta Code always runs a child in the background; its Agent tool takes no foreground choice.')
-      return { id, name: 'Agent', arguments: { description, prompt, subagent_type: 'general-purpose' } }
+      return {
+        id,
+        name: 'Agent',
+        arguments: { description, prompt, subagent_type: 'general-purpose' },
+      }
     },
     spawnSubagentBatch: null,
     backgroundBash: null,
@@ -1696,7 +2462,11 @@ const TOOL_VOCABULARY = {
     completeGoal: null,
     blockGoal: null,
     mcpTool: null,
-    codeExecution: (id, source) => ({ id, name: LETTA_TOOL.Workflow, arguments: { script: source } }),
+    codeExecution: (id, source) => ({
+      id,
+      name: LETTA_TOOL.Workflow,
+      arguments: { script: source },
+    }),
     workflowTools: [LETTA_TOOL.Workflow],
   },
   [AgentProvider.DIRAC]: {
@@ -1710,7 +2480,13 @@ const TOOL_VOCABULARY = {
     // not in an ACP client terminal: the CLI forces
     // `vscodeTerminalExecutionMode: "backgroundExec"`. Each commands entry
     // supplies one command.
-    bash: (id, command) => ({ id, name: 'execute_command', arguments: { commands: [command] } }),
+    bash: (id, command) => ({
+      id,
+      name: 'execute_command',
+      arguments: {
+        commands: [command],
+      },
+    }),
     // The edit_file tool addresses each edit with an ANCHOR§CONTENT coordinate.
     // A prior anchored native read supplies that coordinate.
     // Its random ID belongs to the conversation.
@@ -1720,17 +2496,37 @@ const TOOL_VOCABULARY = {
       id,
       name: 'edit_file',
       arguments: {
-        files: [{
-          path,
-          edits: [{ edit_type: 'replace', anchor: '{{editAnchor}}', end_anchor: '{{editAnchor}}', text: after }],
-        }],
+        files: [
+          {
+            path,
+            edits: [
+              {
+                edit_type: 'replace',
+                anchor: '{{editAnchor}}',
+                end_anchor: '{{editAnchor}}',
+                text: after,
+              },
+            ],
+          },
+        ],
       },
     }),
     // `write_to_file` creates or overwrites a file.
-    write: (id, { path, content }) => ({ id, name: 'write_to_file', arguments: { path, content } }),
+    write: (id, { path, content }) => ({
+      id,
+      name: 'write_to_file',
+      arguments: { path, content },
+    }),
     // `read_file` reads files, and states `include_anchors` so the result
     // carries the ANCHOR§CONTENT coordinates a later `edit_file` needs.
-    read: (id, path) => ({ id, name: 'read_file', arguments: { paths: [path], include_anchors: true } }),
+    read: (id, path) => ({
+      id,
+      name: 'read_file',
+      arguments: {
+        paths: [path],
+        include_anchors: true,
+      },
+    }),
     // The session/set_mode call selects plan mode.
     // The respond plan call ends the model turn.
     // Its approval answer arrives as the next prompt.
@@ -1748,7 +2544,11 @@ const TOOL_VOCABULARY = {
       return {
         id,
         name: 'respond',
-        arguments: { operation: 'question', text: question.question, options: question.options.map(({ label }) => label) },
+        arguments: {
+          operation: 'question',
+          text: question.question,
+          options: question.options.map(({ label }) => label),
+        },
       }
     }),
     // The native tool takes one array even when the turn starts one child.
@@ -1764,21 +2564,51 @@ const TOOL_VOCABULARY = {
     blockGoal: null,
     // No MCP client in the current core.
     mcpTool: null,
-    codeExecution: (id, source) => ({ id, name: 'execute_command', arguments: { script: source, language: 'node' } }),
+    codeExecution: (id, source) => ({
+      id,
+      name: 'execute_command',
+      arguments: { script: source, language: 'node' },
+    }),
     workflowTools: null,
   },
   [AgentProvider.QODER]: {
     // Qoder's stream-json layer emits Anthropic-shaped messages. Its plan exit
     // reads the plan file and accepts no plan argument.
-    bash: (id, command) => ({ id, name: 'Bash', arguments: { command, description: 'Run the scripted command' } }),
-    edit: (id, { path, before, after }) => ({ id, name: 'Edit', arguments: { file_path: path, old_string: before, new_string: after } }),
-    write: (id, { path, content }) => ({ id, name: 'Write', arguments: { file_path: path, content } }),
-    read: (id, path) => ({ id, name: 'Read', arguments: { file_path: path } }),
+    bash: (id, command) => ({
+      id,
+      name: 'Bash',
+      arguments: { command, description: 'Run the scripted command' },
+    }),
+    edit: (id, { path, before, after }) => ({
+      id,
+      name: 'Edit',
+      arguments: { file_path: path, old_string: before, new_string: after },
+    }),
+    write: (id, { path, content }) => ({
+      id,
+      name: 'Write',
+      arguments: { file_path: path, content },
+    }),
+    read: (id, path) => ({
+      id,
+      name: 'Read',
+      arguments: { file_path: path },
+    }),
     enterPlanMode: id => ({ id, name: 'EnterPlanMode', arguments: {} }),
     exitPlanMode: null,
     exitPlanModeFromFile: id => ({ id, name: 'ExitPlanMode', arguments: {} }),
-    askUserQuestion: questionBuilder((id, questions) => ({ id, name: 'AskUserQuestion', arguments: { questions: questions.map(withMultiSelect) } })),
-    spawnSubagent: (id, { description, prompt }) => ({ id, name: 'Agent', arguments: { description, prompt, subagent_type: 'general-purpose' } }),
+    askUserQuestion: questionBuilder((id, questions) => ({
+      id,
+      name: 'AskUserQuestion',
+      arguments: {
+        questions: questions.map(withMultiSelect),
+      },
+    })),
+    spawnSubagent: (id, { description, prompt }) => ({
+      id,
+      name: 'Agent',
+      arguments: { description, prompt, subagent_type: 'general-purpose' },
+    }),
     spawnSubagentBatch: null,
     backgroundBash: (id, command) => ({
       id,
@@ -1791,15 +2621,36 @@ const TOOL_VOCABULARY = {
     updateTodos: (id, steps) => ({
       id,
       name: 'WriteTodos',
-      arguments: { todos: steps.map(({ step, status }) => ({ description: step, status: acceptedTodoStatus('Qoder CLI WriteTodos', CANCELLED_AND_BLOCKED_TODO_STATUSES, status) })) },
+      arguments: {
+        todos: steps.map(({ step, status }) => ({
+          description: step,
+          status: acceptedTodoStatus('Qoder CLI WriteTodos', CANCELLED_AND_BLOCKED_TODO_STATUSES, status),
+        })),
+      },
     }),
-    createGoal: (id, objective) => ({ id, name: 'CreateGoal', arguments: { objective } }),
+    createGoal: (id, objective) => ({
+      id,
+      name: 'CreateGoal',
+      arguments: { objective },
+    }),
     // `UpdateGoal` takes one status word: `complete` or `blocked`. Its schema
     // states no reason field, so the builder drops the one its caller holds.
-    completeGoal: id => ({ id, name: 'UpdateGoal', arguments: { status: 'complete' } }),
-    blockGoal: id => ({ id, name: 'UpdateGoal', arguments: { status: 'blocked' } }),
+    completeGoal: id => ({
+      id,
+      name: 'UpdateGoal',
+      arguments: { status: 'complete' },
+    }),
+    blockGoal: id => ({
+      id,
+      name: 'UpdateGoal',
+      arguments: { status: 'blocked' },
+    }),
     mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp__${server}__${tool}`, arguments: input }),
-    codeExecution: (id, source) => ({ id, name: 'Workflow', arguments: { script: source } }),
+    codeExecution: (id, source) => ({
+      id,
+      name: 'Workflow',
+      arguments: { script: source },
+    }),
     workflowTools: ['Workflow'],
   },
   [AgentProvider.DROID]: {
@@ -1814,9 +2665,17 @@ const TOOL_VOCABULARY = {
       name: 'Create',
       arguments: { file_path: request.path, content: request.content },
     }),
-    read: (id, path) => ({ id: droidCallId(id), name: 'Read', arguments: { file_path: path } }),
+    read: (id, path) => ({
+      id: droidCallId(id),
+      name: 'Read',
+      arguments: { file_path: path },
+    }),
     enterPlanMode: null,
-    exitPlanMode: (id, plan) => ({ id: droidCallId(id), name: 'ExitSpecMode', arguments: { plan } }),
+    exitPlanMode: (id, plan) => ({
+      id: droidCallId(id),
+      name: 'ExitSpecMode',
+      arguments: { plan },
+    }),
     exitPlanModeFromFile: null,
     // Droid's AskUser takes one plain-text `questionnaire`, not a questions
     // array. The format is numbered `[question]` blocks with `[topic]` and
@@ -1850,71 +2709,195 @@ const TOOL_VOCABULARY = {
       id: droidCallId(id),
       name: 'TodoWrite',
       arguments: {
-        todos: steps.map(s => ({ content: s.step, status: acceptedTodoStatus('Factory Droid TodoWrite', BASE_TODO_STATUSES, s.status) })),
+        todos: steps.map(s => ({
+          content: s.step,
+          status: acceptedTodoStatus('Factory Droid TodoWrite', BASE_TODO_STATUSES, s.status),
+        })),
       },
     }),
     createGoal: null,
     completeGoal: null,
     blockGoal: null,
-    mcpTool: (id, { server, tool, input }) => ({ id: droidCallId(id), name: `${server}___${tool}`, arguments: input }),
+    mcpTool: (id, { server, tool, input }) => ({
+      id: droidCallId(id),
+      name: `${server}___${tool}`,
+      arguments: input,
+    }),
     codeExecution: (id, source) => droidScriptToolCall(id, source),
     workflowTools: null,
   },
   [AgentProvider.COMMAND_CODE]: {
-    bash: (id, command) => ({ id, name: COMMAND_CODE_TOOL.ShellCommand, arguments: { command, description: 'Run the scripted command.' } }),
-    edit: (id, { path, before, after }) => ({ id, name: 'edit_file', arguments: { file_path: path, old_string: before, new_string: after } }),
-    write: (id, { path, content }) => ({ id, name: 'write_file', arguments: { file_path: path, content } }),
-    read: (id, path) => ({ id, name: 'read_file', arguments: { file_path: path } }),
+    bash: (id, command) => ({
+      id,
+      name: COMMAND_CODE_TOOL.ShellCommand,
+      arguments: { command, description: 'Run the scripted command.' },
+    }),
+    edit: (id, { path, before, after }) => ({
+      id,
+      name: 'edit_file',
+      arguments: { file_path: path, old_string: before, new_string: after },
+    }),
+    write: (id, { path, content }) => ({
+      id,
+      name: 'write_file',
+      arguments: { file_path: path, content },
+    }),
+    read: (id, path) => ({
+      id,
+      name: 'read_file',
+      arguments: { file_path: path },
+    }),
     enterPlanMode: null,
     exitPlanMode: null,
     exitPlanModeFromFile: null,
     askUserQuestion: null,
-    spawnSubagent: (id, { description, prompt, agentType, background }) => ({ id, name: COMMAND_CODE_TOOL.Agent, arguments: { description, prompt, subagent_type: agentType ?? 'general', run_in_background: background ?? false } }),
+    spawnSubagent: (id, { description, prompt, agentType, background }) => ({
+      id,
+      name: COMMAND_CODE_TOOL.Agent,
+      arguments: {
+        description,
+        prompt,
+        subagent_type: agentType ?? 'general',
+        run_in_background: background ?? false,
+      },
+    }),
     spawnSubagentBatch: null,
-    backgroundBash: (id, command) => ({ id, name: COMMAND_CODE_TOOL.ShellCommand, arguments: { command, description: 'Run the scripted background command.', run_in_background: true } }),
+    backgroundBash: (id, command) => ({
+      id,
+      name: COMMAND_CODE_TOOL.ShellCommand,
+      arguments: { command, description: 'Run the scripted background command.', run_in_background: true },
+    }),
     updateTodos: null,
     createGoal: null,
     completeGoal: null,
     blockGoal: null,
     mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp__${server}__${tool}`, arguments: input }),
-    codeExecution: (id, source) => ({ id, name: 'codemode', arguments: { code: source } }),
+    codeExecution: (id, source) => ({
+      id,
+      name: 'codemode',
+      arguments: { code: source },
+    }),
     workflowTools: null,
   },
   [AgentProvider.DEEPSEEK_HARNESS]: {
-    bash: (id, command) => ({ id, name: DEEPSEEK_HARNESS_TOOL.Bash, arguments: { command, description: 'Run the scripted command.' } }),
-    edit: (id, { path, before, after }) => ({ id, name: DEEPSEEK_HARNESS_TOOL.Edit, arguments: { file_path: path, old_string: before, new_string: after } }),
-    write: (id, { path, content }) => ({ id, name: DEEPSEEK_HARNESS_TOOL.Write, arguments: { file_path: path, content } }),
-    read: (id, path) => ({ id, name: DEEPSEEK_HARNESS_TOOL.Read, arguments: { file_path: path } }),
+    bash: (id, command) => ({
+      id,
+      name: DEEPSEEK_HARNESS_TOOL.Bash,
+      arguments: { command, description: 'Run the scripted command.' },
+    }),
+    edit: (id, { path, before, after }) => ({
+      id,
+      name: DEEPSEEK_HARNESS_TOOL.Edit,
+      arguments: { file_path: path, old_string: before, new_string: after },
+    }),
+    write: (id, { path, content }) => ({
+      id,
+      name: DEEPSEEK_HARNESS_TOOL.Write,
+      arguments: { file_path: path, content },
+    }),
+    read: (id, path) => ({
+      id,
+      name: DEEPSEEK_HARNESS_TOOL.Read,
+      arguments: { file_path: path },
+    }),
     enterPlanMode: null,
-    exitPlanMode: (id, plan) => ({ id, name: DEEPSEEK_HARNESS_TOOL.ExitPlanMode, arguments: { plan } }),
+    exitPlanMode: (id, plan) => ({
+      id,
+      name: DEEPSEEK_HARNESS_TOOL.ExitPlanMode,
+      arguments: { plan },
+    }),
     exitPlanModeFromFile: null,
-    askUserQuestion: questionBuilder((id, questions) => ({ id, name: DEEPSEEK_HARNESS_TOOL.AskUserQuestion, arguments: { questions: questions.map(({ freeText: _freeText, multiSelect, ...question }, index) => ({ id: `question-${index + 1}`, ...question, multi_select: multiSelect ?? false })) } })),
-    spawnSubagent: (id, { description, prompt, background }) => ({ id, name: DEEPSEEK_HARNESS_TOOL.Subagent, arguments: { description, prompt, run_in_background: background ?? true } }),
+    askUserQuestion: questionBuilder((id, questions) => ({
+      id,
+      name: DEEPSEEK_HARNESS_TOOL.AskUserQuestion,
+      arguments: {
+        questions: questions.map(({ freeText: _freeText, multiSelect, ...question }, index) => ({ id: `question-${index + 1}`, ...question, multi_select: multiSelect ?? false })),
+      },
+    })),
+    spawnSubagent: (id, { description, prompt, background }) => ({
+      id,
+      name: DEEPSEEK_HARNESS_TOOL.Subagent,
+      arguments: { description, prompt, run_in_background: background ?? true },
+    }),
     spawnSubagentBatch: null,
-    backgroundBash: (id, command) => ({ id, name: DEEPSEEK_HARNESS_TOOL.Bash, arguments: { command, description: 'Run the scripted background command.', run_in_background: true } }),
-    updateTodos: (id, steps) => ({ id, name: DEEPSEEK_HARNESS_TOOL.TodoWrite, arguments: { todos: steps.map(step => ({ content: step.step, status: acceptedTodoStatus('DeepSeek Harness TodoWrite', BASE_TODO_STATUSES, step.status) })) } }),
+    backgroundBash: (id, command) => ({
+      id,
+      name: DEEPSEEK_HARNESS_TOOL.Bash,
+      arguments: { command, description: 'Run the scripted background command.', run_in_background: true },
+    }),
+    updateTodos: (id, steps) => ({
+      id,
+      name: DEEPSEEK_HARNESS_TOOL.TodoWrite,
+      arguments: {
+        todos: steps.map(step => ({
+          content: step.step,
+          status: acceptedTodoStatus('DeepSeek Harness TodoWrite', BASE_TODO_STATUSES, step.status),
+        })),
+      },
+    }),
     // update_goal requires the goal ID and the revision that get_goal returns, which the operations here cannot carry:
     // `deepseekHarnessUpdateGoalToolCall` states that call.
     createGoal: null,
     completeGoal: null,
     blockGoal: null,
     mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp__${server}__${tool}`, arguments: input }),
-    codeExecution: (id, source) => ({ id, name: DEEPSEEK_HARNESS_TOOL.Workflow, arguments: { script: source, meta: { name: 'native-code', description: 'Run the scripted native source.' } } }),
+    codeExecution: (id, source) => ({
+      id,
+      name: DEEPSEEK_HARNESS_TOOL.Workflow,
+      arguments: {
+        script: source,
+        meta: { name: 'native-code', description: 'Run the scripted native source.' },
+      },
+    }),
     workflowTools: [DEEPSEEK_HARNESS_TOOL.Workflow],
   },
   [AgentProvider.GEMINI_CLI]: {
-    bash: (id, command) => ({ id, name: GEMINI_TOOL.RunShellCommand, arguments: { command } }),
-    edit: (id, { path, before, after }) => ({ id, name: GEMINI_TOOL.Replace, arguments: { file_path: path, old_string: before, new_string: after, instruction: 'Apply the requested replacement exactly.' } }),
-    write: (id, { path, content }) => ({ id, name: GEMINI_TOOL.WriteFile, arguments: { file_path: path, content } }),
-    read: (id, path) => ({ id, name: GEMINI_TOOL.ReadFile, arguments: { file_path: path } }),
+    bash: (id, command) => ({
+      id,
+      name: GEMINI_TOOL.RunShellCommand,
+      arguments: { command },
+    }),
+    edit: (id, { path, before, after }) => ({
+      id,
+      name: GEMINI_TOOL.Replace,
+      arguments: {
+        file_path: path,
+        old_string: before,
+        new_string: after,
+        instruction: 'Apply the requested replacement exactly.',
+      },
+    }),
+    write: (id, { path, content }) => ({
+      id,
+      name: GEMINI_TOOL.WriteFile,
+      arguments: { file_path: path, content },
+    }),
+    read: (id, path) => ({
+      id,
+      name: GEMINI_TOOL.ReadFile,
+      arguments: { file_path: path },
+    }),
     enterPlanMode: id => ({ id, name: GEMINI_TOOL.EnterPlanMode, arguments: {} }),
     exitPlanMode: null,
     exitPlanModeFromFile: id => geminiPlanApprovalToolCall(id, GEMINI_E2E_PLAN_FILENAME),
     askUserQuestion: null,
-    spawnSubagent: (id, { prompt }) => ({ id, name: GEMINI_TOOL.InvokeAgent, arguments: { agent_name: 'generalist', prompt } }),
+    spawnSubagent: (id, { prompt }) => ({
+      id,
+      name: GEMINI_TOOL.InvokeAgent,
+      arguments: { agent_name: 'generalist', prompt },
+    }),
     spawnSubagentBatch: null,
     backgroundBash: null,
-    updateTodos: (id, steps) => ({ id, name: GEMINI_TOOL.TodoWrite, arguments: { todos: steps.map(step => ({ description: step.step, status: acceptedTodoStatus('Gemini CLI write_todos', CANCELLED_AND_BLOCKED_TODO_STATUSES, step.status) })) } }),
+    updateTodos: (id, steps) => ({
+      id,
+      name: GEMINI_TOOL.TodoWrite,
+      arguments: {
+        todos: steps.map(step => ({
+          description: step.step,
+          status: acceptedTodoStatus('Gemini CLI write_todos', CANCELLED_AND_BLOCKED_TODO_STATUSES, step.status),
+        })),
+      },
+    }),
     createGoal: null,
     completeGoal: null,
     blockGoal: null,
@@ -1923,10 +2906,30 @@ const TOOL_VOCABULARY = {
     workflowTools: null,
   },
   [AgentProvider.MUSE_CODE]: {
-    bash: (id, command) => ({ id, name: MUSE_TOOL.Bash, namespace: MUSE_TOOL_NAMESPACE, arguments: { command, description: 'Run the scripted command.' } }),
-    edit: (id, { path, before, after }) => ({ id, name: MUSE_TOOL.EditFile, namespace: MUSE_TOOL_NAMESPACE, arguments: { path, find: before, replace: after } }),
-    write: (id, { path, content }) => ({ id, name: MUSE_TOOL.WriteFile, namespace: MUSE_TOOL_NAMESPACE, arguments: { path, content } }),
-    read: (id, path) => ({ id, name: MUSE_TOOL.ReadFile, namespace: MUSE_TOOL_NAMESPACE, arguments: { path } }),
+    bash: (id, command) => ({
+      id,
+      name: MUSE_TOOL.Bash,
+      namespace: MUSE_TOOL_NAMESPACE,
+      arguments: { command, description: 'Run the scripted command.' },
+    }),
+    edit: (id, { path, before, after }) => ({
+      id,
+      name: MUSE_TOOL.EditFile,
+      namespace: MUSE_TOOL_NAMESPACE,
+      arguments: { path, find: before, replace: after },
+    }),
+    write: (id, { path, content }) => ({
+      id,
+      name: MUSE_TOOL.WriteFile,
+      namespace: MUSE_TOOL_NAMESPACE,
+      arguments: { path, content },
+    }),
+    read: (id, path) => ({
+      id,
+      name: MUSE_TOOL.ReadFile,
+      namespace: MUSE_TOOL_NAMESPACE,
+      arguments: { path },
+    }),
     enterPlanMode: null,
     exitPlanMode: null,
     exitPlanModeFromFile: null,
@@ -1952,12 +2955,23 @@ const TOOL_VOCABULARY = {
                 id: `question-${index + 1}`,
                 header: question.header,
                 question: question.question,
-                options: question.options.map(option => ({ label: option.label, description: option.description, ...(option.preview ? { preview: { format: 'markdown', content: option.preview } } : {}) })),
+                options: question.options.map(option => ({
+                  label: option.label,
+                  description: option.description,
+                  ...(option.preview
+                    ? {
+                        preview: { format: 'markdown', content: option.preview },
+                      }
+                    : {}),
+                })),
               }
             }
             const minimum = question.minimumSelections ?? 1
             const maximum = question.maximumSelections ?? question.options.length
-            for (const [word, count] of [['minimum', minimum], ['maximum', maximum]] as const) {
+            for (const [word, count] of [
+              ['minimum', minimum],
+              ['maximum', maximum],
+            ] as const) {
               if (!Number.isSafeInteger(count) || count < 1 || count > question.options.length)
                 throw new Error(`The native Muse selection ${word} must be a whole number of the options: ${String(count)}`)
             }
@@ -1979,13 +2993,43 @@ const TOOL_VOCABULARY = {
     // only inside `workflow` scripts through host.agent(), whose fold carries no child session.
     spawnSubagent: null,
     spawnSubagentBatch: null,
-    backgroundBash: (id, command) => ({ id, name: MUSE_TOOL.Bash, namespace: MUSE_TOOL_NAMESPACE, arguments: { command, description: 'Run the scripted background command.', yield_time_ms: 0 } }),
-    updateTodos: (id, steps) => ({ id, name: MUSE_TOOL.WriteTodos, namespace: MUSE_TOOL_NAMESPACE, arguments: { todos: steps.map(step => ({ text: step.step, status: acceptedTodoStatus('Muse Code write_todos', MUSE_TODO_STATUSES, step.status) })) } }),
-    createGoal: (id, objective) => ({ id, name: MUSE_TOOL.CreateGoal, namespace: MUSE_TOOL_NAMESPACE, arguments: { objective } }),
-    completeGoal: id => ({ id, name: MUSE_TOOL.UpdateGoal, namespace: MUSE_TOOL_NAMESPACE, arguments: { status: 'complete' } }),
+    backgroundBash: (id, command) => ({
+      id,
+      name: MUSE_TOOL.Bash,
+      namespace: MUSE_TOOL_NAMESPACE,
+      arguments: { command, description: 'Run the scripted background command.', yield_time_ms: 0 },
+    }),
+    updateTodos: (id, steps) => ({
+      id,
+      name: MUSE_TOOL.WriteTodos,
+      namespace: MUSE_TOOL_NAMESPACE,
+      arguments: {
+        todos: steps.map(step => ({
+          text: step.step,
+          status: acceptedTodoStatus('Muse Code write_todos', MUSE_TODO_STATUSES, step.status),
+        })),
+      },
+    }),
+    createGoal: (id, objective) => ({
+      id,
+      name: MUSE_TOOL.CreateGoal,
+      namespace: MUSE_TOOL_NAMESPACE,
+      arguments: { objective },
+    }),
+    completeGoal: id => ({
+      id,
+      name: MUSE_TOOL.UpdateGoal,
+      namespace: MUSE_TOOL_NAMESPACE,
+      arguments: { status: 'complete' },
+    }),
     blockGoal: (id, reason) => {
       requireReason('Muse Code update_goal', reason)
-      return { id, name: MUSE_TOOL.UpdateGoal, namespace: MUSE_TOOL_NAMESPACE, arguments: { status: 'blocked' } }
+      return {
+        id,
+        name: MUSE_TOOL.UpdateGoal,
+        namespace: MUSE_TOOL_NAMESPACE,
+        arguments: { status: 'blocked' },
+      }
     },
     // Muse ignores the response namespace. Its full registered MCP ID selects the server and tool.
     mcpTool: (id, { server, tool, input }) => ({ id, name: `mcp__${server}__${tool}`, arguments: input }),
@@ -1994,7 +3038,12 @@ const TOOL_VOCABULARY = {
     codeExecution: (id, source) => {
       if (!id.trim() || !source.trim())
         throw new Error('The native Muse workflow call requires a call ID and source.')
-      return { id, name: MUSE_TOOL.Workflow, namespace: MUSE_TOOL_NAMESPACE, arguments: { name: 'Native code', script: source } }
+      return {
+        id,
+        name: MUSE_TOOL.Workflow,
+        namespace: MUSE_TOOL_NAMESPACE,
+        arguments: { name: 'Native code', script: source },
+      }
     },
     workflowTools: [MUSE_TOOL.Workflow],
   },
@@ -2004,13 +3053,29 @@ const TOOL_VOCABULARY = {
     // The ACP title can add local/ or environment/ for display.
     // The host-terminal mode offers execute. Withholding the host terminal
     // selects the native bash/process runtime instead.
-    bash: (id, command) => ({ id, name: 'execute', arguments: { command } }),
+    bash: (id, command) => ({
+      id,
+      name: 'execute',
+      arguments: { command },
+    }),
     // `edit_file` is an exact-string replace; an empty `old_string` creates.
-    edit: (id, { path, before, after }) => ({ id, name: 'edit_file', arguments: { path, old_string: before, new_string: after } }),
+    edit: (id, { path, before, after }) => ({
+      id,
+      name: 'edit_file',
+      arguments: { path, old_string: before, new_string: after },
+    }),
     // `write_text_file` creates or overwrites a file.
-    write: (id, { path, content }) => ({ id, name: 'write_text_file', arguments: { path, content } }),
+    write: (id, { path, content }) => ({
+      id,
+      name: 'write_text_file',
+      arguments: { path, content },
+    }),
     // `read_text_file` reads a text file.
-    read: (id, path) => ({ id, name: 'read_text_file', arguments: { path } }),
+    read: (id, path) => ({
+      id,
+      name: 'read_text_file',
+      arguments: { path },
+    }),
     // There is no plan-approval request. The ACP `plan` update is a to-do
     // display only.
     enterPlanMode: null,
@@ -2028,7 +3093,11 @@ const TOOL_VOCABULARY = {
         || !/^[A-Z0-9]$/i.test(label[0] ?? '') || !/^[A-Z0-9]$/i.test(label.at(-1) ?? '')) {
         throw new Error('The native Fast Agent label must contain 1 to 32 ASCII characters. It must start and end with a letter or digit.')
       }
-      return { id, name: 'subagent', arguments: { message: prompt, label: description } }
+      return {
+        id,
+        name: 'subagent',
+        arguments: { message: prompt, label: description },
+      }
     },
     spawnSubagentBatch: null,
     // The execute schema accepts these fields:
@@ -2072,7 +3141,9 @@ function requireBuilder<T>(builder: T | null, provider: AgentProvider, operation
 function droidCallId(id: string): string {
   if (!id)
     throw new Error('The native Droid tool call requires a nonempty ID.')
-  return id.startsWith('call_') ? id : `call_${id}`
+  return id.startsWith('call_')
+    ? id
+    : `call_${id}`
 }
 
 /** A shell command, in the provider's own shell tool. */
@@ -2086,14 +3157,25 @@ export function lettaMcpCatalogArguments(agentId: string, server: string): strin
     || !server || server !== server.trim() || !/^[\w-]+$/.test(server)) {
     throw new Error('The native Letta MCP catalog requires valid agent and server IDs.')
   }
-  return ['mcp', 'tools', server, '--full', '--agent', agentId]
+  return [
+    'mcp',
+    'tools',
+    server,
+    '--full',
+    '--agent',
+    agentId,
+  ]
 }
 
 /** Run Fast Agent's local shell when the host terminal capability is withheld. */
 export function fastAgentNativeBashToolCall(id: string, command: string): MockModelToolCall {
   if (!id.trim() || !command.trim())
     throw new Error('A native Fast Agent command requires a call ID and a command.')
-  return { id, name: FASTAGENT_TOOL.Bash, arguments: { command } }
+  return {
+    id,
+    name: FASTAGENT_TOOL.Bash,
+    arguments: { command },
+  }
 }
 
 /** A named background Agent creates a native CodeBuddy teammate. */
@@ -2103,21 +3185,32 @@ export function codebuddyTeammateToolCall(id: string, request: Pick<SubagentRequ
   const call = spawnSubagentToolCall(AgentProvider.CODEBUDDY, id, { description: request.description, prompt: request.prompt, background: true })
   if (!call.arguments)
     throw new Error('A CodeBuddy teammate requires structured Agent arguments.')
-  return { ...call, arguments: { ...call.arguments, name: request.teammateName } }
+  return {
+    ...call,
+    arguments: { ...call.arguments, name: request.teammateName },
+  }
 }
 
 /** Read the native task snapshot without waiting for a persistent teammate to exit. */
 export function codebuddyTaskOutputToolCall(id: string, taskId: string): MockModelToolCall {
   if (!id.trim() || !taskId.trim())
     throw new Error('A CodeBuddy task output call requires a call ID and a task ID.')
-  return { id, name: 'TaskOutput', arguments: { task_id: taskId, block: false } }
+  return {
+    id,
+    name: 'TaskOutput',
+    arguments: { task_id: taskId, block: false },
+  }
 }
 
 /** Stop the exact native background task that the spawn receipt identifies. */
 export function codebuddyTaskStopToolCall(id: string, taskId: string): MockModelToolCall {
   if (!id.trim() || !taskId.trim())
     throw new Error('A CodeBuddy task stop call requires a call ID and a task ID.')
-  return { id, name: 'TaskStop', arguments: { task_id: taskId } }
+  return {
+    id,
+    name: 'TaskStop',
+    arguments: { task_id: taskId },
+  }
 }
 
 /** Capture the actual CLI catalog through Letta's native Bash tool. */
@@ -2135,7 +3228,14 @@ export function lettaMcpCatalogToolCall(id: string, options: {
     throw new Error('The native Letta MCP capture requires valid identities and absolute executable paths.')
   }
   const args = lettaMcpCatalogArguments(options.agentId, options.server)
-  const command = [options.nodeExecutable, options.captureScriptPath, options.receiptId, id, options.executable, ...args]
+  const command = [
+    options.nodeExecutable,
+    options.captureScriptPath,
+    options.receiptId,
+    id,
+    options.executable,
+    ...args,
+  ]
     .map(quotePosixShellArgument)
     .join(' ')
   return bashToolCall(AgentProvider.LETTA, id, command)
@@ -2151,7 +3251,16 @@ export function lettaMcpCliToolCall(id: string, agentId: string, toolId: string,
   if (!toolId.startsWith(prefix) || !/^[\w-]+$/.test(remainder) || separator < 1 || separator + 2 >= remainder.length)
     throw new Error('The native Letta MCP tool ID must identify its server and tool.')
   const serialized = JSON.stringify(input)
-  const command = ['letta', 'mcp', 'call', toolId, '--agent', agentId, '--args', serialized].map(quotePosixShellArgument).join(' ')
+  const command = [
+    'letta',
+    'mcp',
+    'call',
+    toolId,
+    '--agent',
+    agentId,
+    '--args',
+    serialized,
+  ].map(quotePosixShellArgument).join(' ')
   return bashToolCall(AgentProvider.LETTA, id, command)
 }
 
@@ -2168,7 +3277,10 @@ export function backgroundBashToolCall(provider: AgentProvider, id: string, comm
 /** Copilot reports this asynchronous shell through a completion notice, with no shell registry row. */
 export function copilotAsyncBashToolCall(id: string, command: string): MockModelToolCall {
   const call = bashToolCall(AgentProvider.GITHUB_COPILOT, id, command)
-  return { ...call, arguments: { ...call.arguments, description: 'Run the scripted background command', mode: 'async' } }
+  return {
+    ...call,
+    arguments: { ...call.arguments, description: 'Run the scripted background command', mode: 'async' },
+  }
 }
 
 /** Spawn a subagent, in the provider's own tool. */
@@ -2187,7 +3299,11 @@ export function updateTodosToolCall(provider: AgentProvider, id: string, steps: 
 
 /** One incremental call of Pi's native todo extension. */
 export function piTodoToolCall(callId: string, request: PiTodoRequest): MockModelToolCall {
-  return { id: callId, name: PI_TOOL.Todo, arguments: { ...request } }
+  return {
+    id: callId,
+    name: PI_TOOL.Todo,
+    arguments: { ...request },
+  }
 }
 
 /**
@@ -2204,7 +3320,11 @@ export function cursorRequestContextToolCall(id: string): MockModelToolCall {
 
 /** Run the installed Pi subagents extension with its native workflow script field. */
 export function piWorkflowToolCall(id: string, script: string): MockModelToolCall {
-  return { id, name: 'SubagentWorkflow', arguments: { script } }
+  return {
+    id,
+    name: 'SubagentWorkflow',
+    arguments: { script },
+  }
 }
 
 /** Match the installed Pi 0.99.1 direct tool catalog. */
@@ -2221,12 +3341,25 @@ export function piMcpResourceToolCall(id: string, request: { operation: 'list' |
   if (!id || !request.server || (request.operation === 'read' && !request.uri))
     throw new Error('A native Pi resource call requires a call ID, server, and a URI for a read.')
   const names = { list: 'list_mcp_resources', templates: 'list_mcp_resource_templates', read: 'read_mcp_resource' }
-  return { id, name: names[request.operation], arguments: { server: request.server, ...(request.operation === 'read' ? { uri: request.uri } : {}) } }
+  return {
+    id,
+    name: names[request.operation],
+    arguments: {
+      server: request.server,
+      ...(request.operation === 'read'
+        ? { uri: request.uri }
+        : {}),
+    },
+  }
 }
 
 /** Run a script through Pi's built-in codemode tool. */
 export function piCodemodeToolCall(id: string, code: string): MockModelToolCall {
-  return { id, name: 'codemode', arguments: { code } }
+  return {
+    id,
+    name: 'codemode',
+    arguments: { code },
+  }
 }
 
 /** Script the provider's native code executor without changing its source text. */
@@ -2243,11 +3376,17 @@ export function workflowToolNames(provider: AgentProvider): readonly string[] {
  * The name of each native workflow tool that a provider of the table offers.
  * A provider with no workflow support must offer none of them, so a check of its catalog reads the whole list.
  */
-export const WORKFLOW_TOOL_NAMES: readonly string[] = [...new Set(Object.values(TOOL_VOCABULARY).flatMap(entry => entry.workflowTools ?? []))].sort()
+export const WORKFLOW_TOOL_NAMES: readonly string[] = [
+  ...new Set(Object.values(TOOL_VOCABULARY).flatMap(entry => entry.workflowTools ?? [])),
+].sort()
 
 /** Invoke CodeBuddy's direct REPL in its native ptc agent configuration. */
 export function codebuddyReplToolCall(id: string, code: string): MockModelToolCall {
-  return { id, name: 'REPL', arguments: { code } }
+  return {
+    id,
+    name: 'REPL',
+    arguments: { code },
+  }
 }
 
 /** Invoke the current Droid shell tool with its required summary and explicit risk level. */
@@ -2255,14 +3394,22 @@ export function droidExecuteToolCall(id: string, request: { command: string, sum
   const callId = droidCallId(id)
   if (!request.command.trim() || !request.summary.trim() || !['low', 'medium', 'high'].includes(request.riskLevel))
     throw new Error('The native Droid Execute call requires an ID, command, summary, and valid risk level.')
-  return { id: callId, name: 'Execute', arguments: { ...request } }
+  return {
+    id: callId,
+    name: 'Execute',
+    arguments: { ...request },
+  }
 }
 
 /** Run one native Droid script with its exact source, including any native directives. */
 export function droidScriptToolCall(id: string, script: string): MockModelToolCall {
   if (typeof script !== 'string' || !script.trim() || new TextEncoder().encode(script).byteLength > 512 * 1024)
     throw new Error('The native Droid script requires nonempty source within 512 KiB.')
-  return { id: droidCallId(id), name: 'Script', arguments: { script } }
+  return {
+    id: droidCallId(id),
+    name: 'Script',
+    arguments: { script },
+  }
 }
 
 /** Invoke the disposable Pi extension that requests a native multiline editor. */
@@ -2281,7 +3428,12 @@ export function fastAgentHumanInputToolCall(callId: string, message: string, ans
       message,
       schema: {
         type: 'object',
-        properties: { answer: { type: 'string', enum: [...answers] } },
+        properties: {
+          answer: {
+            type: 'string',
+            enum: [...answers],
+          },
+        },
         required: ['answer'],
       },
     },
@@ -2307,12 +3459,25 @@ export function mcpToolCall(provider: AgentProvider, id: string, request: McpToo
 export function droidToolSearchToolCall(id: string, query: string, maxResults?: number): MockModelToolCall {
   if (maxResults !== undefined && (!Number.isSafeInteger(maxResults) || maxResults <= 0))
     throw new RangeError('The native Droid tool search requires a positive safe result maximum.')
-  return { id: droidCallId(id), name: 'ToolSearch', arguments: { query, ...(maxResults === undefined ? {} : { max_results: maxResults }) } }
+  return {
+    id: droidCallId(id),
+    name: 'ToolSearch',
+    arguments: {
+      query,
+      ...(maxResults === undefined
+        ? {}
+        : { max_results: maxResults }),
+    },
+  }
 }
 
 /** Wait for CodeBuddy's project MCP server before its tool enters the model catalog. */
 export function codebuddyWaitForMcpServersToolCall(id: string, servers: string[]): MockModelToolCall {
-  return { id, name: 'WaitForMcpServers', arguments: { servers } }
+  return {
+    id,
+    name: 'WaitForMcpServers',
+    arguments: { servers },
+  }
 }
 
 /** Discover CodeBuddy's deferred Workflow tool before executing it. */
@@ -2324,12 +3489,25 @@ export function codebuddyFindWorkflowToolCall(id: string): MockModelToolCall {
 export function codebuddyFindToolsToolCall(id: string, toolNames: readonly string[]): MockModelToolCall {
   if (toolNames.length === 0 || toolNames.some(name => !name.trim()))
     throw new Error('The native CodeBuddy search requires exact tool names.')
-  return { id, name: 'ToolSearch', arguments: { tool_names: [...toolNames] } }
+  return {
+    id,
+    name: 'ToolSearch',
+    arguments: {
+      tool_names: [...toolNames],
+    },
+  }
 }
 
 /** Run CodeBuddy's deferred Workflow tool with its native wrapper. */
 export function codebuddyWorkflowToolCall(id: string, script: string): MockModelToolCall {
-  return { id, name: 'DeferExecuteTool', arguments: { toolName: 'Workflow', params: { script } } }
+  return {
+    id,
+    name: 'DeferExecuteTool',
+    arguments: {
+      toolName: 'Workflow',
+      params: { script },
+    },
+  }
 }
 
 /**
@@ -2339,14 +3517,28 @@ export function codebuddyWorkflowToolCall(id: string, script: string): MockModel
 function taskFamilyCreateCall(name: string, id: string, task: { subject: string, description: string, activeForm?: string | undefined }): MockModelToolCall {
   if (task.subject.trim() === '' || task.description.trim() === '')
     throw new Error(`The native ${name} call requires a nonempty subject and description.`)
-  return { id, name, arguments: { subject: task.subject, description: task.description, ...(task.activeForm === undefined ? {} : { activeForm: task.activeForm }) } }
+  return {
+    id,
+    name,
+    arguments: {
+      subject: task.subject,
+      description: task.description,
+      ...(task.activeForm === undefined
+        ? {}
+        : { activeForm: task.activeForm }),
+    },
+  }
 }
 
 /** One TaskUpdate call of the Task family, which changes the status of one task by its native ID. */
 function taskFamilyUpdateCall(name: string, id: string, taskId: string, status: TaskFamilyStatus): MockModelToolCall {
   if (taskId.trim() === '')
     throw new Error(`The native ${name} call requires the ID of its task.`)
-  return { id, name, arguments: { taskId, status } }
+  return {
+    id,
+    name,
+    arguments: { taskId, status },
+  }
 }
 
 /**
@@ -2374,7 +3566,11 @@ export function codebuddyTaskUpdateToolCall(id: string, taskId: string, status: 
 
 /** Ask Letta's vision tool to open a local image. */
 export function lettaViewImageToolCall(id: string, path: string): MockModelToolCall {
-  return { id, name: 'ViewImage', arguments: { path } }
+  return {
+    id,
+    name: 'ViewImage',
+    arguments: { path },
+  }
 }
 
 /** Create one Letta task; the native result gives its stable task ID. */
@@ -2416,7 +3612,10 @@ export function zcodeReadRangeToolCall(id: string, path: string, range: { offset
   if (!Number.isSafeInteger(range.offset) || range.offset < 0 || !Number.isSafeInteger(range.limit) || range.limit < 1)
     throw new Error('The native ZCode Read range requires a nonnegative integer offset and a positive integer limit.')
   const call = readToolCall(AgentProvider.ZCODE, id, path)
-  return { ...call, arguments: { ...call.arguments, offset: range.offset, limit: range.limit } }
+  return {
+    ...call,
+    arguments: { ...call.arguments, offset: range.offset, limit: range.limit },
+  }
 }
 
 /** Codex reads image bytes with view_image, not a shell command. */
@@ -2434,27 +3633,49 @@ export function codexEscalatedCommandToolCall(id: string, command: string): Mock
 
 /** Kimi Code reads image files through ReadMediaFile, not its text Read tool. */
 export function kimiReadMediaFileToolCall(id: string, path: string): MockModelToolCall {
-  return { id, name: 'ReadMediaFile', arguments: { path } }
+  return {
+    id,
+    name: 'ReadMediaFile',
+    arguments: { path },
+  }
 }
 
 /** Codewhale discovers deferred native and MCP tools through its own search tool. */
 export function codewhaleToolSearchToolCall(id: string, query: string): MockModelToolCall {
-  return { id, name: CODEWHALE_TOOL.ToolSearch, arguments: { query } }
+  return {
+    id,
+    name: CODEWHALE_TOOL.ToolSearch,
+    arguments: { query },
+  }
 }
 
 /** Codewhale reads images through its vision-aware native media tool. */
 export function codewhaleReadMediaToolCall(id: string, path: string): MockModelToolCall {
-  return { id, name: CODEWHALE_TOOL.ReadMedia, arguments: { path } }
+  return {
+    id,
+    name: CODEWHALE_TOOL.ReadMedia,
+    arguments: { path },
+  }
 }
 
 /** Goose's image reader returns image content from a local path. */
 export function gooseReadImageToolCall(id: string, source: string): MockModelToolCall {
-  return { id, name: 'read_image', arguments: { source } }
+  return {
+    id,
+    name: 'read_image',
+    arguments: { source },
+  }
 }
 
 /** Return the native Goose classifier's exact list of read-only tool request IDs. */
 export function goosePermissionJudgmentToolCall(id: string, readOnlyRequestIds: readonly string[]): MockModelToolCall {
-  return { id, name: 'platform__tool_by_tool_permission', arguments: { read_only_request_ids: [...readOnlyRequestIds] } }
+  return {
+    id,
+    name: 'platform__tool_by_tool_permission',
+    arguments: {
+      read_only_request_ids: [...readOnlyRequestIds],
+    },
+  }
 }
 
 /**
@@ -2464,12 +3685,20 @@ export function goosePermissionJudgmentToolCall(id: string, readOnlyRequestIds: 
  * string `summary` is the readable report both sides show.
  */
 export function gooseFinalOutputToolCall(id: string, summary: string): MockModelToolCall {
-  return { id, name: 'recipe__final_output', arguments: { summary } }
+  return {
+    id,
+    name: 'recipe__final_output',
+    arguments: { summary },
+  }
 }
 
 /** Reasonix's image reader returns structured image content from a local path. */
 export function reasonixViewImageToolCall(id: string, path: string): MockModelToolCall {
-  return { id, name: 'view_image', arguments: { path } }
+  return {
+    id,
+    name: 'view_image',
+    arguments: { path },
+  }
 }
 
 /** ZCode's installed Node tool returns emitted PNG bytes as a native image result. */
@@ -2486,39 +3715,67 @@ export function zcodeNodeImageToolCall(id: string, base64: string, label: string
 
 /** Script Cursor's native GenerateImage call and its generated PNG result. */
 export function cursorGenerateImageToolCall(id: string, description: string, filePath: string, imageData: string): MockModelToolCall {
-  return { id, name: CURSOR_GENERATE_IMAGE_TOOL, arguments: { description, filePath, imageData } }
+  return {
+    id,
+    name: CURSOR_GENERATE_IMAGE_TOOL,
+    arguments: { description, filePath, imageData },
+  }
 }
 
 /** Script Cursor's native create-plan query and its approval control. */
 export function cursorCreatePlanToolCall(id: string, name: string, overview: string, plan: string): MockModelToolCall {
-  return { id, name: CURSOR_CREATE_PLAN_TOOL, arguments: { name, overview, plan } }
+  return {
+    id,
+    name: CURSOR_CREATE_PLAN_TOOL,
+    arguments: { name, overview, plan },
+  }
 }
 
 /** Script Cursor's native web-fetch query, which asks the client for permission. */
 export function cursorWebFetchPermissionToolCall(id: string, url: string): MockModelToolCall {
-  return { id, name: CURSOR_WEB_FETCH_TOOL, arguments: { url } }
+  return {
+    id,
+    name: CURSOR_WEB_FETCH_TOOL,
+    arguments: { url },
+  }
 }
 
 /** Load one Claude Code skill through its native tool. */
 export function claudeSkillToolCall(id: string, skill: string): MockModelToolCall {
-  return { id, name: 'Skill', arguments: { skill } }
+  return {
+    id,
+    name: 'Skill',
+    arguments: { skill },
+  }
 }
 
 /** Load the bundled skill that the installed ZCode CreateWorkflow tool requires. */
 export function zcodeWorkflowSkillToolCall(id: string): MockModelToolCall {
-  return { id, name: 'Skill', arguments: { skill: 'dynamic-workflows' } }
+  return {
+    id,
+    name: 'Skill',
+    arguments: { skill: 'dynamic-workflows' },
+  }
 }
 
 /** Start a named ZCode workflow with an inline TypeScript script. */
 export function zcodeCreateWorkflowToolCall(id: string, name: string, script: string): MockModelToolCall {
-  return { id, name: 'CreateWorkflow', arguments: { name, script } }
+  return {
+    id,
+    name: 'CreateWorkflow',
+    arguments: { name, script },
+  }
 }
 
 /** Read the exact native ZCode workflow result without another execution. */
 export function zcodeGetWorkflowRunToolCall(id: string, runId: string): MockModelToolCall {
   if (typeof id !== 'string' || !id.trim() || id.includes('\0') || typeof runId !== 'string' || !runId.trim() || runId.includes('\0'))
     throw new Error('The native ZCode workflow query requires a call ID and run ID.')
-  return { id, name: 'GetWorkflowRun', arguments: { run_id: runId } }
+  return {
+    id,
+    name: 'GetWorkflowRun',
+    arguments: { run_id: runId },
+  }
 }
 
 /**
@@ -2567,24 +3824,45 @@ export type MiMoTaskOperation
  * The E2E environment enables it through MIMOCODE_EXPERIMENTAL_WORKFLOW_TOOL.
  */
 export function mimoWorkflowToolCall(id: string, script: string): MockModelToolCall {
-  return { id, name: 'workflow', arguments: { operation: 'run', script } }
+  return {
+    id,
+    name: 'workflow',
+    arguments: { operation: 'run', script },
+  }
 }
 
 /** Start Kimi Code's native AgentSwarm with one prompt per item. */
 export function kimiAgentSwarmToolCall(id: string, description: string, promptTemplate: string, items: string[]): MockModelToolCall {
-  return { id, name: 'AgentSwarm', arguments: { description, subagent_type: 'coder', prompt_template: promptTemplate, items } }
+  return {
+    id,
+    name: 'AgentSwarm',
+    arguments: {
+      description,
+      subagent_type: 'coder',
+      prompt_template: promptTemplate,
+      items,
+    },
+  }
 }
 
 /** Run Qwen Code's native workflow tool with an inline script. */
 export function qwenWorkflowToolCall(id: string, script: string): MockModelToolCall {
-  return { id, name: 'workflow', arguments: { script } }
+  return {
+    id,
+    name: 'workflow',
+    arguments: { script },
+  }
 }
 
 /** Run Codewhale's structured workflow with actual read-only children. */
 export function codewhaleWorkflowToolCall(id: string, goal: string, prompt: string, children?: readonly { label: string, prompt: string }[]): MockModelToolCall {
   if (children !== undefined && !Array.isArray(children))
     throw new Error('The native workflow children must be an array.')
-  const assignments = children === undefined ? [{ label: 'Probe child', prompt }] : children
+  const assignments = children === undefined
+    ? [
+        { label: 'Probe child', prompt },
+      ]
+    : children
   if (assignments.length === 0 || assignments.some(child => typeof child !== 'object' || child === null || typeof child.label !== 'string' || typeof child.prompt !== 'string' || child.prompt.trim() === ''))
     throw new Error('The native workflow requires a nonempty child assignment.')
   return {
@@ -2596,7 +3874,12 @@ export function codewhaleWorkflowToolCall(id: string, goal: string, prompt: stri
         goal,
         risk: 'read_only',
         phases: [],
-        children: assignments.map(child => ({ label: child.label, prompt: child.prompt, type: 'explore', file_scope: [] })),
+        children: assignments.map(child => ({
+          label: child.label,
+          prompt: child.prompt,
+          type: 'explore',
+          file_scope: [],
+        })),
         gates: [],
       },
     },
@@ -2605,17 +3888,31 @@ export function codewhaleWorkflowToolCall(id: string, goal: string, prompt: stri
 
 /** Run Grok Build's native Rhai workflow source. */
 export function grokWorkflowToolCall(id: string, script: string): MockModelToolCall {
-  return { id, name: 'workflow', arguments: { source: { type: 'script', script } } }
+  return {
+    id,
+    name: 'workflow',
+    arguments: {
+      source: { type: 'script', script },
+    },
+  }
 }
 
 /** Add one Cline teammate before routing a team task. */
 export function clineSpawnTeammateToolCall(id: string, agentId: string, rolePrompt: string): MockModelToolCall {
-  return { id, name: 'team_spawn_teammate', arguments: { agentId, rolePrompt } }
+  return {
+    id,
+    name: 'team_spawn_teammate',
+    arguments: { agentId, rolePrompt },
+  }
 }
 
 /** Queue a Cline teammate run that emits native run lifecycle events. */
 export function clineRunTeammateTaskToolCall(id: string, agentId: string, task: string): MockModelToolCall {
-  return { id, name: 'team_run_task', arguments: { agentId, task, runMode: 'async' } }
+  return {
+    id,
+    name: 'team_run_task',
+    arguments: { agentId, task, runMode: 'async' },
+  }
 }
 
 /**
@@ -2639,7 +3936,11 @@ export function ohMyPiTodoToolCall(id: string, operation: OhMyPiTodoOperation): 
     throw new Error('The native Oh My Pi todo operation requires the verbatim text of its task.')
   if (operation.op === 'block')
     requireReason('Oh My Pi todo block', operation.reason)
-  return { id, name: 'todo', arguments: { ...operation } }
+  return {
+    id,
+    name: 'todo',
+    arguments: { ...operation },
+  }
 }
 
 /**
@@ -2648,19 +3949,33 @@ export function ohMyPiTodoToolCall(id: string, operation: OhMyPiTodoOperation): 
  * Oh My Pi offers it only to a subagent.
  */
 export function ohMyPiYieldToolCall(id: string, report: string): MockModelToolCall {
-  return { id, name: 'yield', arguments: { data: report } }
+  return {
+    id,
+    name: 'yield',
+    arguments: { data: report },
+  }
 }
 
 /** One call of MiMo Code's to-do tool. */
 export function mimoTaskToolCall(id: string, operation: MiMoTaskOperation): MockModelToolCall {
-  return { id, name: 'task', arguments: { operation } }
+  return {
+    id,
+    name: 'task',
+    arguments: { operation },
+  }
 }
 
 /** Cancel one existing native MiMo actor through its model tool. */
 export function mimoActorCancelToolCall(id: string, actorId: string): MockModelToolCall {
   if (actorId.trim() === '')
     throw new Error('A MiMo actor cancellation requires an actor ID.')
-  return { id, name: MIMO_TOOL.Actor, arguments: { operation: { action: MIMO_ACTOR_ACTION.Cancel, actor_id: actorId } } }
+  return {
+    id,
+    name: MIMO_TOOL.Actor,
+    arguments: {
+      operation: { action: MIMO_ACTOR_ACTION.Cancel, actor_id: actorId },
+    },
+  }
 }
 
 /**
@@ -2669,7 +3984,11 @@ export function mimoActorCancelToolCall(id: string, actorId: string): MockModelT
  * LeapMux refuses the request because its UI cannot send keyboard input to that command.
  */
 export function mimoInteractiveBashToolCall(id: string, command: string): MockModelToolCall {
-  return { id, name: 'bash', arguments: { command, description: 'Run the scripted interactive command', interactive: true } }
+  return {
+    id,
+    name: 'bash',
+    arguments: { command, description: 'Run the scripted interactive command', interactive: true },
+  }
 }
 
 /**
@@ -2678,7 +3997,11 @@ export function mimoInteractiveBashToolCall(id: string, command: string): MockMo
  * The shared exitPlanMode contract requires approval, so it cannot represent that native operation.
  */
 export function kiroSwitchToExecutionToolCall(id: string, plan: string): MockModelToolCall {
-  return { id, name: 'switch_to_execution', arguments: { plan } }
+  return {
+    id,
+    name: 'switch_to_execution',
+    arguments: { plan },
+  }
 }
 
 /**
@@ -2687,7 +4010,11 @@ export function kiroSwitchToExecutionToolCall(id: string, plan: string): MockMod
  * Kiro supplies no separate state for a task in progress.
  */
 export function kiroCompleteTodosToolCall(id: string, taskIds: string[]): MockModelToolCall {
-  return { id, name: 'todo_list', arguments: { command: 'complete', completed_task_ids: taskIds, context_update: 'The scripted tasks are done.' } }
+  return {
+    id,
+    name: 'todo_list',
+    arguments: { command: 'complete', completed_task_ids: taskIds, context_update: 'The scripted tasks are done.' },
+  }
 }
 
 /**
@@ -2701,13 +4028,23 @@ export function diracRespondToolCall(id: string, operation: 'complete' | 'progre
   return {
     id,
     name: 'respond',
-    arguments: { operation, text, ...(options ? { options } : {}) },
+    arguments: {
+      operation,
+      text,
+      ...(options
+        ? { options }
+        : {}),
+    },
   }
 }
 
 /** Return the summary that Dirac's native /smol command asks the model to write. */
 export function diracCondenseToolCall(id: string, context: string): MockModelToolCall {
-  return { id, name: 'condense', arguments: { context } }
+  return {
+    id,
+    name: 'condense',
+    arguments: { context },
+  }
 }
 
 export function diracEditAnchorCapture(content: string): Record<string, string> {
@@ -2730,12 +4067,20 @@ export const JUNIE_ANSWER_TOOL = 'answer'
  * The answer tool carries that response text.
  */
 export function junieAnswerToolCall(id: string, fullAnswer: string): MockModelToolCall {
-  return { id, name: JUNIE_ANSWER_TOOL, arguments: { full_answer: fullAnswer } }
+  return {
+    id,
+    name: JUNIE_ANSWER_TOOL,
+    arguments: { full_answer: fullAnswer },
+  }
 }
 
 /** The bundled Junie docs child ends its task through `submit`. */
 export function junieSubagentSubmitToolCall(id: string, summary: string): MockModelToolCall {
-  return { id, name: 'submit', arguments: { solution_summary: summary } }
+  return {
+    id,
+    name: 'submit',
+    arguments: { solution_summary: summary },
+  }
 }
 
 /** Submit Junie's plan tabs and delivery stages through its current tool. */
@@ -2745,12 +4090,20 @@ export function junieSubmitPlanToolCall(
   proposal: Array<{ name: string, content: string }>,
   deliveryPlan: Array<{ name: string, description: string }>,
 ): MockModelToolCall {
-  return { id, name: 'submit', arguments: { name, proposal, delivery_plan: deliveryPlan } }
+  return {
+    id,
+    name: 'submit',
+    arguments: { name, proposal, delivery_plan: deliveryPlan },
+  }
 }
 
 /** Submit Gemini's native plan filename without supplying invented plan text. */
 export function geminiPlanApprovalToolCall(id: string, filename: string): MockModelToolCall {
-  return { id, name: GEMINI_TOOL.ExitPlanMode, arguments: { plan_filename: filename } }
+  return {
+    id,
+    name: GEMINI_TOOL.ExitPlanMode,
+    arguments: { plan_filename: filename },
+  }
 }
 
 /** Create one native Command Code task. */
@@ -2765,12 +4118,27 @@ export function commandCodeTaskUpdateToolCall(id: string, taskId: string, status
 
 /** Ask the native Command Code runtime to load its deferred tool schemas. */
 export function commandCodeLoadToolsToolCall(id: string, query: string, maxResults?: number): MockModelToolCall {
-  return { id, name: 'search_tools', arguments: { query, ...(maxResults === undefined ? {} : { max_results: maxResults }) } }
+  return {
+    id,
+    name: 'search_tools',
+    arguments: {
+      query,
+      ...(maxResults === undefined
+        ? {}
+        : { max_results: maxResults }),
+    },
+  }
 }
 
 /** Return the exact native result that completes a Gemini child task. */
 export function geminiCompleteTaskToolCall(id: string, response: string): MockModelToolCall {
-  return { id, name: GEMINI_TOOL.CompleteTask, arguments: { result: { response } } }
+  return {
+    id,
+    name: GEMINI_TOOL.CompleteTask,
+    arguments: {
+      result: { response },
+    },
+  }
 }
 
 /** Replace the native Gemini checklist with all supported task statuses. */
@@ -2811,24 +4179,45 @@ export function deepseekHarnessUpdateGoalToolCall(id: string, goal: { goalId: st
       goal_id: goal.goalId,
       revision: goal.revision,
       action: end.action,
-      ...(end.action === 'blocked' ? { blocked_reason: requireReason('DeepSeek Harness update_goal', end.reason) } : {}),
+      ...(end.action === 'blocked'
+        ? {
+            blocked_reason: requireReason('DeepSeek Harness update_goal', end.reason),
+          }
+        : {}),
     },
   }
 }
 
 /** Read an image through the native Deepseek Harness image tool. */
 export function deepseekHarnessReadImageToolCall(id: string, path: string): MockModelToolCall {
-  return { id, name: DEEPSEEK_HARNESS_TOOL.ReadImage, arguments: { file_path: path } }
+  return {
+    id,
+    name: DEEPSEEK_HARNESS_TOOL.ReadImage,
+    arguments: { file_path: path },
+  }
 }
 
 /** Request the exact wider native sandbox permission through Deepseek Harness. */
 export function deepseekHarnessEscalatedBashToolCall(id: string, command: string, justification: string): MockModelToolCall {
-  return { id, name: DEEPSEEK_HARNESS_TOOL.Bash, arguments: { command, description: 'Run the scripted command.', sandbox_permissions: 'danger-full-access', justification } }
+  return {
+    id,
+    name: DEEPSEEK_HARNESS_TOOL.Bash,
+    arguments: {
+      command,
+      description: 'Run the scripted command.',
+      sandbox_permissions: 'danger-full-access',
+      justification,
+    },
+  }
 }
 
 /** Run native code that can call the registered DeepSeek tools. */
 export function deepseekHarnessRunCodeToolCall(id: string, source: string): MockModelToolCall {
   if (typeof id !== 'string' || !id.trim() || typeof source !== 'string' || !source.trim())
     throw new Error('The native DeepSeek code call requires a nonempty call ID and source.')
-  return { id, name: DEEPSEEK_HARNESS_TOOL.RunCode, arguments: { description: 'Read the native MCP value.', code: source } }
+  return {
+    id,
+    name: DEEPSEEK_HARNESS_TOOL.RunCode,
+    arguments: { description: 'Read the native MCP value.', code: source },
+  }
 }

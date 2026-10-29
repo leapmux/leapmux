@@ -40,10 +40,18 @@ export function museToolRowId(snapshot: NativeMessageSnapshot, query: NativeTool
     if (!id.trim() || !Number.isSafeInteger(item.revision) || typeof item.revision !== 'number' || item.revision < 1)
       throw new Error('The native Muse row supplies an invalid item lifecycle.')
     const previous = latest.get(id)
-    if (!previous || item.revision > previous.revision)
-      latest.set(id, { revision: item.revision, item, params, spanId: message.spanId })
+    if (!previous || item.revision > previous.revision) {
+      latest.set(id, {
+        revision: item.revision,
+        item,
+        params,
+        spanId: message.spanId,
+      })
+    }
   }
-  const candidates = [...latest.values()].filter(candidate => candidate.item.callId === query.callId)
+  const candidates = [
+    ...latest.values(),
+  ].filter(candidate => candidate.item.callId === query.callId)
   if (candidates.length !== 1 || !candidates[0])
     throw new Error('The native Muse call requires exactly one item in its owned session.')
   const { item, params, spanId } = candidates[0]
@@ -59,5 +67,8 @@ export function museToolRowId(snapshot: NativeMessageSnapshot, query: NativeTool
 }
 
 export function nativeLaunch(context: ManagedNativeScenarioContext) {
-  return resolveNativeStartupLaunch(context.leapmuxServer.agentEnv, { binaryName: 'muse', holdWhen: ['serve'] })
+  return resolveNativeStartupLaunch(context.leapmuxServer.agentEnv, {
+    binaryName: 'muse',
+    holdWhen: ['serve'],
+  })
 }

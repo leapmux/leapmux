@@ -11,6 +11,15 @@ geminiTest('returns the exact native MCP input refusal without a browser form', 
   const receiptLog = join(agent.workingDir, 'gemini-form-receipt.json')
   const server = writeMcpFormServer(agent.workingDir, 'gemini-form-server.mjs', { receiptLog })
   await withGeminiMcp(native, server, async () => {
-    await expectUnsupportedMcpInput(native, { receiptLog, callId: 'gemini-input-refusal', invoke: () => invokeNativeMcpTool(native, { server: server.name, tool: 'ask', callId: 'gemini-input-refusal', input: {} }) })
+    await expectUnsupportedMcpInput(native, {
+      receiptLog,
+      callId: 'gemini-input-refusal',
+      invoke: () => invokeNativeMcpTool(native, {
+        server: server.name,
+        tool: 'ask',
+        callId: 'gemini-input-refusal',
+        input: {},
+      }),
+    })
   })
 })

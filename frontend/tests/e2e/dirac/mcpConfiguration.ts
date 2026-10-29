@@ -28,9 +28,19 @@ export function rewriteDiracMcpRequest(line: string, servers: readonly DiracStdi
   }
   const request = {
     ...frame,
-    params: { ...frame.params, mcpServers: servers.map(server => ({ ...server, args: [...server.args], env: server.env.map(entry => ({ ...entry })) })) },
+    params: {
+      ...frame.params,
+      mcpServers: servers.map(server => ({
+        ...server,
+        args: [...server.args],
+        env: server.env.map(entry => ({ ...entry })),
+      })),
+    },
   }
-  return { line: JSON.stringify(request), request }
+  return {
+    line: JSON.stringify(request),
+    request,
+  }
 }
 
 function validateServers(servers: readonly DiracStdioMcpServer[]): void {
@@ -66,7 +76,14 @@ export function writeDiracMcpWrapper(options: {
   mkdirSync(options.directory, { recursive: true })
   const receiptLog = join(options.directory, 'native-mcp-session.jsonl')
   const scriptPath = join(options.directory, 'dirac-mcp.cjs')
-  const configuration = { executable: options.executable, args: [...options.args ?? []], servers: options.servers, receiptLog }
+  const configuration = {
+    executable: options.executable,
+    args: [
+      ...options.args ?? [],
+    ],
+    servers: options.servers,
+    receiptLog,
+  }
   const source = `const {spawn}=require('node:child_process');
 const {appendFileSync}=require('node:fs');
 const {createInterface}=require('node:readline');
@@ -131,7 +148,9 @@ export function readDiracMcpSessionObservation(path: string): DiracMcpSessionObs
     throw new Error('The native Dirac MCP receipt contains an invalid session creation request.')
   }
   const replies = records.filter(record => isObject(record) && record.direction === 'reply' && isObject(record.frame) && record.frame.id === request.id)
-  const reply = isObject(replies[0]) && isObject(replies[0].frame) ? replies[0].frame : undefined
+  const reply = isObject(replies[0]) && isObject(replies[0].frame)
+    ? replies[0].frame
+    : undefined
   if (replies.length !== 1 || !reply || reply.error || !isObject(reply.result) || typeof reply.result.sessionId !== 'string' || reply.result.sessionId === '')
     throw new Error('The configured native Dirac request has no unique successful session reply.')
   return { request, reply, sessionId: reply.result.sessionId }

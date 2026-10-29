@@ -11,7 +11,15 @@ describe('chartResultFromSpec', () => {
   it('reads a categorical chart', () => {
     const source = chartResultFromSpec(JSON.stringify({
       type: 'bar',
-      data: { labels: ['A', 'B'], datasets: [{ label: 'Hits', data: [1, 2] }] },
+      data: {
+        labels: ['A', 'B'],
+        datasets: [
+          {
+            label: 'Hits',
+            data: [1, 2],
+          },
+        ],
+      },
     }), { title: 'Weekly hits', description: 'per region' })
 
     expect(source.shape).toBe('bar')
@@ -22,7 +30,12 @@ describe('chartResultFromSpec', () => {
     // holds one array, so the half it does not plot is absent rather than empty.
     // A series that states no shape of its own omits the key rather than carrying
     // an explicit undefined -- the chart-level `shape` above is what fills it in.
-    expect(source.series).toEqual([{ label: 'Hits', values: [1, 2] }])
+    expect(source.series).toEqual([
+      {
+        label: 'Hits',
+        values: [1, 2],
+      },
+    ])
     // The KEYS, because `toEqual` ignores an undefined-valued property -- so a series
     // that grew a field back would still match the expectation above.
     expect(Object.keys(source.series[0]!).sort()).toEqual(['label', 'values'])
@@ -30,7 +43,18 @@ describe('chartResultFromSpec', () => {
   })
 
   it('reads a filled line as an area, whichever half declares the fill', () => {
-    const spec = { type: 'line', data: { labels: ['A'], datasets: [{ data: [1], fill: true }] } }
+    const spec = {
+      type: 'line',
+      data: {
+        labels: ['A'],
+        datasets: [
+          {
+            data: [1],
+            fill: true,
+          },
+        ],
+      },
+    }
     expect(chartResultFromSpec(JSON.stringify(spec)).shape).toBe('area')
     // Kilo rewrites `type:"area"` itself, so the row must not depend on that pass.
     expect(chartResultFromSpec(JSON.stringify({ ...spec, type: 'area' })).shape).toBe('area')
@@ -49,11 +73,22 @@ describe('chartResultFromSpec', () => {
     ['the dataset index 0', 0],
     ['the dataset index 1', 1],
     ['the relative dataset index "+1"', '+1'],
-    ['an object target', { value: 0 }],
+    [
+      'an object target',
+      { value: 0 },
+    ],
   ])('promotes a line whose fill states %s', (_label, fill) => {
     const source = chartResultFromSpec(JSON.stringify({
       type: 'line',
-      data: { labels: ['A'], datasets: [{ data: [1], fill }] },
+      data: {
+        labels: ['A'],
+        datasets: [
+          {
+            data: [1],
+            fill,
+          },
+        ],
+      },
     }))
     expect(source.shape).toBe('area')
   })
@@ -65,7 +100,17 @@ describe('chartResultFromSpec', () => {
   ])('leaves a line whose fill states %s a line', (_label, fill) => {
     const source = chartResultFromSpec(JSON.stringify({
       type: 'line',
-      data: { labels: ['A'], datasets: [{ data: [1], ...(fill === undefined ? {} : { fill }) }] },
+      data: {
+        labels: ['A'],
+        datasets: [
+          {
+            data: [1],
+            ...(fill === undefined
+              ? {}
+              : { fill }),
+          },
+        ],
+      },
     }))
     expect(source.shape).toBe('line')
     expect(source.series[0]?.shape).toBeUndefined()
@@ -74,7 +119,20 @@ describe('chartResultFromSpec', () => {
   it('keeps a series that overrides the chart shape', () => {
     const source = chartResultFromSpec(JSON.stringify({
       type: 'bar',
-      data: { labels: ['A'], datasets: [{ label: 'Bars', data: [1] }, { label: 'Trend', type: 'line', data: [2] }] },
+      data: {
+        labels: ['A'],
+        datasets: [
+          {
+            label: 'Bars',
+            data: [1],
+          },
+          {
+            label: 'Trend',
+            type: 'line',
+            data: [2],
+          },
+        ],
+      },
     }))
     expect(source.shape).toBe('bar')
     expect(source.series.map(series => series.shape)).toEqual([undefined, 'line'])
@@ -88,7 +146,18 @@ describe('chartResultFromSpec', () => {
       type: 'bar',
       data: {
         labels: ['A'],
-        datasets: [{ label: 'Bars', data: [1] }, { label: 'Trend', type: 'line', fill: true, data: [2] }],
+        datasets: [
+          {
+            label: 'Bars',
+            data: [1],
+          },
+          {
+            label: 'Trend',
+            type: 'line',
+            fill: true,
+            data: [2],
+          },
+        ],
       },
     }))
     expect(source.shape).toBe('bar')
@@ -101,7 +170,15 @@ describe('chartResultFromSpec', () => {
   it('states no shape for a series that overrides the type to the chart\'s own', () => {
     const source = chartResultFromSpec(JSON.stringify({
       type: 'bar',
-      data: { labels: ['A'], datasets: [{ type: 'bar', data: [1] }] },
+      data: {
+        labels: ['A'],
+        datasets: [
+          {
+            type: 'bar',
+            data: [1],
+          },
+        ],
+      },
     }))
     expect(source.series[0]?.shape).toBeUndefined()
   })
@@ -109,18 +186,55 @@ describe('chartResultFromSpec', () => {
   it('reads coordinates apart from values', () => {
     const source = chartResultFromSpec(JSON.stringify({
       type: 'bubble',
-      data: { datasets: [{ data: [{ x: 1, y: 2, r: 5 }, { x: 3, y: 4 }] }] },
+      data: {
+        datasets: [
+          {
+            data: [
+              { x: 1, y: 2, r: 5 },
+              { x: 3, y: 4 },
+            ],
+          },
+        ],
+      },
     }))
     const series = source.series[0]!
     expect(series.values).toBeUndefined()
     expect(seriesValues(series)).toEqual([])
-    expect(seriesPoints(series)).toEqual([{ x: 1, y: 2, r: 5 }, { x: 3, y: 4 }])
+    expect(seriesPoints(series)).toEqual([
+      { x: 1, y: 2, r: 5 },
+      { x: 3, y: 4 },
+    ])
   })
 
   it('drops a coordinate that states no axis, and flattens a gap to zero', () => {
-    const points = chartResultFromSpec(JSON.stringify({ type: 'scatter', data: { datasets: [{ data: [{ x: 1, y: 2 }, { x: 'a', y: 2 }, { y: 3 }] }] } }))
-    expect(points.series[0]?.points).toEqual([{ x: 1, y: 2 }])
-    const values = chartResultFromSpec(JSON.stringify({ type: 'bar', data: { labels: ['A', 'B', 'C'], datasets: [{ data: [1, null, 'x'] }] } }))
+    const points = chartResultFromSpec(JSON.stringify({
+      type: 'scatter',
+      data: {
+        datasets: [
+          {
+            data: [
+              { x: 1, y: 2 },
+              { x: 'a', y: 2 },
+              { y: 3 },
+            ],
+          },
+        ],
+      },
+    }))
+    expect(points.series[0]?.points).toEqual([
+      { x: 1, y: 2 },
+    ])
+    const values = chartResultFromSpec(JSON.stringify({
+      type: 'bar',
+      data: {
+        labels: ['A', 'B', 'C'],
+        datasets: [
+          {
+            data: [1, null, 'x'],
+          },
+        ],
+      },
+    }))
     expect(values.series[0]?.values).toEqual([1, 0, 0])
   })
 
@@ -141,7 +255,10 @@ describe('chartResultFromSpec', () => {
   })
 
   it('separates a chart with no data from one it could not read', () => {
-    const empty = chartResultFromSpec(JSON.stringify({ type: 'pie', data: { labels: [], datasets: [] } }))
+    const empty = chartResultFromSpec(JSON.stringify({
+      type: 'pie',
+      data: { labels: [], datasets: [] },
+    }))
     expect(empty.error).toBeUndefined()
     expect(chartHasData(empty)).toBe(false)
   })
@@ -153,7 +270,11 @@ describe('chartResultFromSpec', () => {
       type: 'line',
       data: {
         labels: Array.from({ length: CHART_MAX_POINTS + 5 }, (_, index) => `L${index}`),
-        datasets: [{ data: Array.from({ length: CHART_MAX_POINTS + 5 }, (_, index) => index) }],
+        datasets: [
+          {
+            data: Array.from({ length: CHART_MAX_POINTS + 5 }, (_, index) => index),
+          },
+        ],
       },
     }))
     expect(seriesValues(source.series[0]!)).toHaveLength(CHART_MAX_POINTS)
@@ -164,7 +285,13 @@ describe('chartResultFromSpec', () => {
   it('caps the coordinates of one series and states that it did', () => {
     const source = chartResultFromSpec(JSON.stringify({
       type: 'scatter',
-      data: { datasets: [{ data: Array.from({ length: CHART_MAX_POINTS + 1 }, (_, index) => ({ x: index, y: index })) }] },
+      data: {
+        datasets: [
+          {
+            data: Array.from({ length: CHART_MAX_POINTS + 1 }, (_, index) => ({ x: index, y: index })),
+          },
+        ],
+      },
     }))
     expect(seriesPoints(source.series[0]!)).toHaveLength(CHART_MAX_POINTS)
     expect(source.truncated).toBe(true)
@@ -173,7 +300,12 @@ describe('chartResultFromSpec', () => {
   it('caps the series count and states that it did', () => {
     const source = chartResultFromSpec(JSON.stringify({
       type: 'bar',
-      data: { labels: ['A'], datasets: Array.from({ length: CHART_MAX_SERIES + 3 }, () => ({ data: [1] })) },
+      data: {
+        labels: ['A'],
+        datasets: Array.from({ length: CHART_MAX_SERIES + 3 }, () => ({
+          data: [1],
+        })),
+      },
     }))
     expect(source.series).toHaveLength(CHART_MAX_SERIES)
     expect(source.truncated).toBe(true)
@@ -182,7 +314,14 @@ describe('chartResultFromSpec', () => {
   it('states no truncation for a chart that fits', () => {
     const source = chartResultFromSpec(JSON.stringify({
       type: 'bar',
-      data: { labels: ['A', 'B'], datasets: [{ data: [1, 2] }] },
+      data: {
+        labels: ['A', 'B'],
+        datasets: [
+          {
+            data: [1, 2],
+          },
+        ],
+      },
     }))
     expect(source.truncated).toBeUndefined()
   })
@@ -192,13 +331,36 @@ describe('chartCopyableText', () => {
   it('writes the numbers a spreadsheet takes, not the configuration', () => {
     const source = chartResultFromSpec(JSON.stringify({
       type: 'bar',
-      data: { labels: ['A', 'B'], datasets: [{ label: 'Hits', data: [1, 2] }, { data: [3, 4] }] },
+      data: {
+        labels: ['A', 'B'],
+        datasets: [
+          {
+            label: 'Hits',
+            data: [1, 2],
+          },
+          {
+            data: [3, 4],
+          },
+        ],
+      },
     }))
     expect(chartCopyableText(source)).toBe('\tHits\tSeries 2\nA\t1\t3\nB\t2\t4')
   })
 
   it('writes a point chart as its coordinates', () => {
-    const source = chartResultFromSpec(JSON.stringify({ type: 'scatter', data: { datasets: [{ label: 'P', data: [{ x: 1, y: 2 }] }] } }))
+    const source = chartResultFromSpec(JSON.stringify({
+      type: 'scatter',
+      data: {
+        datasets: [
+          {
+            label: 'P',
+            data: [
+              { x: 1, y: 2 },
+            ],
+          },
+        ],
+      },
+    }))
     expect(chartCopyableText(source)).toBe('\tx\ty\nP\t1\t2')
   })
 
@@ -212,8 +374,17 @@ describe('chartCopyableText', () => {
       data: {
         labels: ['A', 'B'],
         datasets: [
-          { label: 'Hits', data: [1, 2] },
-          { label: 'Deals', type: 'scatter', data: [{ x: 3, y: 4 }] },
+          {
+            label: 'Hits',
+            data: [1, 2],
+          },
+          {
+            label: 'Deals',
+            type: 'scatter',
+            data: [
+              { x: 3, y: 4 },
+            ],
+          },
         ],
       },
     }))
@@ -229,8 +400,15 @@ describe('chartCopyableText', () => {
       data: {
         labels: ['A'],
         datasets: [
-          { type: 'scatter', data: [{ x: 9, y: 9 }] },
-          { data: [1] },
+          {
+            type: 'scatter',
+            data: [
+              { x: 9, y: 9 },
+            ],
+          },
+          {
+            data: [1],
+          },
         ],
       },
     }))
@@ -242,7 +420,17 @@ describe('chartCopyableText', () => {
   it('pads the radius column of a point that states none', () => {
     const source = chartResultFromSpec(JSON.stringify({
       type: 'bubble',
-      data: { datasets: [{ label: 'P', data: [{ x: 1, y: 2, r: 5 }, { x: 3, y: 4 }] }] },
+      data: {
+        datasets: [
+          {
+            label: 'P',
+            data: [
+              { x: 1, y: 2, r: 5 },
+              { x: 3, y: 4 },
+            ],
+          },
+        ],
+      },
     }))
     expect(chartCopyableText(source)).toBe('\tx\ty\tr\nP\t1\t2\t5\nP\t3\t4\t')
   })

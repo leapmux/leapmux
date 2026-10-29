@@ -13,10 +13,18 @@ beforeAll(() => {
 describe('mcp renderer', () => {
   checkKindModule({
     kind: 'mcp',
-    request: { args: { q: 1 }, server: 'Docs', tool: 'lookup' },
+    request: {
+      args: { q: 1 },
+      server: 'Docs',
+      tool: 'lookup',
+    },
     minimalTitlePart: 's / t',
     titlePart: 'Docs / lookup',
-    result: { content: [{ type: 'text', text: 'found it' }] },
+    result: {
+      content: [
+        { type: 'text', text: 'found it' },
+      ],
+    },
     resultPart: 'found it',
   })
 })

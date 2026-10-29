@@ -10,9 +10,13 @@ function expectModelAtEffort(request: MockModelRequestRecord, model: string, eff
 }
 
 kimiTest('sends the chosen effort into native turns before and after reload', async ({ native }) => {
-  await exerciseNativeOption(native, { groupId: 'effort', value: 'low', nativeProof: (request) => {
-    expect(request.body).toHaveProperty('reasoning_effort', 'low')
-  } })
+  await exerciseNativeOption(native, {
+    groupId: 'effort',
+    value: 'low',
+    nativeProof: (request) => {
+      expect(request.body).toHaveProperty('reasoning_effort', 'low')
+    },
+  })
 })
 
 // The alternate thinking model takes the ladder of the default model and starts at Medium, so Low differs from its default

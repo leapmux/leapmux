@@ -34,7 +34,9 @@ for (const decision of ['allow', 'deny'] as const) {
     const ruleName = 'qoder-auto-review'
     await native.modelScript.rule({
       ...qoderAutoReviewRule(ruleName, false, 'The user requested this isolated fixture write.'),
-      respond: { error: { status: 400, message: 'The scripted reviewer is unavailable.' } },
+      respond: {
+        error: { status: 400, message: 'The scripted reviewer is unavailable.' },
+      },
     })
     const agent = await currentNativeAgent(native)
     const controls = await watchNativeControls(native.leapmuxServer, agent.id)
@@ -63,10 +65,12 @@ for (const decision of ['allow', 'deny'] as const) {
               isObject(control.payload.request) && control.payload.request.tool_use_id === call.id,
             )).toBe(true)
             expect(controls.controls()).toEqual(expect.arrayContaining([
-              expect.objectContaining({ payload: expect.objectContaining({
-                type: 'control_request',
-                request: expect.objectContaining({ subtype: 'can_use_tool', tool_name: 'Bash', tool_use_id: call.id }),
-              }) }),
+              expect.objectContaining({
+                payload: expect.objectContaining({
+                  type: 'control_request',
+                  request: expect.objectContaining({ subtype: 'can_use_tool', tool_name: 'Bash', tool_use_id: call.id }),
+                }),
+              }),
             ]))
             expect((await native.modelScript.status()).ruleMatches[ruleName] ?? 0).toBeGreaterThan(reviewsBefore)
           },

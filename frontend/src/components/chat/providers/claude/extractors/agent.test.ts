@@ -79,7 +79,10 @@ describe('agent report text', () => {
   it('joins the text blocks of a finished run', () => {
     const source = claudeAgentFromToolResult({
       status: 'completed',
-      content: [{ type: 'text', text: 'First.' }, { type: 'text', text: 'Second.' }],
+      content: [
+        { type: 'text', text: 'First.' },
+        { type: 'text', text: 'Second.' },
+      ],
     }, '')
     expect(source?.content).toBe('First.\n\nSecond.')
   })
@@ -91,7 +94,10 @@ describe('agent report text', () => {
       status: 'completed',
       content: [
         { type: 'text', text: 'Here it is.' },
-        { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAA' } },
+        {
+          type: 'image',
+          source: { type: 'base64', media_type: 'image/png', data: 'AAA' },
+        },
       ],
     }, '')
     expect(source?.content).toContain('Here it is.')
@@ -101,7 +107,12 @@ describe('agent report text', () => {
   it('keeps an external image as a link rather than an inline embed', () => {
     const source = claudeAgentFromToolResult({
       status: 'completed',
-      content: [{ type: 'image', source: { type: 'url', url: 'https://example.test/a.png' } }],
+      content: [
+        {
+          type: 'image',
+          source: { type: 'url', url: 'https://example.test/a.png' },
+        },
+      ],
     }, '')
     expect(source?.content).toBe('[image](https://example.test/a.png)')
   })
@@ -120,7 +131,12 @@ describe('claudeAgentResultIsLaunch', () => {
   })
 
   it('reports a finished run as not a launch', () => {
-    const source = claudeAgentFromToolResult({ status: 'completed', content: [{ type: 'text', text: 'done' }] }, '')
+    const source = claudeAgentFromToolResult({
+      status: 'completed',
+      content: [
+        { type: 'text', text: 'done' },
+      ],
+    }, '')
     expect(claudeAgentResultIsLaunch(source!)).toBe(false)
   })
 
@@ -138,7 +154,9 @@ describe('claudeAgentResultIsLaunch', () => {
     const source = claudeAgentFromToolResult({
       status: 'completed',
       outputFile: '/tmp/a.output',
-      content: [{ type: 'text', text: 'The report.' }],
+      content: [
+        { type: 'text', text: 'The report.' },
+      ],
     }, '')
     expect(claudeAgentResultIsLaunch(source!)).toBe(false)
   })
@@ -149,7 +167,9 @@ describe('claudeAgentResultBody', () => {
     const source = claudeAgentFromToolResult({
       status: 'completed',
       prompt: 'Do the thing.',
-      content: [{ type: 'text', text: 'Did it.' }],
+      content: [
+        { type: 'text', text: 'Did it.' },
+      ],
     }, '')
     expect(claudeAgentResultBody(source!)).toBe('Did it.')
   })

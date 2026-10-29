@@ -64,7 +64,12 @@ interface InlineRun {
  * its own code blocks and a `<div>` with `white-space: pre` must break the same
  * way a `<pre>` does.
  */
-const NEWLINE_PRESERVING_WHITE_SPACE = new Set(['pre', 'pre-wrap', 'pre-line', 'break-spaces'])
+const NEWLINE_PRESERVING_WHITE_SPACE = new Set([
+  'pre',
+  'pre-wrap',
+  'pre-line',
+  'break-spaces',
+])
 
 /**
  * Word segmentation, built once.
@@ -83,8 +88,11 @@ const NEWLINE_PRESERVING_WHITE_SPACE = new Set(['pre', 'pre-wrap', 'pre-line', '
 let wordSegmenter: Intl.Segmenter | null | undefined
 
 function segmenter(): Intl.Segmenter | null {
-  if (wordSegmenter === undefined)
-    wordSegmenter = typeof Intl.Segmenter === 'function' ? new Intl.Segmenter(undefined, { granularity: 'word' }) : null
+  if (wordSegmenter === undefined) {
+    wordSegmenter = typeof Intl.Segmenter === 'function'
+      ? new Intl.Segmenter(undefined, { granularity: 'word' })
+      : null
+  }
   return wordSegmenter
 }
 
@@ -106,7 +114,9 @@ function isInlineDisplay(el: Element): boolean {
 }
 
 function preservesNewlines(el: Element | null): boolean {
-  return el ? NEWLINE_PRESERVING_WHITE_SPACE.has(getComputedStyle(el).whiteSpace) : false
+  return el
+    ? NEWLINE_PRESERVING_WHITE_SPACE.has(getComputedStyle(el).whiteSpace)
+    : false
 }
 
 /**
@@ -144,7 +154,9 @@ function buildInlineRun(block: Element): InlineRun {
       const el = node as Element
       if (el.tagName === 'BR')
         return NodeFilter.FILTER_ACCEPT
-      return isInlineDisplay(el) ? NodeFilter.FILTER_SKIP : NodeFilter.FILTER_REJECT
+      return isInlineDisplay(el)
+        ? NodeFilter.FILTER_SKIP
+        : NodeFilter.FILTER_REJECT
     },
   })
 
@@ -152,7 +164,12 @@ function buildInlineRun(block: Element): InlineRun {
     if (node.nodeType !== Node.TEXT_NODE) {
       // A `<br>`. It has no characters of its own, so the run borrows one.
       breaks.push(text.length)
-      pieces.push({ node: null, start: text.length, length: 1, preserves: true })
+      pieces.push({
+        node: null,
+        start: text.length,
+        length: 1,
+        preserves: true,
+      })
       text += '\n'
       continue
     }
@@ -162,7 +179,12 @@ function buildInlineRun(block: Element): InlineRun {
       for (let i = textNode.data.indexOf('\n'); i >= 0; i = textNode.data.indexOf('\n', i + 1))
         breaks.push(text.length + i)
     }
-    pieces.push({ node: textNode, start: text.length, length: textNode.data.length, preserves })
+    pieces.push({
+      node: textNode,
+      start: text.length,
+      length: textNode.data.length,
+      preserves,
+    })
     text += textNode.data
   }
 
@@ -198,7 +220,9 @@ export function wordBounds(text: string, index: number): TextBounds | null {
   if (!segment || text === '')
     return null
   const at = Math.max(0, Math.min(index, text.length))
-  const segments = [...segment.segment(text)]
+  const segments = [
+    ...segment.segment(text),
+  ]
   if (segments.length === 0)
     return null
 
@@ -244,7 +268,9 @@ function paragraphBounds(run: InlineRun, index: number): TextBounds | null {
     start++
   while (end > start && /\s/.test(run.text[end - 1] ?? '') && !preservedAt(end - 1))
     end--
-  return start < end ? { start, end } : null
+  return start < end
+    ? { start, end }
+    : null
 }
 
 /** The DOM position for a run index, entering a piece from its left edge. */
@@ -266,7 +292,10 @@ function endPosition(run: InlineRun, index: number): TextCaret | null {
   for (const piece of run.pieces) {
     if (!piece.node || piece.start >= index)
       continue
-    last = { node: piece.node, offset: Math.min(index - piece.start, piece.length) }
+    last = {
+      node: piece.node,
+      offset: Math.min(index - piece.start, piece.length),
+    }
   }
   return last
 }
@@ -288,7 +317,9 @@ export function wordRangeAt(caret: TextCaret, root: Element): Range | null {
   if (!resolved)
     return null
   const bounds = wordBounds(resolved.run.text, resolved.index)
-  return bounds ? rangeFor(resolved.run, bounds) : null
+  return bounds
+    ? rangeFor(resolved.run, bounds)
+    : null
 }
 
 /**
@@ -300,7 +331,9 @@ export function paragraphRangeAt(caret: TextCaret, root: Element): Range | null 
   if (!resolved)
     return null
   const bounds = paragraphBounds(resolved.run, resolved.index)
-  return bounds ? rangeFor(resolved.run, bounds) : null
+  return bounds
+    ? rangeFor(resolved.run, bounds)
+    : null
 }
 
 /**

@@ -42,18 +42,28 @@ export function OptionAxisChip(props: OptionAxisChipProps): JSX.Element {
       groupId={props.groupId}
       optionGroups={props.optionGroups}
       optionValues={props.optionValues}
-      {...(props.onChange === undefined ? {} : { onChange: props.onChange })}
-      {...(props.disabledReason === undefined ? {} : { disabledReason: props.disabledReason })}
+      {...(props.onChange === undefined
+        ? {}
+        : { onChange: props.onChange })}
+      {...(props.disabledReason === undefined
+        ? {}
+        : { disabledReason: props.disabledReason })}
       popoverClass={styles.axisPopover}
-      {...(props.testIdPrefix === undefined ? {} : { popoverTestId: `${props.testIdPrefix}-popover` })}
+      {...(props.testIdPrefix === undefined
+        ? {}
+        : { popoverTestId: `${props.testIdPrefix}-popover` })}
       // The `[+]` menu renders the same group and keeps the plain
       // `<groupId>-<value>` ids, so the chip's own items are namespaced.
-      {...(props.testIdPrefix === undefined ? {} : { itemTestIdPrefix: props.testIdPrefix })}
+      {...(props.testIdPrefix === undefined
+        ? {}
+        : { itemTestIdPrefix: props.testIdPrefix })}
       trigger={(triggerProps, view) => (
         <Tooltip text={view.label}>
           <button
             class={styles.axisChip}
-            data-testid={props.testIdPrefix ? `${props.testIdPrefix}-trigger` : undefined}
+            data-testid={props.testIdPrefix
+              ? `${props.testIdPrefix}-trigger`
+              : undefined}
             data-chip-optional={props.optional ? '' : undefined}
             {...triggerProps}
           >

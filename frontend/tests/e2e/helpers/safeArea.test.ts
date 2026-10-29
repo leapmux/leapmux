@@ -16,7 +16,9 @@ interface InsetsPayload {
 function fakePage() {
   const send = vi.fn(async (_method: string, _params: InsetsPayload) => {})
   const page = {
-    context: () => ({ newCDPSession: async () => ({ send }) }),
+    context: () => ({
+      newCDPSession: async () => ({ send }),
+    }),
   } as unknown as Page
   return { page, send }
 }
@@ -29,7 +31,12 @@ describe('applySimulatedSafeArea', () => {
 
     expect(send).toHaveBeenCalledTimes(1)
     expect(send).toHaveBeenCalledWith('Emulation.setSafeAreaInsetsOverride', {
-      insets: { top: 47, right: 0, bottom: 34, left: 0 },
+      insets: {
+        top: 47,
+        right: 0,
+        bottom: 34,
+        left: 0,
+      },
     })
   })
 
@@ -54,6 +61,8 @@ describe('applySimulatedSafeArea', () => {
     await applySimulatedSafeArea(page, ZERO_INSETS)
 
     expect(send).toHaveBeenCalledTimes(2)
-    expect(send.mock.calls[1]![1]).toEqual({ insets: { top: 0, right: 0, bottom: 0, left: 0 } })
+    expect(send.mock.calls[1]![1]).toEqual({
+      insets: { top: 0, right: 0, bottom: 0, left: 0 },
+    })
   })
 })

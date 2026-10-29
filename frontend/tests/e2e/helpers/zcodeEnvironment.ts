@@ -44,9 +44,18 @@ function zcodeModels(options: ZcodeEnvironmentOptions): string[] {
 function zcodeLegacyConfig(options: ZcodeEnvironmentOptions): Record<string, unknown> {
   const model = (id: string, priority: number) => ({
     name: id,
-    reasoning: id === options.plainModelID ? { enabled: false } : { enabled: true, variants: ['low', 'medium', 'high'], defaultVariant: 'high' },
+    reasoning: id === options.plainModelID
+      ? { enabled: false }
+      : {
+          enabled: true,
+          variants: ['low', 'medium', 'high'],
+          defaultVariant: 'high',
+        },
     limit: { context: 128_000, output: 16_000 },
-    modalities: { input: ['text'], output: ['text'] },
+    modalities: {
+      input: ['text'],
+      output: ['text'],
+    },
     zcode: { priority },
   })
   return {
@@ -57,7 +66,10 @@ function zcodeLegacyConfig(options: ZcodeEnvironmentOptions): Record<string, unk
         source: 'custom',
         enabled: true,
         options: { apiKey: options.modelKey, baseURL: options.baseURL },
-        models: Object.fromEntries(zcodeModels(options).map((id, priority) => [id, model(id, priority)])),
+        models: Object.fromEntries(zcodeModels(options).map((id, priority) => [
+          id,
+          model(id, priority),
+        ])),
       },
     },
   }
@@ -71,22 +83,28 @@ function zcodePersonalConfig(options: ZcodeEnvironmentOptions): Record<string, u
     config: {
       providerOrder: [providerID],
       providerConfigRules: {
-        providerRules: [{
-          providerId: providerID,
-          providerName: 'LeapMux E2E',
-          enabled: true,
-          config: {
-            group: 'standard-personal',
-            access: { type: 'api-key', apiKey: options.modelKey },
-            api: { type: 'openai-chat-completions', baseUrl: options.baseURL },
-            personalModelIds: models,
-            modelOrder: models,
-            visibility: 'visible',
+        providerRules: [
+          {
+            providerId: providerID,
+            providerName: 'LeapMux E2E',
+            enabled: true,
+            config: {
+              group: 'standard-personal',
+              access: { type: 'api-key', apiKey: options.modelKey },
+              api: { type: 'openai-chat-completions', baseUrl: options.baseURL },
+              personalModelIds: models,
+              modelOrder: models,
+              visibility: 'visible',
+            },
           },
-        }],
+        ],
       },
       modelConfigRules: {
-        providerModelRules: models.map(id => ({ providerId: providerID, modelId: id, config: { enabled: true } })),
+        providerModelRules: models.map(id => ({
+          providerId: providerID,
+          modelId: id,
+          config: { enabled: true },
+        })),
         manualProviderModelRules: [],
       },
       defaultModelSelection: {

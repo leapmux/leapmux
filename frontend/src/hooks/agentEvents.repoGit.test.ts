@@ -63,7 +63,13 @@ describe('handleAgentStatusChange repo git wiring', () => {
     createRoot((dispose) => {
       const harness = installTestBridge({ workspaceId: WS })
       const { view, metadata, selection } = createTestTabStores(WS)
-      emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '0', workerId: 'w1' })
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'a1',
+        tileId: harness.rootTileId,
+        position: '0',
+        workerId: 'w1',
+      })
       const repoGitStore = createRepoGitStore()
       const chatStore = createChatStore()
 
@@ -78,7 +84,13 @@ describe('handleAgentStatusChange repo git wiring', () => {
             isWorktree: true,
           } as never,
         }),
-        { chatStore, view, metadata, selection, repoGitStore },
+        {
+          chatStore,
+          view,
+          metadata,
+          selection,
+          repoGitStore,
+        },
       )
 
       const state = repoGitStore.get(repoKey('w1', '/repo'))
@@ -104,7 +116,13 @@ describe('handleAgentStatusChange repo git wiring', () => {
           agentId: 'unjoined',
           gitStatus: { toplevel: '/repo', branch: 'main' } as never,
         }),
-        { chatStore, view, metadata, selection, repoGitStore },
+        {
+          chatStore,
+          view,
+          metadata,
+          selection,
+          repoGitStore,
+        },
         'w-stream',
       )
 
@@ -117,7 +135,13 @@ describe('handleAgentStatusChange repo git wiring', () => {
     createRoot((dispose) => {
       const harness = installTestBridge({ workspaceId: WS })
       const { view, metadata, selection } = createTestTabStores(WS)
-      emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '0', workerId: 'w1' })
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'a1',
+        tileId: harness.rootTileId,
+        position: '0',
+        workerId: 'w1',
+      })
       metadata.patch('a1', { workingDir: '/repo/pkg' })
       const repoGitStore = createRepoGitStore()
       const chatStore = createChatStore()
@@ -134,7 +158,13 @@ describe('handleAgentStatusChange repo git wiring', () => {
           agentId: 'a1',
           gitStatus: { toplevel: '/repo', branch: 'main' } as never,
         }),
-        { chatStore, view, metadata, selection, repoGitStore },
+        {
+          chatStore,
+          view,
+          metadata,
+          selection,
+          repoGitStore,
+        },
       )
 
       expect(repoGitStore.get(orphanKey)).toBeUndefined()
@@ -147,7 +177,13 @@ describe('handleAgentStatusChange repo git wiring', () => {
     createRoot((dispose) => {
       const harness = installTestBridge({ workspaceId: WS })
       const { view, metadata, selection } = createTestTabStores(WS)
-      emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: '0', workerId: 'w1' })
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'a1',
+        tileId: harness.rootTileId,
+        position: '0',
+        workerId: 'w1',
+      })
       const repoGitStore = createRepoGitStore()
       const chatStore = createChatStore()
       repoGitStore.upsert(repoKey('w1', '/repo'), {
@@ -163,7 +199,13 @@ describe('handleAgentStatusChange repo git wiring', () => {
           agentId: 'a1',
           gitStatus: { toplevel: '/repo', branch: 'other' } as never,
         }),
-        { chatStore, view, metadata, selection, repoGitStore },
+        {
+          chatStore,
+          view,
+          metadata,
+          selection,
+          repoGitStore,
+        },
       )
 
       expect(repoGitStore.get(repoKey('w1', '/repo'))?.branch).toBe('stamped')

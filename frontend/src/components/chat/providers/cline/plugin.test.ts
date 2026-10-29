@@ -26,7 +26,14 @@ function approval(toolName: string, input: Record<string, unknown>): Record<stri
     version: 'v1',
     event: 'approval.requested',
     sessionId: 's1',
-    payload: { approvalId: 'approval_1', sessionId: 's1', agentId: 'agent_1', toolCallId: 'call_1', toolName, inputJson: JSON.stringify(input) },
+    payload: {
+      approvalId: 'approval_1',
+      sessionId: 's1',
+      agentId: 'agent_1',
+      toolCallId: 'call_1',
+      toolName,
+      inputJson: JSON.stringify(input),
+    },
   }
 }
 
@@ -39,19 +46,39 @@ const question: Record<string, unknown> = {
     requestId: 'capreq_1',
     targetClientId: 'leapmux-a',
     capabilityName: 'tool_executor.askQuestion',
-    payload: { executor: 'askQuestion', args: ['Which color do you prefer?', ['Red', 'Blue']], context: { toolCallId: 'call_q' } },
+    payload: {
+      executor: 'askQuestion',
+      args: [
+        'Which color do you prefer?',
+        ['Red', 'Blue'],
+      ],
+      context: { toolCallId: 'call_q' },
+    },
   },
 }
 
 function saved(request: Record<string, unknown>, response: Record<string, unknown> | undefined): PersistedControlResponse {
-  return { requestId: 'r1', claimToken: '', request, response }
+  return {
+    requestId: 'r1',
+    claimToken: '',
+    request,
+    response,
+  }
 }
 
 describe('cline plugin', () => {
   // A registration that is present but holds the readers of another provider passes a
   // presence check, so the test compares each hook with Cline's own function.
   it('registers the Cline readers for the CLINE provider', () => {
-    expect(Object.keys(plugin.transcript).sort()).toEqual(['classify', 'compactionStart', 'extractDivider', 'extractRow', 'notificationEntry', 'relatedMessages', 'spanRole'])
+    expect(Object.keys(plugin.transcript).sort()).toEqual([
+      'classify',
+      'compactionStart',
+      'extractDivider',
+      'extractRow',
+      'notificationEntry',
+      'relatedMessages',
+      'spanRole',
+    ])
     expect(plugin.transcript.compactionStart).toBe(clineCompactionStart)
     expect(plugin.transcript.classify).toBe(classifyClineMessage)
     expect(plugin.transcript.extractRow).toBe(clineExtractRow)
@@ -66,7 +93,13 @@ describe('cline plugin', () => {
 
   // The worker's ValidateAttachment refuses a PDF and a binary file with the same policy.
   it('accepts text and images, and no PDF or binary', () => {
-    expect(plugin.configuration?.attachments).toEqual({ text: true, image: true, pdf: false, audio: false, binary: false })
+    expect(plugin.configuration?.attachments).toEqual({
+      text: true,
+      image: true,
+      pdf: false,
+      audio: false,
+      binary: false,
+    })
   })
 
   it('carries Plan on the permission-mode axis, as the plan toggle', () => {
@@ -74,7 +107,9 @@ describe('cline plugin', () => {
     expect(plugin.configuration?.planMode?.groupKey).toBe('permissionMode')
     expect(plugin.configuration?.planMode?.planValue).toBe(CLINE_PERMISSION_MODE.Plan)
     expect(plugin.configuration?.planMode?.defaultValue).toBe(CLINE_PERMISSION_MODE.Act)
-    expect(plugin.configuration?.planMode?.currentMode({ optionValues: { permissionMode: CLINE_PERMISSION_MODE.Plan } })).toBe(CLINE_PERMISSION_MODE.Plan)
+    expect(plugin.configuration?.planMode?.currentMode({
+      optionValues: { permissionMode: CLINE_PERMISSION_MODE.Plan },
+    })).toBe(CLINE_PERMISSION_MODE.Plan)
   })
 
   it('states no elicitation and no child input', () => {
@@ -85,48 +120,99 @@ describe('cline plugin', () => {
 
 describe('cline controls', () => {
   it('offers the Bypass preset as Auto-approve and no Smart preset', () => {
-    expect(controls.permissionPresets).toEqual({ bypass: { sets: { permissionMode: CLINE_PERMISSION_MODE.AutoApprove } } })
+    expect(controls.permissionPresets).toEqual({
+      bypass: {
+        sets: { permissionMode: CLINE_PERMISSION_MODE.AutoApprove },
+      },
+    })
   })
 
   it('reads an approval into a permission with its arguments', () => {
-    const control = controls.extractControl?.({ payload: approval('editor', { path: '/work/a.ts', old_text: 'a', new_text: 'b' }) })
+    const control = controls.extractControl?.({
+      payload: approval('editor', { path: '/work/a.ts', old_text: 'a', new_text: 'b' }),
+    })
     expect(control).toEqual({
       kind: 'permission',
-      permission: { title: 'editor', input: { path: '/work/a.ts', old_text: 'a', new_text: 'b' }, options: [] },
+      permission: {
+        title: 'editor',
+        input: { path: '/work/a.ts', old_text: 'a', new_text: 'b' },
+        options: [],
+      },
     })
   })
 
   it('states the commands of a command approval', () => {
-    const control = controls.extractControl?.({ payload: approval('run_commands', { commands: ['git status', { command: 'go', args: ['test', './...'] }] }) })
-    expect(control?.kind === 'permission' ? control.permission.command : undefined).toBe('git status\ngo test ./...')
+    const control = controls.extractControl?.({
+      payload: approval('run_commands', {
+        commands: [
+          'git status',
+          {
+            command: 'go',
+            args: ['test', './...'],
+          },
+        ],
+      }),
+    })
+    expect(control?.kind === 'permission'
+      ? control.permission.command
+      : undefined).toBe('git status\ngo test ./...')
   })
 
   // A subagent, a configured agent and a teammate each run their own tools without
   // asking, so the approval that starts one says so.
   it.each([
-    ['spawn_agent', { task: 'Look.' }],
-    ['subagent_reviewer_1a2b', { prompt: 'Review the change.' }],
-    ['team_spawn_teammate', { agentId: 'researcher', rolePrompt: 'You research.' }],
-    ['team_run_task', { agentId: 'researcher', task: 'Report a word.' }],
+    [
+      'spawn_agent',
+      { task: 'Look.' },
+    ],
+    [
+      'subagent_reviewer_1a2b',
+      { prompt: 'Review the change.' },
+    ],
+    [
+      'team_spawn_teammate',
+      { agentId: 'researcher', rolePrompt: 'You research.' },
+    ],
+    [
+      'team_run_task',
+      { agentId: 'researcher', task: 'Report a word.' },
+    ],
   ])('warns that the agent that %s starts runs its tools without asking', (tool, input) => {
-    const control = controls.extractControl?.({ payload: approval(tool, input) })
-    expect(control?.kind === 'permission' ? control.permission.reason : undefined).toBe(CLINE_SPAWN_WARNING)
+    const control = controls.extractControl?.({
+      payload: approval(tool, input),
+    })
+    expect(control?.kind === 'permission'
+      ? control.permission.reason
+      : undefined).toBe(CLINE_SPAWN_WARNING)
   })
 
   it('gives no warning for a tool that starts no agent', () => {
-    for (const tool of ['editor', 'run_commands', 'team_status', 'github__subagent_search']) {
-      const control = controls.extractControl?.({ payload: approval(tool, {}) })
-      expect(control?.kind === 'permission' ? control.permission.reason : 'no permission', tool).toBeUndefined()
+    for (const tool of [
+      'editor',
+      'run_commands',
+      'team_status',
+      'github__subagent_search',
+    ]) {
+      const control = controls.extractControl?.({
+        payload: approval(tool, {}),
+      })
+      expect(control?.kind === 'permission'
+        ? control.permission.reason
+        : 'no permission', tool).toBeUndefined()
     }
   })
 
   it('reads the plan tool\'s approval as the plan approval', () => {
-    expect(controls.extractControl?.({ payload: approval('switch_to_act_mode', {}) })).toEqual({ kind: 'plan' })
+    expect(controls.extractControl?.({
+      payload: approval('switch_to_act_mode', {}),
+    })).toEqual({ kind: 'plan' })
   })
 
   it('reads nothing else', () => {
     expect(controls.extractControl?.({ payload: question })).toBeNull()
-    expect(controls.extractControl?.({ payload: { type: 'control_request' } })).toBeNull()
+    expect(controls.extractControl?.({
+      payload: { type: 'control_request' },
+    })).toBeNull()
   })
 
   it('reads an approval whose arguments are not JSON with none', () => {
@@ -134,7 +220,9 @@ describe('cline controls', () => {
     const inner = payload.payload as Record<string, unknown>
     inner.inputJson = 'not json'
     const control = controls.extractControl?.({ payload })
-    expect(control?.kind === 'permission' ? control.permission.input : undefined).toEqual({})
+    expect(control?.kind === 'permission'
+      ? control.permission.input
+      : undefined).toEqual({})
   })
 
   // The composer's send refuses the call, and its words ride the refusal as the reason.
@@ -156,15 +244,23 @@ describe('cline questions', () => {
   })
 
   it('reads the question and its options', () => {
-    expect(ask.extractQuestions(question)).toEqual([{
-      question: 'Which color do you prefer?',
-      options: [{ value: 'Red', label: 'Red' }, { value: 'Blue', label: 'Blue' }],
-    }])
+    expect(ask.extractQuestions(question)).toEqual([
+      {
+        question: 'Which color do you prefer?',
+        options: [
+          { value: 'Red', label: 'Red' },
+          { value: 'Blue', label: 'Blue' },
+        ],
+      },
+    ])
   })
 
   it('reads no question from arguments that state none', () => {
     const empty = structuredClone(question)
-    ;((empty.payload as Record<string, unknown>).payload as Record<string, unknown>).args = ['  ', ['A']]
+    ;((empty.payload as Record<string, unknown>).payload as Record<string, unknown>).args = [
+      '  ',
+      ['A'],
+    ]
     expect(ask.extractQuestions(empty)).toEqual([])
   })
 
@@ -176,12 +272,18 @@ describe('cline questions', () => {
     const send = async (bytes: Uint8Array) => {
       sent.push(bytes)
     }
-    return { send, last: () => JSON.parse(new TextDecoder().decode(sent.at(-1))) as Record<string, unknown> }
+    return {
+      send,
+      last: () => JSON.parse(new TextDecoder().decode(sent.at(-1))) as Record<string, unknown>,
+    }
   }
 
   async function answer(selected: string[], typed: string): Promise<Record<string, unknown>> {
     const { send, last } = recorder()
-    await ask.sendAnswer(request, send, ask.extractQuestions(question), createControlAnswerState({ selections: { 0: selected }, customTexts: { 0: typed } }))
+    await ask.sendAnswer(request, send, ask.extractQuestions(question), createControlAnswerState({
+      selections: { 0: selected },
+      customTexts: { 0: typed },
+    }))
     return last()
   }
 
@@ -190,7 +292,11 @@ describe('cline questions', () => {
   it('answers with the picked option', async () => {
     expect(await answer(['Blue'], '')).toEqual({
       type: 'control_response',
-      response: { subtype: 'success', request_id: 'capreq_1', response: { behavior: 'allow', [CLINE_QUESTION_ANSWER.Answer]: 'Blue' } },
+      response: {
+        subtype: 'success',
+        request_id: 'capreq_1',
+        response: { behavior: 'allow', [CLINE_QUESTION_ANSWER.Answer]: 'Blue' },
+      },
     })
   })
 
@@ -223,7 +329,11 @@ describe('cline saved answers', () => {
   })
 
   it('words a question\'s answer and its refusal', () => {
-    expect(display(saved(question, { requestId: 'capreq_1', ok: true, payload: { result: 'Blue' } }))).toEqual({ kind: 'label', text: 'Blue' })
+    expect(display(saved(question, {
+      requestId: 'capreq_1',
+      ok: true,
+      payload: { result: 'Blue' },
+    }))).toEqual({ kind: 'label', text: 'Blue' })
     expect(display(saved(question, { requestId: 'capreq_1', ok: false, error: CLINE_DECLINE_REASON.Question }))).toEqual({ kind: 'label', text: 'Declined' })
     expect(display(saved(question, { requestId: 'capreq_1', ok: false, error: 'Later.' }))).toEqual({ kind: 'feedback', message: 'Later.' })
   })
@@ -254,7 +364,12 @@ describe('native output without a filesystem pointer', () => {
         ],
       },
     }
-    const call = providerToolCall(AgentProvider.CLINE, frame, { spanId: 'native-call', spanType: 'run_commands', agentSessionId: 'native-session', role: 'result' })
+    const call = providerToolCall(AgentProvider.CLINE, frame, {
+      spanId: 'native-call',
+      spanType: 'run_commands',
+      agentSessionId: 'native-session',
+      role: 'result',
+    })
     expect(call).not.toBeNull()
     expect(call?.id).toBe('native-call')
     expect(call?.outputFilePaths).toBeUndefined()

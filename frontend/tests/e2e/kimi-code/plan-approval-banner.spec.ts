@@ -24,10 +24,16 @@ const APPROACHES = [
 function planSteps() {
   return [
     {
-      toolCalls: [writeToolCall(KIMI, 'write-plan', { path: '{{planFile}}', content: PLAN })],
+      toolCalls: [
+        writeToolCall(KIMI, 'write-plan', { path: '{{planFile}}', content: PLAN }),
+      ],
       captures: { ...KIMI_PLAN_FILE_CAPTURE },
     },
-    { toolCalls: [exitPlanModeFromFileToolCall(KIMI, 'exit-plan', APPROACHES)] },
+    {
+      toolCalls: [
+        exitPlanModeFromFileToolCall(KIMI, 'exit-plan', APPROACHES),
+      ],
+    },
   ]
 }
 
@@ -85,7 +91,11 @@ kimiTest.describe('reviews a Kimi Code plan', () => {
     await expectSettingsChip(page, 'Always Ask')
 
     const start = await modelScript.queue(
-      { toolCalls: [enterPlanModeToolCall(KIMI, 'enter-plan')] },
+      {
+        toolCalls: [
+          enterPlanModeToolCall(KIMI, 'enter-plan'),
+        ],
+      },
       ...planSteps(),
       { text: 'I will revise the plan.' },
     )

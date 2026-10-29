@@ -347,7 +347,9 @@ describe('elevationDeadlineInterceptor', () => {
 
   it('adopts nothing when the response carries no report', async () => {
     const seen = recordAdoptions()
-    const next = vi.fn(async () => ({ header: new Headers() }) as never)
+    const next = vi.fn(async () => ({
+      header: new Headers(),
+    }) as never)
 
     await transportModule.elevationDeadlineInterceptor(next)(req)
 

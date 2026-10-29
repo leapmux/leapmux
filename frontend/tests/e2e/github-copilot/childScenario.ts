@@ -39,10 +39,12 @@ export async function exerciseCopilotChildTranscript(context: ManagedNativeScena
   })
   const start = await modelScript.queue(
     {
-      toolCalls: [spawnSubagentToolCall(context.provider, 'spawn-copilot', {
-        description: 'Ask the subagent for one word',
-        prompt: modelScript.prompt('Reply with exactly COPILOT_CHILD_PONG.'),
-      })],
+      toolCalls: [
+        spawnSubagentToolCall(context.provider, 'spawn-copilot', {
+          description: 'Ask the subagent for one word',
+          prompt: modelScript.prompt('Reply with exactly COPILOT_CHILD_PONG.'),
+        }),
+      ],
     },
     { text: 'COPILOT_ROOT_DONE' },
   )

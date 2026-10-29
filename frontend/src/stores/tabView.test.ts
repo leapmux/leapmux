@@ -52,7 +52,9 @@ describe('tabView detached terminals', () => {
       projection,
       state,
       metadata,
-      detachedTerminals: () => [{ id: detachedId, workerId: 'w1', workspaceId: 'ws-1' }],
+      detachedTerminals: () => [
+        { id: detachedId, workerId: 'w1', workspaceId: 'ws-1' },
+      ],
     })
     return { view, metadata }
   }
@@ -125,7 +127,12 @@ describe('tabView detached terminals', () => {
     withTestBridge((harness) => {
       createRoot((dispose) => {
         const { view } = mountWithDetached('t1')
-        emitAddTab({ type: TabType.TERMINAL, id: 't1', tileId: harness.rootTileId, position: 'a' })
+        emitAddTab({
+          type: TabType.TERMINAL,
+          id: 't1',
+          tileId: harness.rootTileId,
+          position: 'a',
+        })
 
         const tab = view.getTerminalTab('t1')
         expect(tab?.tileId).toBe(harness.rootTileId)
@@ -157,8 +164,18 @@ describe('tabView', () => {
         seedWorkspace(harness, 'ws-other', 'other-root')
         const { view } = mountView()
 
-        emitAddTab({ type: TabType.AGENT, id: 'a-here', tileId: harness.rootTileId, position: 'M' })
-        emitAddTab({ type: TabType.AGENT, id: 'a-there', tileId: 'other-root', position: 'M' })
+        emitAddTab({
+          type: TabType.AGENT,
+          id: 'a-here',
+          tileId: harness.rootTileId,
+          position: 'M',
+        })
+        emitAddTab({
+          type: TabType.AGENT,
+          id: 'a-there',
+          tileId: 'other-root',
+          position: 'M',
+        })
 
         // No notion of "active" anywhere in the view -- both answer.
         expect(view.forWorkspace(harness.workspaceId).map(t => t.id)).toEqual(['a-here'])
@@ -173,7 +190,12 @@ describe('tabView', () => {
       createRoot((dispose) => {
         seedWorkspace(harness, 'ws-other', 'other-root')
         const { view } = mountView()
-        emitAddTab({ type: TabType.AGENT, id: 'a-there', tileId: 'other-root', position: 'M' })
+        emitAddTab({
+          type: TabType.AGENT,
+          id: 'a-there',
+          tileId: 'other-root',
+          position: 'M',
+        })
         expect(view.forWorkspace('ws-other')).toHaveLength(1)
 
         // A remote client moves that tab into the OTHER workspace. Under the
@@ -212,8 +234,20 @@ describe('tabView', () => {
           metadata,
           isWorkspaceMutatable: workspaceId => workspaceId !== 'ws-archived',
         })
-        emitAddTab({ type: TabType.AGENT, id: 'a-live', tileId: harness.rootTileId, position: 'M', workerId: 'wkr-1' })
-        emitAddTab({ type: TabType.AGENT, id: 'a-archived', tileId: 'archived-root', position: 'M', workerId: 'wkr-1' })
+        emitAddTab({
+          type: TabType.AGENT,
+          id: 'a-live',
+          tileId: harness.rootTileId,
+          position: 'M',
+          workerId: 'wkr-1',
+        })
+        emitAddTab({
+          type: TabType.AGENT,
+          id: 'a-archived',
+          tileId: 'archived-root',
+          position: 'M',
+          workerId: 'wkr-1',
+        })
         metadata.patch('a-live', { workingDir: '/repo', mru: 1 })
         // The MORE recent of the two, which is what makes this a preference
         // rather than a tie-break.
@@ -240,7 +274,13 @@ describe('tabView', () => {
           metadata,
           isWorkspaceMutatable: () => false,
         })
-        emitAddTab({ type: TabType.AGENT, id: 'a-archived', tileId: harness.rootTileId, position: 'M', workerId: 'wkr-1' })
+        emitAddTab({
+          type: TabType.AGENT,
+          id: 'a-archived',
+          tileId: harness.rootTileId,
+          position: 'M',
+          workerId: 'wkr-1',
+        })
         metadata.patch('a-archived', { workingDir: '/repo', mru: 1 })
 
         expect(view.findTabInWorkingDir('wkr-1', '/repo')?.id).toBe('a-archived')
@@ -253,7 +293,13 @@ describe('tabView', () => {
     withTestBridge((harness) => {
       createRoot((dispose) => {
         const { view, metadata } = mountView()
-        emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: 'M', workerId: 'wkr-1' })
+        emitAddTab({
+          type: TabType.AGENT,
+          id: 'a1',
+          tileId: harness.rootTileId,
+          position: 'M',
+          workerId: 'wkr-1',
+        })
         metadata.patch('a1', {
           title: 'My Agent',
           gitToplevel: '/repo',
@@ -283,7 +329,13 @@ describe('tabView', () => {
     withTestBridge((harness) => {
       createRoot((dispose) => {
         const { view, metadata } = mountView()
-        emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: 'M', workerId: 'wkr-1' })
+        emitAddTab({
+          type: TabType.AGENT,
+          id: 'a1',
+          tileId: harness.rootTileId,
+          position: 'M',
+          workerId: 'wkr-1',
+        })
         metadata.patch('a1', {
           title: 'Agent One',
           hasNotification: true,
@@ -343,7 +395,12 @@ describe('tabView', () => {
     withTestBridge((harness) => {
       createRoot((dispose) => {
         const { view, metadata } = mountView()
-        emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: 'M' })
+        emitAddTab({
+          type: TabType.AGENT,
+          id: 'a1',
+          tileId: harness.rootTileId,
+          position: 'M',
+        })
         metadata.patch('a1', { title: 'My Agent' })
         expect(view.forWorkspace(harness.workspaceId)).toHaveLength(1)
 
@@ -369,7 +426,12 @@ describe('tabView', () => {
     withTestBridge((harness) => {
       createRoot((dispose) => {
         const { view } = mountView()
-        emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: 'M' })
+        emitAddTab({
+          type: TabType.AGENT,
+          id: 'a1',
+          tileId: harness.rootTileId,
+          position: 'M',
+        })
         expect(view.forWorkspace(harness.workspaceId)).toHaveLength(1)
 
         const bridge = getCRDTBridge()!
@@ -378,7 +440,9 @@ describe('tabView', () => {
           // not resurrect it.
           setTabTileId(ctxFromBridge(bridge), TabType.AGENT, 'a1', 'gone'),
         ]))
-        bridge.enqueue(newBatch([tombstoneTab(ctxFromBridge(bridge), TabType.AGENT, 'a1')]))
+        bridge.enqueue(newBatch([
+          tombstoneTab(ctxFromBridge(bridge), TabType.AGENT, 'a1'),
+        ]))
 
         expect(view.forWorkspace(harness.workspaceId)).toHaveLength(0)
         dispose()
@@ -404,14 +468,23 @@ describe('tabView', () => {
       await withTestBridge(async (harness) => {
         const dispose = createRoot((d) => {
           const { view } = mountView()
-          emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: 'a' })
+          emitAddTab({
+            type: TabType.AGENT,
+            id: 'a1',
+            tileId: harness.rootTileId,
+            position: 'a',
+          })
 
           let runs = 0
           createEffect(() => {
             void view.forWorkspace(harness.workspaceId).length
             runs++
           })
-          return { d, view, runs: () => runs }
+          return {
+            d,
+            view,
+            runs: () => runs,
+          }
         })
         await flush()
         const baseline = dispose.runs()
@@ -435,19 +508,33 @@ describe('tabView', () => {
       await withTestBridge(async (harness) => {
         const h = createRoot((d) => {
           const { view } = mountView()
-          emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: 'a' })
+          emitAddTab({
+            type: TabType.AGENT,
+            id: 'a1',
+            tileId: harness.rootTileId,
+            position: 'a',
+          })
 
           let runs = 0
           createEffect(() => {
             void view.forWorkspace(harness.workspaceId).map(t => t.position).join()
             runs++
           })
-          return { d, view, runs: () => runs }
+          return {
+            d,
+            view,
+            runs: () => runs,
+          }
         })
         await flush()
         const baseline = h.runs()
 
-        emitAddTab({ type: TabType.AGENT, id: 'a2', tileId: harness.rootTileId, position: 'b' })
+        emitAddTab({
+          type: TabType.AGENT,
+          id: 'a2',
+          tileId: harness.rootTileId,
+          position: 'b',
+        })
         await flush()
 
         expect(h.runs()).toBeGreaterThan(baseline)
@@ -467,8 +554,18 @@ describe('tabView', () => {
       await withTestBridge(async (harness) => {
         const h = createRoot((d) => {
           const { view, metadata } = mountView()
-          emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: 'a' })
-          emitAddTab({ type: TabType.AGENT, id: 'a2', tileId: harness.rootTileId, position: 'b' })
+          emitAddTab({
+            type: TabType.AGENT,
+            id: 'a1',
+            tileId: harness.rootTileId,
+            position: 'a',
+          })
+          emitAddTab({
+            type: TabType.AGENT,
+            id: 'a2',
+            tileId: harness.rootTileId,
+            position: 'b',
+          })
           return { d, view, metadata }
         })
         await flush()
@@ -490,7 +587,12 @@ describe('tabView', () => {
       await withTestBridge(async (harness) => {
         const h = createRoot((d) => {
           const { view } = mountView()
-          emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: 'a' })
+          emitAddTab({
+            type: TabType.AGENT,
+            id: 'a1',
+            tileId: harness.rootTileId,
+            position: 'a',
+          })
           return { d, view }
         })
         await flush()
@@ -522,8 +624,19 @@ describe('tabView', () => {
       await withTestBridge(async (harness) => {
         const h = createRoot((d) => {
           const { view } = mountView()
-          emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: 'a', workerId: 'wkr-1' })
-          emitAddTab({ type: TabType.AGENT, id: 'a2', tileId: harness.rootTileId, position: 'b' })
+          emitAddTab({
+            type: TabType.AGENT,
+            id: 'a1',
+            tileId: harness.rootTileId,
+            position: 'a',
+            workerId: 'wkr-1',
+          })
+          emitAddTab({
+            type: TabType.AGENT,
+            id: 'a2',
+            tileId: harness.rootTileId,
+            position: 'b',
+          })
           return { d, view }
         })
         await flush()
@@ -533,8 +646,11 @@ describe('tabView', () => {
         // Re-write `worker_id` with the value it already holds. The register
         // object is replaced, so the projection rebuilds a1's row byte-identical.
         const bridge = getCRDTBridge()!
-        for (let i = 0; i < 5; i++)
-          bridge.enqueue(newBatch([setTabWorkerId(ctxFromBridge(bridge), TabType.AGENT, 'a1', 'wkr-1')]))
+        for (let i = 0; i < 5; i++) {
+          bridge.enqueue(newBatch([
+            setTabWorkerId(ctxFromBridge(bridge), TabType.AGENT, 'a1', 'wkr-1'),
+          ]))
+        }
         await flush()
 
         const after = h.view.forWorkspace(harness.workspaceId)
@@ -573,8 +689,18 @@ describe('tabView', () => {
             setNodeParentId(ctxFromBridge(bridge), 'tile-c', harness.rootTileId),
             setNodePosition(ctxFromBridge(bridge), 'tile-c', 'V'),
           ]))
-          emitAddTab({ type: TabType.AGENT, id: 'held', tileId: 'tile-b', position: 'a' })
-          emitAddTab({ type: TabType.AGENT, id: 'mover', tileId: 'tile-b', position: 'b' })
+          emitAddTab({
+            type: TabType.AGENT,
+            id: 'held',
+            tileId: 'tile-b',
+            position: 'a',
+          })
+          emitAddTab({
+            type: TabType.AGENT,
+            id: 'mover',
+            tileId: 'tile-b',
+            position: 'b',
+          })
           return { d, view }
         })
         await flush()
@@ -582,7 +708,9 @@ describe('tabView', () => {
         // Point `held` at a tile nobody has a record of: the genuinely
         // unorderable case, so the join holds it at its last placement.
         const bridge = getCRDTBridge()!
-        bridge.enqueue(newBatch([setTabTileId(ctxFromBridge(bridge), TabType.AGENT, 'held', 'not-yet')]))
+        bridge.enqueue(newBatch([
+          setTabTileId(ctxFromBridge(bridge), TabType.AGENT, 'held', 'not-yet'),
+        ]))
         await flush()
         const before = h.view.getById(TabType.AGENT, 'held')
         expect(before, 'the tab is held, not dropped').toBeDefined()
@@ -594,7 +722,9 @@ describe('tabView', () => {
         expect(h.view.getById(TabType.AGENT, 'held'), 'idle tick').toBe(before)
 
         // Now move the OTHER tab, which swaps the whole placement array.
-        bridge.enqueue(newBatch([setTabTileId(ctxFromBridge(bridge), TabType.AGENT, 'mover', 'tile-c')]))
+        bridge.enqueue(newBatch([
+          setTabTileId(ctxFromBridge(bridge), TabType.AGENT, 'mover', 'tile-c'),
+        ]))
         await flush()
         expect(h.view.getById(TabType.AGENT, 'mover')?.tileId, 'the move really landed').toBe('tile-c')
         expect(h.view.getById(TabType.AGENT, 'held'), 'the held tab is the same object').toBe(before)
@@ -609,13 +739,22 @@ describe('tabView', () => {
       await withTestBridge(async (harness) => {
         const h = createRoot((d) => {
           const { view, metadata } = mountView()
-          emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: 'a' })
+          emitAddTab({
+            type: TabType.AGENT,
+            id: 'a1',
+            tileId: harness.rootTileId,
+            position: 'a',
+          })
 
           let seen: string | undefined
           createEffect(() => {
             seen = view.forWorkspace(harness.workspaceId)[0]?.title
           })
-          return { d, metadata, seen: () => seen }
+          return {
+            d,
+            metadata,
+            seen: () => seen,
+          }
         })
         await flush()
         expect(h.seen()).toBeUndefined()
@@ -648,7 +787,13 @@ describe('tabView', () => {
         installTestBridge({ workspaceId: 'ws', rootTileId: 'root' })
         const { view, layoutStore } = createTestTabStores('ws')
         const { left, right } = twoTiles(layoutStore)
-        emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: left, position: 'a', workerId: 'w' })
+        emitAddTab({
+          type: TabType.AGENT,
+          id: 'a1',
+          tileId: left,
+          position: 'a',
+          workerId: 'w',
+        })
 
         const { gridId } = layoutStore.makeGrid(right, 2, 2)
         layoutStore.removeGrid(gridId)
@@ -665,7 +810,13 @@ describe('tabView', () => {
         installTestBridge({ workspaceId: 'ws', rootTileId: 'root' })
         const { view, layoutStore } = createTestTabStores('ws')
         const { left, right } = twoTiles(layoutStore)
-        emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: left, position: 'a', workerId: 'w' })
+        emitAddTab({
+          type: TabType.AGENT,
+          id: 'a1',
+          tileId: left,
+          position: 'a',
+          workerId: 'w',
+        })
 
         layoutStore.closeTile(right)
 
@@ -687,7 +838,13 @@ describe('tabView', () => {
         const outerLeft = layoutStore.getAllTileIds().find(id => id !== outerRight)!
         const innerRight = layoutStore.splitTile(outerLeft, 'vertical')!
         const innerLeft = layoutStore.getAllTileIds().find(id => id !== outerRight && id !== innerRight)!
-        emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: innerLeft, position: 'a', workerId: 'w' })
+        emitAddTab({
+          type: TabType.AGENT,
+          id: 'a1',
+          tileId: innerLeft,
+          position: 'a',
+          workerId: 'w',
+        })
 
         layoutStore.closeTile(innerRight)
         layoutStore.closeTile(outerRight)
@@ -724,7 +881,12 @@ describe('tabView', () => {
       withTestBridge((harness) => {
         createRoot((dispose) => {
           const { view } = mountView()
-          emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: 'a' })
+          emitAddTab({
+            type: TabType.AGENT,
+            id: 'a1',
+            tileId: harness.rootTileId,
+            position: 'a',
+          })
           expect(view.all().map(t => t.id), 'resolves first, so it has a held placement').toEqual(['a1'])
 
           // Tombstoning the tile leaves its node RECORD in place (a tombstone
@@ -732,7 +894,9 @@ describe('tabView', () => {
           // knows exactly what happened -- the chain is dead. The projection
           // drops the tab deliberately, and the hold must not override it.
           const bridge = getCRDTBridge()!
-          bridge.enqueue(newBatch([tombstoneNode(ctxFromBridge(bridge), harness.rootTileId)]))
+          bridge.enqueue(newBatch([
+            tombstoneNode(ctxFromBridge(bridge), harness.rootTileId),
+          ]))
 
           expect(view.all().map(t => t.id), 'the projection dropped it on purpose')
             .toEqual([])
@@ -775,8 +939,14 @@ describe('tabView', () => {
         const h = createRoot((d) => {
           const { state, projection } = projectionMemo()
           const view = createTabView({ projection, state, metadata: counting.store })
-          for (const id of ['a1', 'a2', 'a3'])
-            emitAddTab({ type: TabType.AGENT, id, tileId: harness.rootTileId, position: id })
+          for (const id of ['a1', 'a2', 'a3']) {
+            emitAddTab({
+              type: TabType.AGENT,
+              id,
+              tileId: harness.rootTileId,
+              position: id,
+            })
+          }
           createEffect(() => {
             void view.forWorkspace(harness.workspaceId).map(t => t.title).join()
           })
@@ -789,7 +959,9 @@ describe('tabView', () => {
         await flush()
 
         expect(h.view.getById(TabType.AGENT, 'a2')?.title, 'the patch landed').toBe('Renamed')
-        expect([...new Set(counting.reads)], 'only a2 is re-read').toEqual(['a2'])
+        expect([
+          ...new Set(counting.reads),
+        ], 'only a2 is re-read').toEqual(['a2'])
         h.d()
       })
     })
@@ -800,8 +972,14 @@ describe('tabView', () => {
         const h = createRoot((d) => {
           const { state, projection } = projectionMemo()
           const view = createTabView({ projection, state, metadata: counting.store })
-          for (const id of ['a1', 'a2', 'a3'])
-            emitAddTab({ type: TabType.AGENT, id, tileId: harness.rootTileId, position: id })
+          for (const id of ['a1', 'a2', 'a3']) {
+            emitAddTab({
+              type: TabType.AGENT,
+              id,
+              tileId: harness.rootTileId,
+              position: id,
+            })
+          }
           createEffect(() => {
             void view.forWorkspace(harness.workspaceId).map(t => t.title).join()
           })
@@ -829,8 +1007,14 @@ describe('tabView', () => {
         const h = createRoot((d) => {
           const { state, projection } = projectionMemo()
           const view = createTabView({ projection, state, metadata: counting.store })
-          for (const id of ['a1', 'a2', 'a3'])
-            emitAddTab({ type: TabType.AGENT, id, tileId: harness.rootTileId, position: id })
+          for (const id of ['a1', 'a2', 'a3']) {
+            emitAddTab({
+              type: TabType.AGENT,
+              id,
+              tileId: harness.rootTileId,
+              position: id,
+            })
+          }
           createEffect(() => {
             void view.all().length
           })
@@ -847,7 +1031,9 @@ describe('tabView', () => {
         await flush()
 
         expect(h.view.getById(TabType.AGENT, 'a3')?.workspaceId).toBe('ws-other')
-        expect([...new Set(counting.reads)], 'only the moved tab is re-assembled').toEqual(['a3'])
+        expect([
+          ...new Set(counting.reads),
+        ], 'only the moved tab is re-assembled').toEqual(['a3'])
         expect(h.view.getById(TabType.AGENT, 'a1'), 'the others keep their objects').toBe(before)
         h.d()
       })
@@ -859,8 +1045,18 @@ describe('tabView', () => {
         const h = createRoot((d) => {
           const { state, projection } = projectionMemo()
           const view = createTabView({ projection, state, metadata: counting.store })
-          emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: 'a' })
-          emitAddTab({ type: TabType.AGENT, id: 'a2', tileId: harness.rootTileId, position: 'b' })
+          emitAddTab({
+            type: TabType.AGENT,
+            id: 'a1',
+            tileId: harness.rootTileId,
+            position: 'a',
+          })
+          emitAddTab({
+            type: TabType.AGENT,
+            id: 'a2',
+            tileId: harness.rootTileId,
+            position: 'b',
+          })
           createEffect(() => {
             void view.all().length
           })
@@ -869,7 +1065,9 @@ describe('tabView', () => {
         await flush()
 
         const bridge = getCRDTBridge()!
-        bridge.enqueue(newBatch([tombstoneTab(ctxFromBridge(bridge), TabType.AGENT, 'a1')]))
+        bridge.enqueue(newBatch([
+          tombstoneTab(ctxFromBridge(bridge), TabType.AGENT, 'a1'),
+        ]))
         await flush()
         expect(h.view.all().map(t => t.id)).toEqual(['a2'])
         counting.reads.length = 0
@@ -893,14 +1091,34 @@ describe('tabView', () => {
   describe('placement walk short-circuit', () => {
     it('skips the walk while the projection rows have not moved', () => {
       createRoot((dispose) => {
-        const rows = [{ userId: 'u', workspaceId: 'w', tabType: TabType.AGENT, tabId: 'a1', workerId: '', tileId: 'tile', position: 'a' }]
+        const rows = [
+          {
+            userId: 'u',
+            workspaceId: 'w',
+            tabType: TabType.AGENT,
+            tabId: 'a1',
+            workerId: '',
+            tileId: 'tile',
+            position: 'a',
+          },
+        ]
         // A hand-built pair rather than the bridge: the walk's cost is only
         // observable by counting reads of `state.tabs`, and the real manager
         // replaces the whole state object on `recomputeSpeculative`, which would
         // take the counter with it.
-        const proj = { userId: 'u', workspaces: new Map(), ownedTabs: rows, renderedTabs: rows } as unknown as Projection
+        const proj = {
+          userId: 'u',
+          workspaces: new Map(),
+          ownedTabs: rows,
+          renderedTabs: rows,
+        } as unknown as Projection
         let tabsReads = 0
-        const tabs = { a1: { tabId: 'a1', tileId: { value: 'tile' } } }
+        const tabs = {
+          a1: {
+            tabId: 'a1',
+            tileId: { value: 'tile' },
+          },
+        }
         const state = {
           userId: 'u',
           nodes: { tile: {} },
@@ -961,12 +1179,19 @@ describe('tabView', () => {
             setNodeParentId(ctx, 'sibling-tile', harness.rootTileId),
             setNodePosition(ctx, 'sibling-tile', 'V'),
           ]))
-          emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: tile, position: 'M' })
+          emitAddTab({
+            type: TabType.AGENT,
+            id: 'a1',
+            tileId: tile,
+            position: 'M',
+          })
           expect(view.getById(TabType.AGENT, 'a1')?.tileId).toBe(tile)
 
           // A peer tombstones the tile: the chain is dead, so the projection drops
           // the tab on purpose and it must NOT be held.
-          bridge.enqueue(newBatch([tombstoneNode(ctxFromBridge(bridge), tile)]))
+          bridge.enqueue(newBatch([
+            tombstoneNode(ctxFromBridge(bridge), tile),
+          ]))
           expect(view.getById(TabType.AGENT, 'a1'), 'dropped on purpose').toBeUndefined()
 
           // Now the hub redacts the node out of this subscriber's set entirely.
@@ -1014,7 +1239,12 @@ describe('tabView', () => {
             setNodeParentId(ctxFromBridge(bridge), moved, harness.rootTileId),
             setNodePosition(ctxFromBridge(bridge), moved, 'V'),
           ]))
-          emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: home, position: 'M' })
+          emitAddTab({
+            type: TabType.AGENT,
+            id: 'a1',
+            tileId: home,
+            position: 'M',
+          })
           expect(view.getById(TabType.AGENT, 'a1')?.tileId, 'resolved on its home tile').toBe(home)
 
           // The tab moves to `moved`, and `moved` becomes a SPLIT in the same
@@ -1049,13 +1279,23 @@ describe('tabView', () => {
         createRoot((dispose) => {
           const { view } = mountView()
           const bridge = getCRDTBridge()!
-          emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: 'M', workerId: 'wkr-1' })
-          bridge.enqueue(newBatch([setTabTileId(ctxFromBridge(bridge), TabType.AGENT, 'a1', 'not-yet')]))
+          emitAddTab({
+            type: TabType.AGENT,
+            id: 'a1',
+            tileId: harness.rootTileId,
+            position: 'M',
+            workerId: 'wkr-1',
+          })
+          bridge.enqueue(newBatch([
+            setTabTileId(ctxFromBridge(bridge), TabType.AGENT, 'a1', 'not-yet'),
+          ]))
           expect(view.getById(TabType.AGENT, 'a1')?.workerId).toBe('wkr-1')
 
           // The short-circuit must stay OFF while a hold is in flight, or this
           // write never reaches the view.
-          bridge.enqueue(newBatch([setTabWorkerId(ctxFromBridge(bridge), TabType.AGENT, 'a1', 'wkr-2')]))
+          bridge.enqueue(newBatch([
+            setTabWorkerId(ctxFromBridge(bridge), TabType.AGENT, 'a1', 'wkr-2'),
+          ]))
           expect(view.getById(TabType.AGENT, 'a1')?.workerId).toBe('wkr-2')
           dispose()
         })
@@ -1067,16 +1307,31 @@ describe('tabView', () => {
         createRoot((dispose) => {
           const { view } = mountView()
           const bridge = getCRDTBridge()!
-          emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: 'M' })
-          emitAddTab({ type: TabType.AGENT, id: 'a2', tileId: harness.rootTileId, position: 'V' })
+          emitAddTab({
+            type: TabType.AGENT,
+            id: 'a1',
+            tileId: harness.rootTileId,
+            position: 'M',
+          })
+          emitAddTab({
+            type: TabType.AGENT,
+            id: 'a2',
+            tileId: harness.rootTileId,
+            position: 'V',
+          })
 
           // a1 stops resolving and is held; `renderedTabs` now holds a2 alone and
           // stays that way, so every later tick runs the scoped candidate walk.
-          bridge.enqueue(newBatch([setTabTileId(ctxFromBridge(bridge), TabType.AGENT, 'a1', 'not-yet')]))
+          bridge.enqueue(newBatch([
+            setTabTileId(ctxFromBridge(bridge), TabType.AGENT, 'a1', 'not-yet'),
+          ]))
           expect(view.getById(TabType.AGENT, 'a1'), 'held').toBeDefined()
 
           harness.pending.consumeEntityRemoved(create(EntityRemovedSchema, {
-            entity: { case: 'tab', value: { tabType: TabType.AGENT, tabId: 'a1' } },
+            entity: {
+              case: 'tab',
+              value: { tabType: TabType.AGENT, tabId: 'a1' },
+            },
           }))
           expect(view.getById(TabType.AGENT, 'a1'), 'gone from the CRDT, gone from the view').toBeUndefined()
           expect(view.all().map(t => t.id), 'and the rest are untouched').toEqual(['a2'])
@@ -1120,11 +1375,19 @@ describe('tabView', () => {
           }
           const view = createTabView({ projection, state: countingState, metadata })
           const bridge = getCRDTBridge()!
-          for (const id of ['a1', 'a2', 'a3'])
-            emitAddTab({ type: TabType.AGENT, id, tileId: harness.rootTileId, position: id })
+          for (const id of ['a1', 'a2', 'a3']) {
+            emitAddTab({
+              type: TabType.AGENT,
+              id,
+              tileId: harness.rootTileId,
+              position: id,
+            })
+          }
 
           // Enter the hold. This tick legitimately rescans: the rows moved.
-          bridge.enqueue(newBatch([setTabTileId(ctxFromBridge(bridge), TabType.AGENT, 'a1', 'not-yet')]))
+          bridge.enqueue(newBatch([
+            setTabTileId(ctxFromBridge(bridge), TabType.AGENT, 'a1', 'not-yet'),
+          ]))
           expect(view.getById(TabType.AGENT, 'a1'), 'held').toBeDefined()
           scans.count = 0
 
@@ -1137,7 +1400,9 @@ describe('tabView', () => {
           expect(view.getById(TabType.AGENT, 'a1')?.tileId, 'and the tab is still held').toBe(harness.rootTileId)
 
           // The scoped walk still has to SEE writes to the held tab.
-          bridge.enqueue(newBatch([setTabWorkerId(ctxFromBridge(bridge), TabType.AGENT, 'a1', 'wkr-9')]))
+          bridge.enqueue(newBatch([
+            setTabWorkerId(ctxFromBridge(bridge), TabType.AGENT, 'a1', 'wkr-9'),
+          ]))
           expect(view.getById(TabType.AGENT, 'a1')?.workerId).toBe('wkr-9')
           dispose()
         })
@@ -1150,8 +1415,16 @@ describe('tabView', () => {
       withTestBridge((harness) => {
         createRoot((dispose) => {
           const { view, metadata } = mountView()
-          emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: 'a' })
-          metadata.patch('a1', { title: 'Mine', screen: new Uint8Array([1, 2, 3]) })
+          emitAddTab({
+            type: TabType.AGENT,
+            id: 'a1',
+            tileId: harness.rootTileId,
+            position: 'a',
+          })
+          metadata.patch('a1', {
+            title: 'Mine',
+            screen: new Uint8Array([1, 2, 3]),
+          })
           expect(view.all().map(t => t.id)).toEqual(['a1'])
 
           // Point the tab at a tile that does not exist: unresolvable, but the
@@ -1203,14 +1476,23 @@ describe('tabView', () => {
     await withTestBridge(async (harness) => {
       const ctx = createRoot((d) => {
         const { view, metadata } = mountView()
-        emitAddTab({ type: TabType.TERMINAL, id: 't1', tileId: harness.rootTileId, position: 'a' })
+        emitAddTab({
+          type: TabType.TERMINAL,
+          id: 't1',
+          tileId: harness.rootTileId,
+          position: 'a',
+        })
         metadata.patch('t1', { title: 'zsh' })
         let runs = 0
         createEffect(() => {
           void view.forWorkspace(harness.workspaceId).length
           runs++
         })
-        return { d, metadata, runs: () => runs }
+        return {
+          d,
+          metadata,
+          runs: () => runs,
+        }
       })
       await flush()
       const before = ctx.runs()
@@ -1231,9 +1513,24 @@ describe('tabView', () => {
     withTestBridge((harness) => {
       createRoot((dispose) => {
         const { view } = mountView()
-        emitAddTab({ type: TabType.AGENT, id: 'c', tileId: harness.rootTileId, position: 'z' })
-        emitAddTab({ type: TabType.AGENT, id: 'a', tileId: harness.rootTileId, position: 'a' })
-        emitAddTab({ type: TabType.AGENT, id: 'b', tileId: harness.rootTileId, position: 'm' })
+        emitAddTab({
+          type: TabType.AGENT,
+          id: 'c',
+          tileId: harness.rootTileId,
+          position: 'z',
+        })
+        emitAddTab({
+          type: TabType.AGENT,
+          id: 'a',
+          tileId: harness.rootTileId,
+          position: 'a',
+        })
+        emitAddTab({
+          type: TabType.AGENT,
+          id: 'b',
+          tileId: harness.rootTileId,
+          position: 'm',
+        })
 
         expect(view.forTile(harness.rootTileId).map(t => t.id)).toEqual(['a', 'b', 'c'])
         dispose()
@@ -1260,8 +1557,18 @@ describe('tabView', () => {
         createRoot((dispose) => {
           const { view } = mountView()
           // Identical positions force the id tie-break to decide the order.
-          emitAddTab({ type: TabType.AGENT, id: 'ax7QpLm', tileId: harness.rootTileId, position: 'n' })
-          emitAddTab({ type: TabType.AGENT, id: 'Zx7QpLm', tileId: harness.rootTileId, position: 'n' })
+          emitAddTab({
+            type: TabType.AGENT,
+            id: 'ax7QpLm',
+            tileId: harness.rootTileId,
+            position: 'n',
+          })
+          emitAddTab({
+            type: TabType.AGENT,
+            id: 'Zx7QpLm',
+            tileId: harness.rootTileId,
+            position: 'n',
+          })
 
           expect(view.forTile(harness.rootTileId).map(t => t.id)).toEqual(['Zx7QpLm', 'ax7QpLm'])
           dispose()
@@ -1290,9 +1597,24 @@ describe('tabView', () => {
       withTestBridge((harness) => {
         createRoot((dispose) => {
           const { view } = mountView()
-          emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: 'a' })
-          emitAddTab({ type: TabType.TERMINAL, id: 't1', tileId: harness.rootTileId, position: 'b' })
-          emitAddTab({ type: TabType.FILE, id: 'f1', tileId: harness.rootTileId, position: 'c' })
+          emitAddTab({
+            type: TabType.AGENT,
+            id: 'a1',
+            tileId: harness.rootTileId,
+            position: 'a',
+          })
+          emitAddTab({
+            type: TabType.TERMINAL,
+            id: 't1',
+            tileId: harness.rootTileId,
+            position: 'b',
+          })
+          emitAddTab({
+            type: TabType.FILE,
+            id: 'f1',
+            tileId: harness.rootTileId,
+            position: 'c',
+          })
 
           expect(view.getAgentTab('a1')?.type).toBe(TabType.AGENT)
           expect(view.getTerminalTab('t1')?.type).toBe(TabType.TERMINAL)

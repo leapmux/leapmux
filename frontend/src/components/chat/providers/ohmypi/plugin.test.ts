@@ -29,7 +29,13 @@ function sent(onRespond: ReturnType<typeof vi.fn>): unknown[] {
   return onRespond.mock.calls.map(call => JSON.parse(new TextDecoder().decode(call[0] as Uint8Array)))
 }
 
-const approval = { type: 'extension_ui_request', id: 'a1', method: 'select', title: 'Allow tool: bash\nCommand: ls', options: ['Approve', 'Deny'] }
+const approval = {
+  type: 'extension_ui_request',
+  id: 'a1',
+  method: 'select',
+  title: 'Allow tool: bash\nCommand: ls',
+  options: ['Approve', 'Deny'],
+}
 
 describe('ohmypi plugin', () => {
   // The test compares each hook by identity: a plugin that registers another
@@ -53,7 +59,13 @@ describe('ohmypi plugin', () => {
 
   // The worker's ValidateAttachment refuses a PDF and a binary file with the same policy.
   it('accepts text and images, and no PDF or binary', () => {
-    expect(plugin.configuration?.attachments).toEqual({ text: true, image: true, pdf: false, audio: false, binary: false })
+    expect(plugin.configuration?.attachments).toEqual({
+      text: true,
+      image: true,
+      pdf: false,
+      audio: false,
+      binary: false,
+    })
   })
 
   it('labels the settings trigger with the approval mode', () => {
@@ -61,7 +73,11 @@ describe('ohmypi plugin', () => {
   })
 
   it('offers the Bypass preset as yolo and no Smart preset', () => {
-    expect(controls.permissionPresets).toEqual({ bypass: { sets: { permissionMode: 'yolo' } } })
+    expect(controls.permissionPresets).toEqual({
+      bypass: {
+        sets: { permissionMode: 'yolo' },
+      },
+    })
   })
 
   it('states the session as a file', () => {
@@ -73,9 +89,19 @@ describe('ohmypi plugin', () => {
 describe('ohmypi controls', () => {
   it('routes the bridge\'s request and a select to the question form, each other extension dialog to the dialog row, and the approval to the permission row', () => {
     expect(ask.isRequest({ type: 'leapmux_ask', id: 'q', questions: [] })).toBe(true)
-    expect(ask.isRequest({ type: 'extension_ui_request', method: 'select', title: 'Pick', options: ['a'] })).toBe(true)
+    expect(ask.isRequest({
+      type: 'extension_ui_request',
+      method: 'select',
+      title: 'Pick',
+      options: ['a'],
+    })).toBe(true)
     for (const method of ['confirm', 'input', 'editor']) {
-      const dialog = { type: 'extension_ui_request', id: 'd1', method, title: 'Proceed?' }
+      const dialog = {
+        type: 'extension_ui_request',
+        id: 'd1',
+        method,
+        title: 'Proceed?',
+      }
       expect(ask.isRequest(dialog), method).toBe(false)
       expect(controls.extractControl?.({ payload: dialog })?.kind, method).toBe('dialog')
     }
@@ -84,14 +110,41 @@ describe('ohmypi controls', () => {
   })
 
   it('answers the bridge\'s request with one envelope for the whole call', async () => {
-    const payload = { type: 'leapmux_ask', id: 'q1', questions: [{ id: 'db', question: 'Which database?', options: [{ label: 'SQLite' }] }] }
+    const payload = {
+      type: 'leapmux_ask',
+      id: 'q1',
+      questions: [
+        {
+          id: 'db',
+          question: 'Which database?',
+          options: [
+            { label: 'SQLite' },
+          ],
+        },
+      ],
+    }
     const onRespond = vi.fn(async () => {})
     await createRoot(async (dispose) => {
-      const state = createControlAnswerState({ selections: { 0: ['SQLite'] } })
+      const state = createControlAnswerState({
+        selections: {
+          0: ['SQLite'],
+        },
+      })
       await ask.sendAnswer(request(payload, 'q1'), onRespond, ask.extractQuestions(payload), state)
       dispose()
     })
-    expect(sent(onRespond)).toEqual([{ type: 'leapmux_ask_answer', id: 'q1', answers: [{ id: 'db', selected: ['SQLite'] }] }])
+    expect(sent(onRespond)).toEqual([
+      {
+        type: 'leapmux_ask_answer',
+        id: 'q1',
+        answers: [
+          {
+            id: 'db',
+            selected: ['SQLite'],
+          },
+        ],
+      },
+    ])
   })
 
   it('answers a dialog with omp\'s own confirm, value and cancellation envelopes', () => {
@@ -105,10 +158,20 @@ describe('ohmypi controls', () => {
   })
 
   it('answers a select with its option, and dismisses it with none', async () => {
-    const payload = { type: 'extension_ui_request', id: 's1', method: 'select', title: 'Pick', options: ['a', 'b'] }
+    const payload = {
+      type: 'extension_ui_request',
+      id: 's1',
+      method: 'select',
+      title: 'Pick',
+      options: ['a', 'b'],
+    }
     const onRespond = vi.fn(async () => {})
     await createRoot(async (dispose) => {
-      await ask.sendAnswer(request(payload, 's1'), onRespond, ask.extractQuestions(payload), createControlAnswerState({ selections: { 0: ['b'] } }))
+      await ask.sendAnswer(request(payload, 's1'), onRespond, ask.extractQuestions(payload), createControlAnswerState({
+        selections: {
+          0: ['b'],
+        },
+      }))
       await ask.sendAnswer(request(payload, 's1'), onRespond, ask.extractQuestions(payload), createControlAnswerState())
       dispose()
     })
@@ -119,12 +182,22 @@ describe('ohmypi controls', () => {
   })
 
   it('answers a select with the typed text, and dismisses it when the typed text is blank', async () => {
-    const payload = { type: 'extension_ui_request', id: 's1', method: 'select', title: 'Pick', options: ['a', 'b'] }
+    const payload = {
+      type: 'extension_ui_request',
+      id: 's1',
+      method: 'select',
+      title: 'Pick',
+      options: ['a', 'b'],
+    }
     const onRespond = vi.fn(async () => {})
     await createRoot(async (dispose) => {
-      await ask.sendAnswer(request(payload, 's1'), onRespond, ask.extractQuestions(payload), createControlAnswerState({ customTexts: { 0: 'c' } }))
+      await ask.sendAnswer(request(payload, 's1'), onRespond, ask.extractQuestions(payload), createControlAnswerState({
+        customTexts: { 0: 'c' },
+      }))
       // omp refuses an empty value for a select, so a blank answer is a dismissal.
-      await ask.sendAnswer(request(payload, 's1'), onRespond, ask.extractQuestions(payload), createControlAnswerState({ customTexts: { 0: '  \n' } }))
+      await ask.sendAnswer(request(payload, 's1'), onRespond, ask.extractQuestions(payload), createControlAnswerState({
+        customTexts: { 0: '  \n' },
+      }))
       dispose()
     })
     expect(sent(onRespond)).toEqual([
@@ -138,31 +211,65 @@ describe('ohmypi controls', () => {
       type: 'leapmux_ask',
       id: 'q2',
       questions: [
-        { id: 'name', question: 'Project name?', options: [{ label: 'alpha' }] },
-        { id: 'langs', question: 'Which languages?', multi: true, options: [{ label: 'Go' }, { label: 'Rust' }] },
+        {
+          id: 'name',
+          question: 'Project name?',
+          options: [
+            { label: 'alpha' },
+          ],
+        },
+        {
+          id: 'langs',
+          question: 'Which languages?',
+          multi: true,
+          options: [
+            { label: 'Go' },
+            { label: 'Rust' },
+          ],
+        },
       ],
     }
     const onRespond = vi.fn(async () => {})
     await createRoot(async (dispose) => {
-      const state = createControlAnswerState({ selections: { 1: ['Go', 'Rust'] } })
+      const state = createControlAnswerState({
+        selections: {
+          1: ['Go', 'Rust'],
+        },
+      })
       await ask.sendAnswer(request(payload, 'q2'), onRespond, ask.extractQuestions(payload), state)
       dispose()
     })
     // The bridge matches each answer to its question by id, so a question with no
     // answer still states its id.
-    expect(sent(onRespond)).toEqual([{ type: 'leapmux_ask_answer', id: 'q2', answers: [{ id: 'name' }, { id: 'langs', selected: ['Go', 'Rust'] }] }])
+    expect(sent(onRespond)).toEqual([
+      {
+        type: 'leapmux_ask_answer',
+        id: 'q2',
+        answers: [
+          { id: 'name' },
+          {
+            id: 'langs',
+            selected: ['Go', 'Rust'],
+          },
+        ],
+      },
+    ])
   })
 
   it('dismisses a question with omp\'s own cancellation', async () => {
     const onRespond = vi.fn(async () => {})
     await ask.sendReject(request({ type: 'leapmux_ask', id: 'q1', questions: [] }, 'q1'), onRespond, '')
-    expect(sent(onRespond)).toEqual([{ type: 'extension_ui_response', id: 'q1', cancelled: true }])
+    expect(sent(onRespond)).toEqual([
+      { type: 'extension_ui_response', id: 'q1', cancelled: true },
+    ])
   })
 
   it('sends a chosen approval option as the dialog\'s value', async () => {
     const onRespond = vi.fn(async () => {})
     await controls.sendPermissionOption!(onRespond, 'a1', 'Approve')
-    expect(sent(onRespond)).toEqual([{ type: 'extension_ui_response', id: 'a1', value: 'Approve' }])
+    expect(sent(onRespond)).toEqual([
+      { type: 'extension_ui_response', id: 'a1', value: 'Approve' },
+    ])
   })
 
   it('refuses an approval with typed feedback, and sends the feedback as the next message', () => {
@@ -183,9 +290,27 @@ describe('ohmypi rows', () => {
   it('reads an assistant message as its text, and leaves its thinking to the row the worker writes for it', () => {
     // omp 18.2.11's own frame (probe s1), shortened. The worker persists the thinking
     // as a reasoning row before this one, which the shared transcript draws.
-    const text = providerRow(AgentProvider.OH_MY_PI, { type: 'message_end', message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'Greet.' }, { type: 'text', text: 'Hello from the mock model.' }], stopReason: 'stop' } })
+    const text = providerRow(AgentProvider.OH_MY_PI, {
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: 'Greet.' },
+          { type: 'text', text: 'Hello from the mock model.' },
+        ],
+        stopReason: 'stop',
+      },
+    })
     expect(text).toEqual({ kind: 'assistant-text', text: 'Hello from the mock model.' })
-    const thinking = providerRow(AgentProvider.OH_MY_PI, { type: 'message_end', message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'Greet.' }] } })
+    const thinking = providerRow(AgentProvider.OH_MY_PI, {
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: 'Greet.' },
+        ],
+      },
+    })
     expect(thinking).toEqual({ kind: 'hidden' })
   })
 
@@ -198,13 +323,26 @@ describe('ohmypi rows', () => {
   })
 
   it('reads the end of a run as a divider', () => {
-    expect(providerRow(AgentProvider.OH_MY_PI, { type: 'agent_end', isTerminal: true, messages: [{ role: 'assistant', stopReason: 'stop' }] })).toMatchObject({ kind: 'divider' })
+    expect(providerRow(AgentProvider.OH_MY_PI, {
+      type: 'agent_end',
+      isTerminal: true,
+      messages: [
+        { role: 'assistant', stopReason: 'stop' },
+      ],
+    })).toMatchObject({ kind: 'divider' })
   })
 
   it('reads a tool frame as the row of its call', () => {
-    const row = providerRow(AgentProvider.OH_MY_PI, { type: 'tool_execution_start', toolCallId: 'call_1', toolName: 'bash', args: { command: 'ls' } }, { role: 'request' })
+    const row = providerRow(AgentProvider.OH_MY_PI, {
+      type: 'tool_execution_start',
+      toolCallId: 'call_1',
+      toolName: 'bash',
+      args: { command: 'ls' },
+    }, { role: 'request' })
     expect(row?.kind).toBe('tool')
-    expect(row?.kind === 'tool' ? row.call.kind : null).toBe('execute')
+    expect(row?.kind === 'tool'
+      ? row.call.kind
+      : null).toBe('execute')
   })
 })
 
@@ -231,7 +369,12 @@ describe('native output without a filesystem pointer', () => {
         },
       },
     }
-    const call = providerToolCall(AgentProvider.OH_MY_PI, frame, { spanId: 'native-call', spanType: 'bash', agentSessionId: 'native-session', role: 'result' })
+    const call = providerToolCall(AgentProvider.OH_MY_PI, frame, {
+      spanId: 'native-call',
+      spanType: 'bash',
+      agentSessionId: 'native-session',
+      role: 'result',
+    })
     expect(call).not.toBeNull()
     expect(call?.id).toBe('native-call')
     expect(call?.outputFilePaths).toBeUndefined()

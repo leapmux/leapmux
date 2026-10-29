@@ -9,7 +9,9 @@ export function getPlatform(): Platform {
   if (cachedPlatform)
     return cachedPlatform
 
-  const ua = typeof navigator !== 'undefined' ? navigator.userAgent : ''
+  const ua = typeof navigator !== 'undefined'
+    ? navigator.userAgent
+    : ''
   if (MAC_RE.test(ua)) {
     cachedPlatform = 'mac'
   }

@@ -45,14 +45,18 @@ function scriptSnapshotText(text: string): string {
   const lines = text.split('\n')
   const closing = lines.at(-2)
   const snapshot = lines.at(-1)
-  return closing !== undefined && snapshot !== undefined && SCRIPT_CLOSING_LINE.test(closing) ? snapshot : text
+  return closing !== undefined && snapshot !== undefined && SCRIPT_CLOSING_LINE.test(closing)
+    ? snapshot
+    : text
 }
 
 /** Read the final native Script snapshot. Printed output cannot supply its status. */
 function droidScriptResult(text: string, nativeId: string): NativeToolOutcome {
   if (SCRIPT_COMPLETED_FOOTER.test(text.split('\n').at(-1) ?? ''))
     return { text, failed: false }
-  const decode = (value: string): unknown => JSON.parse(value.startsWith('Error: ') ? value.slice('Error: '.length) : value)
+  const decode = (value: string): unknown => JSON.parse(value.startsWith('Error: ')
+    ? value.slice('Error: '.length)
+    : value)
   let snapshotText = scriptSnapshotText(text)
   let snapshot: unknown = decode(snapshotText)
   if (Array.isArray(snapshot)) {
@@ -91,7 +95,9 @@ export function readDroidToolResult(request: MockModelRequestRecord, callId: str
   if (toolName !== DROID_TOOL.Execute)
     return { text }
   const trailer = /(?:^|\r?\n)\[Process exited with code (-?\d+)\]\s*$/.exec(text)
-  const exitCode = trailer ? Number(trailer[1]) : undefined
+  const exitCode = trailer
+    ? Number(trailer[1])
+    : undefined
   if (exitCode === undefined || !Number.isSafeInteger(exitCode))
     throw new Error('The native Droid Execute result contains no complete integer exit trailer.')
   return { text, exitCode, failed: exitCode !== 0 }

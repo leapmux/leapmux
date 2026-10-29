@@ -70,7 +70,9 @@ export const QuakeTerminalPanel: Component<QuakeTerminalPanelProps> = (props) =>
 
   const entry = createMemo(() => {
     const keyId = props.activeQuakeKeyId()
-    return keyId === null ? undefined : props.quakeStore.entryFor(keyId)
+    return keyId === null
+      ? undefined
+      : props.quakeStore.entryFor(keyId)
   })
 
   /**
@@ -161,12 +163,16 @@ export const QuakeTerminalPanel: Component<QuakeTerminalPanelProps> = (props) =>
           // caret back to the composer when focus is still inside this box.
           data-quake-panel
           data-quake-orientation={preferences.quakeOrientation()}
-          data-quake-open={open() ? 'true' : 'false'}
+          data-quake-open={open()
+            ? 'true'
+            : 'false'}
           // A closed panel is still in the DOM, so it must be out of the
           // accessibility tree and out of the tab order -- otherwise a keyboard
           // user tabs into a terminal that is off screen. `inert` covers focus,
           // `aria-hidden` covers the reader.
-          aria-hidden={open() ? undefined : 'true'}
+          aria-hidden={open()
+            ? undefined
+            : 'true'}
         >
           {/* The one pointer route to hide the panel.
               A keyboard user has the toggle chord, but the panel covers the
@@ -193,7 +199,9 @@ export const QuakeTerminalPanel: Component<QuakeTerminalPanelProps> = (props) =>
               // The panel takes focus while it is open, which is what makes
               // TerminalView focus the xterm on the way in.
               tileFocused={open()}
-              {...(props.tabEditing !== undefined ? { tabEditing: props.tabEditing } : {})}
+              {...(props.tabEditing !== undefined
+                ? { tabEditing: props.tabEditing }
+                : {})}
               confirmLink={props.confirmLink}
               getLastOffset={id => props.metadata.get(id)?.lastOffset}
               onInput={props.onInput}

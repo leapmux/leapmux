@@ -22,13 +22,22 @@ export function claudeSwitchModeSpec(request: SwitchModeRequest, args: ClaudeToo
   // word the header instead.
   const titleBefore = claudeSwitchModeTitle(toolName, false)
   const titleAfter = claudeSwitchModeTitle(toolName, true)
-  if (!result)
-    return { kind: 'switch_mode', request, ...(titleBefore !== undefined ? { title: titleBefore } : {}) }
+  if (!result) {
+    return {
+      kind: 'switch_mode',
+      request,
+      ...(titleBefore !== undefined
+        ? { title: titleBefore }
+        : {}),
+    }
+  }
   if (exitPlan && result.isError === true) {
     return {
       kind: 'switch_mode',
       request: { ...request, declinedTitle: 'Sent feedback' },
-      ...(titleBefore !== undefined ? { title: titleBefore } : {}),
+      ...(titleBefore !== undefined
+        ? { title: titleBefore }
+        : {}),
       statusOverride: 'declined',
       result: proseResult(result.resultContent),
     }
@@ -36,15 +45,36 @@ export function claudeSwitchModeSpec(request: SwitchModeRequest, args: ClaudeToo
   // The file the command line interface wrote the approved plan to. The row used to
   // state it under its header, and only the RESULT carries it. A labelled fact rather
   // than a body line, because the body holds whatever the call itself returned.
-  const planFile = exitPlan ? pickString(result.toolUseResult, 'filePath') : ''
-  const metadata = planFile ? [{ label: 'Plan file', value: planFile }] : undefined
+  const planFile = exitPlan
+    ? pickString(result.toolUseResult, 'filePath')
+    : ''
+  const metadata = planFile
+    ? [
+        { label: 'Plan file', value: planFile },
+      ]
+    : undefined
   const header = {
-    ...(titleAfter !== undefined ? { title: titleAfter } : {}),
-    ...(metadata !== undefined ? { metadata } : {}),
+    ...(titleAfter !== undefined
+      ? { title: titleAfter }
+      : {}),
+    ...(metadata !== undefined
+      ? { metadata }
+      : {}),
   }
-  if (!result.resultContent)
-    return { kind: 'switch_mode', request, ...header, result: unparsedResult(result.resultContent) }
-  return { kind: 'switch_mode', request, ...header, result: proseResult(result.resultContent) }
+  if (!result.resultContent) {
+    return {
+      kind: 'switch_mode',
+      request,
+      ...header,
+      result: unparsedResult(result.resultContent),
+    }
+  }
+  return {
+    kind: 'switch_mode',
+    request,
+    ...header,
+    result: proseResult(result.resultContent),
+  }
 }
 
 /**

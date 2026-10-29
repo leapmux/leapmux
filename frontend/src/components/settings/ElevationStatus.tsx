@@ -71,7 +71,9 @@ export const ElevationStatus: Component = () => {
   const NO_DEADLINE = 'none'
   let confirmedMirrorOf: string | null = null
   const mirrorKey = (deadline: Timestamp | undefined) =>
-    deadline ? `${deadline.seconds}.${deadline.nanos}` : NO_DEADLINE
+    deadline
+      ? `${deadline.seconds}.${deadline.nanos}`
+      : NO_DEADLINE
 
   /**
    * Re-read the account ONCE for a mirrored value this row cannot trust.
@@ -177,7 +179,9 @@ export const ElevationStatus: Component = () => {
               </Show>
             </div>
             <button type="button" class="small outline" onClick={end} disabled={busy()} data-testid="elevation-drop">
-              {busy() ? 'Ending...' : 'End now'}
+              {busy()
+                ? 'Ending...'
+                : 'End now'}
             </button>
           </div>
           {/*

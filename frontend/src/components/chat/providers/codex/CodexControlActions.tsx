@@ -27,7 +27,9 @@ const CodexPermissionsActions: Component<ActionsProps> = (props) => {
   const permissionChoice = createSessionPermissionPresetChoice(props)
   // An unavailable saved choice resets to Once. A wider grant requires a new user choice.
   const selectedScope = (): 'turn' | 'session' =>
-    (allowChoice.choice() === 'session' ? 'session' : 'turn')
+    (allowChoice.choice() === 'session'
+      ? 'session'
+      : 'turn')
   // The footer reads this value for both its leading controls and their visibility check.
   const allowChoicePill = createMemo<ControlAllowChoicePill>(() => ({
     label: ALLOW_AS_LABEL,
@@ -68,7 +70,12 @@ const CodexPlanModePromptActions: Component<ActionsProps> = (props) => {
   const handleApprove = () => sendResponse(
     props.onRespond,
     buildAllowResponse(props.request.requestId, getToolInput(props.request.payload)),
-    { planApproval: { permissionMode: planApproval.permissionMode() ?? '', clearContext: planApproval.clearContext() } },
+    {
+      planApproval: {
+        permissionMode: planApproval.permissionMode() ?? '',
+        clearContext: planApproval.clearContext(),
+      },
+    },
   )
 
   return (
@@ -98,7 +105,11 @@ function codexAction(
 ) {
   if (!decision)
     return undefined
-  return { label: codexDecisionLabel(decision), testId, onSelect: () => onSelect(decision) }
+  return {
+    label: codexDecisionLabel(decision),
+    testId,
+    onSelect: () => onSelect(decision),
+  }
 }
 
 /** Codex-specific control request action buttons. */
@@ -154,8 +165,12 @@ export const CodexControlActions: Component<ActionsProps> = (props) => {
     const negative = negativeAction()
     const positive = positiveAction()
     return {
-      ...(negative !== undefined ? { negativeAction: negative } : {}),
-      ...(positive !== undefined ? { positiveAction: positive } : {}),
+      ...(negative !== undefined
+        ? { negativeAction: negative }
+        : {}),
+      ...(positive !== undefined
+        ? { positiveAction: positive }
+        : {}),
     }
   }
 

@@ -81,7 +81,9 @@ describe('useChatScroll render-ahead overscan', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -134,7 +136,9 @@ describe('useChatScroll render-ahead overscan', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -195,7 +199,9 @@ describe('useChatScroll render-ahead overscan', () => {
         catch (e) {
           dispose()
           vi.useRealTimers()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -203,7 +209,9 @@ describe('useChatScroll render-ahead overscan', () => {
 
 describe('useChatScroll windowing trim', () => {
   const mkMsgs = (n: number): AgentChatMessage[] =>
-    Array.from({ length: n }, (_, i) => ({ seq: BigInt(i + 1) } as AgentChatMessage))
+    Array.from({ length: n }, (_, i) => ({
+      seq: BigInt(i + 1),
+    } as AgentChatMessage))
 
   it('trims the oldest end while following the tail even after the geometry re-pin advanced the sticky record', () =>
     new Promise<void>((resolve, reject) => {
@@ -262,7 +270,9 @@ describe('useChatScroll windowing trim', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -315,7 +325,9 @@ describe('useChatScroll windowing trim', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -358,7 +370,9 @@ describe('useChatScroll windowing trim', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -373,7 +387,10 @@ describe('useChatScroll windowing trim', () => {
           div.setScrollTop(4500) // start at the bottom
           // Rows carry ids so the trim can locate the anchored row in the window.
           const mkIdMsgs = (n: number): AgentChatMessage[] =>
-            Array.from({ length: n }, (_, i) => ({ id: `m${i + 1}`, seq: BigInt(i + 1) } as AgentChatMessage))
+            Array.from({ length: n }, (_, i) => ({
+              id: `m${i + 1}`,
+              seq: BigInt(i + 1),
+            } as AgentChatMessage))
           const [messages, setMessages] = createSignal<AgentChatMessage[]>(mkIdMsgs(MAX_LOADED_CHAT_MESSAGES))
           // A virtualizer that pins the viewport midpoint to row 'm50' (the reader
           // scrolled up to it). totalHeight constant so the geometry effect is quiet.
@@ -415,7 +432,9 @@ describe('useChatScroll windowing trim', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -429,7 +448,10 @@ describe('useChatScroll windowing trim', () => {
           div.setClientHeight(500)
           div.setScrollTop(4500)
           const mkIdMsgs = (n: number): AgentChatMessage[] =>
-            Array.from({ length: n }, (_, i) => ({ id: `m${i + 1}`, seq: BigInt(i + 1) } as AgentChatMessage))
+            Array.from({ length: n }, (_, i) => ({
+              id: `m${i + 1}`,
+              seq: BigInt(i + 1),
+            } as AgentChatMessage))
           const [messages, setMessages] = createSignal<AgentChatMessage[]>(mkIdMsgs(MAX_LOADED_CHAT_MESSAGES))
           // The captured anchor row is NOT present in the window (deleted / reseq'd
           // out between capture and the trim), so findIndex returns -1.
@@ -470,7 +492,9 @@ describe('useChatScroll windowing trim', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -486,7 +510,10 @@ describe('useChatScroll windowing trim', () => {
           div.setScrollHeight(40000)
           div.setScrollTop(28000) // scrolled up; viewport top at row index 280 (m281)
           const mkIdMsgs = (n: number): AgentChatMessage[] =>
-            Array.from({ length: n }, (_, i) => ({ id: `m${i + 1}`, seq: BigInt(i + 1) } as AgentChatMessage))
+            Array.from({ length: n }, (_, i) => ({
+              id: `m${i + 1}`,
+              seq: BigInt(i + 1),
+            } as AgentChatMessage))
           const [messages, setMessages] = createSignal<AgentChatMessage[]>(mkIdMsgs(400))
           // A virtualizer whose anchorAt maps a scroll offset to the row at that offset
           // (rows are rowH tall), so the buffer-top anchor (bufferTargetPx above the
@@ -536,7 +563,9 @@ describe('useChatScroll windowing trim', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -550,7 +579,10 @@ describe('useChatScroll windowing trim', () => {
           div.setScrollHeight(5000)
           div.setScrollTop(2000)
           const mkIdMsgs = (n: number): AgentChatMessage[] =>
-            Array.from({ length: n }, (_, i) => ({ id: `m${i + 1}`, seq: BigInt(i + 1) } as AgentChatMessage))
+            Array.from({ length: n }, (_, i) => ({
+              id: `m${i + 1}`,
+              seq: BigInt(i + 1),
+            } as AgentChatMessage))
           const [messages, setMessages] = createSignal<AgentChatMessage[]>(mkIdMsgs(MAX_LOADED_CHAT_MESSAGES))
           const virt: ChatScrollVirtualizer = {
             ...virtualizerNoOps(),
@@ -587,7 +619,9 @@ describe('useChatScroll windowing trim', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))

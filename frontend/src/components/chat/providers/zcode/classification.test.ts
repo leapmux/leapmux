@@ -14,7 +14,12 @@ import { classifyZCodeMessage } from './classification'
 
 /** Build a persisted native session event. */
 function event(type: string, payload: Record<string, unknown> = {}): Record<string, unknown> {
-  return { type, payload, sessionId: 's-1', seq: 1 }
+  return {
+    type,
+    payload,
+    sessionId: 's-1',
+    seq: 1,
+  }
 }
 
 /** A `tool.updated` row of the given lifecycle kind. */
@@ -25,7 +30,10 @@ function toolEvent(kind: string, payload: Record<string, unknown> = {}): Record<
 describe('classifyZCodeMessage', () => {
   it('leaves worker-consumed frames unknown', () => {
     for (const parent of [
-      { method: ZCODE_METHOD.StateUpdated, params: { reason: 'session_compacted' } },
+      {
+        method: ZCODE_METHOD.StateUpdated,
+        params: { reason: 'session_compacted' },
+      },
       event(ZCODE_EVENT.TurnStarted),
       event(ZCODE_EVENT.ModelStreaming),
       event(ZCODE_EVENT.SessionUpdated, { messageCount: 3 }),
@@ -45,7 +53,10 @@ describe('classifyZCodeMessage', () => {
     expect(classifyZCodeMessage(input(parent))).toEqual({ kind: 'assistant_text' })
   })
   it('leaves a stored state update unknown', () => {
-    const parent = { method: ZCODE_METHOD.StateUpdated, params: { reason: 'session_compacted' } }
+    const parent = {
+      method: ZCODE_METHOD.StateUpdated,
+      params: { reason: 'session_compacted' },
+    }
     expect(classifyZCodeMessage(input(parent)))
       .toEqual({ kind: 'unknown' })
   })
@@ -71,8 +82,15 @@ describe('classifyZCodeMessage', () => {
   // per-iteration counters arrive as the same type and carry no conversation.
   it('leaves unknown the telemetry variants of session.updated', () => {
     for (const payload of [
-      { messageCount: 3, modelRef: { providerId: 'zai', modelId: 'glm-5.3' }, iteration: 2 },
-      { usage: { inputTokens: 10, outputTokens: 2 }, contextWindow: 200000 },
+      {
+        messageCount: 3,
+        modelRef: { providerId: 'zai', modelId: 'glm-5.3' },
+        iteration: 2,
+      },
+      {
+        usage: { inputTokens: 10, outputTokens: 2 },
+        contextWindow: 200000,
+      },
       { content: 'no stop reason means this is not a finished generation' },
     ]) {
       expect(classifyZCodeMessage(input(event(ZCODE_EVENT.SessionUpdated, payload))))
@@ -106,7 +124,13 @@ describe('classifyZCodeMessage', () => {
     })
     expect(classifyZCodeMessage(input(parent))).toEqual({
       kind: 'notification',
-      entries: [{ kind: 'compaction', phase: 'end', detail: { trigger: 'auto', pre: 180000, post: 12000 } }],
+      entries: [
+        {
+          kind: 'compaction',
+          phase: 'end',
+          detail: { trigger: 'auto', pre: 180000, post: 12000 },
+        },
+      ],
     })
   })
 
@@ -114,7 +138,11 @@ describe('classifyZCodeMessage', () => {
   // `goal_updated` row for its transition, so the frame itself draws nothing.
   it('leaves unknown a goal change session.updated', () => {
     for (const payload of [
-      { action: 'set', source: 'command', target: { targetID: 'g1', objective: 'Ship it', status: 'active' } },
+      {
+        action: 'set',
+        source: 'command',
+        target: { targetID: 'g1', objective: 'Ship it', status: 'active' },
+      },
       { action: 'cleared', source: 'command', target: null },
     ]) {
       expect(classifyZCodeMessage(input(event(ZCODE_EVENT.SessionUpdated, payload)))).toEqual({ kind: 'unknown' })
@@ -171,7 +199,12 @@ describe('classifyZCodeMessage', () => {
   // in a LeapMux row, which carries no ZCode event for the dispatch above to match.
   it('classifies the stop row LeapMux writes as a notification', () => {
     expect(classifyZCodeMessage(input({ type: 'interrupted' })))
-      .toEqual({ kind: 'notification', entries: [{ kind: 'text', text: 'Interrupted' }] })
+      .toEqual({
+        kind: 'notification',
+        entries: [
+          { kind: 'text', text: 'Interrupted' },
+        ],
+      })
   })
 
   it('classifies a resolved permission as a notification carrying the row', () => {
@@ -272,14 +305,20 @@ describe('classifyZCodeMessage on consolidated notification threads', () => {
   it('drops the unrenderable entries from a thread but keeps the rest', () => {
     const blank = { type: ZCODE_EVENT.PermissionResolved }
     const steer = event(ZCODE_EVENT.TurnSteerDrained)
-    const result = classifyZCodeMessage(input(blank, { old_seqs: [], messages: [blank, steer] }))
+    const result = classifyZCodeMessage(input(blank, {
+      old_seqs: [],
+      messages: [blank, steer],
+    }))
     expect(result.kind).toBe('notification')
     if (result.kind === 'notification')
       expect(result.entries).toHaveLength(1)
   })
 
   it('hides a thread whose every entry is unrenderable', () => {
-    const messages = [{ type: ZCODE_EVENT.PermissionResolved }, { type: ZCODE_EVENT.PermissionResolved }]
+    const messages = [
+      { type: ZCODE_EVENT.PermissionResolved },
+      { type: ZCODE_EVENT.PermissionResolved },
+    ]
     expect(classifyZCodeMessage(input(messages[0], { old_seqs: [], messages })))
       .toEqual({ kind: 'hidden' })
   })
@@ -303,10 +342,17 @@ describe('classifyZCodeMessage on consolidated notification threads', () => {
       status: ZCODE_GOAL_VERIFICATION_STATUS.Completed,
       verification: { passed: false, reason: 'The tests still fail.', nextAction: 'Fix the failing test.' },
     })
-    expect(classifyZCodeMessage(input(compacted, { old_seqs: [], messages: [compacted, verdict] }))).toEqual({
+    expect(classifyZCodeMessage(input(compacted, {
+      old_seqs: [],
+      messages: [compacted, verdict],
+    }))).toEqual({
       kind: 'notification',
       entries: [
-        { kind: 'compaction', phase: 'end', detail: { trigger: 'auto', pre: 180000, post: 12000 } },
+        {
+          kind: 'compaction',
+          phase: 'end',
+          detail: { trigger: 'auto', pre: 180000, post: 12000 },
+        },
         { kind: 'text', text: 'Iteration 1 · Goal incomplete, continuing — The tests still fail. Next: Fix the failing test.' },
       ],
     })
@@ -316,8 +362,15 @@ describe('classifyZCodeMessage on consolidated notification threads', () => {
   // one entry per member in order.
   it('folds two notification-shape session.updated rows into one thread', () => {
     const micro = event(ZCODE_EVENT.SessionUpdated, { strategy: ZCODE_MICROCOMPACT_STRATEGY.LocalToolResultClear, tokensSaved: 4000 })
-    const steer = event(ZCODE_EVENT.SessionUpdated, { pendingInputIds: ['p1'], reason: 'user_removed', targetTurnId: 'turn_1' })
-    expect(classifyZCodeMessage(input(micro, { old_seqs: [], messages: [micro, steer] }))).toEqual({
+    const steer = event(ZCODE_EVENT.SessionUpdated, {
+      pendingInputIds: ['p1'],
+      reason: 'user_removed',
+      targetTurnId: 'turn_1',
+    })
+    expect(classifyZCodeMessage(input(micro, {
+      old_seqs: [],
+      messages: [micro, steer],
+    }))).toEqual({
       kind: 'notification',
       entries: [
         { kind: 'compaction', phase: 'end', micro: true },
@@ -332,9 +385,15 @@ describe('classifyZCodeMessage on consolidated notification threads', () => {
   it('does not fold two model-response session.updated rows into a thread', () => {
     const first = event(ZCODE_EVENT.SessionUpdated, { content: 'first', stopReason: 'stop' })
     const second = event(ZCODE_EVENT.SessionUpdated, { content: 'second', stopReason: 'end_turn' })
-    expect(classifyZCodeMessage(input(first, { old_seqs: [], messages: [first, second] })))
+    expect(classifyZCodeMessage(input(first, {
+      old_seqs: [],
+      messages: [first, second],
+    })))
       .toEqual({ kind: 'assistant_text' })
-    expect(classifyZCodeMessage(input(second, { old_seqs: [], messages: [first, second] })))
+    expect(classifyZCodeMessage(input(second, {
+      old_seqs: [],
+      messages: [first, second],
+    })))
       .toEqual({ kind: 'assistant_text' })
   })
 
@@ -346,7 +405,9 @@ describe('classifyZCodeMessage on consolidated notification threads', () => {
   // A wrapper whose entries are not notification types must fall through to the
   // per-message classification instead of being hijacked into the thread path.
   it('does not treat a wrapper of non-notification events as a thread', () => {
-    const messages = [event(ZCODE_EVENT.SessionUpdated, { content: 'hi', stopReason: 'stop' })]
+    const messages = [
+      event(ZCODE_EVENT.SessionUpdated, { content: 'hi', stopReason: 'stop' }),
+    ]
     expect(classifyZCodeMessage(input(messages[0], { old_seqs: [], messages })))
       .toEqual({ kind: 'assistant_text' })
   })
@@ -357,7 +418,10 @@ describe('classifyZCodeMessage on a retained tool row', () => {
     'reads a retained %s row as the call result',
     (kind) => {
       const parent = toolEvent(kind, { stdoutTail: 'partial output' })
-      expect(classifyZCodeMessage({ ...input(parent, null, AgentProvider.ZCODE), completion: MessageCompletion.ERROR }))
+      expect(classifyZCodeMessage({
+        ...input(parent, null, AgentProvider.ZCODE),
+        completion: MessageCompletion.ERROR,
+      }))
         .toEqual({ kind: 'tool_result' })
     },
   )

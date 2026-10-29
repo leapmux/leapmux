@@ -6,5 +6,7 @@ import { parseMessageContent } from '../../../src/lib/messageParser'
 export function readKiroToolSupplement(message: AgentChatMessage): Record<string, unknown> | null {
   const parsed = parseMessageContent(message)
   const original = parsed.parentObject
-  return original ? acpToolSupplement(original, parsed.supplementalContent) ?? null : null
+  return original
+    ? acpToolSupplement(original, parsed.supplementalContent) ?? null
+    : null
 }

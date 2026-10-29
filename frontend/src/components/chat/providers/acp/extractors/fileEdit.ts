@@ -42,7 +42,12 @@ function acpListedReplacement(filePath: string, entry: unknown): FileEditDiff | 
   const newStr = pickFirstString(entry, TOOL_NEW_TEXT_KEYS)
   if (oldStr === undefined && newStr === undefined)
     return null
-  return { filePath, structuredPatch: null, oldStr: oldStr ?? '', newStr: newStr ?? '' }
+  return {
+    filePath,
+    structuredPatch: null,
+    oldStr: oldStr ?? '',
+    newStr: newStr ?? '',
+  }
 }
 
 /**
@@ -83,14 +88,22 @@ export function acpFileEditsFromToolCallRawInput(
   const changes: FileEditDiff[] = Array.isArray(rawInput.edits)
     ? rawInput.edits.flatMap((entry) => {
         const listed = acpListedReplacement(filePath, entry)
-        return listed ? [listed] : []
+        return listed
+          ? [listed]
+          : []
       })
     : []
 
   const oldStr = pickFirstString(rawInput, TOOL_OLD_TEXT_KEYS)
   const newStr = pickFirstString(rawInput, TOOL_NEW_TEXT_KEYS)
-  if (oldStr !== undefined || newStr !== undefined)
-    changes.push({ filePath, structuredPatch: null, oldStr: oldStr ?? '', newStr: newStr ?? '' })
+  if (oldStr !== undefined || newStr !== undefined) {
+    changes.push({
+      filePath,
+      structuredPatch: null,
+      oldStr: oldStr ?? '',
+      newStr: newStr ?? '',
+    })
+  }
   if (changes.length > 0)
     return changes
 
@@ -101,5 +114,12 @@ export function acpFileEditsFromToolCallRawInput(
   const content = pickFirstString(rawInput, ['content'])
   if (content === undefined)
     return []
-  return [{ filePath, structuredPatch: null, oldStr: '', newStr: content }]
+  return [
+    {
+      filePath,
+      structuredPatch: null,
+      oldStr: '',
+      newStr: content,
+    },
+  ]
 }

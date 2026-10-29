@@ -45,7 +45,7 @@ function packagesIn(nodeModules: string): Array<[string, string]> {
     // which is the guard passing while the bug it exists to catch is live.
     if (!entry.isDirectory() && !entry.isSymbolicLink())
       continue
-    // Skip every dot-entry, not just `.bin`: `.cache`, `.vite`, `.vinxi` and
+    // Skip every dot-entry, not just `.bin`: `.cache`, `.vite`, `.nitro` and
     // friends are tool state, and `.pnpm` genuinely holds package directories
     // that would otherwise be counted as installs.
     if (entry.name.startsWith('.'))
@@ -53,8 +53,12 @@ function packagesIn(nodeModules: string): Array<[string, string]> {
     const full = join(nodeModules, entry.name)
     if (entry.name.startsWith('@')) {
       for (const scoped of readdirSync(full, { withFileTypes: true })) {
-        if (scoped.isDirectory() || scoped.isSymbolicLink())
-          packages.push([`${entry.name}/${scoped.name}`, join(full, scoped.name)])
+        if (scoped.isDirectory() || scoped.isSymbolicLink()) {
+          packages.push([
+            `${entry.name}/${scoped.name}`,
+            join(full, scoped.name),
+          ])
+        }
       }
     }
     else {

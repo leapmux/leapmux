@@ -79,8 +79,12 @@ function buildTranscriptScenario(options: TranscriptScenarioOptions): Transcript
   const { transcript, resolver } = testTranscriptContext(
     options.archive,
     {
-      ...(options.fetchSpan !== undefined ? { fetchSpan: options.fetchSpan } : {}),
-      ...(options.fetchMessage !== undefined ? { fetchMessage: options.fetchMessage } : {}),
+      ...(options.fetchSpan !== undefined
+        ? { fetchSpan: options.fetchSpan }
+        : {}),
+      ...(options.fetchMessage !== undefined
+        ? { fetchMessage: options.fetchMessage }
+        : {}),
     },
   )
   if (options.windowIds !== undefined)
@@ -98,7 +102,9 @@ function buildTranscriptScenario(options: TranscriptScenarioOptions): Transcript
     showHiddenMessages: () => false,
   })
 
-  let nextSeq = options.archive.reduce((max, message) => (message.seq > max ? message.seq : max), 0n) + 1n
+  let nextSeq = options.archive.reduce((max, message) => (message.seq > max
+    ? message.seq
+    : max), 0n) + 1n
 
   function entry(id: string): ClassifiedEntry {
     const found = entries.visibleEntries().find(candidate => candidate.message.id === id)
@@ -117,7 +123,11 @@ function buildTranscriptScenario(options: TranscriptScenarioOptions): Transcript
     const message = prepared.message
     const sources = createMessageRenderSources(() => resolver, () => message, () => prepared.resolved)
     return cachedChatRow(
-      { renderCache: renderCacheStore.forRow(renderKeyForEntry(prepared)), sources, spanType: message.spanType },
+      {
+        renderCache: renderCacheStore.forRow(renderKeyForEntry(prepared)),
+        sources,
+        spanType: message.spanType,
+      },
       message.agentProvider,
       prepared.resolved,
       prepared.category,
@@ -150,7 +160,10 @@ function buildTranscriptScenario(options: TranscriptScenarioOptions): Transcript
             getMessageUiState: key => messageUiState().get(id)?.[key],
             setMessageUiState: (key, value) => setMessageUiState((previous) => {
               const next = new Map(previous)
-              next.set(id, { ...previous.get(id), [key]: value })
+              next.set(id, {
+                ...previous.get(id),
+                [key]: value,
+              })
               return next
             }),
             get renderCache() {
@@ -170,7 +183,9 @@ function buildTranscriptScenario(options: TranscriptScenarioOptions): Transcript
   // A replacement keeps the resident message's sequence unless the frame states
   // one: it is the store's in-place merge, not a new arrival.
   function replaceFrame(frame: TranscriptFrame, broadcast: boolean): void {
-    const resident = [...transcript.sources.messages()].find(message => message.id === frame.id)
+    const resident = [
+      ...transcript.sources.messages(),
+    ].find(message => message.id === frame.id)
     if (resident === undefined)
       throw new Error(`No message named "${frame.id}" to replace. The window holds: ${transcript.windowIds().join(', ') || 'nothing'}.`)
     const message = makeTranscriptMessage(frame, frame.seq ?? resident.seq)
@@ -182,7 +197,9 @@ function buildTranscriptScenario(options: TranscriptScenarioOptions): Transcript
 
   return {
     resolver,
-    messages: () => [...transcript.sources.messages()],
+    messages: () => [
+      ...transcript.sources.messages(),
+    ],
     entry,
     extract,
     toolRow,

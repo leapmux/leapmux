@@ -16,8 +16,16 @@ for (const decision of ['approve', 'reject'] as const) {
     const path = join(geminiNativeProject(native, agent), agent.agentSessionId, 'plans', filename)
     const plan = '# Native complete plan\n\n1. Read the actual source.\n2. Apply only the approved change.\n'
     const start = await modelScript.queue(
-      { toolCalls: [writeToolCall(native.provider, 'gemini-plan-write', { path, content: plan })] },
-      { toolCalls: [geminiPlanApprovalToolCall('gemini-plan-exit', filename)] },
+      {
+        toolCalls: [
+          writeToolCall(native.provider, 'gemini-plan-write', { path, content: plan }),
+        ],
+      },
+      {
+        toolCalls: [
+          geminiPlanApprovalToolCall('gemini-plan-exit', filename),
+        ],
+      },
       { text: `The native plan ${decision} operation completed.` },
     )
     await sendMessage(page, modelScript.prompt('Write the native plan, then request its approval.'))
@@ -31,10 +39,14 @@ for (const decision of ['approve', 'reject'] as const) {
     await modelScript.waitForSteps(start + 3)
     await waitForAgentIdle(page)
     const request = await modelScript.requestAt(start + 2)
-    expect(nativeToolResult(request, 'gemini-plan-exit')).toMatch(decision === 'approve' ? /Plan approved/ : /User cancelled|Plan rejected|Tool \\"exit_plan_mode\\" was canceled by the user\./i)
+    expect(nativeToolResult(request, 'gemini-plan-exit')).toMatch(decision === 'approve'
+      ? /Plan approved/
+      : /User cancelled|Plan rejected|Tool \\"exit_plan_mode\\" was canceled by the user\./i)
     await expect(assistantBubbles(page).filter({ hasText: `The native plan ${decision} operation completed.` })).toBeVisible()
     await page.reload()
     await waitForSettingsHydrated(page)
-    await expectSettingsOptionChosen(page, `permissionMode-${decision === 'approve' ? 'default' : 'plan'}`)
+    await expectSettingsOptionChosen(page, `permissionMode-${decision === 'approve'
+      ? 'default'
+      : 'plan'}`)
   })
 }

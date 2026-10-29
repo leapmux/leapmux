@@ -71,7 +71,12 @@ export function parseClineCompleteCatalog(value: unknown): ClineCatalogTool[] {
     const validEditor = entry.id === 'editor' && actual.length === 1 && expected.includes(actual[0]!)
     if (!validEditor && (actual.length !== expected.length || actual.some((name, index) => name !== expected[index])))
       throw new Error('The native Cline capability contains an unaudited callable tool.')
-    return { id: entry.id, description: entry.description, defaultEnabled: entry.defaultEnabled, headlessToolNames: [...entry.headlessToolNames] }
+    return {
+      id: entry.id,
+      description: entry.description,
+      defaultEnabled: entry.defaultEnabled,
+      headlessToolNames: [...entry.headlessToolNames],
+    }
   })
   const ids = tools.map(tool => tool.id)
   if (new Set(ids).size !== ids.length || Object.keys(CORE_TOOL_NAMES).some(id => id !== 'web_search' && !ids.includes(id)))
@@ -109,7 +114,13 @@ export async function queryClineCompleteCatalog(query: ClineCatalogQuery, execut
   const env = hubSpawnEnv(privateEnv)
   const executable = requireBinary('cline', 'The native Cline catalog requires the installed CLI', env)
   const timeout = nativeCommandTimeout(query.deadline, CATALOG_COMMAND_LIMIT_MS)
-  const result = await execute(executable, ['config', 'tools', '--json'], { cwd: query.workingDir, env, encoding: 'utf8', maxBuffer: 4 * 1024 * 1024, timeout })
+  const result = await execute(executable, ['config', 'tools', '--json'], {
+    cwd: query.workingDir,
+    env,
+    encoding: 'utf8',
+    maxBuffer: 4 * 1024 * 1024,
+    timeout,
+  })
   await query.onReceipt?.(result)
   let decoded: unknown
   try {
@@ -131,7 +142,17 @@ export async function readClineCompleteCatalog(context: ManagedNativeScenarioCon
     throw new Error('The native Cline catalog requires the actual active Cline session.')
   const before = await context.modelScript.status()
   const deadline = context.modelScript.testDeadline()
-  const tools = await queryClineCompleteCatalog({ environment: privateEnv, workingDir: agent.workingDir, runDir: getGlobalState().tmpDir, ...(deadline === undefined ? {} : { deadline }), ...(onReceipt === undefined ? {} : { onReceipt }) })
+  const tools = await queryClineCompleteCatalog({
+    environment: privateEnv,
+    workingDir: agent.workingDir,
+    runDir: getGlobalState().tmpDir,
+    ...(deadline === undefined
+      ? {}
+      : { deadline }),
+    ...(onReceipt === undefined
+      ? {}
+      : { onReceipt }),
+  })
   expect(await context.modelScript.status()).toEqual(before)
   expectSameNativeSession(agent, await currentNativeAgent(context), 'The native Cline catalog read')
   return tools

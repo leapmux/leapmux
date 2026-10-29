@@ -70,8 +70,12 @@ vi.mock('~/api/platformBridge', () => ({
   parseRelayClosePayload: (payload: unknown) => {
     const close = payload as { code?: unknown, reason?: unknown, wasClean?: unknown } | null
     return {
-      code: typeof close?.code === 'number' ? close.code : 1006,
-      reason: typeof close?.reason === 'string' ? close.reason : '',
+      code: typeof close?.code === 'number'
+        ? close.code
+        : 1006,
+      reason: typeof close?.reason === 'string'
+        ? close.reason
+        : '',
       wasClean: close?.wasClean === true,
     }
   },
@@ -139,12 +143,22 @@ function makeFakePending(opts?: {
   // targets a specific map (defaults to workspaces) so the OR over all four
   // maps (now centralized in isConfirmedPopulated) can be pinned per-map.
   const map = opts?.populateMap ?? 'workspaces'
-  const entry = opts?.populated ? { x1: {} } : {}
+  const entry = opts?.populated
+    ? { x1: {} }
+    : {}
   const confirmedState = {
-    workspaces: map === 'workspaces' ? entry : {},
-    nodes: map === 'nodes' ? entry : {},
-    tabs: map === 'tabs' ? entry : {},
-    floatingWindows: map === 'floatingWindows' ? entry : {},
+    workspaces: map === 'workspaces'
+      ? entry
+      : {},
+    nodes: map === 'nodes'
+      ? entry
+      : {},
+    tabs: map === 'tabs'
+      ? entry
+      : {},
+    floatingWindows: map === 'floatingWindows'
+      ? entry
+      : {},
   }
   return {
     bootstrap: vi.fn(),
@@ -153,7 +167,9 @@ function makeFakePending(opts?: {
     consumeEntityRemoved: vi.fn(() => ({ droppedPending: opts?.droppedPending ?? false })),
     applyDelta: vi.fn(() => ({ droppedPending: opts?.droppedPending ?? false })),
     consumeBatchEnd: vi.fn(),
-    clock: { observe: vi.fn() },
+    clock: {
+      observe: vi.fn(),
+    },
     // Delegates to the PRODUCTION predicate rather than re-implementing it.
     // A hand-copied mirror meant every cursor-suppression case below asserted
     // against the fake's own branch: the real rule could gain a fifth map or
@@ -169,7 +185,9 @@ function makeFakePending(opts?: {
       // shape that could not occur.
       // Omitted when the harness passed no watermark, matching the target's
       // optional-without-undefined shape.
-      ...(opts?.watermark !== undefined ? { resumeWatermark: opts.watermark } : {}),
+      ...(opts?.watermark !== undefined
+        ? { resumeWatermark: opts.watermark }
+        : {}),
       currentEpoch: opts?.epoch ?? 0n,
     },
   }
@@ -436,7 +454,12 @@ describe('useUserEvents (websocket dispatch)', () => {
     // case) would fail loudly.
     await createRoot(async (dispose) => {
       const [userId] = createSignal('user-nodes-only')
-      const pending = makeFakePending({ populated: true, populateMap: 'nodes', watermark: { physical: 500n, logical: 1n, clientId: 'c-n' }, epoch: 2n })
+      const pending = makeFakePending({
+        populated: true,
+        populateMap: 'nodes',
+        watermark: { physical: 500n, logical: 1n, clientId: 'c-n' },
+        epoch: 2n,
+      })
       let captured: unknown = 'unset'
       useUserEvents({
         userId,
@@ -460,7 +483,12 @@ describe('useUserEvents (websocket dispatch)', () => {
     // or a narrowing to just workspaces/nodes/tabs fails loudly.
     await createRoot(async (dispose) => {
       const [userId] = createSignal('user-fw-only')
-      const pending = makeFakePending({ populated: true, populateMap: 'floatingWindows', watermark: { physical: 600n, logical: 0n, clientId: 'c-fw' }, epoch: 4n })
+      const pending = makeFakePending({
+        populated: true,
+        populateMap: 'floatingWindows',
+        watermark: { physical: 600n, logical: 0n, clientId: 'c-fw' },
+        epoch: 4n,
+      })
       let captured: unknown = 'unset'
       useUserEvents({
         userId,
@@ -675,8 +703,13 @@ describe('useUserEvents (websocket dispatch)', () => {
           }),
         },
       })
-      const batch = create(OpBatchSchema, { batchId: 'b-1', ops: [op] })
-      sock.sendEvent(create(WatchUserEventSchema, { event: { case: 'batch', value: batch } }))
+      const batch = create(OpBatchSchema, {
+        batchId: 'b-1',
+        ops: [op],
+      })
+      sock.sendEvent(create(WatchUserEventSchema, {
+        event: { case: 'batch', value: batch },
+      }))
 
       expect(pending.consumeRemote).toHaveBeenCalledTimes(1)
       expect((pending.consumeRemote.mock.calls[0]![0] as { batchId: string }).batchId).toBe('b-1')
@@ -705,8 +738,12 @@ describe('useUserEvents (websocket dispatch)', () => {
           hlc: create(HLCSchema, { physical: 1n, logical: 0n, clientId: 'c1' }),
         }),
       })
-      const mat = create(EntityMaterializedSchema, { entity: { case: 'tab', value: tab } })
-      sock.sendEvent(create(WatchUserEventSchema, { event: { case: 'entityMaterialized', value: mat } }))
+      const mat = create(EntityMaterializedSchema, {
+        entity: { case: 'tab', value: tab },
+      })
+      sock.sendEvent(create(WatchUserEventSchema, {
+        event: { case: 'entityMaterialized', value: mat },
+      }))
 
       expect(pending.consumeEntityMaterialized).toHaveBeenCalledTimes(1)
       dispose()
@@ -734,7 +771,9 @@ describe('useUserEvents (websocket dispatch)', () => {
           value: create(TabIdentSchema, { tabType: TabType.AGENT, tabId: 'tA' }),
         },
       })
-      sock.sendEvent(create(WatchUserEventSchema, { event: { case: 'entityRemoved', value: rem } }))
+      sock.sendEvent(create(WatchUserEventSchema, {
+        event: { case: 'entityRemoved', value: rem },
+      }))
 
       expect(pending.consumeEntityRemoved).toHaveBeenCalledTimes(1)
       expect(onPendingDropped).toHaveBeenCalledTimes(1)
@@ -756,7 +795,9 @@ describe('useUserEvents (websocket dispatch)', () => {
       const sock = FakeSocket.instances[0]!
 
       const pres = create(PresenceUpdateSchema, { workspaceId: 'w1', activeClientId: 'client-a' })
-      sock.sendEvent(create(WatchUserEventSchema, { event: { case: 'presence', value: pres } }))
+      sock.sendEvent(create(WatchUserEventSchema, {
+        event: { case: 'presence', value: pres },
+      }))
 
       expect(ac.activeFor('w1')).toBe('client-a')
       dispose()
@@ -782,7 +823,9 @@ describe('useUserEvents (websocket dispatch)', () => {
         title: 'My WS',
         rootNodeId: 'r1',
       })
-      sock.sendEvent(create(WatchUserEventSchema, { event: { case: 'created', value: created } }))
+      sock.sendEvent(create(WatchUserEventSchema, {
+        event: { case: 'created', value: created },
+      }))
 
       expect(onWorkspaceLifecycleChanged).toHaveBeenCalledTimes(1)
       dispose()
@@ -1011,7 +1054,12 @@ describe('useUserEvents (websocket dispatch)', () => {
       const sock = FakeSocket.instances[0]!
 
       const atHlc = create(HLCSchema, { physical: 400n, logical: 2n, clientId: 'hub' })
-      sock.sendEvent(create(WatchUserEventSchema, { event: { case: 'batchEnd', value: { atHlc } } }))
+      sock.sendEvent(create(WatchUserEventSchema, {
+        event: {
+          case: 'batchEnd',
+          value: { atHlc },
+        },
+      }))
 
       expect(pending.consumeBatchEnd).toHaveBeenCalledTimes(1)
       expect(pending.consumeBatchEnd.mock.calls[0]?.[0]).toMatchObject({ physical: 400n, logical: 2n })
@@ -1050,7 +1098,9 @@ describe('useUserEvents (websocket dispatch)', () => {
         workspaces: {},
         currentEpoch: 99n,
       })
-      stale.sendEvent(create(WatchUserEventSchema, { event: { case: 'initial', value: staleInitial } }))
+      stale.sendEvent(create(WatchUserEventSchema, {
+        event: { case: 'initial', value: staleInitial },
+      }))
 
       expect(pending.bootstrap).not.toHaveBeenCalled()
       dispose()
@@ -1104,7 +1154,9 @@ describe('useUserEvents (websocket dispatch)', () => {
         workspaces: {},
         currentEpoch: 1n,
       })
-      sock.sendEvent(create(WatchUserEventSchema, { event: { case: 'initial', value: initial } }))
+      sock.sendEvent(create(WatchUserEventSchema, {
+        event: { case: 'initial', value: initial },
+      }))
       expect(hook.bootstrapped()).toBe(true)
 
       sock.emit('close', new Event('close'))
@@ -1475,7 +1527,10 @@ describe('useUserEvents (desktop bridge path)', () => {
       await settleBridge()
 
       const evt = create(WatchUserEventSchema, {
-        event: { case: 'initial', value: create(UserMaterializedSchema, { userId: 'user-1', currentEpoch: 3n }) },
+        event: {
+          case: 'initial',
+          value: create(UserMaterializedSchema, { userId: 'user-1', currentEpoch: 3n }),
+        },
       })
       const payload = toBinary(WatchUserEventSchema, evt)
       const framed = new Uint8Array(4 + payload.length)

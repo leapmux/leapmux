@@ -21,7 +21,11 @@ export function copilotAgentResult(facts: CopilotToolFacts): AgentRun {
       ? 'failed'
       : launched ? 'running' : 'completed'
   const metadata: AgentRun['metadata'] = []
-  for (const [label, key] of [['Agent', 'agent_type'], ['Model', 'model'], ['Effort', 'reasoning_effort']] as const) {
+  for (const [label, key] of [
+    ['Agent', 'agent_type'],
+    ['Model', 'model'],
+    ['Effort', 'reasoning_effort'],
+  ] as const) {
     const value = pickString(args, key)
     if (value)
       metadata.push({ label, value })
@@ -31,10 +35,16 @@ export function copilotAgentResult(facts: CopilotToolFacts): AgentRun {
     // The row key the worker opened for this subagent is its native agent id, which the
     // tool call itself never states. The registry row carries the title instead.
     agentId: '',
-    ...(outcome === 'running' ? { statusLabel: 'launched asynchronously' } : {}),
+    ...(outcome === 'running'
+      ? { statusLabel: 'launched asynchronously' }
+      : {}),
     outcome,
     metadata,
-    body: launched && outcome !== 'failed' ? pickString(args, 'prompt') : facts.output,
-    ...(launched && outcome !== 'failed' ? { bodyLabel: 'Prompt' as const } : {}),
+    body: launched && outcome !== 'failed'
+      ? pickString(args, 'prompt')
+      : facts.output,
+    ...(launched && outcome !== 'failed'
+      ? { bodyLabel: 'Prompt' as const }
+      : {}),
   }
 }

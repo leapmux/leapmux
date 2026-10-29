@@ -17,7 +17,10 @@ function isBannerProbe(value: unknown): value is BannerProbe {
 
 vi.mock('../helpers/ui', async importOriginal => ({
   ...await importOriginal<typeof import('../helpers/ui')>(),
-  controlBanner: (): BannerProbe => ({ bannerProbe: true, isVisible: async () => banner.visible }),
+  controlBanner: (): BannerProbe => ({
+    bannerProbe: true,
+    isVisible: async () => banner.visible,
+  }),
   answerControl: async (_page: Page, decision: string) => {
     banner.clicks.push(decision)
   },
@@ -27,15 +30,20 @@ vi.mock('../helpers/ui', async importOriginal => ({
 vi.mock('@playwright/test', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@playwright/test')>()
   const check = (value: unknown, message?: string) => {
-    if (isBannerProbe(value))
-      return { toContainText: async (text: string) => expect(banner.text, message).toContain(text) }
+    if (isBannerProbe(value)) {
+      return {
+        toContainText: async (text: string) => expect(banner.text, message).toContain(text),
+      }
+    }
     return expect(value, message)
   }
   return {
     ...actual,
     expect: Object.assign(check, {
       poll: (read: () => Promise<unknown>, options?: { message?: string }) => ({
-        not: { toBe: async (unexpected: unknown) => expect(await read(), options?.message).not.toBe(unexpected) },
+        not: {
+          toBe: async (unexpected: unknown) => expect(await read(), options?.message).not.toBe(unexpected),
+        },
       }),
     }),
   }

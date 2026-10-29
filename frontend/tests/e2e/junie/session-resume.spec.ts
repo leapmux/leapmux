@@ -9,7 +9,12 @@ junieTest('reopens a completed picker session and restores its saved Worker rows
   await exerciseSessionResume(native)
 })
 
-const restartTest = createProviderProcessTest({ agent: JUNIE_AGENT, nativeContext, skipReason: JUNIE_E2E_SKIP_REASON, modelRules: JUNIE_HOUSEKEEPING_RULES })
+const restartTest = createProviderProcessTest({
+  agent: JUNIE_AGENT,
+  nativeContext,
+  skipReason: JUNIE_E2E_SKIP_REASON,
+  modelRules: JUNIE_HOUSEKEEPING_RULES,
+})
 
 for (const restart of ['worker', 'hub-and-worker'] as const) {
   restartTest(`retains native context and transcript after a ${restart} restart`, async ({ native, separateHubWorker }) => {

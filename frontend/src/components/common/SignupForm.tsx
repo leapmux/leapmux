@@ -202,7 +202,9 @@ export const SignupForm: Component<SignupFormProps> = (props) => {
             value={email()}
             onInput={e => setEmail(e.currentTarget.value)}
             required={emailRequired()}
-            placeholder={emailRequired() ? undefined : 'Optional: enables account recovery'}
+            placeholder={emailRequired()
+              ? undefined
+              : 'Optional: enables account recovery'}
           />
         </label>
         {/*
@@ -232,7 +234,9 @@ export const SignupForm: Component<SignupFormProps> = (props) => {
             <Show when={submitting()}><Spinner /></Show>
             {submitting()
               ? props.submittingLabel
-              : effectiveMethod() === 'passkey' ? 'Sign up with passkey' : props.submitLabel}
+              : effectiveMethod() === 'passkey'
+                ? 'Sign up with passkey'
+                : props.submitLabel}
           </button>
         </div>
       </form>

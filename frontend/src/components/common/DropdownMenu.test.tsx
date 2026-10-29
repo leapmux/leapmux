@@ -500,7 +500,12 @@ describe('DropdownMenu contextMenuFor', () => {
     try {
       const { row, popover } = renderRowMenu()
 
-      row.dispatchEvent(new MouseEvent('contextmenu', { clientX: 150, clientY: 108, bubbles: true, cancelable: true }))
+      row.dispatchEvent(new MouseEvent('contextmenu', {
+        clientX: 150,
+        clientY: 108,
+        bubbles: true,
+        cancelable: true,
+      }))
       vi.runAllTimers()
 
       expect(popover.style.left).toBe('150px') // the click x, not the row's left edge
@@ -576,7 +581,11 @@ describe('DropdownMenu contextMenuFor', () => {
     try {
       let rowEl!: HTMLDivElement
       const [label, setLabel] = createSignal('Row menu')
-      const menuProps = mergeProps({ contextMenuFor: () => rowEl }, () => ({ 'data-label': label() }))
+      const menuProps = mergeProps({
+        contextMenuFor: () => rowEl,
+      }, () => ({
+        'data-label': label(),
+      }))
       render(() => (
         <>
           <div ref={rowEl} data-testid="row">row</div>
@@ -612,7 +621,12 @@ describe('DropdownMenu contextMenuFor', () => {
         <>
           <div ref={firstRow}>first</div>
           <div ref={secondRow}>second</div>
-          <DropdownMenu contextMenuFor={() => (useSecond() ? secondRow : firstRow)} data-testid="row-menu-popover">
+          <DropdownMenu
+            contextMenuFor={() => (useSecond()
+              ? secondRow
+              : firstRow)}
+            data-testid="row-menu-popover"
+          >
             <button role="menuitem">Rename</button>
           </DropdownMenu>
         </>
@@ -704,7 +718,14 @@ describe('DropdownMenu opening position', () => {
     // jsdom measures every box as 0, so the anchor has to state one. Without it
     // the arithmetic answers the viewport corner for the right reason and the
     // assertion could not tell that from the defect.
-    stubRect(trigger, { top: 300, left: 200, right: 260, bottom: 330, width: 60, height: 30 })
+    stubRect(trigger, {
+      top: 300,
+      left: 200,
+      right: 260,
+      bottom: 330,
+      width: 60,
+      height: 30,
+    })
     stubRect(popover, { width: 160, height: 120 })
 
     fireEvent.click(trigger)
@@ -741,7 +762,14 @@ describe('DropdownMenu opening position', () => {
 
     const trigger = screen.getByRole('button', { name: 'Open', hidden: true })
     const popover = screen.getByTestId('regrown-popover')
-    stubRect(trigger, { top: 300, left: 200, right: 260, bottom: 330, width: 60, height: 30 })
+    stubRect(trigger, {
+      top: 300,
+      left: 200,
+      right: 260,
+      bottom: 330,
+      width: 60,
+      height: 30,
+    })
     stubRect(popover, { width: 160, height: 120 })
     fireEvent.click(trigger)
     const firstPass = popover.style.top
@@ -962,13 +990,17 @@ describe('DropdownMenu size caps', () => {
         <DropdownMenu
           aria-label="Things"
           data-testid={MENU}
-          {...(opts.matchTriggerWidth !== undefined ? { matchTriggerWidth: opts.matchTriggerWidth } : {})}
+          {...(opts.matchTriggerWidth !== undefined
+            ? { matchTriggerWidth: opts.matchTriggerWidth }
+            : {})}
           trigger={p => <button {...p} type="button">Open</button>}
         >
           <li>Alpha</li>
         </DropdownMenu>
       ),
-      opts.container ? { container: opts.container } : undefined,
+      opts.container
+        ? { container: opts.container }
+        : undefined,
     )
   }
 

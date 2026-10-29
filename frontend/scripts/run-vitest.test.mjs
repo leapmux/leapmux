@@ -7,11 +7,21 @@ import { launchVitest } from './run-vitest.mjs'
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal()
   const spawn = vi.fn()
-  return { ...actual, spawn, default: { ...actual, spawn } }
+  return {
+    ...actual,
+    spawn,
+    default: { ...actual, spawn },
+  }
 })
 vi.mock('node:process', async (importOriginal) => {
   const actual = await importOriginal()
-  return { ...actual, default: { ...actual.default, versions: { ...actual.default.versions } } }
+  return {
+    ...actual,
+    default: {
+      ...actual.default,
+      versions: { ...actual.default.versions },
+    },
+  }
 })
 
 const nodeVersion = process.versions.node

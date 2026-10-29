@@ -14,9 +14,17 @@ describe('chatPremeasureQueue', () => {
         { id: 'empty', hasSpanLines: false, heightKey: 'empty-key' },
         { id: 'answer', hasSpanLines: false, heightKey: 'answer-key' },
       ]
-      const entries = new Map(items.map(item => [item.id, { message: { id: item.id } } as ClassifiedEntry]))
+      const entries = new Map(items.map(item => [
+        item.id,
+        {
+          message: { id: item.id },
+        } as ClassifiedEntry,
+      ]))
       const { virt } = setup(items)
-      const candidates = () => items.filter(item => !virt.hasMeasuredHeight(item.id)).map(item => ({ entry: entries.get(item.id)!, item }))
+      const candidates = () => items.filter(item => !virt.hasMeasuredHeight(item.id)).map(item => ({
+        entry: entries.get(item.id)!,
+        item,
+      }))
       const queue = createPremeasureQueue({
         virt,
         visibleEntryById: () => entries,
@@ -41,9 +49,17 @@ describe('chatPremeasureQueue', () => {
   function makeHarness(ids: string[]) {
     const measured = new Set<string>()
     const items = ids.map(id => ({ id, hasSpanLines: false, heightKey: `k-${id}` } as VirtualItem))
-    const entries = new Map(ids.map(id => [id, { message: { id } } as ClassifiedEntry]))
+    const entries = new Map(ids.map(id => [
+      id,
+      {
+        message: { id },
+      } as ClassifiedEntry,
+    ]))
     const itemById = new Map(items.map(item => [item.id, item]))
-    const candidate = (id: string): ChatDomPremeasureCandidate => ({ entry: entries.get(id)!, item: itemById.get(id)! })
+    const candidate = (id: string): ChatDomPremeasureCandidate => ({
+      entry: entries.get(id)!,
+      item: itemById.get(id)!,
+    })
     const [ranged, setRanged] = createSignal<ChatDomPremeasureCandidate[]>([])
     const [lookAhead, setLookAhead] = createSignal<ChatDomPremeasureCandidate[]>([])
     const [warmup, setWarmup] = createSignal<ChatDomPremeasureCandidate[]>([])
@@ -63,14 +79,27 @@ describe('chatPremeasureQueue', () => {
       lookAheadCandidates: lookAhead,
       warmupCandidates: warmup,
     })
-    return { queue, candidate, setRanged, setLookAhead, setWarmup, itemById, measured }
+    return {
+      queue,
+      candidate,
+      setRanged,
+      setLookAhead,
+      setWarmup,
+      itemById,
+      measured,
+    }
   }
 
   it('queues ranged candidates as pending+collapsed (live tail included) and look-ahead as pending only', () => {
     createRoot((dispose) => {
       const h = makeHarness(['a', 'b', 'c'])
-      h.setRanged([h.candidate('a'), h.candidate('c')])
-      h.setLookAhead([h.candidate('b')])
+      h.setRanged([
+        h.candidate('a'),
+        h.candidate('c'),
+      ])
+      h.setLookAhead([
+        h.candidate('b'),
+      ])
 
       // All three owed a premeasure render, in display order.
       expect(h.queue.premeasureCandidates().map(c => c.item.id)).toEqual(['a', 'b', 'c'])
@@ -78,7 +107,9 @@ describe('chatPremeasureQueue', () => {
       // unmeasured content can't overflow onto the trailing in-flow tail UI and it
       // reveals in order with its siblings. The look-ahead row 'b' is not in the main
       // <For>, so it is never collapsed.
-      expect([...h.queue.collapsedPremeasureIds()].sort()).toEqual(['a', 'c'])
+      expect([
+        ...h.queue.collapsedPremeasureIds(),
+      ].sort()).toEqual(['a', 'c'])
       dispose()
     })
   })
@@ -86,11 +117,15 @@ describe('chatPremeasureQueue', () => {
   it('queues warm-up candidates as pending-only, like look-ahead rows', () => {
     createRoot((dispose) => {
       const h = makeHarness(['a', 'b'])
-      h.setWarmup([h.candidate('b')])
+      h.setWarmup([
+        h.candidate('b'),
+      ])
 
       expect(h.queue.premeasureCandidates().map(c => c.item.id)).toEqual(['b'])
       // Warm-up rows are not in the main <For>, so they must never collapse.
-      expect([...h.queue.collapsedPremeasureIds()]).toEqual([])
+      expect([
+        ...h.queue.collapsedPremeasureIds(),
+      ]).toEqual([])
 
       // A settled measurement retires the warm-up row like any other.
       expect(h.queue.onMeasure('b', 60, 'k-b', 0, true)).toBe(true)
@@ -102,14 +137,21 @@ describe('chatPremeasureQueue', () => {
   it('a settled measurement retires the row from pending and collapse', () => {
     createRoot((dispose) => {
       const h = makeHarness(['a', 'b'])
-      h.setRanged([h.candidate('a'), h.candidate('b')])
+      h.setRanged([
+        h.candidate('a'),
+        h.candidate('b'),
+      ])
 
       expect(h.queue.onMeasure('a', 120, 'k-a', 0, true)).toBe(true)
       expect(h.queue.premeasureCandidates().map(c => c.item.id)).toEqual(['b'])
       // The next band recompute (the committed height drops it from the candidates)
       // clears the collapse now that the row has real geometry.
-      h.setRanged([h.candidate('b')])
-      expect([...h.queue.collapsedPremeasureIds()]).toEqual(['b'])
+      h.setRanged([
+        h.candidate('b'),
+      ])
+      expect([
+        ...h.queue.collapsedPremeasureIds(),
+      ]).toEqual(['b'])
       dispose()
     })
   })
@@ -117,7 +159,9 @@ describe('chatPremeasureQueue', () => {
   it('an unsettled measurement keeps the row mounted for a re-measure under the same heightKey', () => {
     createRoot((dispose) => {
       const h = makeHarness(['a'])
-      h.setRanged([h.candidate('a')])
+      h.setRanged([
+        h.candidate('a'),
+      ])
 
       // Accepted but images still loading: the height committed (hasMeasuredHeight is
       // now true), yet the row must KEEP its premeasure mount so the image-settle
@@ -150,8 +194,12 @@ describe('chatPremeasureQueue', () => {
           const { virt } = setup([candidate.item])
           const queue = createPremeasureQueue({
             virt,
-            visibleEntryById: () => new Map([['a', candidate.entry]]),
-            virtualItemById: () => new Map([['a', candidate.item]]),
+            visibleEntryById: () => new Map([
+              ['a', candidate.entry],
+            ]),
+            virtualItemById: () => new Map([
+              ['a', candidate.item],
+            ]),
             virtualItems: () => [candidate.item],
             rangedCandidates: () => [candidate],
             lookAheadCandidates: () => [],

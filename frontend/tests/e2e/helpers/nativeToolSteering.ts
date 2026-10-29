@@ -48,7 +48,9 @@ export interface StopWithPendingSteerOptions {
 export async function exerciseStopWithPendingSteer(context: ManagedNativeScenarioContext, options: StopWithPendingSteerOptions = {}): Promise<void> {
   if (options.rowAt !== undefined && options.rowAt !== 'echo' && options.rowAt !== 'acceptance')
     throw new Error('The pending steer scenario needs echo or acceptance row timing.')
-  const acceptedRows = options.rowAt === 'acceptance' ? 1 : 0
+  const acceptedRows = options.rowAt === 'acceptance'
+    ? 1
+    : 0
   const { page, modelScript } = context
   const agent = await currentNativeAgent(context)
   const marker = uniqueMarker()
@@ -57,12 +59,18 @@ export async function exerciseStopWithPendingSteer(context: ManagedNativeScenari
   const gate = `native-stop-steer-${marker}`
   await withCleanup(async () => {
     const start = await modelScript.queue(
-      { ...nativeTextStep(context, `UNREADANSWER${marker}`), gate },
+      {
+        ...nativeTextStep(context, `UNREADANSWER${marker}`),
+        gate,
+      },
       nativeTextStep(context, answer),
     )
     await sendMessage(page, modelScript.prompt('Hold the scripted answer for a stop.'))
     await modelScript.waitForGate(gate)
-    await steerQueuedInput(page, { message: modelScript.prompt(steering), match: steering })
+    await steerQueuedInput(page, {
+      message: modelScript.prompt(steering),
+      match: steering,
+    })
     await expect(userBubbles(page).filter({ hasText: steering })).toHaveCount(acceptedRows)
     await interruptButton(page).click()
     await retryUntilPass(async () => {
@@ -106,7 +114,10 @@ export async function exerciseSteerDuringText(context: ManagedNativeScenarioCont
   const steering = `STEERINPUT${marker}`
   const reply = `STEEREDREPLY${marker}`
   const steer = async () => {
-    await steerQueuedInput(context.page, { message: context.modelScript.prompt(steering), match: steering })
+    await steerQueuedInput(context.page, {
+      message: context.modelScript.prompt(steering),
+      match: steering,
+    })
   }
   if (options.answer === 'preempt') {
     await exerciseInterruptedPartialAnswer(context, {
@@ -127,7 +138,17 @@ export async function exerciseSteerDuringText(context: ManagedNativeScenarioCont
   const gate = `native-continue-steer-${marker}`
   await withCleanup(async () => {
     const start = await context.modelScript.queue(
-      { ...nativeTextStep(context, answer), text: answer, stream: { chunkChars: head.length, delayMs: 0, gates: [{ afterChunk: 1, name: gate }] } },
+      {
+        ...nativeTextStep(context, answer),
+        text: answer,
+        stream: {
+          chunkChars: head.length,
+          delayMs: 0,
+          gates: [
+            { afterChunk: 1, name: gate },
+          ],
+        },
+      },
       nativeTextStep(context, reply),
     )
     await sendMessage(context.page, context.modelScript.prompt('Stream the scripted answer.'))
@@ -159,7 +180,9 @@ export async function exerciseSteerDuringText(context: ManagedNativeScenarioCont
         await expect(assistantBubbles(context.page).filter({ hasText: reply })).toHaveCount(1)
       await expect(userBubbles(context.page).filter({ hasText: steering })).toHaveCount(1)
       await expect(messageContents(context.page).filter({ hasText: INTERRUPTION_MARKER })).toHaveCount(0)
-      await expectRowsInOrder(messageContents(context.page), options.steerOrder === 'any' ? [head, reply] : [head, steering, reply])
+      await expectRowsInOrder(messageContents(context.page), options.steerOrder === 'any'
+        ? [head, reply]
+        : [head, steering, reply])
       await options.checkTranscript?.()
     }
   }, async () => { await context.modelScript.releaseGateIfHeld(gate) })
@@ -191,7 +214,11 @@ export async function exerciseSteerAfterTool(context: ManagedNativeScenarioConte
   const steering = NATIVE_TOOL_STEERING_TEXT
   await withCleanup(async () => {
     const start = await context.modelScript.queue(
-      { toolCalls: [bashToolCall(context.provider, 'held-native-steer-tool', output.command)] },
+      {
+        toolCalls: [
+          bashToolCall(context.provider, 'held-native-steer-tool', output.command),
+        ],
+      },
       nativeTextStep(context, 'finished steered'),
     )
     await sendMessage(context.page, context.modelScript.prompt('Run the controlled waiting command, then reply with one word: finished.'))
@@ -249,7 +276,12 @@ export async function exerciseSteerBeforeTool(context: NativeScenarioContext, op
   const steering = 'Also include the word STEEREDWORD in your reply.'
   const command = 'printf provider-steer-ready'
   const start = await context.modelScript.queue(
-    { gate, toolCalls: [bashToolCall(context.provider, 'steer-tool', command)] },
+    {
+      gate,
+      toolCalls: [
+        bashToolCall(context.provider, 'steer-tool', command),
+      ],
+    },
     nativeTextStep(context, 'The turn ended with STEEREDWORD.'),
   )
   await withCleanup(async () => {
@@ -287,7 +319,10 @@ export async function exerciseQueuedTurnWithoutSteering(context: ManagedNativeSc
   const server = context.leapmuxServer
   const channel = await getTestChannel(server.hubUrl, server.adminToken)
   await withCleanup(async () => {
-    const start = await context.modelScript.queue({ ...nativeTextStep(context, firstAnswer), gate }, nativeTextStep(context, nextAnswer))
+    const start = await context.modelScript.queue({
+      ...nativeTextStep(context, firstAnswer),
+      gate,
+    }, nativeTextStep(context, nextAnswer))
     await sendMessage(context.page, context.modelScript.prompt('Hold the first ordinary native turn.'))
     await context.modelScript.waitForGate(gate)
     await sendMessage(context.page, context.modelScript.prompt(nextPrompt))
@@ -297,7 +332,9 @@ export async function exerciseQueuedTurnWithoutSteering(context: ManagedNativeSc
       expect(
         (await readQueue()).items.filter(item => item.text.includes(nextPrompt)).map(item => ({ state: item.state, canSteer: item.canSteer, canPreempt: item.canPreempt })),
         'the queued prompt waits, offers no steer, and can preempt the held turn',
-      ).toEqual([{ state: AgentInputState.QUEUED, canSteer: false, canPreempt: true }])
+      ).toEqual([
+        { state: AgentInputState.QUEUED, canSteer: false, canPreempt: true },
+      ])
     })
     const item = (await readQueue()).items.find(candidate => candidate.text.includes(nextPrompt))
     if (!item)

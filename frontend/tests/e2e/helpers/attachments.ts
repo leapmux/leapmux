@@ -45,12 +45,22 @@ function quadrantPng(): Buffer {
   const rowLength = 1 + IMAGE_SIZE * 3
   const pixels = Buffer.alloc(IMAGE_SIZE * rowLength)
   const colors = [
-    [[255, 0, 0], [0, 255, 0]],
-    [[0, 0, 255], [255, 255, 0]],
+    [
+      [255, 0, 0],
+      [0, 255, 0],
+    ],
+    [
+      [0, 0, 255],
+      [255, 255, 0],
+    ],
   ]
   for (let y = 0; y < IMAGE_SIZE; y++) {
     for (let x = 0; x < IMAGE_SIZE; x++) {
-      const color = colors[y < IMAGE_SIZE / 2 ? 0 : 1]?.[x < IMAGE_SIZE / 2 ? 0 : 1]
+      const color = colors[y < IMAGE_SIZE / 2
+        ? 0
+        : 1]?.[x < IMAGE_SIZE / 2
+        ? 0
+        : 1]
       if (!color)
         throw new Error('the attachment image has no quadrant color')
       const offset = y * rowLength + 1 + x * 3
@@ -61,7 +71,16 @@ function quadrantPng(): Buffer {
   }
 
   return Buffer.concat([
-    Buffer.from([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]),
+    Buffer.from([
+      0x89,
+      0x50,
+      0x4E,
+      0x47,
+      0x0D,
+      0x0A,
+      0x1A,
+      0x0A,
+    ]),
     pngChunk('IHDR', header),
     pngChunk('IDAT', deflateSync(pixels)),
     pngChunk('IEND', Buffer.alloc(0)),
@@ -159,10 +178,14 @@ function waveAudioBytes(): Buffer {
 export function writeAudioAttachmentFixture(name?: string, format: 'wav' | 'flac' = 'wav'): string {
   if (format !== 'wav' && format !== 'flac')
     throw new Error('The audio fixture format must be WAV or FLAC.')
-  const filename = name === undefined ? `voice.${format}` : name
+  const filename = name === undefined
+    ? `voice.${format}`
+    : name
   if (typeof filename !== 'string' || !isFileNameComponent(filename) || !filename.toLowerCase().endsWith(`.${format}`))
     throw new Error(`The audio fixture requires a ${format.toUpperCase()} filename without a directory.`)
-  const bytes = format === 'flac' ? Buffer.from(flacAudio.dataBase64, 'base64') : waveAudioBytes()
+  const bytes = format === 'flac'
+    ? Buffer.from(flacAudio.dataBase64, 'base64')
+    : waveAudioBytes()
   const path = join(createTestDirectory('attachment-audio-'), filename)
   writeFileSync(path, bytes)
   return path

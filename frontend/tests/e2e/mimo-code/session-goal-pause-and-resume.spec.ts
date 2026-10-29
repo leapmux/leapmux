@@ -4,5 +4,8 @@ import { mimoTest } from '../mimo-fixtures'
 import { exerciseMiMoShellToolExecution } from './shellToolExecution'
 
 mimoTest('refuses unsupported goal actions on the running native provider', async ({ native }) => {
-  await expectUnsupportedGoalActions(native, { actions: [AgentGoalAction.PAUSE, AgentGoalAction.RESUME], relatedProof: () => exerciseMiMoShellToolExecution(native, { includeFailure: false }) })
+  await expectUnsupportedGoalActions(native, {
+    actions: [AgentGoalAction.PAUSE, AgentGoalAction.RESUME],
+    relatedProof: () => exerciseMiMoShellToolExecution(native, { includeFailure: false }),
+  })
 })

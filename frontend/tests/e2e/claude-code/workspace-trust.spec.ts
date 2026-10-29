@@ -26,14 +26,28 @@ claudeTest('loads the actual project startup hook without a native trust barrier
         const hook = writeNativeProjectHook(directory, marker)
         const configuration = join(directory, '.claude', 'settings.json')
         mkdirSync(dirname(configuration), { recursive: true })
-        writeFileSync(configuration, JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: 'command', command: `${quotePosixShellArgument(process.execPath)} ${quotePosixShellArgument(hook.scriptPath)}` }] }] } }))
+        writeFileSync(configuration, JSON.stringify({
+          hooks: {
+            SessionStart: [
+              {
+                hooks: [
+                  { type: 'command', command: `${quotePosixShellArgument(process.execPath)} ${quotePosixShellArgument(hook.scriptPath)}` },
+                ],
+              },
+            ],
+          },
+        }))
       },
       prove: async (privateContext, { directory, marker }) => {
         await sendNativeAnswer(privateContext, 'Reply once from this project.', 'The native project startup turn completed.')
         const receipt = join(directory, 'native-project-hook-receipt.json')
         expect(existsSync(receipt)).toBe(true)
         const actual: unknown = JSON.parse(readFileSync(receipt, 'utf8'))
-        expect(actual).toMatchObject({ marker, workingDirectory: directory, input: { hook_event_name: 'SessionStart', cwd: directory } })
+        expect(actual).toMatchObject({
+          marker,
+          workingDirectory: directory,
+          input: { hook_event_name: 'SessionStart', cwd: directory },
+        })
       },
     },
   })

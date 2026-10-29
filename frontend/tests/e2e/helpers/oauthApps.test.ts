@@ -11,7 +11,9 @@ import {
   TEST_PKCE_CHALLENGE,
 } from './oauthApps'
 
-vi.mock('./api', () => ({ callHub: vi.fn() }))
+vi.mock('./api', () => ({
+  callHub: vi.fn(),
+}))
 
 beforeEach(() => {
   vi.mocked(callHub).mockReset()
@@ -39,7 +41,9 @@ describe('authorizeParams', () => {
   })
 
   it('adds the extra parameters, and an extra parameter replaces a default', () => {
-    const params = authorizeParams({ extra: { scope: 'admin:read', installation_name: 'ci' } })
+    const params = authorizeParams({
+      extra: { scope: 'admin:read', installation_name: 'ci' },
+    })
     expect(params.scope).toBe('admin:read')
     expect(params.installation_name).toBe('ci')
   })
@@ -47,7 +51,9 @@ describe('authorizeParams', () => {
 
 describe('authorizeURL', () => {
   it('puts the encoded parameters on the authorize path of the hub', () => {
-    const url = new URL(authorizeURL('http://hub.test', { extra: { scope: 'admin:read admin:users' } }))
+    const url = new URL(authorizeURL('http://hub.test', {
+      extra: { scope: 'admin:read admin:users' },
+    }))
     expect(url.origin + url.pathname).toBe('http://hub.test/oauth/authorize')
     expect(url.searchParams.get('scope')).toBe('admin:read admin:users')
     expect(url.searchParams.get('code_challenge')).toBe(TEST_PKCE_CHALLENGE)
@@ -57,20 +63,28 @@ describe('authorizeURL', () => {
 
 describe('consentForm', () => {
   it.each(['allow', 'deny'] as const)('answers the request with %s, and keeps every authorization parameter', (decision) => {
-    expect(consentForm({ state: 'state-deny' }, decision)).toEqual({ ...authorizeParams({ state: 'state-deny' }), decision })
+    expect(consentForm({ state: 'state-deny' }, decision)).toEqual({
+      ...authorizeParams({ state: 'state-deny' }),
+      decision,
+    })
   })
 })
 
 describe('registerAppViaAPI', () => {
   it('sends the body of the caller as the session, and returns the client ID and the secret', async () => {
-    vi.mocked(callHub).mockResolvedValue({ app: { clientId: 'c-1' }, clientSecret: 's-1' })
+    vi.mocked(callHub).mockResolvedValue({
+      app: { clientId: 'c-1' },
+      clientSecret: 's-1',
+    })
     const body = { clientName: 'App', visibility: 'APP_VISIBILITY_PRIVATE' }
     await expect(registerAppViaAPI('http://hub.test', 'leapmux-session=a', body)).resolves.toEqual({ clientId: 'c-1', clientSecret: 's-1' })
     expect(callHub).toHaveBeenCalledWith('http://hub.test', 'AppService/RegisterApp', body, { cookie: 'leapmux-session=a', operation: 'registerAppViaAPI' })
   })
 
   it('reads a public client, which has no secret, as the empty secret', async () => {
-    vi.mocked(callHub).mockResolvedValue({ app: { clientId: 'c-2' } })
+    vi.mocked(callHub).mockResolvedValue({
+      app: { clientId: 'c-2' },
+    })
     await expect(registerAppViaAPI('http://hub.test', 'c', {})).resolves.toEqual({ clientId: 'c-2', clientSecret: '' })
   })
 
@@ -82,7 +96,12 @@ describe('registerAppViaAPI', () => {
 
 describe('listAppsViaAPI', () => {
   it('returns the client ID of each app', async () => {
-    vi.mocked(callHub).mockResolvedValue({ apps: [{ clientId: 'c-1' }, { clientId: 'c-2' }] })
+    vi.mocked(callHub).mockResolvedValue({
+      apps: [
+        { clientId: 'c-1' },
+        { clientId: 'c-2' },
+      ],
+    })
     await expect(listAppsViaAPI('http://hub.test', 'c')).resolves.toEqual(['c-1', 'c-2'])
   })
 
@@ -92,7 +111,9 @@ describe('listAppsViaAPI', () => {
   })
 
   it('refuses an app with no client ID', async () => {
-    vi.mocked(callHub).mockResolvedValue({ apps: [{}] })
+    vi.mocked(callHub).mockResolvedValue({
+      apps: [{}],
+    })
     await expect(listAppsViaAPI('http://hub.test', 'c')).rejects.toThrow('no client ID')
   })
 })

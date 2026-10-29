@@ -82,7 +82,9 @@ test.describe('code block field', () => {
     // computed style is empty rather than wrong. See readAttached.
     return readAttached(block, 'blockBackground', (matches) => {
       const el = matches.find(candidate => candidate.isConnected)
-      return el ? getComputedStyle(el).backgroundColor : null
+      return el
+        ? getComputedStyle(el).backgroundColor
+        : null
     })
   }
 
@@ -146,7 +148,9 @@ test.describe('code block field', () => {
     // two hosts is the whole point of a field that composites.
     const bubbleSurface = await readAttached(bubble, 'the bubble surface', (matches) => {
       const el = matches.find(candidate => candidate.isConnected)
-      return el ? getComputedStyle(el).backgroundColor : null
+      return el
+        ? getComputedStyle(el).backgroundColor
+        : null
     })
     const panelSurface = await resolvedColor(page, 'var(--background)')
     expect(bubbleSurface, 'a user bubble is a different surface from the panel').not.toBe(panelSurface)
@@ -446,7 +450,7 @@ test.describe('markdown editor links', () => {
     await expect(editor.locator('a')).toHaveAttribute('href', 'https://new.test')
     await expect(page.locator('[data-testid="link-popover"]')).toBeHidden()
 
-    // Reopening is a SEPARATE gesture, so it is outside Oat's 150ms close
+    // Reopening is a SEPARATE gesture, so it is outside Oat's 250ms close
     // transition -- the window in which `showPopover()` would re-enter an
     // element the browser is still removing from the top layer and bring the
     // panel back BELOW the page, where the transcript swallows its buttons.

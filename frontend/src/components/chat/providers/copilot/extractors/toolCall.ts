@@ -42,7 +42,9 @@ const SHELL_COMPLETION = /(?:\r?\n)?<shellId: [^\r\n>]+ completed with exit code
 /** The text without that trailer. The row states the exit code in its own place. */
 function stripShellTrailer(value: string): string {
   const trailer = value.match(SHELL_COMPLETION)
-  return trailer ? value.slice(0, trailer.index) : value
+  return trailer
+    ? value.slice(0, trailer.index)
+    : value
 }
 
 /**
@@ -76,7 +78,9 @@ const COPILOT_SEARCH_KINDS = new Set<ToolKind>(['glob', 'grep', 'search'])
 function copilotCommandLanguage(toolName: string): CommandLanguage | undefined {
   if (toolName === COPILOT_TOOL.Sql || toolName === COPILOT_TOOL.SessionStoreSql)
     return 'sql'
-  return toolName === COPILOT_TOOL.WritePowerShell ? 'powershell' : undefined
+  return toolName === COPILOT_TOOL.WritePowerShell
+    ? 'powershell'
+    : undefined
 }
 
 /**
@@ -91,8 +95,15 @@ function copilotToolQuestions(input: Record<string, unknown>): QuestionPrompt[] 
   const question = pickString(input, 'question')
   if (!question)
     return []
-  const choices = Array.isArray(input.choices) ? input.choices.filter((choice): choice is string => typeof choice === 'string') : []
-  return [{ question, options: choices.map(choice => ({ label: choice })) }]
+  const choices = Array.isArray(input.choices)
+    ? input.choices.filter((choice): choice is string => typeof choice === 'string')
+    : []
+  return [
+    {
+      question,
+      options: choices.map(choice => ({ label: choice })),
+    },
+  ]
 }
 
 /**
@@ -155,8 +166,12 @@ function grepMatchFile(line: string): string {
   const numbered = line.replace(/:\d+:.*/s, '')
   if (numbered !== line)
     return numbered
-  const separator = /^[a-z]:[\\/]/i.test(line) ? line.indexOf(':', 2) : line.indexOf(':')
-  return separator < 0 ? line : line.slice(0, separator)
+  const separator = /^[a-z]:[\\/]/i.test(line)
+    ? line.indexOf(':', 2)
+    : line.indexOf(':')
+  return separator < 0
+    ? line
+    : line.slice(0, separator)
 }
 
 /**
@@ -191,7 +206,9 @@ function copilotCompletionOutcome(data: Record<string, unknown>): ProviderToolOu
     return 'interrupted'
   if (data.success === true)
     return null
-  return code === COPILOT_TOOL_ERROR_CODE.Rejected || code === COPILOT_TOOL_ERROR_CODE.Denied ? 'declined' : 'failed'
+  return code === COPILOT_TOOL_ERROR_CODE.Rejected || code === COPILOT_TOOL_ERROR_CODE.Denied
+    ? 'declined'
+    : 'failed'
 }
 
 /**
@@ -205,7 +222,9 @@ function copilotCompletionOutcome(data: Record<string, unknown>): ProviderToolOu
 function copilotMcpIdentity(started: Record<string, unknown> | null | undefined): { server: string, tool: string } | undefined {
   const server = pickString(started, 'mcpServerName')
   const tool = pickString(started, 'mcpToolName')
-  return server && tool ? { server, tool } : undefined
+  return server && tool
+    ? { server, tool }
+    : undefined
 }
 
 /**
@@ -240,12 +259,20 @@ export function copilotToolRow(
       toolCallId: pickString(started, 'toolCallId'),
       toolName,
       kind: copilotToolKind(toolName),
-      ...(identity ? { mcp: identity } : {}),
+      ...(identity
+        ? { mcp: identity }
+        : {}),
       input: copilotToolArguments(toolName, started.arguments),
       finished,
       // A retained start frame lands NO result: the turn ending says nothing about
       // a call whose completion event the runtime never sent.
-      lifecycle: { frameStatus: 'unstated', providerOutcome: null, retainedOutcome: outcome, rowFinal: finished, resultFrameLanded: false },
+      lifecycle: {
+        frameStatus: 'unstated',
+        providerOutcome: null,
+        retainedOutcome: outcome,
+        rowFinal: finished,
+        resultFrameLanded: false,
+      },
       raw: null,
     }
   }
@@ -255,7 +282,9 @@ export function copilotToolRow(
   const toolCallId = pickString(completed, 'toolCallId')
   // The paired start belongs to this call alone. A start for another call would
   // supply the wrong name and the wrong arguments.
-  const paired = pairedStart && pickString(pairedStart, 'toolCallId') === toolCallId ? pairedStart : null
+  const paired = pairedStart && pickString(pairedStart, 'toolCallId') === toolCallId
+    ? pairedStart
+    : null
   const toolName = pickString(paired, 'toolName') || spanType || ''
   const lifecycle = copilotCompletionLifecycle(completed, completion)
   const status = deriveToolCallStatus(lifecycle, true)
@@ -264,7 +293,9 @@ export function copilotToolRow(
     toolCallId,
     toolName,
     kind: copilotToolKind(toolName),
-    ...(identity ? { mcp: identity } : {}),
+    ...(identity
+      ? { mcp: identity }
+      : {}),
     input: copilotToolArguments(toolName, paired?.arguments),
     finished: true,
     lifecycle,
@@ -374,7 +405,9 @@ export interface CopilotToolFacts {
  * edit kind and lists the files instead.
  */
 function copilotSingleOperation(requestedChanges: FileEditDiff[] | null): FileEditDiff | undefined {
-  return requestedChanges?.length === 1 ? requestedChanges[0] : undefined
+  return requestedChanges?.length === 1
+    ? requestedChanges[0]
+    : undefined
 }
 
 /**
@@ -420,12 +453,16 @@ export function copilotToolFacts(row: CopilotToolRow): CopilotToolFacts {
   // its arguments -- and reading the patch first is what lets the file it identifies
   // reach the folded copy.
   const patchText = copilotPatchText(row.toolName, row.input)
-  const requestedChanges = patchText ? applyPatchFileChanges(patchText) : null
+  const requestedChanges = patchText
+    ? applyPatchFileChanges(patchText)
+    : null
   const args = copilotToolArgs(row, requestedChanges)
   const output = copilotOutput(row)
   const status = deriveToolCallStatus(row.lifecycle, row.lifecycle.resultFrameLanded)
   const failed = status === 'failed'
-  const contents = Array.isArray(row.raw?.contents) ? row.raw.contents : null
+  const contents = Array.isArray(row.raw?.contents)
+    ? row.raw.contents
+    : null
   const structuredJson = prettifyStructuredJson(row.raw?.structuredContent)
   const hasResult = row.lifecycle.resultFrameLanded
   const answered = hasResult && !failed && status !== 'declined'
@@ -447,7 +484,9 @@ export function copilotToolFacts(row: CopilotToolRow): CopilotToolFacts {
     extraContent: copilotRichContent(row.input, contents, structuredJson),
     patchText,
     requestedChanges,
-    search: answered && COPILOT_SEARCH_KINDS.has(row.kind) ? copilotSearchSource(row.kind, args, output) : undefined,
+    search: answered && COPILOT_SEARCH_KINDS.has(row.kind)
+      ? copilotSearchSource(row.kind, args, output)
+      : undefined,
     // A command states itself, and the shared header draws it. The execute reader
     // therefore states no title at all, which is why this one word serves every kind.
     title: pickString(args, 'description') || row.toolName || 'Tool',
@@ -546,8 +585,14 @@ export const COPILOT_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<CopilotToolFac
     return {
       action: facts.toolName === COPILOT_TOOL.StopBash
         ? 'stop'
-        : facts.toolName === COPILOT_TOOL.ListBash ? 'list' : facts.toolName === COPILOT_TOOL.WriteBash ? 'input' : 'output',
-      ...(taskId ? { taskId } : {}),
+        : facts.toolName === COPILOT_TOOL.ListBash
+          ? 'list'
+          : facts.toolName === COPILOT_TOOL.WriteBash
+            ? 'input'
+            : 'output',
+      ...(taskId
+        ? { taskId }
+        : {}),
     }
   },
   // The TOOL NAME states the language for the highlighter, and four tools spell the
@@ -557,8 +602,12 @@ export const COPILOT_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<CopilotToolFac
     const description = pickString(args, 'description') || undefined
     return {
       command: pickFirstString(args, COPILOT_COMMAND_KEYS) ?? '',
-      ...(language !== undefined ? { language } : {}),
-      ...(description !== undefined ? { description } : {}),
+      ...(language !== undefined
+        ? { language }
+        : {}),
+      ...(description !== undefined
+        ? { description }
+        : {}),
     }
   },
   // The PATCH this build parsed, which no argument states: `apply_patch` sends one
@@ -579,7 +628,9 @@ export const COPILOT_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<CopilotToolFac
   message: (args, facts): ToolRequestByKind['message'] => {
     const to = pickString(args, 'agent') || undefined
     return {
-      ...(to !== undefined ? { to } : {}),
+      ...(to !== undefined
+        ? { to }
+        : {}),
       text: pickString(args, 'message') || pickString(args, 'content') || facts.output,
     }
   },
@@ -592,23 +643,31 @@ export const COPILOT_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<CopilotToolFac
   }),
   // The checklist `update_todo` carries as ONE markdown string. No other provider
   // states its list that way, so the shared entry answers an empty list.
-  todo: (args): ToolRequestByKind['todo'] => ({ items: copilotChecklistItems(pickString(args, 'todos')) }),
+  todo: (args): ToolRequestByKind['todo'] => ({
+    items: copilotChecklistItems(pickString(args, 'todos')),
+  }),
   // The question and the CHOICES `ask_user` offered. The shared entry answers an empty
   // list, so the row stated nothing it had asked.
-  question: (args): ToolRequestByKind['question'] => ({ questions: copilotToolQuestions(args) }),
+  question: (args): ToolRequestByKind['question'] => ({
+    questions: copilotToolQuestions(args),
+  }),
   // `source` is Copilot's word for where the file came from, and the shared move list
   // holds neither that spelling nor `path` for the destination.
   move: (args): ToolRequestByKind['move'] => {
     const previousPath = pickString(args, 'source') || undefined
     return {
-      changes: [{
-        filePath: pickString(args, 'path') || '',
-        ...(previousPath !== undefined ? { previousPath } : {}),
-        operation: 'move',
-        oldStr: '',
-        newStr: '',
-        structuredPatch: null,
-      }],
+      changes: [
+        {
+          filePath: pickString(args, 'path') || '',
+          ...(previousPath !== undefined
+            ? { previousPath }
+            : {}),
+          operation: 'move',
+          oldStr: '',
+          newStr: '',
+          structuredPatch: null,
+        },
+      ],
     }
   },
   // `path` FIRST, which is where `copilotToolArgs` puts the single target it recovered.
@@ -622,7 +681,11 @@ export const COPILOT_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<CopilotToolFac
   // `exit_plan_mode` states the mode it leaves for, and no worktree target.
   switch_mode: (args): ToolRequestByKind['switch_mode'] => {
     const mode = pickString(args, 'mode') || undefined
-    return { ...(mode !== undefined ? { mode } : {}) }
+    return {
+      ...(mode !== undefined
+        ? { mode }
+        : {}),
+    }
   },
   // The WHOLE argument record is the note, including an empty one: `context_board`
   // reads and writes the board with the same tool, and a read states no fields.
@@ -631,7 +694,11 @@ export const COPILOT_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<CopilotToolFac
   // `list_agents` filters with `query` alone, and states no channel.
   agents: (args): ToolRequestByKind['agents'] => {
     const query = pickString(args, 'query') || undefined
-    return { ...(query !== undefined ? { query } : {}) }
+    return {
+      ...(query !== undefined
+        ? { query }
+        : {}),
+    }
   },
 }
 
@@ -653,7 +720,12 @@ function copilotSearchRequest(args: Record<string, unknown>): SearchRequest {
   // The folded `path` FIRST, which is the single target `copilotToolArgs` recovered
   // from whichever key carried it.
   const path = pickString(args, 'path')
-  return { pattern: pickString(args, 'pattern') || pickString(args, 'query'), paths: path ? [path] : toolInputPaths(args) }
+  return {
+    pattern: pickString(args, 'pattern') || pickString(args, 'query'),
+    paths: path
+      ? [path]
+      : toolInputPaths(args),
+  }
 }
 
 /**
@@ -669,12 +741,24 @@ function copilotFileChangeRequest(args: Record<string, unknown>, facts: CopilotT
     return { changes: facts.requestedChanges }
   if (facts.wireKind === 'edit' || facts.wireKind === 'write') {
     const edit = copilotFileEdit(facts)
-    return { changes: edit ? [edit] : [] }
+    return {
+      changes: edit
+        ? [edit]
+        : [],
+    }
   }
   const removed = pickFirstString(args, TOOL_FILE_PATH_KEYS)
   return {
     changes: facts.wireKind === 'delete' && removed
-      ? [{ filePath: removed, operation: 'delete', oldStr: '', newStr: '', structuredPatch: null }]
+      ? [
+          {
+            filePath: removed,
+            operation: 'delete',
+            oldStr: '',
+            newStr: '',
+            structuredPatch: null,
+          },
+        ]
       : [],
   }
 }
@@ -695,13 +779,27 @@ function copilotFileEdit(facts: CopilotToolFacts): FileEditDiff | null {
   if (facts.toolName === COPILOT_TOOL.Create || command === 'create') {
     return fileText === undefined
       ? null
-      : { filePath, operation: 'add', oldStr: '', newStr: fileText, structuredPatch: null, showLineNumbers: false }
+      : {
+          filePath,
+          operation: 'add',
+          oldStr: '',
+          newStr: fileText,
+          structuredPatch: null,
+          showLineNumbers: false,
+        }
   }
   const oldStr = pickString(facts.args, 'old_str', undefined)
   const newStr = pickString(facts.args, 'new_str', undefined)
   if (oldStr === undefined && newStr === undefined)
     return null
-  return { filePath, operation: 'edit', oldStr: oldStr ?? '', newStr: newStr ?? '', structuredPatch: null, showLineNumbers: false }
+  return {
+    filePath,
+    operation: 'edit',
+    oldStr: oldStr ?? '',
+    newStr: newStr ?? '',
+    structuredPatch: null,
+    showLineNumbers: false,
+  }
 }
 
 /**
@@ -722,7 +820,11 @@ function copilotFileEdit(facts: CopilotToolFacts): FileEditDiff | null {
 function copilotProseAnswer(facts: CopilotToolFacts, format: ProseResult['format']): { result?: ProseResult | ToolFailureResult } {
   if (!facts.hasResult)
     return {}
-  return { result: facts.failed ? failedResult(facts.output) : proseResult(facts.output, format) }
+  return {
+    result: facts.failed
+      ? failedResult(facts.output)
+      : proseResult(facts.output, format),
+  }
 }
 
 /**
@@ -733,7 +835,9 @@ function copilotProseAnswer(facts: CopilotToolFacts, format: ProseResult['format
  * the field treats as none.
  */
 function copilotExtraContent(extraContent: McpContentItem[] | undefined): { extraContent?: McpContentItem[] } {
-  return extraContent !== undefined ? { extraContent } : {}
+  return extraContent !== undefined
+    ? { extraContent }
+    : {}
 }
 
 /**
@@ -750,31 +854,63 @@ function copilotFileChangeParts(facts: CopilotToolFacts, kind: 'edit' | 'write' 
   // Both halves are optional on the specification, so each stays absent when the facts state
   // none rather than present with `undefined`.
   const sides = {
-    ...(extraContent !== undefined ? { extraContent } : {}),
+    ...(extraContent !== undefined
+      ? { extraContent }
+      : {}),
   }
   // A patch with several operations lists its files; the shared title words a landed
   // change 'changed', so the request keeps the plain count. One this build cannot read
   // keeps the tool name, which identifies what ran.
   const title = facts.requestedChanges && facts.requestedChanges.length > 1
     ? `${new Set(facts.requestedChanges.map(source => source.filePath)).size} files`
-    : facts.patchText && !facts.requestedChanges ? facts.toolName : undefined
-  const titled = title !== undefined ? { ...sides, title } : sides
+    : facts.patchText && !facts.requestedChanges
+      ? facts.toolName
+      : undefined
+  const titled = title !== undefined
+    ? { ...sides, title }
+    : sides
   if (!facts.hasResult)
     return { request, ...titled }
   // The REQUEST stays on a failure. `RequestedChangesBody` refuses to draw a failed
   // call's diff for every provider, so keeping the list adds nothing to the body -- but
   // the row's TITLE is composed from it, and an empty list heads a failed change with
   // the bare kind word and no way to tell which file the call was about.
-  if (facts.failed)
-    return { request, ...titled, result: failedResult(facts.output) }
-  if (kind === 'delete')
-    return { request, ...sides, result: { changes: request.changes } }
+  if (facts.failed) {
+    return {
+      request,
+      ...titled,
+      result: failedResult(facts.output),
+    }
+  }
+  if (kind === 'delete') {
+    return {
+      request,
+      ...sides,
+      result: { changes: request.changes },
+    }
+  }
   const edit = copilotFileEdit(facts)
-  if (edit)
-    return { request, ...titled, result: { changes: [edit] } }
-  if (facts.requestedChanges)
-    return { request, ...titled, result: { changes: facts.requestedChanges } }
-  return { request, ...titled, result: unparsedResult(facts.output || facts.patchText) }
+  if (edit) {
+    return {
+      request,
+      ...titled,
+      result: {
+        changes: [edit],
+      },
+    }
+  }
+  if (facts.requestedChanges) {
+    return {
+      request,
+      ...titled,
+      result: { changes: facts.requestedChanges },
+    }
+  }
+  return {
+    request,
+    ...titled,
+    result: unparsedResult(facts.output || facts.patchText),
+  }
 }
 
 /**
@@ -795,11 +931,20 @@ function copilotSearchParts(facts: CopilotToolFacts): Omit<ToolCallSpecVariant<'
   // and the image tab, which addresses a picture by its index, loses the same ones.
   // The field is optional on the specification, so it stays absent when the call stated none.
   const extraContent = facts.extraContent
-  const sides = extraContent !== undefined ? { extraContent } : {}
+  const sides = extraContent !== undefined
+    ? { extraContent }
+    : {}
   if (!facts.hasResult)
     return { request, ...sides }
-  if (!source)
-    return facts.failed ? { request, ...sides, result: failedResult(facts.output) } : { request, ...sides }
+  if (!source) {
+    return facts.failed
+      ? {
+          request,
+          ...sides,
+          result: failedResult(facts.output),
+        }
+      : { request, ...sides }
+  }
   // A match list keeps the grep kind and states its counts, so the summary reads
   // the total; a file list reads as a glob; a count mode as a grep.
   // A match list is the one mode that counts MATCHES without listing files:
@@ -809,12 +954,22 @@ function copilotSearchParts(facts: CopilotToolFacts): Omit<ToolCallSpecVariant<'
     request,
     // The WIRE kind words the label, never the reclassified one: a grep that answered
     // a file list draws through the glob renderer and still ran `grep`.
-    label: facts.wireKind === 'glob' ? 'Glob' : facts.wireKind === 'search' ? 'Search' : 'Grep',
+    label: facts.wireKind === 'glob'
+      ? 'Glob'
+      : facts.wireKind === 'search'
+        ? 'Search'
+        : 'Grep',
     ...sides,
     result: matchList
       // `source.matchCount` is 0 for a grep that matched nothing, and `''.split('\n')`
       // is `['']`, so counting the output there reported "1 file" for no matches.
-      ? { ...source, numLines: source.matchCount ?? 0, numFiles: source.matchCount ? new Set(facts.output.trim().split('\n').map(grepMatchFile)).size : 0 }
+      ? {
+          ...source,
+          numLines: source.matchCount ?? 0,
+          numFiles: source.matchCount
+            ? new Set(facts.output.trim().split('\n').map(grepMatchFile)).size
+            : 0,
+        }
       : source,
   }
 }
@@ -828,7 +983,10 @@ function copilotSearchParts(facts: CopilotToolFacts): Omit<ToolCallSpecVariant<'
  * the kind's declared fields the moment a later release does map a tool onto it.
  */
 function copilotUnreachedKind<P extends ToolKind>(kind: P): (facts: CopilotToolFacts) => ToolCallSpecVariant<P> {
-  return (facts): ToolCallSpecVariant<P> => ({ kind, request: copilotRequestFor(kind, facts) })
+  return (facts): ToolCallSpecVariant<P> => ({
+    kind,
+    request: copilotRequestFor(kind, facts),
+  })
 }
 
 /**
@@ -864,18 +1022,42 @@ export const COPILOT_TOOL_READERS: ToolCallSpecReaderTable<CopilotToolFacts> = {
       // request states, so the header and the card cannot drift.
       title: request.description || 'Task',
       ...copilotExtraContent(facts.extraContent),
-      ...(facts.hasResult ? { result: { agents: [copilotAgentResult(facts)] } } : {}),
+      ...(facts.hasResult
+        ? {
+            result: {
+              agents: [
+                copilotAgentResult(facts),
+              ],
+            },
+          }
+        : {}),
     }
   },
   todo: (facts): ToolCallSpecVariant<'todo'> => {
     const request = copilotRequestFor('todo', facts)
     // No title: `todoRenderer` composes the same words from the request this specification
     // carries, and a copy here is a second place for the wording to drift.
-    if (!facts.hasResult)
-      return { kind: 'todo', request, ...copilotExtraContent(facts.extraContent) }
-    if (facts.failed)
-      return { kind: 'todo', request, ...copilotExtraContent(facts.extraContent), result: failedResult(facts.output) }
-    return { kind: 'todo', request, ...copilotExtraContent(facts.extraContent), result: { items: request.items } }
+    if (!facts.hasResult) {
+      return {
+        kind: 'todo',
+        request,
+        ...copilotExtraContent(facts.extraContent),
+      }
+    }
+    if (facts.failed) {
+      return {
+        kind: 'todo',
+        request,
+        ...copilotExtraContent(facts.extraContent),
+        result: failedResult(facts.output),
+      }
+    }
+    return {
+      kind: 'todo',
+      request,
+      ...copilotExtraContent(facts.extraContent),
+      result: { items: request.items },
+    }
   },
   task: (facts): ToolCallSpecVariant<'task'> => {
     const request = copilotRequestFor('task', facts)
@@ -896,13 +1078,19 @@ export const COPILOT_TOOL_READERS: ToolCallSpecReaderTable<CopilotToolFacts> = {
     const outcome = facts.failed
       ? 'failed'
       : shell.exitCode !== undefined
-        ? (shell.exitCode === 0 ? 'completed' : 'failed')
-        : facts.status === 'cancelled' ? 'stopped' : 'completed'
+        ? (shell.exitCode === 0
+            ? 'completed'
+            : 'failed')
+        : facts.status === 'cancelled'
+          ? 'stopped'
+          : 'completed'
     return {
       kind: 'task',
       request,
       title: facts.title,
-      ...(shell.metadata !== undefined ? { metadata: shell.metadata } : {}),
+      ...(shell.metadata !== undefined
+        ? { metadata: shell.metadata }
+        : {}),
       // `copilotCommandParts` reads the same blocks the rich content does and drops
       // the two this row already draws: the exit block and any block that repeats the
       // output.
@@ -920,37 +1108,89 @@ export const COPILOT_TOOL_READERS: ToolCallSpecReaderTable<CopilotToolFacts> = {
     return {
       kind: 'execute',
       request,
-      ...(metadata !== undefined ? { metadata } : {}),
+      ...(metadata !== undefined
+        ? { metadata }
+        : {}),
       ...copilotExtraContent(extraContent),
       // The CODE is optional on the command: a shell that has not reported one states
       // neither it nor a signal.
-      result: { commands: [{ output: text, ...(exitCode !== undefined ? { exitCode } : {}) }], unresolvedTerminals: [] },
+      result: {
+        commands: [
+          {
+            output: text,
+            ...(exitCode !== undefined
+              ? { exitCode }
+              : {}),
+          },
+        ],
+        unresolvedTerminals: [],
+      },
     }
   },
-  edit: (facts): ToolCallSpecVariant<'edit'> => ({ kind: 'edit', ...copilotFileChangeParts(facts, 'edit') }),
-  write: (facts): ToolCallSpecVariant<'write'> => ({ kind: 'write', ...copilotFileChangeParts(facts, 'write') }),
-  delete: (facts): ToolCallSpecVariant<'delete'> => ({ kind: 'delete', ...copilotFileChangeParts(facts, 'delete') }),
+  edit: (facts): ToolCallSpecVariant<'edit'> => ({
+    kind: 'edit',
+    ...copilotFileChangeParts(facts, 'edit'),
+  }),
+  write: (facts): ToolCallSpecVariant<'write'> => ({
+    kind: 'write',
+    ...copilotFileChangeParts(facts, 'write'),
+  }),
+  delete: (facts): ToolCallSpecVariant<'delete'> => ({
+    kind: 'delete',
+    ...copilotFileChangeParts(facts, 'delete'),
+  }),
   read: (facts): ToolCallSpecVariant<'read'> => {
     const request = copilotRequestFor('read', facts)
     if (!facts.hasResult)
       return { kind: 'read', request }
     // The blocks ride every state of the call, for the reason `copilotSearchParts` gives.
-    if (facts.failed)
-      return { kind: 'read', request, ...copilotExtraContent(facts.extraContent), result: failedResult(facts.output) }
-    if (typeof facts.raw?.content === 'string' && request.path)
-      return { kind: 'read', request, result: copilotReadResult(facts.raw, facts.args), ...copilotExtraContent(facts.extraContent) }
+    if (facts.failed) {
+      return {
+        kind: 'read',
+        request,
+        ...copilotExtraContent(facts.extraContent),
+        result: failedResult(facts.output),
+      }
+    }
+    if (typeof facts.raw?.content === 'string' && request.path) {
+      return {
+        kind: 'read',
+        request,
+        result: copilotReadResult(facts.raw, facts.args),
+        ...copilotExtraContent(facts.extraContent),
+      }
+    }
     // A row reaches this only when the call printed NOTHING. A view that printed prose
     // and identified no file is a `report`, which {@link copilotReclassify} states.
-    return { kind: 'read', request, ...copilotExtraContent(facts.extraContent), result: unparsedResult(facts.output) }
+    return {
+      kind: 'read',
+      request,
+      ...copilotExtraContent(facts.extraContent),
+      result: unparsedResult(facts.output),
+    }
   },
-  glob: (facts): ToolCallSpecVariant<'glob'> => ({ kind: 'glob', ...copilotSearchParts(facts) }),
-  grep: (facts): ToolCallSpecVariant<'grep'> => ({ kind: 'grep', ...copilotSearchParts(facts) }),
-  search: (facts): ToolCallSpecVariant<'search'> => ({ kind: 'search', ...copilotSearchParts(facts) }),
+  glob: (facts): ToolCallSpecVariant<'glob'> => ({
+    kind: 'glob',
+    ...copilotSearchParts(facts),
+  }),
+  grep: (facts): ToolCallSpecVariant<'grep'> => ({
+    kind: 'grep',
+    ...copilotSearchParts(facts),
+  }),
+  search: (facts): ToolCallSpecVariant<'search'> => ({
+    kind: 'search',
+    ...copilotSearchParts(facts),
+  }),
   web_search: (facts): ToolCallSpecVariant<'web_search'> => {
     const request = copilotRequestFor('web_search', facts)
     if (!facts.hasResult)
       return { kind: 'web_search', request }
-    return { kind: 'web_search', request, ...copilotExtraContent(facts.extraContent), result: { links: [], summary: facts.output } }
+    return {
+      kind: 'web_search',
+      request,
+      ...copilotExtraContent(facts.extraContent),
+      result: { links: [], summary: facts.output },
+    }
   },
   question: (facts): ToolCallSpecVariant<'question'> => {
     const request = copilotRequestFor('question', facts)
@@ -963,7 +1203,17 @@ export const COPILOT_TOOL_READERS: ToolCallSpecReaderTable<CopilotToolFacts> = {
       kind: 'question',
       request,
       ...copilotExtraContent(facts.extraContent),
-      ...(facts.hasResult ? { result: { answers: facts.output ? [{ header, answer: facts.output }] : [] } } : {}),
+      ...(facts.hasResult
+        ? {
+            result: {
+              answers: facts.output
+                ? [
+                    { header, answer: facts.output },
+                  ]
+                : [],
+            },
+          }
+        : {}),
     }
   },
   mcp: (facts): ToolCallSpecVariant<'mcp'> => {
@@ -972,32 +1222,68 @@ export const COPILOT_TOOL_READERS: ToolCallSpecReaderTable<CopilotToolFacts> = {
     // stating them here too would draw each one twice.
     if (!facts.hasResult)
       return { kind: 'mcp', request }
-    return { kind: 'mcp', request, result: copilotGenericToolResult(facts) }
+    return {
+      kind: 'mcp',
+      request,
+      result: copilotGenericToolResult(facts),
+    }
   },
   move: (facts): ToolCallSpecVariant<'move'> => {
     const request = copilotRequestFor('move', facts)
-    if (!facts.hasResult)
-      return { kind: 'move', request, ...copilotExtraContent(facts.extraContent) }
+    if (!facts.hasResult) {
+      return {
+        kind: 'move',
+        request,
+        ...copilotExtraContent(facts.extraContent),
+      }
+    }
     // The REQUEST stays, for the reason `copilotFileChangeParts` gives: a move whose
     // request is empty heads the row `Move` with neither source nor destination.
-    if (facts.failed)
-      return { kind: 'move', request, ...copilotExtraContent(facts.extraContent), result: failedResult(facts.output) }
-    return { kind: 'move', request, ...copilotExtraContent(facts.extraContent), result: { changes: request.changes } }
+    if (facts.failed) {
+      return {
+        kind: 'move',
+        request,
+        ...copilotExtraContent(facts.extraContent),
+        result: failedResult(facts.output),
+      }
+    }
+    return {
+      kind: 'move',
+      request,
+      ...copilotExtraContent(facts.extraContent),
+      result: { changes: request.changes },
+    }
   },
   fetch: (facts): ToolCallSpecVariant<'fetch'> => {
     const request = copilotRequestFor('fetch', facts)
     if (!facts.hasResult)
       return { kind: 'fetch', request }
     // The blocks ride every state of the call, for the reason `copilotSearchParts` gives.
-    if (facts.failed)
-      return { kind: 'fetch', request, ...copilotExtraContent(facts.extraContent), result: failedResult(facts.output) }
-    return { kind: 'fetch', request, result: { result: facts.output }, ...copilotExtraContent(facts.extraContent) }
+    if (facts.failed) {
+      return {
+        kind: 'fetch',
+        request,
+        ...copilotExtraContent(facts.extraContent),
+        result: failedResult(facts.output),
+      }
+    }
+    return {
+      kind: 'fetch',
+      request,
+      result: { result: facts.output },
+      ...copilotExtraContent(facts.extraContent),
+    }
   },
   message: (facts): ToolCallSpecVariant<'message'> => {
     const request = copilotRequestFor('message', facts)
     if (!facts.hasResult)
       return { kind: 'message', request }
-    return { kind: 'message', request, result: proseResult(facts.output), ...copilotExtraContent(facts.extraContent) }
+    return {
+      kind: 'message',
+      request,
+      result: proseResult(facts.output),
+      ...copilotExtraContent(facts.extraContent),
+    }
   },
   // The five kinds whose answer is words. The blocks ride EVERY state of the call, not
   // the success one alone: a failed skill carries the same content the runtime attached.
@@ -1007,18 +1293,44 @@ export const COPILOT_TOOL_READERS: ToolCallSpecReaderTable<CopilotToolFacts> = {
   // to, and `memory` states what the scratch board holds. Claude and the Agent Client
   // Protocol family draw all three plain, and a `<pre>` block keeps the runtime's own
   // line breaks and indentation exactly as it sent them.
-  skill: (facts): ToolCallSpecVariant<'skill'> => ({ kind: 'skill', request: copilotRequestFor('skill', facts), title: facts.title, ...copilotExtraContent(facts.extraContent), ...copilotProseAnswer(facts, 'plain') }),
-  switch_mode: (facts): ToolCallSpecVariant<'switch_mode'> => ({ kind: 'switch_mode', request: copilotRequestFor('switch_mode', facts), title: facts.title, ...copilotExtraContent(facts.extraContent), ...copilotProseAnswer(facts, 'plain') }),
-  memory: (facts): ToolCallSpecVariant<'memory'> => ({ kind: 'memory', request: copilotRequestFor('memory', facts), title: facts.title, ...copilotExtraContent(facts.extraContent), ...copilotProseAnswer(facts, 'plain') }),
+  skill: (facts): ToolCallSpecVariant<'skill'> => ({
+    kind: 'skill',
+    request: copilotRequestFor('skill', facts),
+    title: facts.title,
+    ...copilotExtraContent(facts.extraContent),
+    ...copilotProseAnswer(facts, 'plain'),
+  }),
+  switch_mode: (facts): ToolCallSpecVariant<'switch_mode'> => ({
+    kind: 'switch_mode',
+    request: copilotRequestFor('switch_mode', facts),
+    title: facts.title,
+    ...copilotExtraContent(facts.extraContent),
+    ...copilotProseAnswer(facts, 'plain'),
+  }),
+  memory: (facts): ToolCallSpecVariant<'memory'> => ({
+    kind: 'memory',
+    request: copilotRequestFor('memory', facts),
+    title: facts.title,
+    ...copilotExtraContent(facts.extraContent),
+    ...copilotProseAnswer(facts, 'plain'),
+  }),
   // A roster of subagents, which `list_agents` writes as a markdown table or list.
-  agents: (facts): ToolCallSpecVariant<'agents'> => ({ kind: 'agents', request: copilotRequestFor('agents', facts), title: facts.title, ...copilotExtraContent(facts.extraContent), ...copilotProseAnswer(facts, 'markdown') }),
+  agents: (facts): ToolCallSpecVariant<'agents'> => ({
+    kind: 'agents',
+    request: copilotRequestFor('agents', facts),
+    title: facts.title,
+    ...copilotExtraContent(facts.extraContent),
+    ...copilotProseAnswer(facts, 'markdown'),
+  }),
   report: (facts): ToolCallSpecVariant<'report'> => ({
     kind: 'report',
     request: copilotRequestFor('report', facts),
     // A `view` that {@link copilotReclassify} moved here states NO title: the tool word
     // `view` over a page of prose says nothing the body does not. A native
     // `task_complete` or `report_progress` states its own.
-    ...(facts.wireKind !== 'read' ? { title: facts.title } : {}),
+    ...(facts.wireKind !== 'read'
+      ? { title: facts.title }
+      : {}),
     ...copilotExtraContent(facts.extraContent),
     // MARKDOWN: all three sources of this kind are a written page. `task_complete` and
     // `report_progress` are the turn's own summary, and the reclassified `view` reached
@@ -1065,7 +1377,9 @@ export function copilotToolCall(row: CopilotToolRow): ToolCall {
   const spec = copilotSpecFor(facts, copilotReclassify(facts))
   return createToolCall(
     { id: row.toolCallId, name: row.toolName, lifecycle: row.lifecycle },
-    facts.status === 'declined' ? declinedToolCallSpec(spec, facts.output) : spec,
+    facts.status === 'declined'
+      ? declinedToolCallSpec(spec, facts.output)
+      : spec,
   )
 }
 
@@ -1081,16 +1395,24 @@ function copilotCommandParts(facts: CopilotToolFacts): {
   // The BLOCK and the CODE are two decisions. One `shell_exit` block states the shell,
   // the directory and the output file whether or not it reports a usable code, and the
   // rows below read it for those. Only a safe integer states the code itself.
-  const exitBlock = exits.length === 1 ? exits[0] : undefined
+  const exitBlock = exits.length === 1
+    ? exits[0]
+    : undefined
   const reportedExit = pickNumber(exitBlock, 'exitCode', undefined)
-  const knownExit = reportedExit !== undefined && Number.isSafeInteger(reportedExit) ? reportedExit : undefined
+  const knownExit = reportedExit !== undefined && Number.isSafeInteger(reportedExit)
+    ? reportedExit
+    : undefined
   const trailer = facts.output.match(SHELL_COMPLETION)
   // The TRAILER states the code in decimal text of unlimited length, so it takes the
   // same safe-integer check as the structured block two lines above. Without it a
   // trailer reading `exit code 99999999999999999999` headed the row
   // `Error (exit 100000000000000000000)`, a number no platform can report.
-  const trailerExit = trailer ? Number(trailer[1]) : undefined
-  const exitCode = knownExit ?? (trailerExit !== undefined && Number.isSafeInteger(trailerExit) ? trailerExit : undefined)
+  const trailerExit = trailer
+    ? Number(trailer[1])
+    : undefined
+  const exitCode = knownExit ?? (trailerExit !== undefined && Number.isSafeInteger(trailerExit)
+    ? trailerExit
+    : undefined)
   const text = stripShellTrailer(facts.output)
   // Every text the result itself carries is already on the row: the displayed text and
   // each field `copilotOutput` chose between. A content block that repeats one of them
@@ -1106,16 +1428,30 @@ function copilotCommandParts(facts: CopilotToolFacts): {
   const extra = contents.filter(item => item !== exitBlock
     && (!isObject(item) || !(item.type === 'text' && shown.has(pickString(item, 'text')))))
   // Each entry is one LABEL/KEY pair, so the tuple states the shape the destructure reads.
-  const metadata = ([['Shell ID', 'shellId'], ['Directory', 'cwd']] as const)
+  const metadata = ([
+    ['Shell ID', 'shellId'],
+    ['Directory', 'cwd'],
+  ] as const)
     .flatMap(([label, key]) => {
       const value = pickString(exitBlock, key)
-      return value ? [{ label, value }] : []
+      return value
+        ? [
+            { label, value },
+          ]
+        : []
     })
   return {
     exitCode,
     text,
     extraContent: extra.length || facts.structuredJson
-      ? [...extra.map(parseMcpContentItem), ...(facts.structuredJson ? [{ type: 'unknown' as const, raw: facts.structuredJson }] : [])]
+      ? [
+          ...extra.map(parseMcpContentItem),
+          ...(facts.structuredJson
+            ? [
+                { type: 'unknown' as const, raw: facts.structuredJson },
+              ]
+            : []),
+        ]
       : undefined,
     metadata: metadata.length ? metadata : undefined,
   }
@@ -1140,11 +1476,23 @@ function copilotRichContent(rawArgs: Record<string, unknown>, contents: unknown[
     return undefined
   const fallbackPath = pickFirstString(rawArgs, TOOL_FILE_PATH_KEYS)
   const items = (contents ?? []).map(parseMcpContentItem).map(item =>
-    item.type === 'image' && fallbackPath ? { ...item, source: withFallbackFilePath(item.source, fallbackPath) } : item)
+    item.type === 'image' && fallbackPath
+      ? {
+          ...item,
+          source: withFallbackFilePath(item.source, fallbackPath),
+        }
+      : item)
   // The pretty STRING, exactly as the sibling execute path passes it. A round trip
   // through `JSON.parse` re-reads every number as a double, so a structured result
   // carrying an id past 2^53 drew a different id than the runtime sent.
-  return [...items, ...(structuredJson ? [{ type: 'unknown' as const, raw: structuredJson }] : [])]
+  return [
+    ...items,
+    ...(structuredJson
+      ? [
+          { type: 'unknown' as const, raw: structuredJson },
+        ]
+      : []),
+  ]
 }
 
 /** The generic result an unrecognized or MCP-shaped call answers with. */
@@ -1154,9 +1502,19 @@ function copilotGenericToolResult(facts: CopilotToolFacts): GenericToolResult {
     // An unmatched completion identifies no tool: its content text IS the result. A
     // FAILED call states that text as the error alone -- `GenericToolBody` draws
     // both fields with no guard, so putting it in each drew the same words twice.
-    content: parsed.length > 0 ? parsed : !facts.failed && facts.output ? [{ type: 'text', text: facts.output }] : [],
-    ...(facts.structuredJson ? { structuredJson: facts.structuredJson } : {}),
-    ...(facts.failed && facts.output ? { error: facts.output } : {}),
+    content: parsed.length > 0
+      ? parsed
+      : !facts.failed && facts.output
+          ? [
+              { type: 'text', text: facts.output },
+            ]
+          : [],
+    ...(facts.structuredJson
+      ? { structuredJson: facts.structuredJson }
+      : {}),
+    ...(facts.failed && facts.output
+      ? { error: facts.output }
+      : {}),
   }
 }
 
@@ -1164,27 +1522,55 @@ function copilotGenericToolResult(facts: CopilotToolFacts): GenericToolResult {
 function copilotSearchSource(wireKind: ToolKind, args: Record<string, unknown>, output: string): SearchResult {
   const glob = wireKind === 'glob'
   const empty = output.trim() === '' || /^No (?:files|matches) (?:found|matched)[.!]?$/i.test(output.trim())
-  const lines = empty ? [] : output.trim().split('\n').filter(Boolean)
+  const lines = empty
+    ? []
+    : output.trim().split('\n').filter(Boolean)
   const mode = searchOutputMode(args.output_mode)
   const fileList = glob || mode === 'files_with_matches'
   const countMode = mode === 'count'
-  const counts = countMode ? lines.map(line => line.match(/:(\d+)\s*$/)).filter(match => match !== null) : []
-  const hasContext = ['A', 'B', 'C', '-A', '-B', '-C', 'context', 'after_context', 'before_context']
+  const counts = countMode
+    ? lines.map(line => line.match(/:(\d+)\s*$/)).filter(match => match !== null)
+    : []
+  const hasContext = [
+    'A',
+    'B',
+    'C',
+    '-A',
+    '-B',
+    '-C',
+    'context',
+    'after_context',
+    'before_context',
+  ]
     .some(key => requestsContext(args[key]))
   // One count, whichever mode produced it: the row words it from the kind and the
   // mode, and the two can no longer be set at once to disagree.
   const matchCount = countMode
-    ? (counts.length === lines.length ? counts.reduce((total, match) => total + Number(match[1]), 0) : undefined)
-    : (!fileList && !hasContext ? lines.length : undefined)
+    ? (counts.length === lines.length
+        ? counts.reduce((total, match) => total + Number(match[1]), 0)
+        : undefined)
+    : (!fileList && !hasContext
+        ? lines.length
+        : undefined)
   // `mode` and `matchCount` are optional on the result, so each stays ABSENT when the
   // source stated none rather than present with `undefined`.
   return {
-    filenames: fileList ? lines : [],
-    content: fileList || empty ? '' : output,
-    numFiles: fileList || countMode ? lines.length : 0,
+    filenames: fileList
+      ? lines
+      : [],
+    content: fileList || empty
+      ? ''
+      : output,
+    numFiles: fileList || countMode
+      ? lines.length
+      : 0,
     numLines: 0,
-    ...(mode !== undefined ? { mode } : {}),
-    ...(matchCount !== undefined ? { matchCount } : {}),
+    ...(mode !== undefined
+      ? { mode }
+      : {}),
+    ...(matchCount !== undefined
+      ? { matchCount }
+      : {}),
     truncated: false,
     fallbackContent: empty ? '' : output,
     empty,

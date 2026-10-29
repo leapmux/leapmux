@@ -51,13 +51,17 @@ export function claudeSpawnedChildId(requestBody: unknown, spawnCallId: string):
       const text = claudeToolResultText(block.content)
       if (!text?.startsWith('Async agent launched successfully.'))
         return undefined
-      const ids = [...text.matchAll(/^agentId: ([\w-]{1,128}) \(internal ID\b/gim)]
+      const ids = [
+        ...text.matchAll(/^agentId: ([\w-]{1,128}) \(internal ID\b/gim),
+      ]
       if (ids.length !== 1 || childId !== undefined)
         return undefined
       childId = ids[0]?.[1]
     }
   }
-  return callCount === 1 ? childId : undefined
+  return callCount === 1
+    ? childId
+    : undefined
 }
 
 function validateOptions(options: ClaudeChildReportOptions): CompleteReportOptions {
@@ -68,7 +72,13 @@ function validateOptions(options: ClaudeChildReportOptions): CompleteReportOptio
     completionStatus: options.completionStatus ?? CLAUDE_CHILD_COMPLETED_STATUS,
     completionReply: options.completionReply ?? CLAUDE_CHILD_COMPLETION_REPLY,
   }
-  for (const key of ['spawnCallId', 'report', 'reply', 'completionStatus', 'completionReply'] as const)
+  for (const key of [
+    'spawnCallId',
+    'report',
+    'reply',
+    'completionStatus',
+    'completionReply',
+  ] as const)
     requireNonemptyText(complete[key], 'The Claude parent report rule', key)
   return complete
 }

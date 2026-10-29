@@ -55,7 +55,9 @@ describe('SectionNameDialog', () => {
     const onSubmit = vi.fn(async () => {})
     const props = renderDialog(CREATE, { onSubmit })
 
-    fireEvent.input(nameInput(), { target: { value: 'Reviews' } })
+    fireEvent.input(nameInput(), {
+      target: { value: 'Reviews' },
+    })
     fireEvent.click(submitButton())
 
     await waitFor(() => expect(onSubmit).toHaveBeenCalledWith('Reviews'))
@@ -68,7 +70,9 @@ describe('SectionNameDialog', () => {
     const onSubmit = vi.fn(async () => {})
     renderDialog(CREATE, { onSubmit })
 
-    fireEvent.input(nameInput(), { target: { value: '  Code\u200Breview\u00A0board  ' } })
+    fireEvent.input(nameInput(), {
+      target: { value: '  Code\u200Breview\u00A0board  ' },
+    })
     fireEvent.click(submitButton())
 
     // Trimmed, the zero-width space dropped, and the no-break space folded to
@@ -79,7 +83,9 @@ describe('SectionNameDialog', () => {
   it('refuses a name that cleans to nothing', () => {
     renderDialog(CREATE)
 
-    fireEvent.input(nameInput(), { target: { value: '\u200B\uFEFF\u00AD' } })
+    fireEvent.input(nameInput(), {
+      target: { value: '\u200B\uFEFF\u00AD' },
+    })
     expect(submitButton().disabled).toBe(true)
   })
 
@@ -91,7 +97,9 @@ describe('SectionNameDialog', () => {
     })
     const props = renderDialog(CREATE, { onSubmit })
 
-    fireEvent.input(nameInput(), { target: { value: 'Reviews' } })
+    fireEvent.input(nameInput(), {
+      target: { value: 'Reviews' },
+    })
     fireEvent.click(submitButton())
 
     expect(await screen.findByText('section limit reached')).toBeInTheDocument()
@@ -110,7 +118,9 @@ describe('SectionNameDialog', () => {
       .mockResolvedValueOnce(undefined)
     const props = renderDialog(CREATE, { onSubmit })
 
-    fireEvent.input(nameInput(), { target: { value: 'Reviews' } })
+    fireEvent.input(nameInput(), {
+      target: { value: 'Reviews' },
+    })
     fireEvent.click(submitButton())
     expect(await screen.findByText('section limit reached')).toBeInTheDocument()
 

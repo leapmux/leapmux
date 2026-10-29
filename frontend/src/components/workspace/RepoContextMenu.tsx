@@ -58,7 +58,9 @@ const CheckoutActions: Component<{
   // -- a second `providers()` call beside the first could not be narrowed.
   const providerProps = () => {
     const list = providers()
-    return list !== undefined ? { availableProviders: list } : {}
+    return list !== undefined
+      ? { availableProviders: list }
+      : {}
   }
 
   return (
@@ -70,7 +72,9 @@ const CheckoutActions: Component<{
               {...providerProps()}
               availableShells={shells()}
               defaultShell={defaultShell()}
-              {...(props.disabledReason !== undefined ? { disabledReason: props.disabledReason } : {})}
+              {...(props.disabledReason !== undefined
+                ? { disabledReason: props.disabledReason }
+                : {})}
               onNewAgent={provider => actions().onNewAgent(provider)}
               onNewAgentAdvanced={() => actions().onNewAgentAdvanced()}
               onNewTerminalWithShell={shell => actions().onNewTerminalWithShell(shell)}
@@ -115,7 +119,9 @@ export const RepoContextMenu: Component<RepoContextMenuProps> = (props) => {
   return (
     <DropdownMenu
       trigger={rowContextMenuTrigger({ 'data-testid': 'repo-row-menu-trigger' })}
-      {...(props.contextMenuFor !== undefined ? { contextMenuFor: props.contextMenuFor } : {})}
+      {...(props.contextMenuFor !== undefined
+        ? { contextMenuFor: props.contextMenuFor }
+        : {})}
       onToggle={(open) => {
         setMenuOpen(open)
         props.onToggle?.(open)

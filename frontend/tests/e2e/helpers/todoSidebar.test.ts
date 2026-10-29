@@ -19,11 +19,18 @@ vi.mock('./ui', async importOriginal => ({
 }))
 vi.mock('./goalsAndTodos', () => ({
   goalsAndTodosSection: () => ({ name: 'section' }),
-  goalsAndTodosList: () => ({ name: 'list', locator: (selector: string) => ({ name: selector }) }),
+  goalsAndTodosList: () => ({
+    name: 'list',
+    locator: (selector: string) => ({ name: selector }),
+  }),
   expandGoalsAndTodosSection: async () => { fake.events.push('expand') },
 }))
 vi.mock('./providerToolCalls', () => ({
-  updateTodosToolCall: (_provider: AgentProvider, id: string, steps: unknown) => ({ id, name: 'unit-todo', arguments: { steps } }),
+  updateTodosToolCall: (_provider: AgentProvider, id: string, steps: unknown) => ({
+    id,
+    name: 'unit-todo',
+    arguments: { steps },
+  }),
 }))
 vi.mock('@playwright/test', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@playwright/test')>()
@@ -78,10 +85,18 @@ describe('initialTodoList', () => {
   })
 
   it('starts two steps completed and pending, with no step in progress', () => {
-    expect(initialTodoList(['First', 'Last'])).toEqual([{ step: 'First', status: 'completed' }, { step: 'Last', status: 'pending' }])
+    expect(initialTodoList(['First', 'Last'])).toEqual([
+      { step: 'First', status: 'completed' },
+      { step: 'Last', status: 'pending' },
+    ])
   })
 
-  it.each([[[]], [['Only']]])('refuses %j, which cannot start completed and pending', (steps) => {
+  it.each([
+    [[]],
+    [
+      ['Only'],
+    ],
+  ])('refuses %j, which cannot start completed and pending', (steps) => {
     expect(() => initialTodoList(steps)).toThrow('two or more steps')
   })
 
@@ -117,8 +132,12 @@ describe('exerciseTodoListReplacement', () => {
   it('writes the first list, checks each step and status, replaces the list, and checks it again after a reload', async () => {
     await exerciseTodoListReplacement(todoContext())
     expect(fake.queued.map(steps => steps.length)).toEqual([2, 2])
-    expect(fake.queued[0]?.[0]?.toolCalls?.[0]?.arguments).toEqual({ steps: initialTodoList(TODO_LIST_STEPS) })
-    expect(fake.queued[1]?.[0]?.toolCalls?.[0]?.arguments).toEqual({ steps: completedTodoList(TODO_LIST_STEPS) })
+    expect(fake.queued[0]?.[0]?.toolCalls?.[0]?.arguments).toEqual({
+      steps: initialTodoList(TODO_LIST_STEPS),
+    })
+    expect(fake.queued[1]?.[0]?.toolCalls?.[0]?.arguments).toEqual({
+      steps: completedTodoList(TODO_LIST_STEPS),
+    })
     expect(fake.events).toEqual([
       'queue 2',
       'send Write a 3-step to-do list.',
@@ -150,7 +169,12 @@ describe('exerciseTodoListReplacement', () => {
   it('answers in the step of the tool call for a provider that answers in that step', async () => {
     await exerciseTodoListReplacement(todoContext(), { answerStep: 'same-step' })
     expect(fake.queued.map(steps => steps.length)).toEqual([1, 1])
-    expect(fake.queued[0]?.[0]).toMatchObject({ text: 'The plan is written.', toolCalls: [{ id: 'todos-first' }] })
+    expect(fake.queued[0]?.[0]).toMatchObject({
+      text: 'The plan is written.',
+      toolCalls: [
+        { id: 'todos-first' },
+      ],
+    })
     expect(fake.events.filter(event => event.startsWith('steps'))).toEqual(['steps 1', 'steps 2'])
   })
 
@@ -164,7 +188,13 @@ describe('exerciseTodoListReplacement', () => {
       },
     })
     expect(approvals).toEqual(['Inspect the repository', 'Report their purpose'])
-    expect(fake.events.slice(0, 5)).toEqual(['queue 2', 'send Write a 2-step to-do list.', 'steps 1', 'approve Inspect the repository', 'steps 2'])
+    expect(fake.events.slice(0, 5)).toEqual([
+      'queue 2',
+      'send Write a 2-step to-do list.',
+      'steps 1',
+      'approve Inspect the repository',
+      'steps 2',
+    ])
   })
 
   it('runs the check of the caller after the first list', async () => {

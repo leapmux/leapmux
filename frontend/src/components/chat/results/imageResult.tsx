@@ -89,7 +89,9 @@ export function ImageResultView(props: {
   const [loading, setLoading] = createSignal(false)
   const [loadError, setLoadError] = createSignal('')
   const [decodeError, setDecodeError] = createSignal(false)
-  const filePath = () => !props.source.data && !props.source.url ? props.source.filePath : undefined
+  const filePath = () => !props.source.data && !props.source.url
+    ? props.source.filePath
+    : undefined
   /**
    * Whether a read of the file can start at all.
    *
@@ -115,19 +117,28 @@ export function ImageResultView(props: {
     }
     setLoading(true)
     setLoadError('')
-    void (refresh ? read(path, { refresh: true }) : read(path)).then((source) => {
+    void (refresh
+      ? read(path, { refresh: true })
+      : read(path)).then((source) => {
       if (current === generation)
         setLoaded(source)
     }).catch((error: unknown) => {
-      if (current === generation)
-        setLoadError(error instanceof Error ? error.message : String(error))
+      if (current === generation) {
+        setLoadError(error instanceof Error
+          ? error.message
+          : String(error))
+      }
     }).finally(() => {
       if (current === generation)
         setLoading(false)
     })
   }
   createEffect(on(
-    () => [filePath(), props.actions?.loadFileImage, props.actions?.deferLoad()] as const,
+    () => [
+      filePath(),
+      props.actions?.loadFileImage,
+      props.actions?.deferLoad(),
+    ] as const,
     () => {
       generation++
       setLoaded(undefined)
@@ -145,18 +156,24 @@ export function ImageResultView(props: {
     // Keep the current geometry while the virtualizer defers height changes.
     if (path && paused && previous?.path === path)
       return previous
-    const resolved = loaded() ?? (path ? props.actions?.cachedFileImage(path) : undefined)
+    const resolved = loaded() ?? (path
+      ? props.actions?.cachedFileImage(path)
+      : undefined)
     const error = loadError()
     // The resolved copy's description fills an absent one; absent stays absent
     // rather than an explicitly undefined key.
-    const description = resolved ? props.source.description ?? resolved.description : undefined
+    const description = resolved
+      ? props.source.description ?? resolved.description
+      : undefined
     return {
       path,
       source: resolved
         ? {
             ...props.source,
             ...resolved,
-            ...(description !== undefined ? { description } : {}),
+            ...(description !== undefined
+              ? { description }
+              : {}),
           }
         : props.source,
       loading: loading() || (canLoad() && !resolved && !error),
@@ -172,7 +189,9 @@ export function ImageResultView(props: {
     if (stated)
       return stated
     const src = info().src
-    return src ? sniffImageDimensionsFromDataUrl(src) : null
+    return src
+      ? sniffImageDimensionsFromDataUrl(src)
+      : null
   })
   // Flips when the decoded image disagrees with the sniffed dimensions
   // (sniffer bug / exotic file): the reservation is dropped and layout falls
@@ -180,11 +199,15 @@ export function ImageResultView(props: {
   // the box — it just degrades to today's measure-on-load behavior.
   const [reservationBroken, setReservationBroken] = createSignal(false)
   createEffect(on(() => info().src, () => setReservationBroken(false)))
-  const reserved = () => (reservationBroken() ? null : dims())
+  const reserved = () => (reservationBroken()
+    ? null
+    : dims())
 
   const sizeStyle = () => {
     const d = reserved()
-    return d ? imageReservationStyle(d) : undefined
+    return d
+      ? imageReservationStyle(d)
+      : undefined
   }
 
   const verifyReservation = (img: HTMLImageElement) => {
@@ -207,8 +230,12 @@ export function ImageResultView(props: {
     const src = source()
     opener({
       index: props.index ?? 0,
-      ...(src.filePath !== undefined ? { filePath: src.filePath } : {}),
-      ...(props.title !== undefined ? { title: props.title } : {}),
+      ...(src.filePath !== undefined
+        ? { filePath: src.filePath }
+        : {}),
+      ...(props.title !== undefined
+        ? { title: props.title }
+        : {}),
     })
   }
   const openable = () => Boolean(props.actions?.openImage)
@@ -219,10 +246,14 @@ export function ImageResultView(props: {
       style={sizeStyle()}
       src={info().src}
       alt={source().description || source().mimeType || 'image'}
-      loading={props.actions?.premeasurePass() ? 'eager' : 'lazy'}
+      loading={props.actions?.premeasurePass()
+        ? 'eager'
+        : 'lazy'}
       decoding="async"
       referrerpolicy="no-referrer"
-      data-size-reserved={reserved() ? '1' : undefined}
+      data-size-reserved={reserved()
+        ? '1'
+        : undefined}
       onLoad={e => verifyReservation(e.currentTarget)}
       onError={(event) => {
         if (event.currentTarget.getAttribute('src') === info().src)
@@ -235,9 +266,23 @@ export function ImageResultView(props: {
     <Show
       when={info().src && !display().decodeError}
       fallback={(
-        <Show when={display().loading || display().error || display().decodeError} fallback={<ImageResultPlaceholder source={source()} {...(info().reason !== undefined ? { reason: info().reason } : {})} />}>
+        <Show
+          when={display().loading || display().error || display().decodeError}
+          fallback={(
+            <ImageResultPlaceholder
+              source={source()}
+              {...(info().reason !== undefined
+                ? { reason: info().reason }
+                : {})}
+            />
+          )}
+        >
           <div class={toolImageRow}>
-            <div class={toolInputSummary}>{display().loading ? 'Loading image…' : display().error || 'The image could not be decoded'}</div>
+            <div class={toolInputSummary}>
+              {display().loading
+                ? 'Loading image…'
+                : display().error || 'The image could not be decoded'}
+            </div>
             <Show when={filePath() && (display().error || display().decodeError) && !display().loading}>
               <div><button type="button" class="small outline" onClick={() => loadFile(true)}>Retry image</button></div>
             </Show>
@@ -272,7 +317,19 @@ export function ImageResultList(props: {
   return (
     <For each={props.sources}>
       {(source, index) => (
-        <ImageResultView source={source} index={(props.indexOffset ?? 0) + index()} {...(props.title !== undefined ? { title: props.title } : {})} {...(props.actions !== undefined ? { actions: props.actions } : {})} {...(props.holdDisplay !== undefined ? { holdDisplay: props.holdDisplay } : {})} />
+        <ImageResultView
+          source={source}
+          index={(props.indexOffset ?? 0) + index()}
+          {...(props.title !== undefined
+            ? { title: props.title }
+            : {})}
+          {...(props.actions !== undefined
+            ? { actions: props.actions }
+            : {})}
+          {...(props.holdDisplay !== undefined
+            ? { holdDisplay: props.holdDisplay }
+            : {})}
+        />
       )}
     </For>
   )
@@ -284,7 +341,9 @@ function ImageResultPlaceholder(props: {
 }): JSX.Element {
   const externalUrl = () => {
     const url = props.source.url ?? ''
-    return url.startsWith('http://') || url.startsWith('https://') ? url : ''
+    return url.startsWith('http://') || url.startsWith('https://')
+      ? url
+      : ''
   }
   // The same wording the Markdown path emits, from the one helper -- a reader
   // who meets the same refused image in a quote reads the same sentence.

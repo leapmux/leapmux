@@ -7,7 +7,12 @@ junieTest.describe('Junie basic chat', () => {
   junieTest('does not expose model reasoning as an ACP thought row', async ({ authenticatedResponsesJunieWorkspace, page, modelScript }) => {
     void authenticatedResponsesJunieWorkspace
     const reasoning = 'JUNIE_THOUGHT_MARKER I compare the two values.'
-    const start = await modelScript.queue({ reasoning, toolCalls: [junieAnswerToolCall('junie-thought-answer', 'The answer is 6912.')] })
+    const start = await modelScript.queue({
+      reasoning,
+      toolCalls: [
+        junieAnswerToolCall('junie-thought-answer', 'The answer is 6912.'),
+      ],
+    })
     await sendMessage(page, modelScript.prompt('Add 1234 and 5678.'))
     await modelScript.waitForSteps(start + 1)
     await waitForAgentIdle(page)

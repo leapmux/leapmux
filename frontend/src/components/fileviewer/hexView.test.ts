@@ -56,7 +56,16 @@ describe('formatRow', () => {
   })
 
   it('handles exactly 8 bytes (first group full, second group empty)', () => {
-    const bytes = new Uint8Array([0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48])
+    const bytes = new Uint8Array([
+      0x41,
+      0x42,
+      0x43,
+      0x44,
+      0x45,
+      0x46,
+      0x47,
+      0x48,
+    ])
     const result = formatRow(bytes, 0)
     expect(result.hex).toBe('41 42 43 44 45 46 47 48                         ')
     expect(result.ascii).toBe('ABCDEFGH        ')

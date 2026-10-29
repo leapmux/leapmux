@@ -14,7 +14,10 @@ deepseekHarnessTest('shows actual native nonzero context use', async ({ native }
 
 deepseekHarnessTest('preserves explicit zero native usage in the Context row after reload', async ({ native, page, modelScript }) => {
   const agent = await currentNativeAgent(native)
-  const step = await modelScript.queue({ text: 'The actual native zero-count turn completed.', usage: { inputTokens: 0, outputTokens: 0 } })
+  const step = await modelScript.queue({
+    text: 'The actual native zero-count turn completed.',
+    usage: { inputTokens: 0, outputTokens: 0 },
+  })
   await sendMessage(page, modelScript.prompt('Complete the exact native zero-count turn.'))
   await modelScript.waitForSteps(step + 1)
   await waitForAgentIdle(page)
@@ -24,7 +27,14 @@ deepseekHarnessTest('preserves explicit zero native usage in the Context row aft
     const snapshot = await readNativeMessageSnapshot(native, agent.id)
     const usage = snapshot.messages.map(message => deepseekHarnessContextUsage(parseMessageContent(message)))
     // The Worker states the native context window (`request/context`) beside the native usage, which states none.
-    expect(usage).toContainEqual({ inputTokens: 0, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, contextTokens: 0, contextWindow: DEEPSEEK_HARNESS_CONTEXT_WINDOW })
+    expect(usage).toContainEqual({
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      contextTokens: 0,
+      contextWindow: DEEPSEEK_HARNESS_CONTEXT_WINDOW,
+    })
     const card = await openAgentInfoCard(page)
     const row = card.getByText('Context', { exact: true }).locator('..')
     // The card prints counts through `formatTokenCount`, so the 1,000,000 window reads "1.0M". The default window of 200,000 would read "200.0k".

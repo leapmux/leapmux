@@ -338,7 +338,10 @@ test.describe('Quote and Mention', () => {
       if (!await quoteButton.isVisible())
         await lineElements.nth(2).click({ clickCount: 3 })
       expect(await quoteButton.isVisible(), 'the triple click raises the quote button').toBe(true)
-    }).toPass({ intervals: [250, 500], timeout: waitTimeoutBeforeTestDeadline() })
+    }).toPass({
+      intervals: [250, 500],
+      timeout: waitTimeoutBeforeTestDeadline(),
+    })
 
     // Click the quote button
     await quoteButton.click()

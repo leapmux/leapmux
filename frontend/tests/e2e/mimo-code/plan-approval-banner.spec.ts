@@ -17,7 +17,10 @@ import { MIMO_AGENT } from './scenarios'
  * the plan agent: on any other agent it answers that plan mode is not active.
  */
 async function openPlanAgent(page: Page, server: { hubUrl: string, adminToken: string, workerId: string }, workspace: WorkspaceFixture): Promise<void> {
-  await openProviderAgent(server, workspace.workspaceId, MIMO_AGENT, { directoryPrefix: 'mimo-plan-', optionValues: { [OPTION_ID_PERMISSION_MODE]: 'plan' } })
+  await openProviderAgent(server, workspace.workspaceId, MIMO_AGENT, {
+    directoryPrefix: 'mimo-plan-',
+    optionValues: { [OPTION_ID_PERMISSION_MODE]: 'plan' },
+  })
   await openWorkspace(page, workspace.workspaceId)
   await expectSettingsChip(page, 'Plan')
 }
@@ -28,7 +31,11 @@ mimoTest.describe('MiMo Code plan approval', () => {
   mimoTest('an approved plan switches the agent to Build and the turn goes on', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
     await openPlanAgent(page, leapmuxServer, authenticatedEmptyWorkspace)
     const start = await modelScript.queue(
-      { toolCalls: [exitPlanModeToolCall(AgentProvider.MIMO_CODE, 'plan-exit', '')] },
+      {
+        toolCalls: [
+          exitPlanModeToolCall(AgentProvider.MIMO_CODE, 'plan-exit', ''),
+        ],
+      },
       { text: 'PLAN_EXECUTION_STARTED' },
     )
     await sendMessage(page, modelScript.prompt('Finish the plan and ask for approval.'))
@@ -54,7 +61,11 @@ mimoTest.describe('MiMo Code plan approval', () => {
   mimoTest('a plain rejection keeps the plan agent', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
     await openPlanAgent(page, leapmuxServer, authenticatedEmptyWorkspace)
     const start = await modelScript.queue(
-      { toolCalls: [exitPlanModeToolCall(AgentProvider.MIMO_CODE, 'plan-exit', '')] },
+      {
+        toolCalls: [
+          exitPlanModeToolCall(AgentProvider.MIMO_CODE, 'plan-exit', ''),
+        ],
+      },
       { text: 'PLAN_KEPT' },
     )
     await sendMessage(page, modelScript.prompt('Finish the plan and ask for approval.'))
@@ -79,7 +90,11 @@ mimoTest.describe('MiMo Code plan approval', () => {
   // words to the model.
   mimoTest('feedback keeps the plan agent and reaches the model', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
     await openPlanAgent(page, leapmuxServer, authenticatedEmptyWorkspace)
-    const start = await modelScript.queue({ toolCalls: [exitPlanModeToolCall(AgentProvider.MIMO_CODE, 'plan-exit', '')] })
+    const start = await modelScript.queue({
+      toolCalls: [
+        exitPlanModeToolCall(AgentProvider.MIMO_CODE, 'plan-exit', ''),
+      ],
+    })
     await modelScript.rule({
       name: 'the model reads the plan feedback',
       when: { body: 'Split the migration into two steps' },

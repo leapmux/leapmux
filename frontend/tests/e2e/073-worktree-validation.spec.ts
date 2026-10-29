@@ -37,7 +37,10 @@ test.describe('repository branch discovery', () => {
     // disabled trigger throws, so the wait retries the read.
     await retryUntilPass(async () => {
       const options = await menuOptionTexts(dialog, 'branch-select-menu')
-      expect({ beta: options.includes('beta-branch'), alpha: options.includes('alpha-branch') }, 'the menu lists the branches of the new directory')
+      expect({
+        beta: options.includes('beta-branch'),
+        alpha: options.includes('alpha-branch'),
+      }, 'the menu lists the branches of the new directory')
         .toEqual({ beta: true, alpha: false })
     })
     await dialog.getByRole('button', { name: 'Cancel' }).click()

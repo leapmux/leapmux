@@ -10,23 +10,46 @@ function permissionRequest(request: Record<string, unknown>): Record<string, unk
     method: 'session.event',
     params: {
       sessionId: 'session-1',
-      event: { id: 'event-1', type: COPILOT_EVENT.PermissionRequested, data: { permissionRequest: request } },
+      event: {
+        id: 'event-1',
+        type: COPILOT_EVENT.PermissionRequested,
+        data: { permissionRequest: request },
+      },
     },
   }
 }
 
 /** One stored answer, as the worker persists it: the runtime's own decision word. */
 function answered(kind: string): Record<string, unknown> {
-  return { type: 'control_response', response: { subtype: 'success', request_id: 'request-1', response: { kind } } }
+  return {
+    type: 'control_response',
+    response: {
+      subtype: 'success',
+      request_id: 'request-1',
+      response: { kind },
+    },
+  }
 }
 
 describe('copilotControlResponseSummary', () => {
-  it.each([['allow', 'Allow'], ['deny', 'Deny']])('reads the sampling %s decision', (decision, text) => {
+  it.each([
+    ['allow', 'Allow'],
+    ['deny', 'Deny'],
+  ])('reads the sampling %s decision', (decision, text) => {
     expect(copilotControlResponseSummary({
       claimToken: 'claim',
       requestId: 'sample',
-      request: { method: 'session.event', params: { event: { type: 'sampling.requested', data: {} } } },
-      response: { response: { response: { decision } } },
+      request: {
+        method: 'session.event',
+        params: {
+          event: { type: 'sampling.requested', data: {} },
+        },
+      },
+      response: {
+        response: {
+          response: { decision },
+        },
+      },
     })).toEqual({ kind: 'label', text })
   })
 
@@ -38,8 +61,15 @@ describe('copilotControlResponseSummary', () => {
     expect(copilotControlResponseSummary({
       claimToken: 'claim',
       requestId: 'switch',
-      request: { method: 'session.event', params: { event: { type: 'auto_mode_switch.requested', data: {} } } },
-      response: { response: { response: answer } },
+      request: {
+        method: 'session.event',
+        params: {
+          event: { type: 'auto_mode_switch.requested', data: {} },
+        },
+      },
+      response: {
+        response: { response: answer },
+      },
     })).toEqual({ kind: 'label', text })
   })
 
@@ -102,7 +132,12 @@ describe('copilotControlResponseSummary', () => {
   // `Object.prototype` reaches the two decision tables. An index read answers a
   // FUNCTION for each of these four, which `option.kind.startsWith` then calls -- and
   // the whole message goes to the error boundary rather than the row.
-  it.each(['toString', '__proto__', 'constructor', 'valueOf'])('answers null for the prototype member %s', (decision) => {
+  it.each([
+    'toString',
+    '__proto__',
+    'constructor',
+    'valueOf',
+  ])('answers null for the prototype member %s', (decision) => {
     const read = () => copilotControlResponseSummary({
       claimToken: 'claim-1',
       requestId: 'request-1',

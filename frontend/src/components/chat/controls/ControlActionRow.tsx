@@ -17,7 +17,9 @@ export interface ControlActionRowProps {
 
 /** Action buttons use the compact metrics that switches and small pill groups share. */
 export function actionButtonClass(outline?: boolean): string {
-  return outline === true ? `${compactControl} outline` : compactControl
+  return outline === true
+    ? `${compactControl} outline`
+    : compactControl
 }
 
 export const ControlActionRow: Component<ControlActionRowProps> = (props) => {

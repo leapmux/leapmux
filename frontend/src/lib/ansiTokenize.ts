@@ -27,7 +27,10 @@ export function ansiSyncTokenize(lang: string, code: string): CachedToken[][] | 
     // mergeLineTokens folds whitespace-only and same-style neighbors (guarding
     // ANSI background bars, which ARE visible on whitespace) — Shiki applies
     // these merges only on its codeToHast path, not codeToTokens.
-    return toCachedTokens(mergeLineTokens(shikiHighlighter.codeToTokens(code, { lang: 'ansi', ...dualThemeTokenOptions() }).tokens))
+    return toCachedTokens(mergeLineTokens(shikiHighlighter.codeToTokens(code, {
+      lang: 'ansi',
+      ...dualThemeTokenOptions(),
+    }).tokens))
   }
   catch {
     return null

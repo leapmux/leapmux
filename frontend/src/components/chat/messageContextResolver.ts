@@ -120,7 +120,9 @@ function newestRelatedMessage(first: AgentChatMessage | undefined, second: Agent
     return first
   if (first.id === second.id && first.seq === second.seq)
     return preferNewerSupplement(second, first)
-  return first.seq >= second.seq ? first : second
+  return first.seq >= second.seq
+    ? first
+    : second
 }
 
 export function createMessageContextResolver(source: MessageContextSources): MessageContextResolver {
@@ -157,7 +159,9 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
 
   function reference(message: AgentChatMessage, original = parseMessageContent(message), cache = true): ResolvedMessage {
     const version = source.contentVersion(message.id)
-    const previous = cache ? resolved.get(message.id) : undefined
+    const previous = cache
+      ? resolved.get(message.id)
+      : undefined
     if (previous?.reference.message === message && previous.reference.original === original
       && previous.contentVersion === version && previous.supplementalRevision === message.supplementalRevision) {
       return previous.reference
@@ -166,7 +170,12 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
       message,
       original,
       resolved: resolveMessageForRendering(original, message.agentProvider),
-      revision: { id: message.id, seq: message.seq, contentVersion: version, supplementalRevision: message.supplementalRevision },
+      revision: {
+        id: message.id,
+        seq: message.seq,
+        contentVersion: version,
+        supplementalRevision: message.supplementalRevision,
+      },
     }
     if (cache)
       resolved.set(message.id, { reference: value, contentVersion: version, supplementalRevision: message.supplementalRevision })
@@ -184,7 +193,9 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
       if (cached?.seq === message.seq && cached.supplementalRevision > latest.supplementalRevision)
         latest = cached
     }
-    return reference(latest, latest === message ? parsed : undefined)
+    return reference(latest, latest === message
+      ? parsed
+      : undefined)
   }
 
   function role(message: AgentChatMessage, parsed?: ParsedMessageContent): ToolSpanRole {
@@ -229,7 +240,9 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
     }
     for (const incoming of messages) {
       const resident = source.messageBySeq(incoming.seq)
-      const message = resident?.id === incoming.id ? preferNewerSupplement(incoming, resident) : incoming
+      const message = resident?.id === incoming.id
+        ? preferNewerSupplement(incoming, resident)
+        : incoming
       const previous = fetched.get(message.id)
       if (previous && preferNewerSupplement(previous, message) === previous)
         continue
@@ -240,8 +253,15 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
       changed = true
     }
     if (changed) {
-      if (reindex)
-        spans.reindex(source.scopeKey, [...fetched.values()].sort((a, b) => a.seq < b.seq ? -1 : a.seq > b.seq ? 1 : 0))
+      if (reindex) {
+        spans.reindex(source.scopeKey, [
+          ...fetched.values(),
+        ].sort((a, b) => a.seq < b.seq
+          ? -1
+          : a.seq > b.seq
+            ? 1
+            : 0))
+      }
       setCacheVersion(value => value + 1)
     }
   }
@@ -262,16 +282,23 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
       return selected.message
     }
     const resident = matches(source.spanMessage(identity, side))
-    const cached = matches(side === 'request' ? spans.getRequestMessage(source.scopeKey, identity) : spans.getResultMessage(source.scopeKey, identity))
+    const cached = matches(side === 'request'
+      ? spans.getRequestMessage(source.scopeKey, identity)
+      : spans.getResultMessage(source.scopeKey, identity))
     const message = newestRelatedMessage(resident, cached)
-    return message ? reference(message) : undefined
+    return message
+      ? reference(message)
+      : undefined
   }
 
   function messageBySeq(seq: bigint): AgentChatMessage | undefined {
     const resident = source.messageBySeq(seq)
     for (const cached of fetched.values()) {
-      if (cached.seq === seq)
-        return resident ? newestRelatedMessage(resident, cached) : cached
+      if (cached.seq === seq) {
+        return resident
+          ? newestRelatedMessage(resident, cached)
+          : cached
+      }
     }
     return resident
   }
@@ -281,7 +308,9 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
     const observed = messageBySeq(recovered.seq)
     if (!observed)
       return recovered
-    return observed.id === recovered.id ? preferNewerSupplement(recovered, observed) : observed
+    return observed.id === recovered.id
+      ? preferNewerSupplement(recovered, observed)
+      : observed
   }
 
   function prune(messages: AgentChatMessage[]): void {
@@ -317,7 +346,13 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
       }
     }
     if (changed) {
-      spans.reindex(source.scopeKey, [...fetched.values()].sort((a, b) => a.seq < b.seq ? -1 : a.seq > b.seq ? 1 : 0))
+      spans.reindex(source.scopeKey, [
+        ...fetched.values(),
+      ].sort((a, b) => a.seq < b.seq
+        ? -1
+        : a.seq > b.seq
+          ? 1
+          : 0))
       setCacheVersion(value => value + 1)
     }
   }
@@ -456,7 +491,9 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
     resolvedMessage: current,
     role,
     visibleRows,
-    fileImage: (path, options) => disposed ? Promise.reject(new DOMException('The image resolver is no longer active', 'AbortError')) : fileImages.load(path, options),
+    fileImage: (path, options) => disposed
+      ? Promise.reject(new DOMException('The image resolver is no longer active', 'AbortError'))
+      : fileImages.load(path, options),
     cachedFileImage: fileImages.peek,
     request: identity => related(identity, 'request'),
     result: identity => related(identity, 'result'),
@@ -503,17 +540,23 @@ export function createMessageContextResolver(source: MessageContextSources): Mes
       if (seq <= 0n || disposed)
         return undefined
       const message = messageBySeq(seq)
-      return message ? reference(message, undefined, false) : undefined
+      return message
+        ? reference(message, undefined, false)
+        : undefined
     },
     message,
-    backgroundTask: rowKey => disposed ? undefined : source.backgroundTask(rowKey),
+    backgroundTask: rowKey => disposed
+      ? undefined
+      : source.backgroundTask(rowKey),
     // The lookup takes the WHOLE span identity, because the store keys an entry
     // by the provider session and the span together. The producer states the
     // session on the `running_tool` payload, so a row reaches its own entry and
     // no other session's. Two clears still end an entry's life: a lifecycle
     // event clears the agent's whole store (clearPerTurnLiveState), and the
     // tool's result row drops its own entry (dropFinishedToolProgress).
-    progress: identity => disposed ? undefined : source.progress(identity),
+    progress: identity => disposed
+      ? undefined
+      : source.progress(identity),
     contentVersion: messageId => source.contentVersion(messageId),
   }
 }

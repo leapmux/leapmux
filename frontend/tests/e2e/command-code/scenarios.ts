@@ -21,7 +21,10 @@ export async function nativeContext(fixtures: NativeContextFixtures): Promise<Ma
 }
 
 export function nativeLaunch(context: ManagedNativeScenarioContext) {
-  return resolveNativeStartupLaunch(context.leapmuxServer.agentEnv, { binaryName: 'command-code', holdWhen: ['--rpc'] })
+  return resolveNativeStartupLaunch(context.leapmuxServer.agentEnv, {
+    binaryName: 'command-code',
+    holdWhen: ['--rpc'],
+  })
 }
 
 /** Hold the native final reply after an actual child file read. */
@@ -31,7 +34,10 @@ export async function runningChild(context: ManagedNativeScenarioContext, option
   const task = `COMMANDCODECHILD${marker} read the supplied file and report one word.`
   const path = join(parent.workingDir, `native-child-${marker}.txt`)
   writeFileSync(path, `NATIVE_CHILD_FILE${marker}\n`)
-  const spawn = spawnSubagentToolCall(context.provider, `spawn-${marker}`, { description: HELD_NATIVE_CHILD_DESCRIPTION, prompt: context.modelScript.prompt(task) })
+  const spawn = spawnSubagentToolCall(context.provider, `spawn-${marker}`, {
+    description: HELD_NATIVE_CHILD_DESCRIPTION,
+    prompt: context.modelScript.prompt(task),
+  })
   return openRunningNativeChild(context, {
     gate: `native-child-${marker}`,
     child: {
@@ -40,8 +46,15 @@ export async function runningChild(context: ManagedNativeScenarioContext, option
       finalStep: { text: `NATIVE_CHILD_REPORT${marker}` },
     },
     spawn,
-    parentSteps: [{ toolCalls: [spawn] }, { text: 'The native parent completed.' }],
-    ...(options.allowExistingRows === undefined ? {} : { allowExistingRows: options.allowExistingRows }),
+    parentSteps: [
+      {
+        toolCalls: [spawn],
+      },
+      { text: 'The native parent completed.' },
+    ],
+    ...(options.allowExistingRows === undefined
+      ? {}
+      : { allowExistingRows: options.allowExistingRows }),
   })
 }
 

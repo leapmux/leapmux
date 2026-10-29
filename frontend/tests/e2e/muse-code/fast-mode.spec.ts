@@ -2,5 +2,8 @@ import { exerciseCapabilityProbe, expectMissingSetting } from '../helpers/unsupp
 import { museTest } from '../muse-fixtures'
 
 museTest('proves the native fast-mode limit after a real sidebar operation', async ({ native }) => {
-  await expectMissingSetting(native, { feature: 'fast-mode', relatedProof: () => exerciseCapabilityProbe(native) })
+  await expectMissingSetting(native, {
+    feature: 'fast-mode',
+    relatedProof: () => exerciseCapabilityProbe(native),
+  })
 })

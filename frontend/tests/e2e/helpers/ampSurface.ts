@@ -56,7 +56,9 @@ const AMP_SERVER_SUBAGENT_TOOLS: ReadonlySet<string> = new Set(Object.values(AMP
  *
  * Every other local tool runs under the name the model called it by.
  */
-const EXECUTOR_TOOL_NAMES: ReadonlyMap<string, string> = new Map([[AMP_SHELL_TOOL.ShellCommand, AMP_TOOL_NAME.AsyncShellCommand]])
+const EXECUTOR_TOOL_NAMES: ReadonlyMap<string, string> = new Map([
+  [AMP_SHELL_TOOL.ShellCommand, AMP_TOOL_NAME.AsyncShellCommand],
+])
 
 /** The mode a thread starts in when its creation states none. Amp's own default. */
 const DEFAULT_AGENT_MODE = 'medium'
@@ -124,7 +126,9 @@ function ampRequestContext(inference: AmpInference): ModelRequestContext {
     body: inference.body,
     systemText: '',
     userText: inference.userText,
-    ...(inference.mockCredential ? { mockCredential: inference.mockCredential } : {}),
+    ...(inference.mockCredential
+      ? { mockCredential: inference.mockCredential }
+      : {}),
   }
 }
 
@@ -241,7 +245,14 @@ interface ActorThread {
   mockCredential?: MockModelCredential
 }
 
-const MOCK_USER = { id: 'user_leapmux_e2e', email: 'e2e@leapmux.invalid', username: 'leapmux-e2e', displayName: 'LeapMux E2E', features: [], team: null }
+const MOCK_USER = {
+  id: 'user_leapmux_e2e',
+  email: 'e2e@leapmux.invalid',
+  username: 'leapmux-e2e',
+  displayName: 'LeapMux E2E',
+  features: [],
+  team: null,
+}
 
 /** Build the Amp service. */
 export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
@@ -291,7 +302,9 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
         thread.tree = seeded.tree
         thread.messages = seeded.messages.map(message => ({
           role: message.role,
-          content: [{ type: 'text', text: message.text, blockState: 'complete' }],
+          content: [
+            { type: 'text', text: message.text, blockState: 'complete' },
+          ],
           messageId: ampMessageID(),
         }))
         thread.seq = thread.messages.length
@@ -300,18 +313,26 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
         writeMockJSON(response, 201, viewOf(thread))
         return
       }
-      writeMockJSON(response, 200, [...threads.values()].map(viewOf))
+      writeMockJSON(response, 200, [
+        ...threads.values(),
+      ].map(viewOf))
       return
     }
     if (url.pathname === '/api/thread-actors' && request.method === 'POST') {
       const body = await readAmpJSON(request)
-      const features: unknown = isObject(body) && body.features !== undefined ? body.features : []
+      const features: unknown = isObject(body) && body.features !== undefined
+        ? body.features
+        : []
       if (!Array.isArray(features) || !features.every((feature): feature is string => typeof feature === 'string')) {
         writeMockJSON(response, 400, { error: 'Amp thread features must be an array of strings.' })
         return
       }
-      const requested = isObject(body) && typeof body.threadId === 'string' ? body.threadId : ''
-      const thread = threadFor(requested || `T-${randomUUID()}`, isObject(body) && typeof body.agentMode === 'string' ? body.agentMode : undefined, features)
+      const requested = isObject(body) && typeof body.threadId === 'string'
+        ? body.threadId
+        : ''
+      const thread = threadFor(requested || `T-${randomUUID()}`, isObject(body) && typeof body.agentMode === 'string'
+        ? body.agentMode
+        : undefined, features)
       const credential = mockCredentialReceipt(request.headers)
       thread.mockCredential = { kind: 'service', accepted: credential.accepted }
       writeMockJSON(response, 200, {
@@ -337,8 +358,12 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
               return {}
             throw error
           })
-      const method = [...url.searchParams.keys()][0] ?? ''
-      const params = isObject(body) && isObject(body.params) ? body.params : {}
+      const method = [
+        ...url.searchParams.keys(),
+      ][0] ?? ''
+      const params = isObject(body) && isObject(body.params)
+        ? body.params
+        : {}
       writeMockJSON(response, 200, internalCall(method, params))
       return
     }
@@ -356,39 +381,85 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
       case 'loadPlugins':
         return { ok: true, result: [] }
       case 'loadSkills':
-        return { ok: true, result: { sources: [] } }
+        return {
+          ok: true,
+          result: { sources: [] },
+        }
       case 'mcpListAccountServers':
-        return { ok: true, result: { servers: [] } }
+        return {
+          ok: true,
+          result: { servers: [] },
+        }
       case 'listThreads': {
         // Amp's own list keeps an archived thread out, and so does this one.
-        const listed = [...threads.values()]
+        const listed = [
+          ...threads.values(),
+        ]
           .filter(thread => !thread.archived && messageCount(thread) > 0)
           .sort((a, b) => b.updatedAt - a.updatedAt)
           .map(thread => ({
             id: thread.id,
             title: thread.title || null,
             userLastInteractedAt: thread.updatedAt,
-            env: { initial: { trees: thread.tree ? [{ uri: thread.tree, displayName: thread.tree.split('/').at(-1) ?? '' }] : [] } },
+            env: {
+              initial: {
+                trees: thread.tree
+                  ? [
+                      { uri: thread.tree, displayName: thread.tree.split('/').at(-1) ?? '' },
+                    ]
+                  : [],
+              },
+            },
             messageCount: messageCount(thread),
             meta: { visibility: 'private' },
           }))
-        const offset = typeof params.offset === 'number' ? params.offset : 0
-        const limit = typeof params.limit === 'number' ? params.limit : 200
-        return { ok: true, result: { threads: listed.slice(offset, offset + limit) } }
-      }
-      case 'getThreadTail': {
-        const thread = threadFor(typeof params.thread === 'string' ? params.thread : `T-${randomUUID()}`)
+        const offset = typeof params.offset === 'number'
+          ? params.offset
+          : 0
+        const limit = typeof params.limit === 'number'
+          ? params.limit
+          : 200
         return {
           ok: true,
           result: {
-            thread: { data: { id: thread.id, v: thread.seq, created: thread.updatedAt, agentMode: thread.agentMode, meta: { agentMode: thread.agentMode, features: thread.features, executorType: 'local-client', usesDtw: true, usesThreadActors: true, visibility: 'private' } } },
+            threads: listed.slice(offset, offset + limit),
+          },
+        }
+      }
+      case 'getThreadTail': {
+        const thread = threadFor(typeof params.thread === 'string'
+          ? params.thread
+          : `T-${randomUUID()}`)
+        return {
+          ok: true,
+          result: {
+            thread: {
+              data: {
+                id: thread.id,
+                v: thread.seq,
+                created: thread.updatedAt,
+                agentMode: thread.agentMode,
+                meta: {
+                  agentMode: thread.agentMode,
+                  features: thread.features,
+                  executorType: 'local-client',
+                  usesDtw: true,
+                  usesThreadActors: true,
+                  visibility: 'private',
+                },
+              },
+            },
             messages: [],
             hasMoreBefore: false,
           },
         }
       }
       case 'archiveThread': {
-        const id = typeof params.thread === 'string' ? params.thread : typeof params.threadID === 'string' ? params.threadID : ''
+        const id = typeof params.thread === 'string'
+          ? params.thread
+          : typeof params.threadID === 'string'
+            ? params.threadID
+            : ''
         const thread = threads.get(id)
         if (thread)
           thread.archived = true
@@ -407,7 +478,9 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
       socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\nContent-Length: 0\r\n\r\n')
       return true
     }
-    const connection = acceptWebSocket(request, socket, head, { protocols: [RIVET_PROTOCOL] })
+    const connection = acceptWebSocket(request, socket, head, {
+      protocols: [RIVET_PROTOCOL],
+    })
     if (!connection)
       return true
     const thread = threadFor(threadID)
@@ -439,14 +512,18 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
     catch {
       return
     }
-    for (const message of Array.isArray(parsed) ? parsed : [parsed]) {
+    for (const message of Array.isArray(parsed)
+      ? parsed
+      : [parsed]) {
       if (isObject(message))
         handleRequest(thread, member, message)
     }
   }
 
   function handleRequest(thread: ActorThread, member: ThreadSocket, message: Record<string, unknown>): void {
-    const params = isObject(message.params) ? message.params : {}
+    const params = isObject(message.params)
+      ? message.params
+      : {}
     const reply = (result: unknown) => {
       if (message.id !== undefined)
         member.connection.send(JSON.stringify({ jsonrpc: '2.0', id: message.id, result }))
@@ -455,7 +532,13 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
       case 'executor_connect':
         member.executor = true
         reply({ ok: true })
-        notify(thread, 'executor_connected', { executorId: params.clientId, registeredToolCount: 0, guidanceInventory: [], resumeBootstrap: false, executorSystemInfo: true })
+        notify(thread, 'executor_connected', {
+          executorId: params.clientId,
+          registeredToolCount: 0,
+          guidanceInventory: [],
+          resumeBootstrap: false,
+          executorSystemInfo: true,
+        })
         return
       case 'executor_guidance_snapshot':
         // The executor reads the guidance files of each directory from its working directory up to the root of the
@@ -464,8 +547,12 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
         options.checkGuidanceFiles(inferenceOf(thread), guidanceFilesOf(params))
         return
       case 'executor_environment_snapshot': {
-        const environment = isObject(params.environment) ? params.environment : {}
-        const trees = Array.isArray(environment.trees) ? environment.trees : []
+        const environment = isObject(params.environment)
+          ? params.environment
+          : {}
+        const trees = Array.isArray(environment.trees)
+          ? environment.trees
+          : []
         const first = trees.find(isObject)
         if (first && typeof first.uri === 'string')
           thread.tree = first.uri
@@ -474,7 +561,11 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
       }
       case 'client_resume':
         member.connection.send(JSON.stringify([
-          { type: 'agent_state', state: thread.turn ? 'working' : 'idle', agentMode: thread.agentMode },
+          {
+            type: 'agent_state',
+            state: thread.turn ? 'working' : 'idle',
+            agentMode: thread.agentMode,
+          },
           { type: 'thread_settings', settings: {} },
           { type: 'thread_features', features: thread.features },
           { type: 'queued_messages', messages: [], openConversationBatchId: null },
@@ -483,7 +574,9 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
         reply({ replayMessageCount: 0, storedEventCount: 0, replayThroughSeq: thread.seq })
         return
       case 'client_append_user_msg': {
-        const content = Array.isArray(params.content) ? params.content.filter(isObject) : []
+        const content = Array.isArray(params.content)
+          ? params.content.filter(isObject)
+          : []
         reply({ ok: true })
         if (thread.turn) {
           // A message during a turn waits for the turn's next interruption point, as
@@ -493,13 +586,21 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
         }
         if (!thread.title)
           thread.title = firstText(content).slice(0, 80)
-        addMessage(thread, { role: 'user', content, messageId: typeof params.messageId === 'string' ? params.messageId : ampMessageID() })
+        addMessage(thread, {
+          role: 'user',
+          content,
+          messageId: typeof params.messageId === 'string'
+            ? params.messageId
+            : ampMessageID(),
+        })
         void runTurn(thread)
         return
       }
       case 'executor_tool_result': {
         reply({ ok: true })
-        const callID = typeof params.toolCallId === 'string' ? params.toolCallId : ''
+        const callID = typeof params.toolCallId === 'string'
+          ? params.toolCallId
+          : ''
         notify(thread, 'executor_tool_result_ack', { toolCallId: callID })
         const waiter = thread.leases.get(callID)
         if (waiter) {
@@ -528,7 +629,12 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
     thread.updatedAt = Date.now()
     thread.messages.push({ role: message.role, content: message.content, messageId: message.messageId })
     notify(thread, 'message_added', {
-      message: { threadId: thread.id, readAt: null, createdAt: new Date().toISOString(), ...message },
+      message: {
+        threadId: thread.id,
+        readAt: null,
+        createdAt: new Date().toISOString(),
+        ...message,
+      },
       seq: thread.seq,
     })
   }
@@ -553,14 +659,20 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
    */
   function failTurn(thread: ActorThread, message: string, code: string): void {
     thread.seq += 1
-    notify(thread, 'error_set', { seq: thread.seq, error: { message, code } })
+    notify(thread, 'error_set', {
+      seq: thread.seq,
+      error: { message, code },
+    })
     thread.turn = undefined
     thread.steers = []
     notify(thread, 'agent_state', { state: 'idle', agentMode: thread.agentMode })
   }
 
   async function runTurn(thread: ActorThread): Promise<void> {
-    const turn: RunningTurn = { cancelled: false, abort: new AbortController() }
+    const turn: RunningTurn = {
+      cancelled: false,
+      abort: new AbortController(),
+    }
     thread.turn = turn
     notify(thread, 'agent_state', { state: 'working', agentMode: thread.agentMode })
     try {
@@ -569,7 +681,9 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
     catch (error) {
       if (turn.cancelled || thread.turn !== turn)
         return
-      const message = error instanceof Error ? error.message : String(error)
+      const message = error instanceof Error
+        ? error.message
+        : String(error)
       failTurn(thread, message, 'leapmux_e2e_mock_failure')
     }
   }
@@ -607,18 +721,41 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
         options.errorSent?.(inference, { code, message: step.error.message })
         return
       }
-      const calls = (step.toolCalls ?? []).map(call => ({ call, id: ampToolUseID(thread.id, call.id) }))
+      const calls = (step.toolCalls ?? []).map(call => ({
+        call,
+        id: ampToolUseID(thread.id, call.id),
+      }))
       const content: ActorBlock[] = []
-      if (step.reasoning !== undefined)
-        content.push({ type: 'thinking', thinking: step.reasoning, signature: 'leapmux-e2e-signature', blockState: 'complete' })
+      if (step.reasoning !== undefined) {
+        content.push({
+          type: 'thinking',
+          thinking: step.reasoning,
+          signature: 'leapmux-e2e-signature',
+          blockState: 'complete',
+        })
+      }
       if (step.text !== undefined)
         content.push({ type: 'text', text: step.text, blockState: 'complete' })
-      for (const { call, id } of calls)
-        content.push({ type: 'tool_use', id, name: call.name, complete: true, input: call.arguments ?? {}, blockState: 'complete' })
+      for (const { call, id } of calls) {
+        content.push({
+          type: 'tool_use',
+          id,
+          name: call.name,
+          complete: true,
+          input: call.arguments ?? {},
+          blockState: 'complete',
+        })
+      }
       const messageId = ampMessageID()
       notify(thread, 'inference_tools', { messageId, agentMode: thread.agentMode, tools: [] })
       notify(thread, 'agent_state', { state: 'streaming', messageId, agentMode: thread.agentMode })
-      addMessage(thread, { role: 'assistant', content, messageId, usage: usage(step, thread.features), state: { type: 'complete' } })
+      addMessage(thread, {
+        role: 'assistant',
+        content,
+        messageId,
+        usage: usage(step, thread.features),
+        state: { type: 'complete' },
+      })
 
       if (calls.length === 0) {
         // A steering line that arrived after the last tool continues the turn.
@@ -646,8 +783,13 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
   function flushSteers(thread: ActorThread): boolean {
     const steers = thread.steers
     thread.steers = []
-    for (const content of steers)
-      addMessage(thread, { role: 'user', content, messageId: ampMessageID() })
+    for (const content of steers) {
+      addMessage(thread, {
+        role: 'user',
+        content,
+        messageId: ampMessageID(),
+      })
+    }
     return steers.length > 0
   }
 
@@ -667,22 +809,47 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
     if (AMP_SERVER_SUBAGENT_TOOLS.has(call.name)) {
       const prompt = subagentPrompt(call.name, args)
       const inference: AmpInference = {
-        body: { model: 'mock-model', system: '', messages: [{ role: 'user', content: [{ type: 'text', text: prompt }] }] },
+        body: {
+          model: 'mock-model',
+          system: '',
+          messages: [
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: prompt },
+              ],
+            },
+          ],
+        },
         userText: prompt,
-        ...(thread.mockCredential ? { mockCredential: thread.mockCredential } : {}),
+        ...(thread.mockCredential
+          ? { mockCredential: thread.mockCredential }
+          : {}),
       }
       const step = await options.answer(inference, turn.abort.signal)
-      if (!step)
-        return { status: 'error', error: { message: 'The mock model has no scripted answer for this subagent.' } }
+      if (!step) {
+        return {
+          status: 'error',
+          error: { message: 'The mock model has no scripted answer for this subagent.' },
+        }
+      }
       if (!await waitForGeneration(inference, step, turn))
         return { status: 'cancelled', reason: 'User canceled' }
-      if (step.error)
-        return { status: 'error', error: { message: step.error.message } }
+      if (step.error) {
+        return {
+          status: 'error',
+          error: { message: step.error.message },
+        }
+      }
       return { status: 'done', result: step.text ?? '' }
     }
     const executor = [...thread.sockets].find(member => member.executor)
-    if (!executor)
-      return { status: 'error', error: { message: 'No executor is connected to the thread.' } }
+    if (!executor) {
+      return {
+        status: 'error',
+        error: { message: 'No executor is connected to the thread.' },
+      }
+    }
     const result = new Promise<unknown>((resolve) => {
       thread.leases.set(id, resolve)
       turn.abort.signal.addEventListener('abort', () => resolve({ status: 'cancelled', reason: 'User canceled' }), { once: true })
@@ -690,7 +857,12 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
     executor.connection.send(JSON.stringify({
       jsonrpc: '2.0',
       method: 'tool_lease',
-      params: { toolCallId: id, toolName: EXECUTOR_TOOL_NAMES.get(call.name) ?? call.name, args, messageId },
+      params: {
+        toolCallId: id,
+        toolName: EXECUTOR_TOOL_NAMES.get(call.name) ?? call.name,
+        args,
+        messageId,
+      },
     }))
     return result
   }
@@ -719,13 +891,24 @@ export function createAmpSurface(options: AmpSurfaceOptions): AmpSurface {
  * skip a file that it cannot place.
  */
 export function guidanceFilesOf(params: Record<string, unknown>): NativeInstructionFile[] {
-  const files = params.files === undefined ? [] : Array.isArray(params.files) ? params.files : [params.files]
+  const files = params.files === undefined
+    ? []
+    : Array.isArray(params.files)
+      ? params.files
+      : [params.files]
   return files.map((file) => {
     // An invalid entry has no verifiable path. Keep it so the instruction guard refuses the snapshot.
     if (!isObject(file))
       return { path: '', content: '' }
-    const uri = typeof file.uri === 'string' ? file.uri : ''
-    return { path: localFilePath(uri), content: typeof file.content === 'string' ? file.content : '' }
+    const uri = typeof file.uri === 'string'
+      ? file.uri
+      : ''
+    return {
+      path: localFilePath(uri),
+      content: typeof file.content === 'string'
+        ? file.content
+        : '',
+    }
   })
 }
 
@@ -747,14 +930,22 @@ function localFilePath(uri: string): string {
 
 /** The request of one subagent call, which its tool states under a key of its own. */
 function subagentPrompt(name: string, args: Record<string, unknown>): string {
-  const pick = (key: string) => (typeof args[key] === 'string' ? args[key] as string : '')
+  const pick = (key: string) => (typeof args[key] === 'string'
+    ? args[key] as string
+    : '')
   switch (name) {
     case AMP_SUBAGENT_TOOL.Task:
       return pick('prompt')
     case AMP_SUBAGENT_TOOL.Oracle:
-      return [pick('task'), pick('context')].filter(Boolean).join('\n\n')
+      return [
+        pick('task'),
+        pick('context'),
+      ].filter(Boolean).join('\n\n')
     default:
-      return [pick('query'), pick('context')].filter(Boolean).join('\n\n')
+      return [
+        pick('query'),
+        pick('context'),
+      ].filter(Boolean).join('\n\n')
   }
 }
 
@@ -769,10 +960,21 @@ export function ampInferenceOf(messages: readonly { role: string, content: reado
   const converted = messages.map(message => ({
     role: message.role,
     content: message.content.map((block) => {
-      if (block.type === 'tool_result')
-        return { type: 'tool_result', tool_use_id: block.toolUseID, content: JSON.stringify(block.run ?? null) }
-      if (block.type === 'tool_use')
-        return { type: 'tool_use', id: block.id, name: block.name, input: block.input }
+      if (block.type === 'tool_result') {
+        return {
+          type: 'tool_result',
+          tool_use_id: block.toolUseID,
+          content: JSON.stringify(block.run ?? null),
+        }
+      }
+      if (block.type === 'tool_use') {
+        return {
+          type: 'tool_use',
+          id: block.id,
+          name: block.name,
+          input: block.input,
+        }
+      }
       if (block.type === 'thinking')
         return { type: 'thinking', thinking: block.thinking }
       return block
@@ -781,12 +983,19 @@ export function ampInferenceOf(messages: readonly { role: string, content: reado
   const lastUser = [...converted].reverse().find(message => message.role === 'user')
   return {
     body: { model: 'mock-model', system: '', messages: converted },
-    userText: lastUser ? lastUser.content.map(blockText).join('\n') : '',
+    userText: lastUser
+      ? lastUser.content.map(blockText).join('\n')
+      : '',
   }
 }
 
 function inferenceOf(thread: { messages: readonly ActorMessage[], mockCredential?: MockModelCredential }): AmpInference {
-  return { ...ampInferenceOf(thread.messages), ...(thread.mockCredential ? { mockCredential: thread.mockCredential } : {}) }
+  return {
+    ...ampInferenceOf(thread.messages),
+    ...(thread.mockCredential
+      ? { mockCredential: thread.mockCredential }
+      : {}),
+  }
 }
 
 function blockText(block: Record<string, unknown>): string {
@@ -806,7 +1015,15 @@ function messageCount(thread: ActorThread): number {
 }
 
 function viewOf(thread: ActorThread): AmpThreadView {
-  return { id: thread.id, agentMode: thread.agentMode, features: [...thread.features], tree: thread.tree, title: thread.title, messageCount: messageCount(thread), archived: thread.archived }
+  return {
+    id: thread.id,
+    agentMode: thread.agentMode,
+    features: [...thread.features],
+    tree: thread.tree,
+    title: thread.title,
+    messageCount: messageCount(thread),
+    archived: thread.archived,
+  }
 }
 
 function usage(step: MockModelStep, features: readonly string[]): Record<string, unknown> {
@@ -834,5 +1051,7 @@ function usage(step: MockModelStep, features: readonly string[]): Record<string,
  */
 async function readAmpJSON(request: IncomingMessage): Promise<unknown> {
   const body = await readMockBody(request)
-  return body.byteLength === 0 ? {} : JSON.parse(body.toString('utf8'))
+  return body.byteLength === 0
+    ? {}
+    : JSON.parse(body.toString('utf8'))
 }

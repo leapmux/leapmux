@@ -62,7 +62,9 @@ const MAX_TRACKED_MESSAGES = 32
 const FALLBACK_MESSAGE = 'Something went wrong'
 
 function defaultTarget(): GlobalErrorTarget | undefined {
-  return typeof window === 'undefined' ? undefined : window
+  return typeof window === 'undefined'
+    ? undefined
+    : window
 }
 
 /** The thrown value behind either event shape, for `formatErrorMessage`. */
@@ -114,8 +116,11 @@ export function installGlobalErrorSink(opts: GlobalErrorSinkOpts): () => void {
     // and a rejection whose `reason` is the same ResizeObserver string.
     if (ignorableErrorReason(event) !== undefined)
       return
-    if (shouldReport(cause instanceof Error ? cause.message : String(cause)))
+    if (shouldReport(cause instanceof Error
+      ? cause.message
+      : String(cause))) {
       opts.report(FALLBACK_MESSAGE, cause)
+    }
   }
 
   target.addEventListener('error', onFault)

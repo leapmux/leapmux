@@ -13,7 +13,12 @@ deepseekHarnessTest('keeps the literal clear objective and clears the actual nat
   const gate = 'deepseek-reserved-objective'
   const owner = await captureDeepseekHarnessGoalOwner(native)
   await withDeepseekHarnessGoalCleanup(native, owner, [gate], async () => {
-    await modelScript.rule({ name: 'the exact reserved objective round', when: { user: 'Objective: "clear"' }, once: true, respond: { text: 'The literal clear objective reached the native goal driver.', gate } })
+    await modelScript.rule({
+      name: 'the exact reserved objective round',
+      when: { user: 'Objective: "clear"' },
+      once: true,
+      respond: { text: 'The literal clear objective reached the native goal driver.', gate },
+    })
     await submitGoal(page, 'clear')
     await modelScript.waitForGate(gate)
     // The objective is exactly the reserved word, so the check requires the whole text, not a part of it.

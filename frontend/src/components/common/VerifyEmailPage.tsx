@@ -63,7 +63,9 @@ export const VerifyEmailPage: Component = () => {
       // code so the page can resume on the round-trip back. Note: login
       // already honors `?redirect=` (see LoginPage.tsx) — do NOT use a
       // different param name here.
-      const next = urlCode ? `/verify-email?code=${encodeURIComponent(urlCode)}` : '/verify-email'
+      const next = urlCode
+        ? `/verify-email?code=${encodeURIComponent(urlCode)}`
+        : '/verify-email'
       navigate(`/login?redirect=${encodeURIComponent(next)}`, { replace: true })
       return
     }
@@ -104,7 +106,10 @@ export const VerifyEmailPage: Component = () => {
     setSubmitting(true)
     setError(null)
     try {
-      const resp = await userClient.verifyEmail({ verificationToken: normalized, ...captcha.fields() })
+      const resp = await userClient.verifyEmail({
+        verificationToken: normalized,
+        ...captcha.fields(),
+      })
       // The RESPONSE is the authoritative account, so adopt it first. A second
       // round trip can fail, and `refreshUser` discards its own failure, so a
       // page that read the account only through the refresh navigates home with
@@ -168,7 +173,9 @@ export const VerifyEmailPage: Component = () => {
               data-testid="verify-email-submit"
               disabled={submitting() || captcha.blocksSubmit()}
             >
-              {submitting() ? 'Verifying…' : 'Verify'}
+              {submitting()
+                ? 'Verifying…'
+                : 'Verify'}
             </button>
           </div>
         </form>

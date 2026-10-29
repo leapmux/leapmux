@@ -7,8 +7,11 @@ import { fastAgentArchiveToolCall } from './archiveToolCall'
 
 export function fastAgentExtractRow(input: RowExtractionInput): ChatRow | null {
   const source = fastAgentArchiveSource(input.resolved)
-  if (!source)
-    return hasFastAgentArchiveSource(input.resolved) ? null : fastAgentACPPlugin.transcript.extractRow(input)
+  if (!source) {
+    return hasFastAgentArchiveSource(input.resolved)
+      ? null
+      : fastAgentACPPlugin.transcript.extractRow(input)
+  }
   switch (source.kind) {
     case 'content': return { kind: 'assistant-text', text: source.text }
     case 'reasoning': return { kind: 'assistant-thinking', text: source.text }
@@ -17,7 +20,11 @@ export function fastAgentExtractRow(input: RowExtractionInput): ChatRow | null {
     case 'request':
     case 'result': {
       const call = fastAgentArchiveToolCall(input)
-      return call ? toolCallRow(call, source.kind === 'request' ? 'request' : 'result', input.span.visibleRows) : null
+      return call
+        ? toolCallRow(call, source.kind === 'request'
+            ? 'request'
+            : 'result', input.span.visibleRows)
+        : null
     }
   }
 }

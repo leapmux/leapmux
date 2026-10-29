@@ -17,7 +17,9 @@ import { claudePermissionPresets } from './permissionPresets'
  * the session, and any other offered id is the once answer or the deny.
  */
 export function sendClaudePermissionOption(onRespond: ControlResponseSender, requestId: string, optionId: string): Promise<void> {
-  const behavior = optionId === 'deny' ? 'deny' : 'allow'
+  const behavior = optionId === 'deny'
+    ? 'deny'
+    : 'allow'
   return sendResponse(onRespond, withControlChoice(
     buildControlResponseEnvelope(requestId, { behavior }),
     optionId,

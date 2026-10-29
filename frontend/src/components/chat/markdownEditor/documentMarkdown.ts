@@ -22,5 +22,7 @@ export function isBlankEditorDocument(document: Node): boolean {
 
 /** Empty paragraphs can serialize as HTML breaks. They still contain no message. */
 export function serializeEditorDocument(document: Node, serialize: (document: Node) => string): string {
-  return isBlankEditorDocument(document) ? '' : stripNeedlessEscapes(serialize(document))
+  return isBlankEditorDocument(document)
+    ? ''
+    : stripNeedlessEscapes(serialize(document))
 }

@@ -12,7 +12,9 @@ import { useWorkspaceLoader } from './useWorkspaceLoader'
 const mockListWorkspaces = vi.fn()
 const mockListSections = vi.fn()
 vi.mock('~/api/clients', () => ({
-  workspaceClient: { listWorkspaces: (...args: unknown[]) => mockListWorkspaces(...args) },
+  workspaceClient: {
+    listWorkspaces: (...args: unknown[]) => mockListWorkspaces(...args),
+  },
   sectionClient: {
     listSections: (...args: unknown[]) => mockListSections(...args),
     moveSection: vi.fn(),
@@ -56,7 +58,12 @@ function mount() {
     const workspaceStore = createWorkspaceStore()
     const sectionStore = createSectionStore()
     const loader = useWorkspaceLoader({ workspaceStore, sectionStore })
-    return { workspaceStore, sectionStore, loader, dispose }
+    return {
+      workspaceStore,
+      sectionStore,
+      loader,
+      dispose,
+    }
   })
 }
 
@@ -122,7 +129,11 @@ describe('useWorkspaceLoader', () => {
     await settle()
     expect(workspaceStore.state.error).toBe('hub unavailable')
 
-    mockListWorkspaces.mockResolvedValueOnce({ workspaces: [ws('w1')] })
+    mockListWorkspaces.mockResolvedValueOnce({
+      workspaces: [
+        ws('w1'),
+      ],
+    })
     await loader.loadWorkspaces()
 
     expect(workspaceStore.state.error).toBeNull()
@@ -142,9 +153,17 @@ describe('useWorkspaceLoader', () => {
     const { workspaceStore, loader } = mount()
     const secondLoad = loader.loadWorkspaces()
 
-    second.resolve({ workspaces: [ws('new')] })
+    second.resolve({
+      workspaces: [
+        ws('new'),
+      ],
+    })
     await secondLoad
-    first.resolve({ workspaces: [ws('old')] })
+    first.resolve({
+      workspaces: [
+        ws('old'),
+      ],
+    })
     await settle()
 
     expect(workspaceStore.state.workspaces.map(w => w.id)).toEqual(['new'])
@@ -158,11 +177,19 @@ describe('useWorkspaceLoader', () => {
     const { workspaceStore, loader } = mount()
     const secondLoad = loader.loadWorkspaces()
 
-    first.resolve({ workspaces: [ws('old')] })
+    first.resolve({
+      workspaces: [
+        ws('old'),
+      ],
+    })
     await settle()
     expect(workspaceStore.state.loading).toBe(true)
 
-    second.resolve({ workspaces: [ws('new')] })
+    second.resolve({
+      workspaces: [
+        ws('new'),
+      ],
+    })
     await secondLoad
     expect(workspaceStore.state.loading).toBe(false)
     expect(workspaceStore.state.workspaces.map(w => w.id)).toEqual(['new'])
@@ -176,9 +203,19 @@ describe('useWorkspaceLoader', () => {
     const { sectionStore, loader } = mount()
     const secondLoad = loader.loadSections()
 
-    second.resolve({ sections: [], items: [{ sectionId: 's1', workspaceId: 'new' }] as never[] })
+    second.resolve({
+      sections: [],
+      items: [
+        { sectionId: 's1', workspaceId: 'new' },
+      ] as never[],
+    })
     await secondLoad
-    first.resolve({ sections: [], items: [{ sectionId: 's1', workspaceId: 'old' }] as never[] })
+    first.resolve({
+      sections: [],
+      items: [
+        { sectionId: 's1', workspaceId: 'old' },
+      ] as never[],
+    })
     await settle()
 
     expect(sectionStore.state.items.map(i => i.workspaceId)).toEqual(['new'])

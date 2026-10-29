@@ -99,7 +99,9 @@ describe('AgentInputQueuePauseBanner', () => {
     // so the reader hears the sentence twice and a by-text lookup resolves two
     // elements. The visible banner IS the live region here; only its class
     // swaps.
-    const carriers = [...container.querySelectorAll('*')].filter(el => el.textContent === sentence)
+    const carriers = [
+      ...container.querySelectorAll('*'),
+    ].filter(el => el.textContent === sentence)
     expect(carriers).toHaveLength(1)
     expect(container.querySelector('[role="status"]')).toContainElement(carriers[0] as HTMLElement)
   })

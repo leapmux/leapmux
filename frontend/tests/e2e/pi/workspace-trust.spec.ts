@@ -23,11 +23,18 @@ import { withMockPiModel } from './scriptedModel'
 const PROJECT_MCP_TOOL = mcpToolCall(AgentProvider.PI, 'catalog', { server: PROJECT_MCP_SERVER_NAME, tool: 'echo', input: {} }).name
 
 piTest('starts and reads a private project without a workspace trust request', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+  })
   await exerciseNativeWorkspaceTrustLimit(context, {
     projectConfiguration: {
       prepare({ directory, marker }) {
-        writePiMcpConfiguration(directory, getGlobalState().tmpDir, { [PROJECT_MCP_SERVER_NAME]: writeMcpEchoServer(directory) })
+        writePiMcpConfiguration(directory, getGlobalState().tmpDir, {
+          [PROJECT_MCP_SERVER_NAME]: writeMcpEchoServer(directory),
+        })
         const extensions = join(directory, '.pi', 'extensions')
         mkdirSync(extensions, { recursive: true })
         const receipt = join(directory, 'native-project-extension-loaded.txt')

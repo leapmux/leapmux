@@ -34,7 +34,9 @@ const POPOVER_LINGER_MS = 1000
 function userRow(page: Page, nth: number) {
   return chatScrollContainer(page)
     .locator('[data-seq]')
-    .filter({ has: page.locator(USER_BUBBLE_SELECTOR) })
+    .filter({
+      has: page.locator(USER_BUBBLE_SELECTOR),
+    })
     .nth(nth)
 }
 

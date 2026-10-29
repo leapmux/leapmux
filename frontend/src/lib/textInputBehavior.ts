@@ -161,7 +161,9 @@ function applyTextSubstitutionAttrs(el: HTMLInputElement | HTMLTextAreaElement |
 export function disableTextSubstitutions(root: ParentNode = document) {
   const nodes = root instanceof Element && shouldDisableTextSubstitutions(root)
     ? [root]
-    : [...root.querySelectorAll(INPUT_OR_EDITABLE_SELECTOR)]
+    : [
+        ...root.querySelectorAll(INPUT_OR_EDITABLE_SELECTOR),
+      ]
 
   for (const node of nodes) {
     if (shouldDisableTextSubstitutions(node))

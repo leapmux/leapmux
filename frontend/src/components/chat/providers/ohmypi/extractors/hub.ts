@@ -37,7 +37,9 @@ export function ohMyPiHubIsProcessOp(args: Record<string, unknown>): boolean {
 
 /** A word that a POSIX shell reads as one word unchanged: the word itself when it holds no special character, else in single quotes. */
 function shellWord(word: string): string {
-  return /^[\w@%+=:,./-]+$/.test(word) ? word : `'${word.replaceAll('\'', '\'\\\'\'')}'`
+  return /^[\w@%+=:,./-]+$/.test(word)
+    ? word
+    : `'${word.replaceAll('\'', '\'\\\'\'')}'`
 }
 
 /**
@@ -53,16 +55,32 @@ export function ohMyPiHubProcessRequest(args: Record<string, unknown>): ExecuteR
   const name = pickString(args, 'name').trim()
   if (op === OH_MY_PI_HUB_OP.Start) {
     const cwd = pickString(args, 'cwd')
-    const words = [pickString(args, 'application'), ...stringArray(args.args)]
+    const words = [
+      pickString(args, 'application'),
+      ...stringArray(args.args),
+    ]
     return {
       command: words.filter((word, index) => index > 0 || word !== '').map(shellWord).join(' '),
-      description: name ? `Start the process ${name}` : 'Start a process',
-      ...(cwd ? { cwd } : {}),
+      description: name
+        ? `Start the process ${name}`
+        : 'Start a process',
+      ...(cwd
+        ? { cwd }
+        : {}),
     }
   }
   if (op === OH_MY_PI_HUB_OP.Send) {
-    const input = [pickString(args, 'text'), ...stringArray(args.keys), pickString(args, 'signal')].filter(Boolean)
-    return { command: input.join(' '), description: `Send to the process ${name}` }
+    const input = [
+      pickString(args, 'text'),
+      ...stringArray(args.keys),
+      pickString(args, 'signal'),
+    ].filter(Boolean)
+    return {
+      command: input.join(' '),
+      description: `Send to the process ${name}`,
+    }
   }
-  return { command: [op, name].filter(Boolean).join(' ') }
+  return {
+    command: [op, name].filter(Boolean).join(' '),
+  }
 }

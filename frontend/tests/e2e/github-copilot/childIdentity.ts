@@ -25,7 +25,12 @@ function validIdentity(value: unknown): value is string {
 
 function requireCopilotParent(parent: AgentInfo | null | undefined): AgentInfo {
   if (!parent || parent.status !== AgentStatus.ACTIVE || parent.agentProvider !== AgentProvider.GITHUB_COPILOT
-    || ![parent.id, parent.rootAgentId, parent.workerId, parent.agentSessionId].every(validIdentity)) {
+    || ![
+      parent.id,
+      parent.rootAgentId,
+      parent.workerId,
+      parent.agentSessionId,
+    ].every(validIdentity)) {
     throw new Error('The Copilot child identity requires an active parent with native session and owner IDs.')
   }
   return parent

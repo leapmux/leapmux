@@ -12,12 +12,14 @@ function makeTaskStopMessage(input: Record<string, unknown> = {}) {
   return {
     type: 'assistant',
     message: {
-      content: [{
-        type: 'tool_use',
-        id: 'test-taskstop',
-        name: 'TaskStop',
-        input: { task_id: 'bfbc3f6', ...input },
-      }],
+      content: [
+        {
+          type: 'tool_use',
+          id: 'test-taskstop',
+          name: 'TaskStop',
+          input: { task_id: 'bfbc3f6', ...input },
+        },
+      ],
     },
   }
 }
@@ -28,11 +30,13 @@ function makeTaskStopResult(resultContent: string) {
     type: 'user',
     message: {
       role: 'user',
-      content: [{
-        tool_use_id: 'test-taskstop',
-        type: 'tool_result',
-        content: resultContent,
-      }],
+      content: [
+        {
+          tool_use_id: 'test-taskstop',
+          type: 'tool_result',
+          content: resultContent,
+        },
+      ],
     },
     tool_use_result: { tool_name: 'TaskStop' },
   }

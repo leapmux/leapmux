@@ -48,7 +48,9 @@ vi.mock('./api', () => ({
   openAgentViaAPI: async (_server: unknown, _workspaceId: string, workingDir: string, options: { title?: string }) => {
     picker.openOptions.push({ workingDir, ...options })
     picker.events.push(`open:${options.title}`)
-    return options.title === 'Keeper' ? KEEPER_ID : SUBJECT_ID
+    return options.title === 'Keeper'
+      ? KEEPER_ID
+      : SUBJECT_ID
   },
 }))
 
@@ -95,10 +97,14 @@ vi.mock('./nativeResume', async importOriginal => ({
 
 vi.mock('./nativeScenario', async importOriginal => ({
   ...await importOriginal<typeof import('./nativeScenario')>(),
-  nativeModelConversationTurns: (request: MockModelRequestRecord): NativeModelTurn[] => [{ role: 'assistant', text: `default reader:${request.stepIndex}` }],
+  nativeModelConversationTurns: (request: MockModelRequestRecord): NativeModelTurn[] => [
+    { role: 'assistant', text: `default reader:${request.stepIndex}` },
+  ],
   nativeAgentById: async (_context: unknown, agentId: string) => {
     picker.events.push('list-agents')
-    const agentSessionId = picker.emptySessionReads > 0 ? '' : STORED_SESSION
+    const agentSessionId = picker.emptySessionReads > 0
+      ? ''
+      : STORED_SESSION
     picker.emptySessionReads = Math.max(0, picker.emptySessionReads - 1)
     return create(AgentInfoSchema, { id: agentId, agentSessionId })
   },
@@ -112,7 +118,10 @@ function rows(texts: () => readonly string[], filters: readonly string[] = []) {
     readCount: () => matching().length,
     count: async () => matching().length,
     filter: ({ hasText }: { hasText: string }) => rows(texts, [...filters, hasText]),
-    first: () => ({ resumePickerProbe: 'first-row', readCount: () => Math.min(1, matching().length) }),
+    first: () => ({
+      resumePickerProbe: 'first-row',
+      readCount: () => Math.min(1, matching().length),
+    }),
   }
 }
 
@@ -129,8 +138,18 @@ vi.mock('./ui', () => ({
     picker.userRows.push(prompt)
     // The model server records the request when the prompt arrives.
     const stepIndex = picker.requests.length
-    const answers = picker.historyInBody ? picker.queued.slice(0, stepIndex).map(step => step.text) : []
-    picker.requests.push({ protocol: 'openai-responses', path: '/v1/responses', stepIndex, body: { prompts: [...picker.sent], answers } })
+    const answers = picker.historyInBody
+      ? picker.queued.slice(0, stepIndex).map(step => step.text)
+      : []
+    picker.requests.push({
+      protocol: 'openai-responses',
+      path: '/v1/responses',
+      stepIndex,
+      body: {
+        prompts: [...picker.sent],
+        answers,
+      },
+    })
   },
   waitForAgentIdle: async (_page: Page, timeoutMs?: number) => {
     picker.idleTimeouts.push(timeoutMs)
@@ -163,7 +182,9 @@ vi.mock('@playwright/test', async (importOriginal) => {
   const check = (value: unknown) => {
     if (typeof value !== 'object' || value === null || !('resumePickerProbe' in value))
       return original.expect(value)
-    const readCount = 'readCount' in value && typeof value.readCount === 'function' ? value.readCount : undefined
+    const readCount = 'readCount' in value && typeof value.readCount === 'function'
+      ? value.readCount
+      : undefined
     return {
       toHaveCount: async (expected: number) => {
         if (!readCount)
@@ -190,7 +211,10 @@ vi.mock('@playwright/test', async (importOriginal) => {
       },
     },
   })
-  return { ...original, expect: Object.assign(check, { poll }) }
+  return {
+    ...original,
+    expect: Object.assign(check, { poll }),
+  }
 })
 
 /** One fake model script. `status` and `waitForSteps` copy the recorded requests at the time of the call. */
@@ -245,7 +269,12 @@ function pickerFixtures(): ResumePickerFixtures {
   return {
     page,
     modelScript: fakeModelScript(),
-    leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'unit-token', workerId: 'unit-worker', dataDir: '/unit/data' },
+    leapmuxServer: {
+      hubUrl: 'http://unused.invalid',
+      adminToken: 'unit-token',
+      workerId: 'unit-worker',
+      dataDir: '/unit/data',
+    },
   }
 }
 
@@ -253,7 +282,12 @@ function pickerFixtures(): ResumePickerFixtures {
 function nativeContext(fields: Partial<ManagedNativeScenarioContext> = {}): ResumePickerNativeContext {
   return async (fixtures) => {
     picker.events.push(`native-context:${fixtures.workspaceId}`)
-    return { ...fixtures, provider: AgentProvider.CODEX, providerAgent: { provider: AgentProvider.CODEX, prefix: 'native-e2e' }, ...fields }
+    return {
+      ...fixtures,
+      provider: AgentProvider.CODEX,
+      providerAgent: { provider: AgentProvider.CODEX, prefix: 'native-e2e' },
+      ...fields,
+    }
   }
 }
 
@@ -296,8 +330,22 @@ describe('sessionPickerRepository', () => {
 describe('openResumeSubject', () => {
   it('opens the keeper and the subject in repositories of their own, and selects the subject', async () => {
     const subject = await openResumeSubject(pickerFixtures(), { label: 'Unit' })
-    expect(subject).toEqual({ workspaceId: 'unit-workspace', keeperId: KEEPER_ID, subjectId: SUBJECT_ID, subjectDir: expect.stringContaining('/unit/data/resume-subject-') })
-    expect(picker.events).toEqual(['repo:keeper', 'repo:subject', 'workspace:Unit', 'open:Keeper', 'open:Subject', 'login', 'open-workspace', 'click:[data-testid="tab"][data-tab-type="agent"]'])
+    expect(subject).toEqual({
+      workspaceId: 'unit-workspace',
+      keeperId: KEEPER_ID,
+      subjectId: SUBJECT_ID,
+      subjectDir: expect.stringContaining('/unit/data/resume-subject-'),
+    })
+    expect(picker.events).toEqual([
+      'repo:keeper',
+      'repo:subject',
+      'workspace:Unit',
+      'open:Keeper',
+      'open:Subject',
+      'login',
+      'open-workspace',
+      'click:[data-testid="tab"][data-tab-type="agent"]',
+    ])
     // With no subject options, the subject opens with the Worker default.
     expect(picker.openOptions[1]).toEqual({ workingDir: subject.subjectDir, title: 'Subject' })
   })
@@ -305,13 +353,25 @@ describe('openResumeSubject', () => {
   it('takes the subject options from the workspace before either agent opens', async () => {
     const subjectOptions = vi.fn(async (workspaceId: string) => {
       picker.events.push(`options:${workspaceId}`)
-      return { agentProvider: AgentProvider.CODEX, model: 'unit-model', optionValues: { effort: 'low' } }
+      return {
+        agentProvider: AgentProvider.CODEX,
+        model: 'unit-model',
+        optionValues: { effort: 'low' },
+      }
     })
     await openResumeSubject(pickerFixtures(), { label: 'Unit', subjectOptions })
     expect(picker.events.indexOf('options:unit-workspace')).toBeGreaterThan(picker.events.indexOf('workspace:Unit'))
     expect(picker.events.indexOf('options:unit-workspace')).toBeLessThan(picker.events.indexOf('open:Keeper'))
-    expect(picker.openOptions[0]).toEqual({ workingDir: expect.stringContaining('resume-keeper-'), title: 'Keeper' })
-    expect(picker.openOptions[1]).toMatchObject({ agentProvider: AgentProvider.CODEX, model: 'unit-model', optionValues: { effort: 'low' }, title: 'Subject' })
+    expect(picker.openOptions[0]).toEqual({
+      workingDir: expect.stringContaining('resume-keeper-'),
+      title: 'Keeper',
+    })
+    expect(picker.openOptions[1]).toMatchObject({
+      agentProvider: AgentProvider.CODEX,
+      model: 'unit-model',
+      optionValues: { effort: 'low' },
+      title: 'Subject',
+    })
   })
 })
 
@@ -426,7 +486,12 @@ describe('resumePickerScenario', () => {
     const providerAssertion = vi.fn()
     // A request body that never repeats the original answer fails the default proof before the provider assertion.
     picker.historyInBody = false
-    await expect(run({ onResumedRequest: providerAssertion })).rejects.toMatchObject({ matcherResult: { name: 'toContain', message: expect.stringContaining('RESUMEANSWER') } })
+    await expect(run({ onResumedRequest: providerAssertion })).rejects.toMatchObject({
+      matcherResult: {
+        name: 'toContain',
+        message: expect.stringContaining('RESUMEANSWER'),
+      },
+    })
     expect(picker.events).toContain('request-at:1')
     expect(providerAssertion).not.toHaveBeenCalled()
   })
@@ -444,7 +509,9 @@ describe('resumePickerScenario', () => {
   })
 
   it('reads the conversation turns through the reader of the provider context', async () => {
-    const read = vi.fn((request: MockModelRequestRecord): NativeModelTurn[] => [{ role: 'assistant', text: `provider reader:${request.stepIndex}` }])
+    const read = vi.fn((request: MockModelRequestRecord): NativeModelTurn[] => [
+      { role: 'assistant', text: `provider reader:${request.stepIndex}` },
+    ])
     await run({}, { readConversationTurns: read })
     expect(read).toHaveBeenCalledOnce()
     expect(picker.events.find(event => event.startsWith('context:'))).toBe('context:[{"role":"assistant","text":"provider reader:1"}]')
@@ -452,13 +519,18 @@ describe('resumePickerScenario', () => {
 
   it('refuses a resumed prompt that reached no model request', async () => {
     const fixtures = pickerFixtures()
-    const withoutRequests = async () => ({ ...(await fixtures.modelScript.status()), requests: [] })
+    const withoutRequests = async () => ({
+      ...(await fixtures.modelScript.status()),
+      requests: [],
+    })
     const script: ModelScript = {
       ...fixtures.modelScript,
       status: withoutRequests,
       waitForSteps: withoutRequests,
       // The original turn keeps its request. Only the resumed prompt reaches no request.
-      requestAt: async stepIndex => stepIndex === 0 ? fixtures.modelScript.requestAt(0) : stepRequest(await withoutRequests(), stepIndex),
+      requestAt: async stepIndex => stepIndex === 0
+        ? fixtures.modelScript.requestAt(0)
+        : stepRequest(await withoutRequests(), stepIndex),
     }
     const scenario = resumePickerScenario({ ...fixtures, modelScript: script }, nativeContext(), { label: 'Unit' })
     await expect(scenario).rejects.toThrow('The model script holds no request for step 1')
@@ -468,12 +540,20 @@ describe('resumePickerScenario', () => {
   describe('session list', () => {
     it('reopens the stored session of the subject directory, and lists it by its id by default', async () => {
       await run()
-      expect(picker.reopens).toEqual([{ provider: AgentProvider.CODEX, workingDir: expect.stringContaining('/unit/data/resume-subject-'), sessionId: STORED_SESSION }])
+      expect(picker.reopens).toEqual([
+        {
+          provider: AgentProvider.CODEX,
+          workingDir: expect.stringContaining('/unit/data/resume-subject-'),
+          sessionId: STORED_SESSION,
+        },
+      ])
     })
 
     it('passes the stated session list to the picker', async () => {
       await run({ sessionList: 'sole-session' })
-      expect(picker.reopens).toEqual([expect.objectContaining({ sessionId: STORED_SESSION, list: 'sole-session' })])
+      expect(picker.reopens).toEqual([
+        expect.objectContaining({ sessionId: STORED_SESSION, list: 'sole-session' }),
+      ])
     })
   })
 
@@ -496,7 +576,9 @@ describe('resumePickerScenario', () => {
       await run()
       const afterResume = picker.events.slice(picker.events.indexOf('steps:2'))
       expect(afterResume.filter(event => event.startsWith('count:'))).toEqual(['count:3'])
-      expect(picker.conversation).toEqual([{ agentId: REOPENED_ID, originalAnswerRows: 2, originalAnswerBubbles: 3 }])
+      expect(picker.conversation).toEqual([
+        { agentId: REOPENED_ID, originalAnswerRows: 2, originalAnswerBubbles: 3 },
+      ])
     })
 
     it('fails when the resumed answer draws another number of bubbles than the original answer', async () => {
@@ -508,7 +590,9 @@ describe('resumePickerScenario', () => {
 
     it('passes the pre-close bubble count and the stored row count to the conversation proof', async () => {
       await run()
-      expect(picker.conversation).toEqual([{ agentId: REOPENED_ID, originalAnswerRows: 2, originalAnswerBubbles: 1 }])
+      expect(picker.conversation).toEqual([
+        { agentId: REOPENED_ID, originalAnswerRows: 2, originalAnswerBubbles: 1 },
+      ])
     })
   })
 
@@ -561,7 +645,12 @@ describe('resumePickerScenario', () => {
       expect(keeper).toMatchObject({ title: 'Keeper' })
       expect(keeper).not.toHaveProperty('agentProvider')
       const pinned = AGENT_E2E_SETTINGS[AgentProvider.CODEX]
-      expect(subject).toMatchObject({ title: 'Subject', agentProvider: AgentProvider.CODEX, model: pinned.model, optionValues: { effort: pinned.effort } })
+      expect(subject).toMatchObject({
+        title: 'Subject',
+        agentProvider: AgentProvider.CODEX,
+        model: pinned.model,
+        optionValues: { effort: pinned.effort },
+      })
     })
 
     it('uses separate working directories for the keeper and the subject', async () => {
@@ -573,13 +662,19 @@ describe('resumePickerScenario', () => {
     })
 
     it('merges the subject option values over the provider defaults', async () => {
-      await run({ subjectOptionValues: { effort: 'low', mode: 'plan' } })
-      expect(picker.openOptions[1]).toMatchObject({ optionValues: { effort: 'low', mode: 'plan' } })
+      await run({
+        subjectOptionValues: { effort: 'low', mode: 'plan' },
+      })
+      expect(picker.openOptions[1]).toMatchObject({
+        optionValues: { effort: 'low', mode: 'plan' },
+      })
     })
 
     it('keeps the provider option values when the spec gives none', async () => {
       await run({ subjectOptionValues: {} })
-      expect(picker.openOptions[1]).toMatchObject({ optionValues: { effort: AGENT_E2E_SETTINGS[AgentProvider.CODEX].effort } })
+      expect(picker.openOptions[1]).toMatchObject({
+        optionValues: { effort: AGENT_E2E_SETTINGS[AgentProvider.CODEX].effort },
+      })
     })
   })
 })

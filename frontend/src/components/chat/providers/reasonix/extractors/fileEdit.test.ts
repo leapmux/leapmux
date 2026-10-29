@@ -8,7 +8,12 @@ const header = '@@ replacement 1 of 1 (1 occurrence(s)) @@\n'
 describe('reasonix replacement receipts', () => {
   it('uses the actual matched text for a fuzzy replacement', () => {
     const sources = reasonixEditReceipt(receipt('@@ replacement 1 of 1 (1 occurrence(s), fuzzy match) @@\n-actual\n+after\n'), '/project/file.ts')
-    expect(sources?.[0]).toMatchObject({ oldStr: 'actual', newStr: 'after', showLineNumbers: false, notice: 'Fuzzy match' })
+    expect(sources?.[0]).toMatchObject({
+      oldStr: 'actual',
+      newStr: 'after',
+      showLineNumbers: false,
+      notice: 'Fuzzy match',
+    })
   })
 
   it('preserves the replacement count and the sample limit', () => {

@@ -24,23 +24,47 @@ async function withGoogleConfiguration(server: NativeContextFixtures['leapmuxSer
   const path = join(home, 'fast-agent.yaml')
   const runDir = getGlobalState().tmpDir
   assertPrivateNativePath(path, runDir)
-  await withNativeConfigurationFile({ path, content: fastagentAudioConfiguration(readFileSync(path, 'utf8'), endpoint), runDir }, use)
+  await withNativeConfigurationFile({
+    path,
+    content: fastagentAudioConfiguration(readFileSync(path, 'utf8'), endpoint),
+    runDir,
+  }, use)
 }
 
 fastAgentTest('delivers WAV and FLAC bytes with and without prompts and retains the recordings after reload', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
   await withGoogleConfiguration(leapmuxServer, async () => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-    await openNativeAgent(context, { directoryPrefix: 'fastagent-audio-', overrides: { model: GEMINI_MODEL_ID } })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
+    await openNativeAgent(context, {
+      directoryPrefix: 'fastagent-audio-',
+      overrides: { model: GEMINI_MODEL_ID },
+    })
     await proveNativeAudioAttachments(context, 'google-generative-language')
     await expect(assistantBubbles(page).filter({ hasText: 'Provider: google.' })).toHaveCount(0)
   })
 })
 
 fastAgentTest('retains audio input on an unsupported provider without making a model request', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-  await openNativeAgent(context, { directoryPrefix: 'fastagent-audio-refusal-', overrides: { model: FAST_AGENT_MOCK_MODEL } })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+  })
+  await openNativeAgent(context, {
+    directoryPrefix: 'fastagent-audio-refusal-',
+    overrides: { model: FAST_AGENT_MOCK_MODEL },
+  })
   const name = 'unsupported-recording.wav'
-  await expectAttachmentOutcome(page, 'audio', { supported: true, fileName: name, fixturePath: writeAudioAttachmentFixture(name) })
+  await expectAttachmentOutcome(page, 'audio', {
+    supported: true,
+    fileName: name,
+    fixturePath: writeAudioAttachmentFixture(name),
+  })
   await sendWithAttachment(page, modelScript.prompt('Listen to this recording.'))
   const failed = await expectNativeInputRefusal(context, 'does not accept audio attachments')
   await page.reload()
@@ -52,13 +76,25 @@ fastAgentTest('retains audio input on an unsupported provider without making a m
 
 fastAgentTest('checks the running provider after a native model switch', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
   await withGoogleConfiguration(leapmuxServer, async () => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-    await openNativeAgent(context, { directoryPrefix: 'fastagent-audio-switch-', overrides: { model: GEMINI_MODEL_ID } })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
+    await openNativeAgent(context, {
+      directoryPrefix: 'fastagent-audio-switch-',
+      overrides: { model: GEMINI_MODEL_ID },
+    })
     await sendMessage(page, `/model switch ${FAST_AGENT_MOCK_MODEL}`)
     await expect(assistantBubbles(page).filter({ hasText: `to ${FAST_AGENT_MOCK_MODEL}.` })).toHaveCount(1)
     await waitForAgentIdle(page)
     const name = 'after-native-switch.wav'
-    await expectAttachmentOutcome(page, 'audio', { supported: true, fileName: name, fixturePath: writeAudioAttachmentFixture(name) })
+    await expectAttachmentOutcome(page, 'audio', {
+      supported: true,
+      fileName: name,
+      fixturePath: writeAudioAttachmentFixture(name),
+    })
     await sendWithAttachment(page, modelScript.prompt('The running provider must accept the recording.'))
     await expectNativeInputRefusal(context, 'does not accept audio attachments')
     const status = await modelScript.status()

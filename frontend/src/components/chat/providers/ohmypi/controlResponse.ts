@@ -56,8 +56,12 @@ export function ohMyPiAskAnswer(requestId: string, answers: OhMyPiAskQuestionAns
     [OH_MY_PI_ASK_ENVELOPE.ID]: requestId,
     [OH_MY_PI_ASK_ENVELOPE.Answers]: answers.map(answer => ({
       [OH_MY_PI_ASK_ANSWER.ID]: answer.id,
-      ...(answer.selected.length > 0 ? { [OH_MY_PI_ASK_ANSWER.Selected]: answer.selected } : {}),
-      ...(answer.custom.trim() ? { [OH_MY_PI_ASK_ANSWER.Custom]: answer.custom } : {}),
+      ...(answer.selected.length > 0
+        ? { [OH_MY_PI_ASK_ANSWER.Selected]: answer.selected }
+        : {}),
+      ...(answer.custom.trim()
+        ? { [OH_MY_PI_ASK_ANSWER.Custom]: answer.custom }
+        : {}),
     })),
   }
 }
@@ -85,10 +89,17 @@ export function isOhMyPiApproval(payload: Record<string, unknown> | undefined): 
  * after it.
  */
 function askAnswerLines(response: Record<string, unknown>, request: Record<string, unknown> | undefined): string {
-  const answers = Array.isArray(response[OH_MY_PI_ASK_ENVELOPE.Answers]) ? (response[OH_MY_PI_ASK_ENVELOPE.Answers] as unknown[]).filter(isObject) : []
-  const questions = Array.isArray(request?.[OH_MY_PI_ASK_ENVELOPE.Questions]) ? (request[OH_MY_PI_ASK_ENVELOPE.Questions] as unknown[]).filter(isObject) : []
+  const answers = Array.isArray(response[OH_MY_PI_ASK_ENVELOPE.Answers])
+    ? (response[OH_MY_PI_ASK_ENVELOPE.Answers] as unknown[]).filter(isObject)
+    : []
+  const questions = Array.isArray(request?.[OH_MY_PI_ASK_ENVELOPE.Questions])
+    ? (request[OH_MY_PI_ASK_ENVELOPE.Questions] as unknown[]).filter(isObject)
+    : []
   return answers.flatMap((answer) => {
-    const text = [stringArray(answer[OH_MY_PI_ASK_ANSWER.Selected]).join(', '), pickString(answer, OH_MY_PI_ASK_ANSWER.Custom)]
+    const text = [
+      stringArray(answer[OH_MY_PI_ASK_ANSWER.Selected]).join(', '),
+      pickString(answer, OH_MY_PI_ASK_ANSWER.Custom),
+    ]
       .filter(part => part.trim() !== '')
       .join('; ')
     if (!text)
@@ -96,7 +107,11 @@ function askAnswerLines(response: Record<string, unknown>, request: Record<strin
     const id = pickString(answer, OH_MY_PI_ASK_ANSWER.ID)
     const question = questions.find(record => pickString(record, 'id') === id)
     const heading = pickString(question, 'question') || id
-    return [heading ? `${heading}: ${text}` : text]
+    return [
+      heading
+        ? `${heading}: ${text}`
+        : text,
+    ]
   }).join('\n')
 }
 
@@ -125,7 +140,10 @@ export function ohMyPiControlResponseSummary(cr: PersistedControlResponse): Cont
   if (typeof confirmed === 'boolean')
     return label(confirmed ? 'Confirmed' : 'Declined')
   const value = response[OH_MY_PI_DIALOG_RESPONSE.Value]
-  if (typeof value === 'string')
-    return label(value === '' ? 'Empty answer' : value)
+  if (typeof value === 'string') {
+    return label(value === ''
+      ? 'Empty answer'
+      : value)
+  }
   return null
 }

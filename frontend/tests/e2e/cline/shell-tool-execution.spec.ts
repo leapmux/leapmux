@@ -16,7 +16,9 @@ clineTest.describe('Cline tool execution', () => {
     // The shared scenario proves the computed output on the page and in the next model request, and the exit code of
     // the failed command in its row header. Cline states the result as a list of records, and the result of a failed
     // command opens with `[Command exited with code N]`. The row draws the output, not the record or the line.
-    await exerciseShellToolExecution(native, { absentRowText: ['"success"', '"query"', 'Command exited with code'] })
+    await exerciseShellToolExecution(native, {
+      absentRowText: ['"success"', '"query"', 'Command exited with code'],
+    })
   })
 
   clineTest('draws the error of a failed command, and the model reads why', async ({ native }) => {
@@ -24,7 +26,9 @@ clineTest.describe('Cline tool execution', () => {
     // put it on the page or in the next model call. Both also carry the command text,
     // so a marker that the command text spells proves nothing.
     const { resultRequest } = await runNativeToolTurn(native, {
-      toolCalls: [bashToolCall(native.provider, 'fail-call', 'echo "cline-fail-$((70 + 7))" >&2; exit 3')],
+      toolCalls: [
+        bashToolCall(native.provider, 'fail-call', 'echo "cline-fail-$((70 + 7))" >&2; exit 3'),
+      ],
       prompt: 'Run the failing command.',
       answer: 'The command failed.',
     })
@@ -44,5 +48,8 @@ clineTest.describe('Cline tool execution', () => {
 })
 
 clineTest('preserves a literal private shell path with spaces and metacharacters', async ({ native }) => {
-  await exerciseShellToolExecution(native, { includeFailure: false, prepare: () => applyPermissionPreset(native.page, 'bypass') })
+  await exerciseShellToolExecution(native, {
+    includeFailure: false,
+    prepare: () => applyPermissionPreset(native.page, 'bypass'),
+  })
 })

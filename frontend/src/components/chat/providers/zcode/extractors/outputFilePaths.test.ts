@@ -82,9 +82,18 @@ describe('native path ownership and preview preservation', () => {
     expect(pathsFor(frame, { role })).toEqual([])
   })
 
-  it.each(['file:///native/opaque', 'https://example.com/result', 'zcode-artifact://session/id', ' ', 'relative/output', '/native/zero\0byte'])('refuses a non-filesystem pointer: %j', (invalid) => {
+  it.each([
+    'file:///native/opaque',
+    'https://example.com/result',
+    'zcode-artifact://session/id',
+    ' ',
+    'relative/output',
+    '/native/zero\0byte',
+  ])('refuses a non-filesystem pointer: %j', (invalid) => {
     const payload: unknown = JSON.parse(JSON.stringify(frame).replaceAll(JSON.stringify(path).slice(1, -1), JSON.stringify(invalid).slice(1, -1)))
-    const supplemental: unknown = options.supplementalContent === undefined ? undefined : JSON.parse(JSON.stringify(options.supplementalContent).replaceAll(JSON.stringify(path).slice(1, -1), JSON.stringify(invalid).slice(1, -1)))
+    const supplemental: unknown = options.supplementalContent === undefined
+      ? undefined
+      : JSON.parse(JSON.stringify(options.supplementalContent).replaceAll(JSON.stringify(path).slice(1, -1), JSON.stringify(invalid).slice(1, -1)))
     const pathsFor = outputFilePathFixture(AgentProvider.ZCODE, frame, options)
     expect(pathsFor(payload, { supplementalContent: supplemental })).toEqual([])
   })
@@ -97,7 +106,12 @@ describe('native path ownership and preview preservation', () => {
       toolCallId: 'native-call',
       toolName: options.spanType,
       outputFile: { path, text: forged, output: forged },
-      completeOutput: { path, text: forged, sessionId: options.agentSessionId, toolCallId: 'native-call' },
+      completeOutput: {
+        path,
+        text: forged,
+        sessionId: options.agentSessionId,
+        toolCallId: 'native-call',
+      },
     }
     const before = JSON.stringify(frame)
     const meta = providerToolMeta(AgentProvider.ZCODE, frame, { ...options, supplementalContent })
@@ -121,16 +135,39 @@ describe('parent Worker and child native session ownership', () => {
   it('keeps an explicitly owned child pointer while the Worker event belongs to its parent', () => {
     const childCallId = `${ZCODE_TOOL_PREFIX.Subagent}agent-child_native-call`
     const childPath = path.replace('/native-session/', '/child-session/')
-    const child = { ...frame, payload: { ...frame.payload, toolCallId: childCallId, agentId: 'agent-child', childSessionId: 'child-session' } }
+    const child = {
+      ...frame,
+      payload: {
+        ...frame.payload,
+        toolCallId: childCallId,
+        agentId: 'agent-child',
+        childSessionId: 'child-session',
+      },
+    }
     const supplementalContent = {
       ...options.supplementalContent,
       payload: { ...options.supplementalContent.payload, toolCallId: childCallId },
-      nativeTool: { ...options.supplementalContent.nativeTool, sessionId: 'child-session', data: { ...options.supplementalContent.nativeTool.data, state: { ...options.supplementalContent.nativeTool.data.state, metadata: { serialization: { ...options.supplementalContent.nativeTool.data.state.metadata.serialization, artifactPath: childPath } } } } },
+      nativeTool: {
+        ...options.supplementalContent.nativeTool,
+        sessionId: 'child-session',
+        data: {
+          ...options.supplementalContent.nativeTool.data,
+          state: {
+            ...options.supplementalContent.nativeTool.data.state,
+            metadata: {
+              serialization: { ...options.supplementalContent.nativeTool.data.state.metadata.serialization, artifactPath: childPath },
+            },
+          },
+        },
+      },
     }
     const childOptions = { ...options, spanId: childCallId, supplementalContent }
     const pathsFor = outputFilePathFixture(AgentProvider.ZCODE, child, childOptions)
     expect(pathsFor()).toEqual([childPath])
     expect(pathsFor(child, { agentSessionId: 'foreign-parent' })).toEqual([])
-    expect(pathsFor({ ...child, payload: { ...child.payload, childSessionId: 'foreign-child' } })).toEqual([])
+    expect(pathsFor({
+      ...child,
+      payload: { ...child.payload, childSessionId: 'foreign-child' },
+    })).toEqual([])
   })
 })

@@ -5,7 +5,11 @@ import { nativeXmlField } from '../helpers/nativeXml'
 export function claudeWorkflowOutput(value: unknown): { result?: unknown } {
   if (!isObject(value))
     throw new Error('The Claude Workflow output is not a native JSON object.')
-  return { ...('result' in value ? { result: value.result } : {}) }
+  return {
+    ...('result' in value
+      ? { result: value.result }
+      : {}),
+  }
 }
 
 /** Failed tasks leave diagnostic bytes. Completed tasks require their native output JSON. */
@@ -55,8 +59,17 @@ export function claudeWorkflowModelOutcome(values: readonly unknown[], launch: C
           if ((status !== 'completed' && status !== 'failed') || summary === undefined || !outputFile)
             throw new Error('The Claude Workflow notification has no complete final native outcome.')
           const resultText = nativeXmlField(body, 'result')
-          const result: unknown = resultText === undefined ? undefined : JSON.parse(resultText)
-          outcomes.push({ status, summary, outputFile, ...(resultText === undefined ? {} : { result }) })
+          const result: unknown = resultText === undefined
+            ? undefined
+            : JSON.parse(resultText)
+          outcomes.push({
+            status,
+            summary,
+            outputFile,
+            ...(resultText === undefined
+              ? {}
+              : { result }),
+          })
         }
       }
     }
@@ -75,7 +88,9 @@ export function claudeWorkflowLaunch(value: unknown, callId: string): ClaudeWork
   if (results.length !== 1)
     return undefined
   const result = value.tool_use_result
-  const payload = isObject(result) && isObject(result.data) ? result.data : result
+  const payload = isObject(result) && isObject(result.data)
+    ? result.data
+    : result
   if (!isObject(payload) || payload.status !== 'async_launched' || typeof payload.taskId !== 'string' || payload.taskId === ''
     || typeof payload.runId !== 'string' || payload.runId === '' || ('error' in payload && payload.error !== undefined)) {
     return undefined
@@ -84,8 +99,12 @@ export function claudeWorkflowLaunch(value: unknown, callId: string): ClaudeWork
     callId,
     taskId: payload.taskId,
     runId: payload.runId,
-    ...(typeof payload.transcriptDir === 'string' ? { transcriptDir: payload.transcriptDir } : {}),
-    ...(typeof payload.scriptPath === 'string' ? { scriptPath: payload.scriptPath } : {}),
+    ...(typeof payload.transcriptDir === 'string'
+      ? { transcriptDir: payload.transcriptDir }
+      : {}),
+    ...(typeof payload.scriptPath === 'string'
+      ? { scriptPath: payload.scriptPath }
+      : {}),
   }
 }
 
@@ -100,5 +119,10 @@ export function claudeWorkflowSnapshot(value: unknown, launch: ClaudeWorkflowLau
       throw new Error('The failed Claude Workflow snapshot has no native error.')
     return { status: 'failed', error: value.error }
   }
-  return { status: 'completed', ...('result' in value ? { result: value.result } : {}) }
+  return {
+    status: 'completed',
+    ...('result' in value
+      ? { result: value.result }
+      : {}),
+  }
 }

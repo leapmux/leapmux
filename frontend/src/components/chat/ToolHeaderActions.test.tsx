@@ -16,8 +16,13 @@ describe('ToolHeaderActions', () => {
     const [copied, setCopied] = createSignal(false)
     render(() => (
       <ToolHeaderActions
-        caller={{ onReply: () => {} }}
-        layout={{ onCopyJson: () => {}, get jsonCopied() { return copied() } }}
+        caller={{
+          onReply: () => {},
+        }}
+        layout={{
+          onCopyJson: () => {},
+          get jsonCopied() { return copied() },
+        }}
       />
     ))
 
@@ -39,11 +44,17 @@ describe('ToolHeaderActions', () => {
     const [quotable, setQuotable] = createSignal(false)
     // A MEMO that rebuilds the caller (the shape MessageBubble itself uses) rather
     // than a getter that resolves through undefined, which the caller props reject.
-    const caller = createMemo<ToolHeaderActionsCallerProps>(() => (quotable() ? { onReply: () => {} } : {}))
+    const caller = createMemo<ToolHeaderActionsCallerProps>(() => (quotable()
+      ? {
+          onReply: () => {},
+        }
+      : {}))
     render(() => (
       <ToolHeaderActions
         caller={caller()}
-        layout={{ onCopyJson: () => {} }}
+        layout={{
+          onCopyJson: () => {},
+        }}
       />
     ))
 

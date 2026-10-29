@@ -16,10 +16,16 @@ export function kiroNotificationEntry(message: Record<string, unknown>): Notific
   if (!kiro)
     return []
   const kind = pickString(kiro, KIRO_META.Kind)
-  if (message.sessionUpdate === ACP_UPDATE.AgentMessageChunk && isObject(kiro[KIRO_META.Refusal]))
-    return [kiroRefusalEntry(kiro[KIRO_META.Refusal])]
-  if (kind === KIRO_KIND.SummarizationCompleted || kind === KIRO_KIND.SummarizationFailed)
-    return [kiroCompactionEntry(kind)]
+  if (message.sessionUpdate === ACP_UPDATE.AgentMessageChunk && isObject(kiro[KIRO_META.Refusal])) {
+    return [
+      kiroRefusalEntry(kiro[KIRO_META.Refusal]),
+    ]
+  }
+  if (kind === KIRO_KIND.SummarizationCompleted || kind === KIRO_KIND.SummarizationFailed) {
+    return [
+      kiroCompactionEntry(kind),
+    ]
+  }
   if (kind === KIRO_KIND.HookUpdate)
     return kiroHookEntries(kiro)
   return []
@@ -27,7 +33,9 @@ export function kiroNotificationEntry(message: Record<string, unknown>): Notific
 
 /** One refusal states its category, its explanation, and the model it suggests. */
 function kiroRefusalEntry(refusal: unknown): NotificationEntry {
-  const record = isObject(refusal) ? refusal : {}
+  const record = isObject(refusal)
+    ? refusal
+    : {}
   const parts: string[] = []
   const category = pickString(record, 'category')
   const explanation = pickString(record, 'explanation').trim()
@@ -38,7 +46,10 @@ function kiroRefusalEntry(refusal: unknown): NotificationEntry {
   const recommended = pickString(record, 'recommendedModel').trim()
   if (recommended)
     parts.push(`Recommended model: ${recommended}`)
-  return { kind: 'text', text: `The model refused this request ${parts.join(' ')}`.trim() }
+  return {
+    kind: 'text',
+    text: `The model refused this request ${parts.join(' ')}`.trim(),
+  }
 }
 
 /** Each summarization end is one compaction boundary; a failure keeps its status. */
@@ -57,7 +68,9 @@ function kiroHookEntries(kiro: Record<string, unknown>): NotificationEntry[] {
   const result = pickObject(hook, 'result')
   const entry: Extract<NotificationEntry, { kind: 'hook' }> = {
     kind: 'hook',
-    outcome: status === 'canceled' ? 'blocked' : 'failed',
+    outcome: status === 'canceled'
+      ? 'blocked'
+      : 'failed',
   }
   const name = pickString(hook, 'name').trim()
   if (name)

@@ -23,8 +23,16 @@ droidTest.describe('Factory Droid settings', () => {
     await expectSettingsOptionChosen(page, 'permissionMode-auto-high')
 
     const start = await modelScript.queue(
-      { toolCalls: [readToolCall(AgentProvider.DROID, 'bypass-read', path)] },
-      { toolCalls: [editToolCall(AgentProvider.DROID, 'bypass-edit', { path, before: 'before', after: 'after' })] },
+      {
+        toolCalls: [
+          readToolCall(AgentProvider.DROID, 'bypass-read', path),
+        ],
+      },
+      {
+        toolCalls: [
+          editToolCall(AgentProvider.DROID, 'bypass-edit', { path, before: 'before', after: 'after' }),
+        ],
+      },
       { text: 'The edit completed.' },
     )
     await sendMessage(page, modelScript.prompt('Replace before with after in the note.'))
@@ -32,7 +40,12 @@ droidTest.describe('Factory Droid settings', () => {
     await waitForAgentIdle(page)
     // The request after the read holds the read result, which states the bytes before the edit.
     expect((await modelScript.requestAt(start + 1)).body).toMatchObject({
-      messages: expect.arrayContaining([expect.objectContaining({ role: 'tool', content: expect.stringContaining('before') })]),
+      messages: expect.arrayContaining([
+        expect.objectContaining({
+          role: 'tool',
+          content: expect.stringContaining('before'),
+        }),
+      ]),
     })
     await expectNoControlBanner(page)
     expect(readFileSync(path, 'utf8')).toBe('after')
@@ -40,7 +53,12 @@ droidTest.describe('Factory Droid settings', () => {
 })
 
 droidTest('approves a pending tool and the next tool when Bypass changes during a turn', async ({ askingDroidWorkspace, page, modelScript, leapmuxServer }) => {
-  const native = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingDroidWorkspace.workspaceId })
+  const native = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: askingDroidWorkspace.workspaceId,
+  })
   const operation = (index: number) => {
     const path = join(askingDroidWorkspace.workingDir, `mid-bypass-${index}.txt`)
     const id = `mid-bypass-${index}`
@@ -54,5 +72,8 @@ droidTest('approves a pending tool and the next tool when Bypass changes during 
       },
     }
   }
-  await exerciseMidTurnBypass(native, [operation(0), operation(1)])
+  await exerciseMidTurnBypass(native, [
+    operation(0),
+    operation(1),
+  ])
 })

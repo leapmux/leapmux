@@ -24,7 +24,9 @@ describe('waitForFileSignal', () => {
     mkdirSync(SCRATCH_ROOT, { recursive: true })
     directory = mkdtempSync(join(SCRATCH_ROOT, 'file-signal-'))
     signalPath = join(directory, 'ready')
-    watcher = Object.assign(new EventEmitter(), { close: vi.fn() }) as unknown as FSWatcher
+    watcher = Object.assign(new EventEmitter(), {
+      close: vi.fn(),
+    }) as unknown as FSWatcher
     watchDirectory = vi.fn(() => watcher)
     vi.useFakeTimers()
   })
@@ -326,7 +328,11 @@ fs.existsSync = (path) => {
     mkdirSync(SCRATCH_ROOT, { recursive: true })
     const directory = mkdtempSync(join(SCRATCH_ROOT, 'output-control-invalid-markers-'))
     try {
-      for (const markers of [{ first: '', second: 'second' }, { first: 'first', second: '' }, { first: 'same', second: 'same' }])
+      for (const markers of [
+        { first: '', second: 'second' },
+        { first: 'first', second: '' },
+        { first: 'same', second: 'same' },
+      ])
         expect(() => createToolOutputControl(directory, markers)).toThrow('distinct nonempty markers')
     }
     finally {

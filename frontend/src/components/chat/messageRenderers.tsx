@@ -39,7 +39,9 @@ export { markdownCacheNamespace, renderMarkdownForContext, shouldPauseSyntaxHigh
 export function getExpandedForKey(context: MessageUiRenderContext | undefined, key: MessageUiKey): boolean {
   const expandAgentThoughts = context?.expandAgentThoughts
   return context?.getMessageUiState?.(key)
-    ?? messageUiDefault(key, expandAgentThoughts !== undefined ? { expandAgentThoughts } : {})
+    ?? messageUiDefault(key, expandAgentThoughts !== undefined
+      ? { expandAgentThoughts }
+      : {})
 }
 
 export function getToolResultExpanded(context: MessageUiRenderContext | undefined): boolean {
@@ -54,7 +56,9 @@ export function useSharedExpandedState(
   // its own thunk to override it.
   initial: () => boolean = () => {
     const expandAgentThoughts = getContext()?.expandAgentThoughts
-    return messageUiDefault(key, expandAgentThoughts !== undefined ? { expandAgentThoughts } : {})
+    return messageUiDefault(key, expandAgentThoughts !== undefined
+      ? { expandAgentThoughts }
+      : {})
   },
 ): [() => boolean, (value: boolean | ((prev: boolean) => boolean)) => void] {
   const [localExpanded, setLocalExpanded] = createSignal<boolean | undefined>(undefined)
@@ -108,7 +112,14 @@ export function ThinkingBubble(props: ThinkingBubbleProps): JSX.Element {
     // its text whenever this line runs.
     const text = props.text
     return text !== undefined
-      ? <MarkdownText text={text} {...(props.context !== undefined ? { context: props.context } : {})} />
+      ? (
+          <MarkdownText
+            text={text}
+            {...(props.context !== undefined
+              ? { context: props.context }
+              : {})}
+          />
+        )
       : null
   }
 
@@ -121,7 +132,10 @@ export function ThinkingBubble(props: ThinkingBubbleProps): JSX.Element {
           </span>
         </Tooltip>
         <span class={toolInputText}>{props.label}</span>
-        <span class={`${inlineFlex} ${thinkingChevron}${expanded() ? ` ${thinkingChevronExpanded}` : ''}`}>
+        <span class={`${inlineFlex} ${thinkingChevron}${expanded()
+          ? ` ${thinkingChevronExpanded}`
+          : ''}`}
+        >
           <Icon icon={ChevronRight} size="sm" class={toolUseIcon} />
         </span>
       </div>
@@ -137,11 +151,31 @@ export function ThinkingBubble(props: ThinkingBubbleProps): JSX.Element {
 export function ThinkingMessage(props: { text: string, context?: ExpandableMarkdownRenderContext }): JSX.Element {
   // Key from the shared classification mapper (context.expandUiKey) so it matches
   // the estimator's pre-mount assumption; the literal is the context-less fallback.
-  return <ThinkingBubble text={props.text} icon={Brain} label="Thinking" stateKey={props.context?.expandUiKey ?? MESSAGE_UI_KEY.THINKING} {...(props.context !== undefined ? { context: props.context } : {})} />
+  return (
+    <ThinkingBubble
+      text={props.text}
+      icon={Brain}
+      label="Thinking"
+      stateKey={props.context?.expandUiKey ?? MESSAGE_UI_KEY.THINKING}
+      {...(props.context !== undefined
+        ? { context: props.context }
+        : {})}
+    />
+  )
 }
 
 export function PlanExecutionMessage(props: { text: string, context?: ExpandableMarkdownRenderContext }): JSX.Element {
-  return <ThinkingBubble text={props.text} icon={PlaneTakeoff} label="Execute plan" stateKey={props.context?.expandUiKey ?? MESSAGE_UI_KEY.PLAN_EXECUTION} {...(props.context !== undefined ? { context: props.context } : {})} />
+  return (
+    <ThinkingBubble
+      text={props.text}
+      icon={PlaneTakeoff}
+      label="Execute plan"
+      stateKey={props.context?.expandUiKey ?? MESSAGE_UI_KEY.PLAN_EXECUTION}
+      {...(props.context !== undefined
+        ? { context: props.context }
+        : {})}
+    />
+  )
 }
 
 /**
@@ -165,7 +199,9 @@ export function UserContentMessage(props: { text: string, attachments: UserMessa
             {att => (
               <span class={attachmentItem}>
                 <Icon
-                  icon={att.mimeType?.startsWith('image/') ? FileImageIcon : FileIcon}
+                  icon={att.mimeType?.startsWith('image/')
+                    ? FileImageIcon
+                    : FileIcon}
                   size="xs"
                 />
                 {att.filename ?? 'Unnamed file'}
@@ -175,7 +211,12 @@ export function UserContentMessage(props: { text: string, attachments: UserMessa
         </div>
       </Show>
       <Show when={hasText()}>
-        <MarkdownText text={props.text} {...(props.context !== undefined ? { context: props.context } : {})} />
+        <MarkdownText
+          text={props.text}
+          {...(props.context !== undefined
+            ? { context: props.context }
+            : {})}
+        />
       </Show>
     </Show>
   )
@@ -205,7 +246,12 @@ export function renderControlResponseRow(
       <div class={controlResponseMessage}>
         <div>
           <div>{CONTROL_RESPONSE_FEEDBACK_LEAD}</div>
-          <MarkdownText text={display.message} {...(context !== undefined ? { context } : {})} />
+          <MarkdownText
+            text={display.message}
+            {...(context !== undefined
+              ? { context }
+              : {})}
+          />
         </div>
       </div>
     )
@@ -244,7 +290,9 @@ export function UnrecognizedMessage(props: {
   renderFailed?: boolean
   context?: MessageUiRenderContext
 }): JSX.Element {
-  const text = (): string => typeof props.payload === 'string' ? props.payload : prettifyJson(props.payload)
+  const text = (): string => typeof props.payload === 'string'
+    ? props.payload
+    : prettifyJson(props.payload)
   const title = (): string => props.renderFailed
     ? 'LeapMux could not render this row'
     : 'LeapMux has no display for this row'

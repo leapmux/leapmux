@@ -11,31 +11,70 @@ import '~/components/chat/providers'
 
 describe('codewhale recovered tool media', () => {
   it('reads the actual recovered image beside the unchanged Read media result', () => {
-    const payload = toolCompleted(CODEWHALE_TOOL.ReadMedia, { path: 'shot.png' }, 'The native image is ready.', { tool_media: [MEDIA_DESCRIPTOR] })
-    const options = { spanType: CODEWHALE_TOOL.ReadMedia, supplementalContent: { outputFiles: { [MEDIA_OUTPUT_FILE_ID]: MEDIA_DATA_URI } } }
-    expect(providerRowImages(AgentProvider.CODEWHALE, payload, options)).toEqual([{ mimeType: 'image/png', url: MEDIA_DATA_URI, dimensions: { width: 64, height: 64 } }])
+    const payload = toolCompleted(CODEWHALE_TOOL.ReadMedia, { path: 'shot.png' }, 'The native image is ready.', {
+      tool_media: [MEDIA_DESCRIPTOR],
+    })
+    const options = {
+      spanType: CODEWHALE_TOOL.ReadMedia,
+      supplementalContent: {
+        outputFiles: { [MEDIA_OUTPUT_FILE_ID]: MEDIA_DATA_URI },
+      },
+    }
+    expect(providerRowImages(AgentProvider.CODEWHALE, payload, options)).toEqual([
+      {
+        mimeType: 'image/png',
+        url: MEDIA_DATA_URI,
+        dimensions: { width: 64, height: 64 },
+      },
+    ])
   })
 
   it('keeps a missing recovered image slot for its viewer', () => {
-    const payload = toolCompleted(CODEWHALE_TOOL.ReadMedia, { path: 'shot.png' }, 'The native image is ready.', { tool_media: [MEDIA_DESCRIPTOR] })
-    expect(providerRowImages(AgentProvider.CODEWHALE, payload, { spanType: CODEWHALE_TOOL.ReadMedia })).toEqual([{ mimeType: 'image/png', dimensions: { width: 64, height: 64 } }])
+    const payload = toolCompleted(CODEWHALE_TOOL.ReadMedia, { path: 'shot.png' }, 'The native image is ready.', {
+      tool_media: [MEDIA_DESCRIPTOR],
+    })
+    expect(providerRowImages(AgentProvider.CODEWHALE, payload, { spanType: CODEWHALE_TOOL.ReadMedia })).toEqual([
+      {
+        mimeType: 'image/png',
+        dimensions: { width: 64, height: 64 },
+      },
+    ])
   })
 
   it('keeps MCP text and the native image in their original order', () => {
-    const payload = toolCompleted('mcp_image_probe_show', {}, JSON.stringify({ content: [
-      { type: 'text', text: 'Before the image.' },
-      { type: 'image', mimeType: 'image/png', data: '[MCP image payload removed from text output]' },
-      { type: 'text', text: 'After the image.' },
-    ] }), { tool_media: [MEDIA_DESCRIPTOR] })
-    const built = call(payload, { spanType: 'mcp_image_probe_show', supplementalContent: { outputFiles: { [MEDIA_OUTPUT_FILE_ID]: MEDIA_DATA_URI } } })
+    const payload = toolCompleted('mcp_image_probe_show', {}, JSON.stringify({
+      content: [
+        { type: 'text', text: 'Before the image.' },
+        { type: 'image', mimeType: 'image/png', data: '[MCP image payload removed from text output]' },
+        { type: 'text', text: 'After the image.' },
+      ],
+    }), {
+      tool_media: [MEDIA_DESCRIPTOR],
+    })
+    const built = call(payload, {
+      spanType: 'mcp_image_probe_show',
+      supplementalContent: {
+        outputFiles: { [MEDIA_OUTPUT_FILE_ID]: MEDIA_DATA_URI },
+      },
+    })
     expect(built.kind).toBe('mcp')
     expect(built.images).toEqual([])
-    expect(built.result).toMatchObject({ content: [
-      { type: 'text', text: 'Before the image.' },
-      { type: 'image', source: { mimeType: 'image/png', url: MEDIA_DATA_URI } },
-      { type: 'text', text: 'After the image.' },
-    ] })
-    expect(providerRowImages(AgentProvider.CODEWHALE, payload, { spanType: 'mcp_image_probe_show', supplementalContent: { outputFiles: { [MEDIA_OUTPUT_FILE_ID]: MEDIA_DATA_URI } } })).toHaveLength(1)
+    expect(built.result).toMatchObject({
+      content: [
+        { type: 'text', text: 'Before the image.' },
+        {
+          type: 'image',
+          source: { mimeType: 'image/png', url: MEDIA_DATA_URI },
+        },
+        { type: 'text', text: 'After the image.' },
+      ],
+    })
+    expect(providerRowImages(AgentProvider.CODEWHALE, payload, {
+      spanType: 'mcp_image_probe_show',
+      supplementalContent: {
+        outputFiles: { [MEDIA_OUTPUT_FILE_ID]: MEDIA_DATA_URI },
+      },
+    })).toHaveLength(1)
   })
 })
 
@@ -48,7 +87,10 @@ function call(payload: Record<string, unknown>, options: ProviderRowOptions = {}
 
 /** A finished call read from its result row, with its opening frame beside it. */
 function finished(name: string, args: Record<string, unknown>, detail: string, metadata: Record<string, unknown> = {}): ToolCall {
-  return call(toolCompleted(name, args, detail, metadata), { spanType: name, request: requestSide(toolStarted(name, args)) })
+  return call(toolCompleted(name, args, detail, metadata), {
+    spanType: name,
+    request: requestSide(toolStarted(name, args)),
+  })
 }
 
 describe('codewhaleToolCall', () => {
@@ -65,13 +107,23 @@ describe('codewhaleToolCall', () => {
     it('reads the output, the exit code and the duration of a finished command', () => {
       const done = finished(CODEWHALE_TOOL.Bash, { command: 'ls -1' }, 'a.ts\n', { exit_code: 0, duration_ms: 35 })
       expect(done.status).toBe('completed')
-      expect(done.result).toStrictEqual({ commands: [{ output: 'a.ts\n', exitCode: 0, durationMs: 35 }], unresolvedTerminals: [] })
+      expect(done.result).toStrictEqual({
+        commands: [
+          { output: 'a.ts\n', exitCode: 0, durationMs: 35 },
+        ],
+        unresolvedTerminals: [],
+      })
     })
 
     it('keeps the output of a command that ran and failed', () => {
       const failing = call(toolFinished(CODEWHALE_EVENT.ItemFailed, CODEWHALE_TOOL.Bash, { command: 'false' }, 'boom', { exit_code: 2 }), { spanType: CODEWHALE_TOOL.Bash })
       expect(failing.status).toBe('failed')
-      expect(failing.result).toStrictEqual({ commands: [{ output: 'boom', exitCode: 2 }], unresolvedTerminals: [] })
+      expect(failing.result).toStrictEqual({
+        commands: [
+          { output: 'boom', exitCode: 2 },
+        ],
+        unresolvedTerminals: [],
+      })
     })
 
     // Codewhale 0.10.0 fails the item of a command that exits nonzero, states no
@@ -80,12 +132,22 @@ describe('codewhaleToolCall', () => {
     it('reads the exit code of a command that ran and failed from the native trailer, and draws only its output', () => {
       const failing = call(toolFailed(CODEWHALE_TOOL.Bash, { command: 'printf x >&2; exit 7' }, 'Failed to execute tool: SHELLERR77\n\n\nCommand exited with code 7'), { spanType: CODEWHALE_TOOL.Bash })
       expect(failing.status).toBe('failed')
-      expect(failing.result).toStrictEqual({ commands: [{ output: 'SHELLERR77', exitCode: 7 }], unresolvedTerminals: [] })
+      expect(failing.result).toStrictEqual({
+        commands: [
+          { output: 'SHELLERR77', exitCode: 7 },
+        ],
+        unresolvedTerminals: [],
+      })
     })
 
     it('reads a failed command that printed nothing', () => {
       const failing = call(toolFailed(CODEWHALE_TOOL.Bash, { command: 'exit 3' }, 'Failed to execute tool: \n\n\nCommand exited with code 3'), { spanType: CODEWHALE_TOOL.Bash })
-      expect(failing.result).toStrictEqual({ commands: [{ output: '', exitCode: 3 }], unresolvedTerminals: [] })
+      expect(failing.result).toStrictEqual({
+        commands: [
+          { output: '', exitCode: 3 },
+        ],
+        unresolvedTerminals: [],
+      })
     })
 
     it('keeps the words of a failure that states no exit trailer', () => {
@@ -117,9 +179,19 @@ describe('codewhaleToolCall', () => {
     // A background launch answers at once with a null code, because the job it
     // started has not ended. The words are the launch notice, not a failure.
     it('draws a background launch, whose exit code is null, as output with no code', () => {
-      const launched = finished(CODEWHALE_TOOL.TaskShellStart, { command: 'npm run dev' }, 'Background task started: shell_1', { task_id: 'shell_1', backgrounded: true, status: 'Running', exit_code: null })
+      const launched = finished(CODEWHALE_TOOL.TaskShellStart, { command: 'npm run dev' }, 'Background task started: shell_1', {
+        task_id: 'shell_1',
+        backgrounded: true,
+        status: 'Running',
+        exit_code: null,
+      })
       expect(launched.status).toBe('completed')
-      expect(launched.result).toStrictEqual({ commands: [{ output: 'Background task started: shell_1' }], unresolvedTerminals: [] })
+      expect(launched.result).toStrictEqual({
+        commands: [
+          { output: 'Background task started: shell_1' },
+        ],
+        unresolvedTerminals: [],
+      })
     })
 
     it('composes the command of a tool that states none', () => {
@@ -133,45 +205,120 @@ describe('codewhaleToolCall', () => {
 
   describe('a file change', () => {
     const DIFF = '--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-before\n+after\n'
-    const MUTATION = { mutation: { diff: DIFF, files: [{ path: 'a.ts', outcome: 'updated' }], renames: [] } }
+    const MUTATION = {
+      mutation: {
+        diff: DIFF,
+        files: [
+          { path: 'a.ts', outcome: 'updated' },
+        ],
+        renames: [],
+      },
+    }
 
     it('states one change for each substitution while it runs', () => {
-      const running = call(toolStarted(CODEWHALE_TOOL.Edit, { path: 'a.ts', edits: [{ oldText: 'a', newText: 'b' }, { oldText: 'c', newText: 'd' }] }), { role: 'request' })
+      const running = call(toolStarted(CODEWHALE_TOOL.Edit, {
+        path: 'a.ts',
+        edits: [
+          { oldText: 'a', newText: 'b' },
+          { oldText: 'c', newText: 'd' },
+        ],
+      }), { role: 'request' })
       expect(running.kind).toBe('edit')
       expect(running.request).toStrictEqual({
         changes: [
-          { filePath: 'a.ts', structuredPatch: null, oldStr: 'a', newStr: 'b' },
-          { filePath: 'a.ts', structuredPatch: null, oldStr: 'c', newStr: 'd' },
+          {
+            filePath: 'a.ts',
+            structuredPatch: null,
+            oldStr: 'a',
+            newStr: 'b',
+          },
+          {
+            filePath: 'a.ts',
+            structuredPatch: null,
+            oldStr: 'c',
+            newStr: 'd',
+          },
         ],
       })
     })
 
     it('states the landed diff once the call answers', () => {
-      const done = finished(CODEWHALE_TOOL.Edit, { path: 'a.ts', edits: [{ oldText: 'before', newText: 'after' }] }, 'Replaced 1 block', MUTATION)
+      const done = finished(CODEWHALE_TOOL.Edit, {
+        path: 'a.ts',
+        edits: [
+          { oldText: 'before', newText: 'after' },
+        ],
+      }, 'Replaced 1 block', MUTATION)
       expect(done.status).toBe('completed')
       const result = done.result as { changes: Array<{ filePath: string, operation?: string, structuredPatch?: unknown }> }
       expect(result.changes).toHaveLength(1)
       expect(result.changes[0]?.filePath).toBe('a.ts')
       expect(result.changes[0]?.operation).toBe('edit')
-      expect(result.changes[0]?.structuredPatch).toStrictEqual([{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-before', '+after'] }])
+      expect(result.changes[0]?.structuredPatch).toStrictEqual([
+        {
+          oldStart: 1,
+          oldLines: 1,
+          newStart: 1,
+          newLines: 1,
+          lines: ['-before', '+after'],
+        },
+      ])
     })
 
     it('states a written file as an addition', () => {
       const done = finished(CODEWHALE_TOOL.Write, { path: 'n.txt', content: 'hi\n' }, 'Wrote', {
-        mutation: { diff: '--- a/n.txt\n+++ b/n.txt\n@@ -0,0 +1 @@\n+hi\n', files: [{ path: 'n.txt', outcome: 'created' }], renames: [] },
+        mutation: {
+          diff: '--- a/n.txt\n+++ b/n.txt\n@@ -0,0 +1 @@\n+hi\n',
+          files: [
+            { path: 'n.txt', outcome: 'created' },
+          ],
+          renames: [],
+        },
       })
       expect(done.kind).toBe('write')
       expect((done.result as { changes: Array<{ operation?: string }> }).changes[0]?.operation).toBe('add')
     })
 
     it('states the requested change when the landed record has no hunks this build can place', () => {
-      const done = finished(CODEWHALE_TOOL.Edit, { path: 'a.ts', edits: [{ oldText: 'x', newText: 'y' }] }, 'Replaced', { mutation: { diff: '', files: [{ path: 'a.ts', outcome: 'updated' }], renames: [] } })
-      expect(done.result).toStrictEqual({ changes: [{ filePath: 'a.ts', structuredPatch: null, oldStr: 'x', newStr: 'y' }] })
+      const done = finished(CODEWHALE_TOOL.Edit, {
+        path: 'a.ts',
+        edits: [
+          { oldText: 'x', newText: 'y' },
+        ],
+      }, 'Replaced', {
+        mutation: {
+          diff: '',
+          files: [
+            { path: 'a.ts', outcome: 'updated' },
+          ],
+          renames: [],
+        },
+      })
+      expect(done.result).toStrictEqual({
+        changes: [
+          {
+            filePath: 'a.ts',
+            structuredPatch: null,
+            oldStr: 'x',
+            newStr: 'y',
+          },
+        ],
+      })
     })
 
     it('falls back to the requested change when the result states no mutation', () => {
       const done = finished(CODEWHALE_TOOL.WriteFile, { path: 'n.txt', content: 'hi' }, 'Wrote')
-      expect(done.result).toStrictEqual({ changes: [{ filePath: 'n.txt', structuredPatch: null, oldStr: '', newStr: 'hi', operation: 'add' }] })
+      expect(done.result).toStrictEqual({
+        changes: [
+          {
+            filePath: 'n.txt',
+            structuredPatch: null,
+            oldStr: '',
+            newStr: 'hi',
+            operation: 'add',
+          },
+        ],
+      })
     })
 
     it('reads the arguments of a failed change and keeps the file in the row', () => {
@@ -182,13 +329,21 @@ describe('codewhaleToolCall', () => {
     })
 
     it('takes the generic card for a change that states no file', () => {
-      expect(finished(CODEWHALE_TOOL.Edit, { edits: [{ oldText: 'a', newText: 'b' }] }, 'x').kind).toBe('other')
+      expect(finished(CODEWHALE_TOOL.Edit, {
+        edits: [
+          { oldText: 'a', newText: 'b' },
+        ],
+      }, 'x').kind).toBe('other')
     })
 
     // The landed record names the file the arguments left out, so the row is still
     // a file change, and both sides state the change that landed.
     it('keeps a change whose arguments name no file when the landed record names one', () => {
-      const done = finished(CODEWHALE_TOOL.Edit, { edits: [{ oldText: 'before', newText: 'after' }] }, 'Replaced 1 block', MUTATION)
+      const done = finished(CODEWHALE_TOOL.Edit, {
+        edits: [
+          { oldText: 'before', newText: 'after' },
+        ],
+      }, 'Replaced 1 block', MUTATION)
       expect(done.kind).toBe('edit')
       expect((done.request as { changes: Array<{ filePath: string }> }).changes.map(change => change.filePath)).toStrictEqual(['a.ts'])
       expect((done.result as { changes: Array<{ filePath: string }> }).changes.map(change => change.filePath)).toStrictEqual(['a.ts'])
@@ -215,14 +370,28 @@ describe('codewhaleToolCall', () => {
     it('numbers a read from the offset it asked for', () => {
       const done = finished(CODEWHALE_TOOL.Read, { path: 'a.ts', offset: 10 }, 'ten\neleven')
       expect(done.request).toStrictEqual({ path: 'a.ts', offset: 10 })
-      expect(done.result).toStrictEqual({ lines: [{ num: 10, text: 'ten' }, { num: 11, text: 'eleven' }], fallbackContent: 'ten\neleven' })
+      expect(done.result).toStrictEqual({
+        lines: [
+          { num: 10, text: 'ten' },
+          { num: 11, text: 'eleven' },
+        ],
+        fallbackContent: 'ten\neleven',
+      })
     })
 
     it('reads a grep answer into matches', () => {
-      const done = finished(CODEWHALE_TOOL.GrepFiles, { pattern: 'x' }, JSON.stringify({ matches: [{ file: 'a.ts', line_number: 2, line: 'x: 1' }], total_matches: 1, truncated: false }))
+      const done = finished(CODEWHALE_TOOL.GrepFiles, { pattern: 'x' }, JSON.stringify({
+        matches: [
+          { file: 'a.ts', line_number: 2, line: 'x: 1' },
+        ],
+        total_matches: 1,
+        truncated: false,
+      }))
       expect(done.kind).toBe('grep')
       expect(done.request).toStrictEqual({ pattern: 'x', paths: [] })
-      expect((done.result as { lines: unknown[] }).lines).toStrictEqual([{ filePath: 'a.ts', lineNumber: 2, text: 'x: 1' }])
+      expect((done.result as { lines: unknown[] }).lines).toStrictEqual([
+        { filePath: 'a.ts', lineNumber: 2, text: 'x: 1' },
+      ])
     })
 
     it('keeps a search answer it cannot read as the text the tool printed', () => {
@@ -232,7 +401,11 @@ describe('codewhaleToolCall', () => {
 
     it('reads the query of every web search spelling', () => {
       expect(finished(CODEWHALE_TOOL.WebSearch, { q: 'one' }, 'r').request).toStrictEqual({ query: 'one' })
-      expect(finished(CODEWHALE_TOOL.WebRun, { search_query: [{ query: 'two' }] }, 'r').request).toStrictEqual({ query: 'two' })
+      expect(finished(CODEWHALE_TOOL.WebRun, {
+        search_query: [
+          { query: 'two' },
+        ],
+      }, 'r').request).toStrictEqual({ query: 'two' })
     })
 
     it('reads the operation of the Web facade from its action', () => {
@@ -248,9 +421,20 @@ describe('codewhaleToolCall', () => {
     })
 
     it('reads the first query record of an advanced search, and no query from a list in another shape', () => {
-      expect(finished(CODEWHALE_TOOL.WebRun, { search_query: ['x', { q: 'two' }, { q: 'three' }] }, 'r').request).toStrictEqual({ query: 'two' })
+      expect(finished(CODEWHALE_TOOL.WebRun, {
+        search_query: [
+          'x',
+          { q: 'two' },
+          { q: 'three' },
+        ],
+      }, 'r').request).toStrictEqual({ query: 'two' })
       expect(finished(CODEWHALE_TOOL.WebRun, { search_query: 'one' }, 'r').request).toStrictEqual({ query: '' })
-      expect(finished(CODEWHALE_TOOL.WebSearch, { query: 'direct', search_query: [{ q: 'advanced' }] }, 'r').request).toStrictEqual({ query: 'direct' })
+      expect(finished(CODEWHALE_TOOL.WebSearch, {
+        query: 'direct',
+        search_query: [
+          { q: 'advanced' },
+        ],
+      }, 'r').request).toStrictEqual({ query: 'direct' })
     })
 
     it('keeps a file-name search and a listing it cannot read as the text the tool printed', () => {
@@ -266,30 +450,51 @@ describe('codewhaleToolCall', () => {
 
   describe('a subagent', () => {
     it('states the launched child with its prompt', () => {
-      const done = finished(CODEWHALE_TOOL.Agent, { action: 'start', prompt: 'Count the files.', type: 'explore', name: 'counter' }, JSON.stringify({ name: 'counter', agent_id: 'agent_1', status: 'running' }))
+      const done = finished(CODEWHALE_TOOL.Agent, {
+        action: 'start',
+        prompt: 'Count the files.',
+        type: 'explore',
+        name: 'counter',
+      }, JSON.stringify({ name: 'counter', agent_id: 'agent_1', status: 'running' }))
       expect(done.title).toBe('counter')
       expect(done.request).toStrictEqual({ description: 'counter', agentType: 'explore', prompt: 'Count the files.' })
       expect(done.result).toStrictEqual({
-        agents: [{
-          description: 'counter',
-          agentId: 'agent_1',
-          statusLabel: 'running',
-          outcome: 'running',
-          metadata: [{ label: 'Agent ID', value: 'agent_1' }],
-          body: 'Count the files.',
-          bodyLabel: 'Prompt',
-        }],
+        agents: [
+          {
+            description: 'counter',
+            agentId: 'agent_1',
+            statusLabel: 'running',
+            outcome: 'running',
+            metadata: [
+              { label: 'Agent ID', value: 'agent_1' },
+            ],
+            body: 'Count the files.',
+            bodyLabel: 'Prompt',
+          },
+        ],
       })
     })
 
     it('states the children a wait settled', () => {
-      const done = finished(CODEWHALE_TOOL.Agent, { action: 'wait' }, JSON.stringify({ action: 'wait', settled: [{ agent_id: 'agent_1', name: 'counter', status: 'completed' }], running: 0, note: 'Read the results.' }))
+      const done = finished(CODEWHALE_TOOL.Agent, { action: 'wait' }, JSON.stringify({
+        action: 'wait',
+        settled: [
+          { agent_id: 'agent_1', name: 'counter', status: 'completed' },
+        ],
+        running: 0,
+        note: 'Read the results.',
+      }))
       expect(done.request).toStrictEqual({ description: 'wait', prompt: '' })
-      expect((done.result as { agents: Array<{ outcome: string, body: string }> }).agents).toMatchObject([{ outcome: 'completed', body: 'Read the results.' }])
+      expect((done.result as { agents: Array<{ outcome: string, body: string }> }).agents).toMatchObject([
+        { outcome: 'completed', body: 'Read the results.' },
+      ])
     })
 
     it('keeps an answer that names no child as text', () => {
-      expect(finished(CODEWHALE_TOOL.Agent, { action: 'wait' }, JSON.stringify({ settled: [], note: 'Nothing ran.' })).result).toStrictEqual({ unparsed: true, text: JSON.stringify({ settled: [], note: 'Nothing ran.' }) })
+      expect(finished(CODEWHALE_TOOL.Agent, { action: 'wait' }, JSON.stringify({ settled: [], note: 'Nothing ran.' })).result).toStrictEqual({
+        unparsed: true,
+        text: JSON.stringify({ settled: [], note: 'Nothing ran.' }),
+      })
     })
 
     // A start that names neither the child nor its type has no description of its
@@ -303,28 +508,68 @@ describe('codewhaleToolCall', () => {
 
   describe('the checklists', () => {
     it('states the runtime\'s own checklist once the call lands', () => {
-      const done = finished(CODEWHALE_TOOL.TodoWrite, { todos: [{ content: 'A', status: 'pending' }] }, 'updated', { task_updates: { checklist: { items: [{ id: 1, content: 'A', status: 'in_progress' }] } } })
+      const done = finished(CODEWHALE_TOOL.TodoWrite, {
+        todos: [
+          { content: 'A', status: 'pending' },
+        ],
+      }, 'updated', {
+        task_updates: {
+          checklist: {
+            items: [
+              { id: 1, content: 'A', status: 'in_progress' },
+            ],
+          },
+        },
+      })
       expect(done.kind).toBe('todo')
-      expect((done.result as { items: Array<{ content: string, status: string }> }).items).toMatchObject([{ content: 'A', status: 'in_progress' }])
+      expect((done.result as { items: Array<{ content: string, status: string }> }).items).toMatchObject([
+        { content: 'A', status: 'in_progress' },
+      ])
     })
 
     it('reads a plan\'s steps and its explanation', () => {
-      const done = finished(CODEWHALE_TOOL.UpdatePlan, { explanation: 'Why', plan: [{ step: 'Look', status: 'completed' }] }, 'Plan updated')
-      expect(done.request).toMatchObject({ items: [{ content: 'Look', status: 'completed' }], note: 'Why' })
+      const done = finished(CODEWHALE_TOOL.UpdatePlan, {
+        explanation: 'Why',
+        plan: [
+          { step: 'Look', status: 'completed' },
+        ],
+      }, 'Plan updated')
+      expect(done.request).toMatchObject({
+        items: [
+          { content: 'Look', status: 'completed' },
+        ],
+        note: 'Why',
+      })
       // The runtime keeps no checklist for a plan, so the result states the plan's own
       // steps, with the explanation above them.
-      expect(done.result).toMatchObject({ items: [{ content: 'Look', status: 'completed' }], note: 'Why' })
+      expect(done.result).toMatchObject({
+        items: [
+          { content: 'Look', status: 'completed' },
+        ],
+        note: 'Why',
+      })
     })
 
     it('states no note for a plan whose explanation is blank', () => {
-      const done = finished(CODEWHALE_TOOL.UpdatePlan, { explanation: '  ', plan: [{ step: 'Look', status: 'pending' }] }, 'Plan updated')
+      const done = finished(CODEWHALE_TOOL.UpdatePlan, {
+        explanation: '  ',
+        plan: [
+          { step: 'Look', status: 'pending' },
+        ],
+      }, 'Plan updated')
       expect(done.request).not.toHaveProperty('note')
       expect(done.result).not.toHaveProperty('note')
     })
 
     it('draws the request\'s list for a checklist call whose result keeps none', () => {
-      const done = finished(CODEWHALE_TOOL.TodoWrite, { todos: [{ content: 'A', status: 'pending' }] }, 'updated', { task_updates: {} })
-      expect((done.result as { items: Array<{ content: string, status: string }> }).items).toMatchObject([{ content: 'A', status: 'pending' }])
+      const done = finished(CODEWHALE_TOOL.TodoWrite, {
+        todos: [
+          { content: 'A', status: 'pending' },
+        ],
+      }, 'updated', { task_updates: {} })
+      expect((done.result as { items: Array<{ content: string, status: string }> }).items).toMatchObject([
+        { content: 'A', status: 'pending' },
+      ])
     })
 
     it('takes the generic card for a list-less call', () => {
@@ -336,13 +581,34 @@ describe('codewhaleToolCall', () => {
     // Read from the REQUEST row: the result row of an answered question hides,
     // because the runtime redacts the answers from it.
     it('reads the questions and states no redacted answer', () => {
-      const args = { questions: [{ id: 'color', header: 'Color', question: 'Which color?', options: [{ label: 'Red' }] }] }
+      const args = {
+        questions: [
+          {
+            id: 'color',
+            header: 'Color',
+            question: 'Which color?',
+            options: [
+              { label: 'Red' },
+            ],
+          },
+        ],
+      }
       const done = call(toolStarted(CODEWHALE_TOOL.RequestUserInput, args), {
         role: 'request',
         spanType: CODEWHALE_TOOL.RequestUserInput,
         result: requestSide(toolCompleted(CODEWHALE_TOOL.RequestUserInput, args, 'User input submitted')),
       })
-      expect(done.request).toStrictEqual({ questions: [{ header: 'Color', question: 'Which color?', options: [{ label: 'Red' }] }] })
+      expect(done.request).toStrictEqual({
+        questions: [
+          {
+            header: 'Color',
+            question: 'Which color?',
+            options: [
+              { label: 'Red' },
+            ],
+          },
+        ],
+      })
       expect(done.result).toStrictEqual({ answers: [] })
       expect(done.status).toBe('completed')
     })
@@ -350,8 +616,16 @@ describe('codewhaleToolCall', () => {
     it('reads the server and the tool of a Model Context Protocol call', () => {
       const done = finished('mcp_docs_search', { q: 'x' }, 'found')
       expect(done.kind).toBe('mcp')
-      expect(done.request).toStrictEqual({ args: { q: 'x' }, server: 'docs', tool: 'search' })
-      expect(done.result).toStrictEqual({ content: [{ type: 'text', text: 'found' }] })
+      expect(done.request).toStrictEqual({
+        args: { q: 'x' },
+        server: 'docs',
+        tool: 'search',
+      })
+      expect(done.result).toStrictEqual({
+        content: [
+          { type: 'text', text: 'found' },
+        ],
+      })
     })
 
     it('reads a workflow run\'s status as the task outcome', () => {
@@ -385,16 +659,52 @@ describe('codewhaleToolCall', () => {
 
     it('reads the action and the target of each background-task call', () => {
       const cases: Array<[string, Record<string, unknown>, Record<string, unknown>]> = [
-        [CODEWHALE_TOOL.TerminalCancel, { terminal_id: 't1' }, { action: 'stop', taskId: 't1' }],
-        [CODEWHALE_TOOL.TerminalWait, { terminal_id: 't1' }, { action: 'output', taskId: 't1' }],
+        [
+          CODEWHALE_TOOL.TerminalCancel,
+          { terminal_id: 't1' },
+          { action: 'stop', taskId: 't1' },
+        ],
+        [
+          CODEWHALE_TOOL.TerminalWait,
+          { terminal_id: 't1' },
+          { action: 'output', taskId: 't1' },
+        ],
         // The tool name states the action, whatever the arguments say.
-        [CODEWHALE_TOOL.TaskShellWait, { task_id: 's1', action: 'cancel' }, { action: 'output', taskId: 's1' }],
-        [CODEWHALE_TOOL.Workflow, { action: 'status', run_id: 'r1' }, { action: 'output', taskId: 'r1' }],
-        [CODEWHALE_TOOL.Tasks, { action: 'list' }, { action: 'list' }],
-        [CODEWHALE_TOOL.Tasks, { action: 'read', id: 't1', task_id: 't0' }, { action: 'output', taskId: 't0' }],
-        [CODEWHALE_TOOL.StartMcpServer, { name: 'docs' }, { action: 'other', taskId: 'docs' }],
-        [CODEWHALE_TOOL.TerminalReset, {}, { action: 'other' }],
-        [CODEWHALE_TOOL.Tasks, { action: 'a_later_action' }, { action: 'other' }],
+        [
+          CODEWHALE_TOOL.TaskShellWait,
+          { task_id: 's1', action: 'cancel' },
+          { action: 'output', taskId: 's1' },
+        ],
+        [
+          CODEWHALE_TOOL.Workflow,
+          { action: 'status', run_id: 'r1' },
+          { action: 'output', taskId: 'r1' },
+        ],
+        [
+          CODEWHALE_TOOL.Tasks,
+          { action: 'list' },
+          { action: 'list' },
+        ],
+        [
+          CODEWHALE_TOOL.Tasks,
+          { action: 'read', id: 't1', task_id: 't0' },
+          { action: 'output', taskId: 't0' },
+        ],
+        [
+          CODEWHALE_TOOL.StartMcpServer,
+          { name: 'docs' },
+          { action: 'other', taskId: 'docs' },
+        ],
+        [
+          CODEWHALE_TOOL.TerminalReset,
+          {},
+          { action: 'other' },
+        ],
+        [
+          CODEWHALE_TOOL.Tasks,
+          { action: 'a_later_action' },
+          { action: 'other' },
+        ],
       ]
       for (const [name, args, request] of cases)
         expect(finished(name, args, 'ok').request, `${name} ${JSON.stringify(args)}`).toStrictEqual(request)
@@ -421,7 +731,11 @@ describe('codewhaleToolCall', () => {
       const done = finished('a_tool_from_a_later_release', { a: 1 }, 'x')
       expect(done.kind).toBe('other')
       expect(done.label).toBe('a_tool_from_a_later_release')
-      expect(done.result).toStrictEqual({ content: [{ type: 'text', text: 'x' }] })
+      expect(done.result).toStrictEqual({
+        content: [
+          { type: 'text', text: 'x' },
+        ],
+      })
     })
 
     it('states no content on the generic card for a call that answered nothing, and the failure for one that failed', () => {
@@ -444,27 +758,72 @@ describe('codewhaleToolCall', () => {
       const result = requestSide(toolCompleted(CODEWHALE_TOOL.Bash, { command: 'ls' }, 'a.ts', { exit_code: 0 }))
       const merged = call(toolStarted(CODEWHALE_TOOL.Bash, { command: 'ls' }), { role: 'request', result })
       expect(merged.status).toBe('completed')
-      expect(merged.result).toStrictEqual({ commands: [{ output: 'a.ts', exitCode: 0 }], unresolvedTerminals: [] })
+      expect(merged.result).toStrictEqual({
+        commands: [
+          { output: 'a.ts', exitCode: 0 },
+        ],
+        unresolvedTerminals: [],
+      })
     })
 
     it('reads a subagent\'s tool blocks, naming the tool from the span', () => {
-      const use = childBlock(CODEWHALE_TRANSCRIPT_ROLE.Assistant, { type: CODEWHALE_BLOCK_TYPE.ToolUse, id: CALL, name: CODEWHALE_TOOL.Bash, input: { command: 'ls' } })
+      const use = childBlock(CODEWHALE_TRANSCRIPT_ROLE.Assistant, {
+        type: CODEWHALE_BLOCK_TYPE.ToolUse,
+        id: CALL,
+        name: CODEWHALE_TOOL.Bash,
+        input: { command: 'ls' },
+      })
       const result = childBlock(CODEWHALE_TRANSCRIPT_ROLE.User, { type: CODEWHALE_BLOCK_TYPE.ToolResult, tool_use_id: CALL, content: 'a.ts' }, 2)
-      const done = call(result, { spanType: CODEWHALE_TOOL.Bash, request: requestSide(use) })
+      const done = call(result, {
+        spanType: CODEWHALE_TOOL.Bash,
+        request: requestSide(use),
+      })
       expect(done.kind).toBe('execute')
       expect(done.request).toStrictEqual({ command: 'ls' })
-      expect(done.result).toStrictEqual({ commands: [{ output: 'a.ts' }], unresolvedTerminals: [] })
-      const failed = call(childBlock(CODEWHALE_TRANSCRIPT_ROLE.User, { type: CODEWHALE_BLOCK_TYPE.ToolResult, tool_use_id: CALL, content: 'no', is_error: true }, 2), { spanType: CODEWHALE_TOOL.Read, request: requestSide(childBlock(CODEWHALE_TRANSCRIPT_ROLE.Assistant, { type: CODEWHALE_BLOCK_TYPE.ToolUse, id: CALL, name: CODEWHALE_TOOL.Read, input: { path: 'x' } })) })
+      expect(done.result).toStrictEqual({
+        commands: [
+          { output: 'a.ts' },
+        ],
+        unresolvedTerminals: [],
+      })
+      const failed = call(childBlock(CODEWHALE_TRANSCRIPT_ROLE.User, {
+        type: CODEWHALE_BLOCK_TYPE.ToolResult,
+        tool_use_id: CALL,
+        content: 'no',
+        is_error: true,
+      }, 2), {
+        spanType: CODEWHALE_TOOL.Read,
+        request: requestSide(childBlock(CODEWHALE_TRANSCRIPT_ROLE.Assistant, {
+          type: CODEWHALE_BLOCK_TYPE.ToolUse,
+          id: CALL,
+          name: CODEWHALE_TOOL.Read,
+          input: { path: 'x' },
+        })),
+      })
       expect(failed.status).toBe('failed')
     })
 
     it('reads a subagent result whose content is a block list', () => {
-      const result = childBlock(CODEWHALE_TRANSCRIPT_ROLE.User, { type: CODEWHALE_BLOCK_TYPE.ToolResult, tool_use_id: CALL, content: [{ type: 'text', text: 'one' }, { type: 'image' }, { type: 'text', text: 'two' }] }, 2)
+      const result = childBlock(CODEWHALE_TRANSCRIPT_ROLE.User, {
+        type: CODEWHALE_BLOCK_TYPE.ToolResult,
+        tool_use_id: CALL,
+        content: [
+          { type: 'text', text: 'one' },
+          { type: 'image' },
+          { type: 'text', text: 'two' },
+        ],
+      }, 2)
       expect(call(result, { spanType: CODEWHALE_TOOL.WebSearch }).result).toStrictEqual({ links: [], summary: 'one\ntwo' })
     })
 
     it('reads no tool frame from an item that names no call', () => {
-      const unnamed = codewhaleEvent(CODEWHALE_EVENT.ItemCompleted, { item: { kind: 'tool_call', detail: 'x', metadata: { tool_name: CODEWHALE_TOOL.Bash } } })
+      const unnamed = codewhaleEvent(CODEWHALE_EVENT.ItemCompleted, {
+        item: {
+          kind: 'tool_call',
+          detail: 'x',
+          metadata: { tool_name: CODEWHALE_TOOL.Bash },
+        },
+      })
       expect(providerToolCall(AgentProvider.CODEWHALE, unnamed)).toBeNull()
     })
 
@@ -474,13 +833,25 @@ describe('codewhaleToolCall', () => {
       const orphan = call(childBlock(CODEWHALE_TRANSCRIPT_ROLE.User, { type: CODEWHALE_BLOCK_TYPE.ToolResult, tool_use_id: CALL, content: 'x' }, 2))
       expect(orphan.kind).toBe('other')
       expect(orphan.label).toBeUndefined()
-      expect(orphan.result).toStrictEqual({ content: [{ type: 'text', text: 'x' }] })
+      expect(orphan.result).toStrictEqual({
+        content: [
+          { type: 'text', text: 'x' },
+        ],
+      })
     })
 
     it('takes the tool name from the request row over the span name', () => {
-      const use = childBlock(CODEWHALE_TRANSCRIPT_ROLE.Assistant, { type: CODEWHALE_BLOCK_TYPE.ToolUse, id: CALL, name: CODEWHALE_TOOL.Read, input: { path: 'a.ts' } })
+      const use = childBlock(CODEWHALE_TRANSCRIPT_ROLE.Assistant, {
+        type: CODEWHALE_BLOCK_TYPE.ToolUse,
+        id: CALL,
+        name: CODEWHALE_TOOL.Read,
+        input: { path: 'a.ts' },
+      })
       const result = childBlock(CODEWHALE_TRANSCRIPT_ROLE.User, { type: CODEWHALE_BLOCK_TYPE.ToolResult, tool_use_id: CALL, content: 'alpha' }, 2)
-      const done = call(result, { spanType: CODEWHALE_TOOL.Bash, request: requestSide(use) })
+      const done = call(result, {
+        spanType: CODEWHALE_TOOL.Bash,
+        request: requestSide(use),
+      })
       expect(done.kind).toBe('read')
       expect(done.label).toBe(CODEWHALE_TOOL.Read)
     })
@@ -488,7 +859,10 @@ describe('codewhaleToolCall', () => {
     // A request row whose result side holds another OPENING frame has no answer yet:
     // only a final frame answers the call.
     it('reads a paired opening frame as no answer', () => {
-      const running = call(toolStarted(CODEWHALE_TOOL.Bash, { command: 'ls' }), { role: 'request', result: requestSide(toolStarted(CODEWHALE_TOOL.Bash, { command: 'ls' })) })
+      const running = call(toolStarted(CODEWHALE_TOOL.Bash, { command: 'ls' }), {
+        role: 'request',
+        result: requestSide(toolStarted(CODEWHALE_TOOL.Bash, { command: 'ls' })),
+      })
       expect(running.status).toBe('in_progress')
       expect(running.result).toBeUndefined()
     })
@@ -518,44 +892,117 @@ describe('CODEWHALE_TOOL_READERS', () => {
   // No Codewhale tool takes these kinds today, and the table must still read one
   // correctly if a later tool does.
   it('reads a kind no tool takes as its request and the words the call printed', () => {
-    for (const kind of ['chart', 'delete', 'image', 'move', 'switch_mode', 'think'] as const) {
+    for (const kind of [
+      'chart',
+      'delete',
+      'image',
+      'move',
+      'switch_mode',
+      'think',
+    ] as const) {
       expect(CODEWHALE_TOOL_READERS[kind](facts({ kind })), kind).toMatchObject({ kind, title: 'a_tool' })
       expect(CODEWHALE_TOOL_READERS[kind](facts({ kind })), kind).not.toHaveProperty('result')
       expect(CODEWHALE_TOOL_READERS[kind](facts({ kind, resultAvailable: true, text: 'out' })).result, kind).toStrictEqual({ unparsed: true, text: 'out' })
       expect(CODEWHALE_TOOL_READERS[kind](facts({ kind, resultAvailable: true })), kind).not.toHaveProperty('result')
-      expect(CODEWHALE_TOOL_READERS[kind](facts({ kind, resultAvailable: true, failed: true, text: 'no' })).result, kind).toStrictEqual({ failure: true, text: 'no' })
+      expect(CODEWHALE_TOOL_READERS[kind](facts({
+        kind,
+        resultAvailable: true,
+        failed: true,
+        text: 'no',
+      })).result, kind).toStrictEqual({ failure: true, text: 'no' })
       expect(CODEWHALE_TOOL_READERS[kind](facts({ kind, resultAvailable: true, interrupted: true })).result, kind).toStrictEqual({ failure: true, text: 'Tool call failed' })
     }
   })
 
   it('reads the unspecified kind as the generic card', () => {
-    expect(CODEWHALE_TOOL_READERS.unspecified(facts({ kind: 'unspecified', toolName: '', input: { a: 1 }, resultAvailable: true, text: 'x' })))
-      .toStrictEqual({ kind: 'unspecified', request: { args: { a: 1 } }, result: { content: [{ type: 'text', text: 'x' }] } })
+    expect(CODEWHALE_TOOL_READERS.unspecified(facts({
+      kind: 'unspecified',
+      toolName: '',
+      input: { a: 1 },
+      resultAvailable: true,
+      text: 'x',
+    })))
+      .toStrictEqual({
+        kind: 'unspecified',
+        request: {
+          args: { a: 1 },
+        },
+        result: {
+          content: [
+            { type: 'text', text: 'x' },
+          ],
+        },
+      })
   })
 
   // `codewhaleReclassify` answers `other` for a file row that names no file, so this
   // branch is the table's own fallback for a row that reaches it anyway.
   it('states the printed words for a file change that states no change on either side', () => {
     expect(CODEWHALE_TOOL_READERS.edit(facts({ kind: 'edit', resultAvailable: true, text: 'Applied' })))
-      .toStrictEqual({ kind: 'edit', request: { changes: [] }, result: { unparsed: true, text: 'Applied' } })
+      .toStrictEqual({
+        kind: 'edit',
+        request: { changes: [] },
+        result: { unparsed: true, text: 'Applied' },
+      })
   })
 })
 
 describe('codewhale recovered image pairing', () => {
   it('reads an image from the matched result while building the opening row', () => {
     const start = toolStarted(CODEWHALE_TOOL.ReadMedia, { path: 'shot.png' })
-    const result = requestSide(toolCompleted(CODEWHALE_TOOL.ReadMedia, { path: 'shot.png' }, 'The native image is ready.', { tool_media: [MEDIA_DESCRIPTOR] }))
-    const options = { role: 'request' as const, spanType: CODEWHALE_TOOL.ReadMedia, result: { ...result, supplementalContent: { outputFiles: { [MEDIA_OUTPUT_FILE_ID]: MEDIA_DATA_URI } } } }
-    expect(providerToolCall(AgentProvider.CODEWHALE, start, options)?.images).toEqual([{ mimeType: 'image/png', url: MEDIA_DATA_URI, dimensions: { width: 64, height: 64 } }])
+    const result = requestSide(toolCompleted(CODEWHALE_TOOL.ReadMedia, { path: 'shot.png' }, 'The native image is ready.', {
+      tool_media: [MEDIA_DESCRIPTOR],
+    }))
+    const options = {
+      role: 'request' as const,
+      spanType: CODEWHALE_TOOL.ReadMedia,
+      result: {
+        ...result,
+        supplementalContent: {
+          outputFiles: { [MEDIA_OUTPUT_FILE_ID]: MEDIA_DATA_URI },
+        },
+      },
+    }
+    expect(providerToolCall(AgentProvider.CODEWHALE, start, options)?.images).toEqual([
+      {
+        mimeType: 'image/png',
+        url: MEDIA_DATA_URI,
+        dimensions: { width: 64, height: 64 },
+      },
+    ])
     // The visible result sibling draws the image. The opening row must not duplicate it.
     expect(providerRowImages(AgentProvider.CODEWHALE, start, options)).toEqual([])
-    const merged = { request: undefined, result: options.result, role: 'request' as const, visibleRows: { request: true, result: false } }
-    expect(providerRowImages(AgentProvider.CODEWHALE, start, { ...options, span: merged })).toEqual([{ mimeType: 'image/png', url: MEDIA_DATA_URI, dimensions: { width: 64, height: 64 } }])
+    const merged = {
+      request: undefined,
+      result: options.result,
+      role: 'request' as const,
+      visibleRows: { request: true, result: false },
+    }
+    expect(providerRowImages(AgentProvider.CODEWHALE, start, { ...options, span: merged })).toEqual([
+      {
+        mimeType: 'image/png',
+        url: MEDIA_DATA_URI,
+        dimensions: { width: 64, height: 64 },
+      },
+    ])
   })
 
   it('refuses a foreign result and keeps the generic base image array empty', () => {
     const start = toolStarted(CODEWHALE_TOOL.ReadMedia, { path: 'shot.png' })
-    const foreign = requestSide(toolCompleted(CODEWHALE_TOOL.ReadMedia, { path: 'shot.png' }, 'A foreign result.', { tool_media: [{ ...MEDIA_DESCRIPTOR, tool_call_id: 'foreign' }] }, 'foreign'))
-    expect(providerRowImages(AgentProvider.CODEWHALE, start, { role: 'request', spanType: CODEWHALE_TOOL.ReadMedia, result: { ...foreign, supplementalContent: { outputFiles: { [MEDIA_OUTPUT_FILE_ID]: MEDIA_DATA_URI } } } })).toEqual([])
+    const foreign = requestSide(toolCompleted(CODEWHALE_TOOL.ReadMedia, { path: 'shot.png' }, 'A foreign result.', {
+      tool_media: [
+        { ...MEDIA_DESCRIPTOR, tool_call_id: 'foreign' },
+      ],
+    }, 'foreign'))
+    expect(providerRowImages(AgentProvider.CODEWHALE, start, {
+      role: 'request',
+      spanType: CODEWHALE_TOOL.ReadMedia,
+      result: {
+        ...foreign,
+        supplementalContent: {
+          outputFiles: { [MEDIA_OUTPUT_FILE_ID]: MEDIA_DATA_URI },
+        },
+      },
+    })).toEqual([])
   })
 })

@@ -44,11 +44,15 @@ function options() {
 }
 
 function hookPath(): string {
-  return join(home, '.dirac', 'Hooks', process.platform === 'win32' ? 'Notification.ps1' : 'Notification')
+  return join(home, '.dirac', 'Hooks', process.platform === 'win32'
+    ? 'Notification.ps1'
+    : 'Notification')
 }
 
 async function executeHook(readiness: DiracPlanReadiness, input: unknown) {
-  const child = spawn(process.execPath, [readiness.scriptPath], { stdio: ['pipe', 'pipe', 'pipe'] })
+  const child = spawn(process.execPath, [readiness.scriptPath], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+  })
   const stdout: string[] = []
   const stderr: string[] = []
   child.stdout.on('data', value => stdout.push(String(value)))
@@ -58,7 +62,11 @@ async function executeHook(readiness: DiracPlanReadiness, input: unknown) {
     child.once('close', resolve)
   })
   child.stdin.end(JSON.stringify(input))
-  return { exitCode: await completed, stdout: stdout.join(''), stderr: stderr.join('') }
+  return {
+    exitCode: await completed,
+    stdout: stdout.join(''),
+    stderr: stderr.join(''),
+  }
 }
 
 describe('parseDiracPlanInput', () => {
@@ -82,11 +90,26 @@ describe('parseDiracPlanInput', () => {
       { ...PLAN_INPUT, taskId: -1 },
       { ...PLAN_INPUT, hookName: 'Other' },
       { ...PLAN_INPUT, notification: undefined },
-      { ...PLAN_INPUT, notification: { ...PLAN_INPUT.notification, event: 'task_complete' } },
-      { ...PLAN_INPUT, notification: { ...PLAN_INPUT.notification, source: 'task_completion' } },
-      { ...PLAN_INPUT, notification: { ...PLAN_INPUT.notification, message: 'Another card' } },
-      { ...PLAN_INPUT, notification: { ...PLAN_INPUT.notification, waitingForUserInput: false } },
-      { ...PLAN_INPUT, notification: { ...PLAN_INPUT.notification, waitingForUserInput: 0 } },
+      {
+        ...PLAN_INPUT,
+        notification: { ...PLAN_INPUT.notification, event: 'task_complete' },
+      },
+      {
+        ...PLAN_INPUT,
+        notification: { ...PLAN_INPUT.notification, source: 'task_completion' },
+      },
+      {
+        ...PLAN_INPUT,
+        notification: { ...PLAN_INPUT.notification, message: 'Another card' },
+      },
+      {
+        ...PLAN_INPUT,
+        notification: { ...PLAN_INPUT.notification, waitingForUserInput: false },
+      },
+      {
+        ...PLAN_INPUT,
+        notification: { ...PLAN_INPUT.notification, waitingForUserInput: 0 },
+      },
     ]
     for (const input of invalid)
       expect(() => parseDiracPlanInput(input)).toThrow('readiness record is invalid')
@@ -114,7 +137,12 @@ describe('withDiracPlanReadiness', () => {
     await withDiracPlanReadiness(options(), async (readiness) => {
       const result = await executeHook(readiness, {
         ...PLAN_INPUT,
-        notification: { event: 'task_complete', source: 'task_completion', message: 'Task Completed', waitingForUserInput: false },
+        notification: {
+          event: 'task_complete',
+          source: 'task_completion',
+          message: 'Task Completed',
+          waitingForUserInput: false,
+        },
       })
       expect(result.exitCode).toBe(0)
       expect(JSON.parse(result.stdout)).toEqual({ cancel: false, contextModification: '', errorMessage: '' })
@@ -176,7 +204,10 @@ describe('withDiracPlanReadiness', () => {
   })
 
   it('rejects relative paths before it installs a hook', async () => {
-    await expect(withDiracPlanReadiness({ ...options(), home: 'relative' }, async () => {})).rejects.toThrow('must be absolute')
+    await expect(withDiracPlanReadiness({
+      ...options(),
+      home: 'relative',
+    }, async () => {})).rejects.toThrow('must be absolute')
     expect(existsSync(hookPath())).toBe(false)
   })
 
@@ -185,9 +216,13 @@ describe('withDiracPlanReadiness', () => {
     extraDirectories.push(outside)
     const outsideHooks = join(outside, 'Hooks')
     mkdirSync(outsideHooks)
-    const outsideHook = join(outsideHooks, process.platform === 'win32' ? 'Notification.ps1' : 'Notification')
+    const outsideHook = join(outsideHooks, process.platform === 'win32'
+      ? 'Notification.ps1'
+      : 'Notification')
     writeFileSync(outsideHook, 'outside hook stays unchanged')
-    symlinkSync(outside, join(home, '.dirac'), process.platform === 'win32' ? 'junction' : 'dir')
+    symlinkSync(outside, join(home, '.dirac'), process.platform === 'win32'
+      ? 'junction'
+      : 'dir')
     await expect(withDiracPlanReadiness(options(), async () => {})).rejects.toThrow('outside the E2E run')
     expect(readFileSync(outsideHook, 'utf8')).toBe('outside hook stays unchanged')
   })

@@ -28,13 +28,18 @@ const { WORKER_ID, WORKING_DIR, REPO_DIR, NEW_WORKSPACE_ID } = vi.hoisted(() => 
 
 vi.mock('random-word-slugs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('random-word-slugs')>()
-  return { ...actual, generateSlug: vi.fn(actual.generateSlug) }
+  return {
+    ...actual,
+    generateSlug: vi.fn(actual.generateSlug),
+  }
 })
 
 vi.mock('~/api/clients', () => ({
   workerClient: {
     listWorkers: vi.fn().mockResolvedValue({
-      workers: [{ id: WORKER_ID, online: true, name: 'worker-1' }],
+      workers: [
+        { id: WORKER_ID, online: true, name: 'worker-1' },
+      ],
     }),
   },
   workspaceClient: {
@@ -59,7 +64,9 @@ vi.mock('~/api/workerRpc', () => ({
   listGitBranches: vi.fn(async () => ({ branches: [] })),
   listGitWorktrees: vi.fn(async () => ({ worktrees: [] })),
   listDirectory: vi.fn(),
-  statFile: vi.fn(async () => ({ info: { modTime: '2026-01-01T00:00:00Z' } })),
+  statFile: vi.fn(async () => ({
+    info: { modTime: '2026-01-01T00:00:00Z' },
+  })),
 }))
 
 // Mock seedTabIntoNewWorkspace through the same module that the dialog imports.
@@ -119,7 +126,9 @@ function renderDialog(overrides: Partial<Parameters<typeof NewWorkspaceDialog>[0
     onClose: vi.fn(),
     startPoint: { kind: 'directory' } as WorkspaceStartPoint,
     availableProviders: [AgentProvider.CLAUDE_CODE],
-    metadata: { patch: vi.fn() } as unknown as TabMetadataStore,
+    metadata: {
+      patch: vi.fn(),
+    } as unknown as TabMetadataStore,
     repoGitStore: createRepoGitStore(),
     ...overrides,
   }
@@ -183,7 +192,9 @@ describe('NewWorkspaceDialog', () => {
     renderDialog()
 
     const input = await screen.findByLabelText('Title') as HTMLInputElement
-    fireEvent.input(input, { target: { value: 'Original Title' } })
+    fireEvent.input(input, {
+      target: { value: 'Original Title' },
+    })
     vi.mocked(generateSlug).mockReturnValueOnce('Replacement Test Title')
     fireEvent.click(screen.getByTestId('title-regenerate'))
     expect(input.value).toBe('Replacement Test Title')
@@ -196,7 +207,9 @@ describe('NewWorkspaceDialog', () => {
     fireEvent.click(screen.getByTestId('pick-dir'))
     await waitFor(() => expect(createButton.disabled).toBe(false))
 
-    fireEvent.input(screen.getByLabelText('Title'), { target: { value: '  ' } })
+    fireEvent.input(screen.getByLabelText('Title'), {
+      target: { value: '  ' },
+    })
     await waitFor(() => expect(createButton.disabled).toBe(true))
     expect(screen.getByText('Name must not be empty')).toBeInTheDocument()
 
@@ -421,11 +434,15 @@ describe('NewWorkspaceDialog', () => {
       await waitFor(() => expect(submit).toBeEnabled())
       fireEvent.click(await screen.findByLabelText('Create new worktree'))
       const input = await screen.findByPlaceholderText('feature-branch')
-      fireEvent.input(input, { target: { value: name } })
+      fireEvent.input(input, {
+        target: { value: name },
+      })
       expect(await screen.findByText(message, { exact: false })).toBeVisible()
       expect(submit).toBeDisabled()
       expect(workerRpc.openAgent).not.toHaveBeenCalled()
-      fireEvent.input(input, { target: { value: 'valid-new-branch' } })
+      fireEvent.input(input, {
+        target: { value: 'valid-new-branch' },
+      })
       await waitFor(() => expect(submit).toBeEnabled())
       expect(screen.queryByText(message, { exact: false })).not.toBeInTheDocument()
     })
@@ -435,9 +452,13 @@ describe('NewWorkspaceDialog', () => {
       fireEvent.click(await screen.findByLabelText('Create new worktree'))
       const input = await screen.findByPlaceholderText('feature-branch')
       const submit = screen.getByRole('button', { name: 'Create' })
-      fireEvent.input(input, { target: { value: 'invalid branch' } })
+      fireEvent.input(input, {
+        target: { value: 'invalid branch' },
+      })
       expect(await screen.findByText('Branch name contains invalid characters')).toBeVisible()
-      fireEvent.input(input, { target: { value: 'foo..bar' } })
+      fireEvent.input(input, {
+        target: { value: 'foo..bar' },
+      })
       expect(await screen.findByText('Branch name must not contain ..')).toBeVisible()
       expect(screen.queryByText('Branch name contains invalid characters')).not.toBeInTheDocument()
       expect(submit).toBeDisabled()
@@ -447,25 +468,37 @@ describe('NewWorkspaceDialog', () => {
 
     it.each(['Create new branch', 'Create new worktree'])('refuses an existing branch and accepts a new name in %s', async (mode) => {
       vi.mocked(workerRpc.listGitBranches).mockResolvedValue(create(ListGitBranchesResponseSchema, {
-        branches: [{ name: 'claimed-branch' }],
+        branches: [
+          { name: 'claimed-branch' },
+        ],
         currentBranch: 'main',
       }))
       renderDialog({ startPoint: REPO_START })
       fireEvent.click(await screen.findByLabelText(mode))
       const submit = await screen.findByRole('button', { name: 'Create' })
       const input = await screen.findByPlaceholderText('feature-branch')
-      fireEvent.input(input, { target: { value: 'claimed-branch' } })
+      fireEvent.input(input, {
+        target: { value: 'claimed-branch' },
+      })
       expect(await screen.findByText('A branch with this name already exists')).toBeVisible()
       expect(submit).toBeDisabled()
-      fireEvent.input(input, { target: { value: 'unclaimed-branch' } })
+      fireEvent.input(input, {
+        target: { value: 'unclaimed-branch' },
+      })
       await waitFor(() => expect(submit).toBeEnabled())
       expect(screen.queryByText('A branch with this name already exists')).not.toBeInTheDocument()
     })
 
     it.each(['Switch to branch', 'Use existing worktree'])('requires a selection in %s and clears that requirement in current mode', async (mode) => {
-      vi.mocked(workerRpc.listGitBranches).mockResolvedValue(create(ListGitBranchesResponseSchema, { branches: [{ name: 'other' }] }))
+      vi.mocked(workerRpc.listGitBranches).mockResolvedValue(create(ListGitBranchesResponseSchema, {
+        branches: [
+          { name: 'other' },
+        ],
+      }))
       vi.mocked(workerRpc.listGitWorktrees).mockResolvedValue(create(ListGitWorktreesResponseSchema, {
-        worktrees: [{ path: '/home/u/worktree', branch: 'other' }],
+        worktrees: [
+          { path: '/home/u/worktree', branch: 'other' },
+        ],
       }))
       renderDialog({ startPoint: REPO_START })
       const submit = await screen.findByRole('button', { name: 'Create' })

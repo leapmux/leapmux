@@ -131,6 +131,8 @@ export async function createTestChannelManager(hubUrl: string, cookie: string): 
     rpcTimeoutFn: () => 60_000,
     expectedUserId: () => userId,
     // Auto-accept key changes in e2e tests (fresh server instances each time).
-    keyPins: new KeyPinStore({ confirmKeyPin: async () => 'accept' }),
+    keyPins: new KeyPinStore({
+      confirmKeyPin: async () => 'accept',
+    }),
   })
 }

@@ -19,5 +19,10 @@ const frame = {
 }
 
 describe('readCommandCodeNativeOutput', () => {
-  runNativeOutputReaderCases({ read: readCommandCodeNativeOutput, frame, path, pointerError: 'The native Command Code result has no unique filesystem pointer.' })
+  runNativeOutputReaderCases({
+    read: readCommandCodeNativeOutput,
+    frame,
+    path,
+    pointerError: 'The native Command Code result has no unique filesystem pointer.',
+  })
 })

@@ -77,7 +77,12 @@ describe('applyClaim', () => {
 
     expect(rewritten).toBe('intro\n- **Go** 1.26.5 or later\noutro\n')
     expect(drifts).toHaveLength(1)
-    expect(drifts[0]).toMatchObject({ file: 'README.md', line: 2, key: 'GOLANG_VERSION', found: '1.26.1' })
+    expect(drifts[0]).toMatchObject({
+      file: 'README.md',
+      line: 2,
+      key: 'GOLANG_VERSION',
+      found: '1.26.1',
+    })
   })
 
   it('reports no drift and changes nothing when the claim already agrees', () => {

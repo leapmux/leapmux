@@ -35,7 +35,9 @@ export const qwenTest = createProviderTest({
       const repository = gitRepositoryWorkingDir(prefix)
       const qwenDir = join(repository, '.qwen')
       mkdirSync(qwenDir, { recursive: true })
-      writePrivateJSON(join(qwenDir, 'settings.json'), { ui: { enableFollowupSuggestions: true } })
+      writePrivateJSON(join(qwenDir, 'settings.json'), {
+        ui: { enableFollowupSuggestions: true },
+      })
       return repository
     },
   }),

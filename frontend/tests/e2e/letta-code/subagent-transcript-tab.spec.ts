@@ -19,22 +19,34 @@ lettaTest.describe('Letta Code subagents', () => {
       // root report to the child.
       await modelScript.rule({
         name: 'the child reports its count',
-        when: { user: CHILD_TASK, lastMessage: { role: 'user' } },
+        when: {
+          user: CHILD_TASK,
+          lastMessage: { role: 'user' },
+        },
         respond: { gate, text: 'LETTA_CHILD_DONE' },
         once: true,
       })
       const start = await modelScript.queue(
         {
-          toolCalls: [spawnSubagentToolCall(native.provider, 'spawn-letta', {
-            description: 'Count the files',
-            prompt: childPrompt,
-          })],
+          toolCalls: [
+            spawnSubagentToolCall(native.provider, 'spawn-letta', {
+              description: 'Count the files',
+              prompt: childPrompt,
+            }),
+          ],
         },
         { text: 'LETTA_ROOT_DONE' },
       )
       await sendMessage(page, modelScript.prompt('Delegate the count to a subagent, then report.'))
       await modelScript.waitForGate(gate)
-      await registerLettaChildNoticeRule(native, { name: 'the Letta root handles the child completion notice', spawnCallId: 'spawn-letta', description: 'Count the files', report: 'LETTA_CHILD_DONE', reply: 'LETTA_ROOT_AFTER_CHILD_DONE', once: true })
+      await registerLettaChildNoticeRule(native, {
+        name: 'the Letta root handles the child completion notice',
+        spawnCallId: 'spawn-letta',
+        description: 'Count the files',
+        report: 'LETTA_CHILD_DONE',
+        reply: 'LETTA_ROOT_AFTER_CHILD_DONE',
+        once: true,
+      })
       await modelScript.releaseGate(gate)
       await modelScript.waitForSteps(start + 2)
       await expect.poll(async () => (await modelScript.status()).ruleMatches['the Letta root handles the child completion notice'] ?? 0).toBe(1)

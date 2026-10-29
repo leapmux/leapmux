@@ -16,12 +16,16 @@ vi.mock('~/components/chat/providers/registry', async (importOriginal) => {
   return {
     ...actual,
     resolvedSpanRole: (parsed: ParsedMessageContent, provider: AgentProvider) =>
-      parsed.parentObject?.noSpanSideForTest === true ? 'none' : actual.resolvedSpanRole(parsed, provider),
+      parsed.parentObject?.noSpanSideForTest === true
+        ? 'none'
+        : actual.resolvedSpanRole(parsed, provider),
   }
 })
 
 function parsed(message: AgentChatMessage | undefined) {
-  return message ? parseMessageContent(message) : undefined
+  return message
+    ? parseMessageContent(message)
+    : undefined
 }
 
 function encode(raw: unknown): Uint8Array {
@@ -45,7 +49,14 @@ function toolUse(id: string, spanId: string) {
   return create(AgentChatMessageSchema, {
     id,
     source: MessageSource.AGENT,
-    content: encode({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Read', input: {} }] } }),
+    content: encode({
+      type: 'assistant',
+      message: {
+        content: [
+          { type: 'tool_use', name: 'Read', input: {} },
+        ],
+      },
+    }),
     contentCompression: ContentCompression.NONE,
     seq: 1n,
     spanId,
@@ -58,7 +69,16 @@ function toolResult(id: string, spanId: string) {
   return create(AgentChatMessageSchema, {
     id,
     source: MessageSource.USER,
-    content: encode({ type: 'user', span_type: 'Read', message: { role: 'user', content: [{ type: 'tool_result', content: 'output', tool_use_id: 't1' }] } }),
+    content: encode({
+      type: 'user',
+      span_type: 'Read',
+      message: {
+        role: 'user',
+        content: [
+          { type: 'tool_result', content: 'output', tool_use_id: 't1' },
+        ],
+      },
+    }),
     contentCompression: ContentCompression.NONE,
     seq: 2n,
     spanId,
@@ -99,7 +119,12 @@ function piEnd(id: string, spanId: string) {
   return create(AgentChatMessageSchema, {
     id,
     source: MessageSource.USER,
-    content: encode({ type: 'tool_execution_end', toolCallId: 'tc1', toolName: 'bash', result: 'done' }),
+    content: encode({
+      type: 'tool_execution_end',
+      toolCallId: 'tc1',
+      toolName: 'bash',
+      result: 'done',
+    }),
     contentCompression: ContentCompression.NONE,
     seq: 2n,
     spanId,
@@ -112,7 +137,9 @@ function codexSpan(id: string, spanId: string, seq: bigint, status: string) {
   return create(AgentChatMessageSchema, {
     id,
     source: MessageSource.AGENT,
-    content: encode({ item: { id: spanId, type: 'commandExecution', status } }),
+    content: encode({
+      item: { id: spanId, type: 'commandExecution', status },
+    }),
     contentCompression: ContentCompression.NONE,
     seq,
     spanId,
@@ -176,7 +203,10 @@ describe('createSpanIndex', () => {
     const frame = (type: string, data: Record<string, unknown>) => ({
       jsonrpc: '2.0',
       method: 'session.event',
-      params: { sessionId: 'session-1', event: { id: `${type}-1`, type, data } },
+      params: {
+        sessionId: 'session-1',
+        event: { id: `${type}-1`, type, data },
+      },
     })
     const request = create(AgentChatMessageSchema, {
       id: 'request',
@@ -297,7 +327,18 @@ describe('createSpanIndex', () => {
     const start = create(AgentChatMessageSchema, {
       id: 'start',
       source: MessageSource.AGENT,
-      content: encode({ jsonrpc: '2.0', method: 'session.event', params: { sessionId: 's1', event: { id: 'e1', type: 'tool.execution_start', data: { toolCallId: 'c1', toolName: 'bash', arguments: {} } } } }),
+      content: encode({
+        jsonrpc: '2.0',
+        method: 'session.event',
+        params: {
+          sessionId: 's1',
+          event: {
+            id: 'e1',
+            type: 'tool.execution_start',
+            data: { toolCallId: 'c1', toolName: 'bash', arguments: {} },
+          },
+        },
+      }),
       contentCompression: ContentCompression.NONE,
       seq: 1n,
       spanId: 'c1',
@@ -313,7 +354,18 @@ describe('createSpanIndex', () => {
     const start = create(AgentChatMessageSchema, {
       id: 'start',
       source: MessageSource.AGENT,
-      content: encode({ jsonrpc: '2.0', method: 'session.event', params: { sessionId: 's1', event: { id: 'e1', type: 'tool.execution_start', data: { toolCallId: 'c1', toolName: 'bash', arguments: {} } } } }),
+      content: encode({
+        jsonrpc: '2.0',
+        method: 'session.event',
+        params: {
+          sessionId: 's1',
+          event: {
+            id: 'e1',
+            type: 'tool.execution_start',
+            data: { toolCallId: 'c1', toolName: 'bash', arguments: {} },
+          },
+        },
+      }),
       contentCompression: ContentCompression.NONE,
       seq: 1n,
       spanId: 'c1',
@@ -333,7 +385,9 @@ describe('createSpanIndex', () => {
     expect(parsed(idx.getRequestMessage('a1', { spanId: 's1', agentSessionId: '' }))).toBeDefined()
 
     // Rebuild from a window that no longer contains s1.
-    idx.reindex('a1', [toolUse('op2', 's2')])
+    idx.reindex('a1', [
+      toolUse('op2', 's2'),
+    ])
     expect(parsed(idx.getRequestMessage('a1', { spanId: 's1', agentSessionId: '' }))).toBeUndefined()
     expect(parsed(idx.getResultMessage('a1', { spanId: 's1', agentSessionId: '' }))).toBeUndefined()
     expect(parsed(idx.getRequestMessage('a1', { spanId: 's2', agentSessionId: '' }))?.parentObject?.type).toBe('assistant')
@@ -394,7 +448,9 @@ describe('explicit no-side span records', () => {
     const index = createSpanIndex()
     const request = toolUse('request', 's1')
     const progress = noSideSpan('window')
-    const messages = progressFirst ? [progress, request] : [request, progress]
+    const messages = progressFirst
+      ? [progress, request]
+      : [request, progress]
     expect(index.index('agent', ...messages)).toBe(false)
     expect(index.getRequestMessage('agent', identity)).toBe(request)
     expect(index.getResultMessage('agent', identity)).toBeUndefined()
@@ -413,34 +469,61 @@ describe('explicit no-side span records', () => {
 
   it.each(['request', 'result'] as const)('removes an indexed %s that changes to a no-side record', (side) => {
     const index = createSpanIndex()
-    const changing = side === 'request' ? toolUse('changing', 's1') : toolResult('changing', 's1')
-    const sibling = side === 'request' ? toolResult('sibling', 's1') : toolUse('sibling', 's1')
+    const changing = side === 'request'
+      ? toolUse('changing', 's1')
+      : toolResult('changing', 's1')
+    const sibling = side === 'request'
+      ? toolResult('sibling', 's1')
+      : toolUse('sibling', 's1')
     const replacement = noSideSpan(changing.id, changing.spanId, changing.seq)
     index.reindex('agent', [changing, sibling])
     expect(index.index('agent', replacement)).toBe(true)
-    expect(side === 'request' ? index.getRequestMessage('agent', identity) : index.getResultMessage('agent', identity)).toBeUndefined()
-    expect(side === 'request' ? index.getResultMessage('agent', identity) : index.getRequestMessage('agent', identity)).toBe(sibling)
+    expect(side === 'request'
+      ? index.getRequestMessage('agent', identity)
+      : index.getResultMessage('agent', identity)).toBeUndefined()
+    expect(side === 'request'
+      ? index.getResultMessage('agent', identity)
+      : index.getRequestMessage('agent', identity)).toBe(sibling)
     index.reindex('agent', [replacement, sibling])
-    expect(side === 'request' ? index.getRequestMessage('agent', identity) : index.getResultMessage('agent', identity)).toBeUndefined()
-    expect(side === 'request' ? index.getResultMessage('agent', identity) : index.getRequestMessage('agent', identity)).toBe(sibling)
+    expect(side === 'request'
+      ? index.getRequestMessage('agent', identity)
+      : index.getResultMessage('agent', identity)).toBeUndefined()
+    expect(side === 'request'
+      ? index.getResultMessage('agent', identity)
+      : index.getRequestMessage('agent', identity)).toBe(sibling)
   })
 
   it.each(['request', 'result'] as const)('accepts a genuine %s under an earlier no-side record ID', (side) => {
     const index = createSpanIndex()
-    const replacement = side === 'request' ? toolUse('changing', 's1') : toolResult('changing', 's1')
+    const replacement = side === 'request'
+      ? toolUse('changing', 's1')
+      : toolResult('changing', 's1')
     expect(index.index('agent', noSideSpan(replacement.id))).toBe(false)
     expect(index.getRequestMessage('agent', identity)).toBeUndefined()
     expect(index.getResultMessage('agent', identity)).toBeUndefined()
     expect(index.index('agent', replacement)).toBe(false)
-    expect(side === 'request' ? index.getRequestMessage('agent', identity) : index.getResultMessage('agent', identity)).toBe(replacement)
-    expect(side === 'request' ? index.getResultMessage('agent', identity) : index.getRequestMessage('agent', identity)).toBeUndefined()
+    expect(side === 'request'
+      ? index.getRequestMessage('agent', identity)
+      : index.getResultMessage('agent', identity)).toBe(replacement)
+    expect(side === 'request'
+      ? index.getResultMessage('agent', identity)
+      : index.getRequestMessage('agent', identity)).toBeUndefined()
   })
 
   it('keeps reused spans separate across agents and provider sessions', () => {
     const index = createSpanIndex()
-    const first = { ...toolUse('first', 's1'), agentSessionId: 'first-session' }
-    const second = { ...toolUse('second', 's1'), agentSessionId: 'second-session' }
-    const otherAgent = { ...toolResult('other-agent', 's1'), agentSessionId: 'first-session' }
+    const first = {
+      ...toolUse('first', 's1'),
+      agentSessionId: 'first-session',
+    }
+    const second = {
+      ...toolUse('second', 's1'),
+      agentSessionId: 'second-session',
+    }
+    const otherAgent = {
+      ...toolResult('other-agent', 's1'),
+      agentSessionId: 'first-session',
+    }
     index.reindex('agent', [first, second])
     index.reindex('other-agent', [otherAgent])
     expect(index.index('agent', noSideSpan('first-window', 's1', 3n, 'first-session'), noSideSpan('second-window', 's1', 4n, 'second-session'))).toBe(false)

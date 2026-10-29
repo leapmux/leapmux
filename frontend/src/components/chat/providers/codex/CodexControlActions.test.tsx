@@ -23,7 +23,9 @@ function makePlanRequest(): ControlRequest {
   return {
     requestId: 'plan-1',
     agentId: 'agent-1',
-    payload: { request: { tool_name: 'CodexPlanModePrompt', input: {} } },
+    payload: {
+      request: { tool_name: 'CodexPlanModePrompt', input: {} },
+    },
   }
 }
 
@@ -49,8 +51,16 @@ function renderActions(
 
 describe('codex control request content', () => {
   it('uses Fractured JSON for requested permissions', () => {
-    const permissions = { network: { enabled: true } }
-    const request = { ...makeRequest({ permissions }), payload: { method: 'item/permissions/requestApproval', params: { permissions } } }
+    const permissions = {
+      network: { enabled: true },
+    }
+    const request = {
+      ...makeRequest({ permissions }),
+      payload: {
+        method: 'item/permissions/requestApproval',
+        params: { permissions },
+      },
+    }
     const { container } = render(() => <ControlRequestContent agentProvider={AgentProvider.CODEX} request={request} answerState={createControlAnswerState()} />)
     expect(container.querySelector('pre')?.textContent).toBe(prettifyJson(permissions))
   })
@@ -58,7 +68,17 @@ describe('codex control request content', () => {
 
 describe('codex control request actions', () => {
   it('renders Deny and Allow with allow-choice and permission pills', () => {
-    renderActions(makeRequest({ availableDecisions: ['accept', 'decline', { acceptWithExecpolicyAmendment: { execpolicy_amendment: ['rm'] } }] }))
+    renderActions(makeRequest({
+      availableDecisions: [
+        'accept',
+        'decline',
+        {
+          acceptWithExecpolicyAmendment: {
+            execpolicy_amendment: ['rm'],
+          },
+        },
+      ],
+    }))
 
     expect(screen.getByTestId('control-deny-btn')).toHaveTextContent('Deny')
     expect(screen.getByTestId('control-allow-btn')).toHaveTextContent('Allow')
@@ -71,7 +91,17 @@ describe('codex control request actions', () => {
   })
 
   it('uses the Codex decision that the allow-choice pills select', async () => {
-    const { onRespond } = renderActions(makeRequest({ availableDecisions: ['accept', 'decline', { acceptWithExecpolicyAmendment: { execpolicy_amendment: ['rm'] } }] }))
+    const { onRespond } = renderActions(makeRequest({
+      availableDecisions: [
+        'accept',
+        'decline',
+        {
+          acceptWithExecpolicyAmendment: {
+            execpolicy_amendment: ['rm'],
+          },
+        },
+      ],
+    }))
 
     fireEvent.click(allowChoicePillGroup('Allow as').getByRole('radio', { name: 'Command rule' }))
     await fireEvent.click(screen.getByTestId('control-allow-btn'))
@@ -79,12 +109,22 @@ describe('codex control request actions', () => {
     const respondCall = onRespond.mock.calls[0]
     expect(respondCall).toBeDefined()
     const [bytes] = respondCall ?? []
-    expect(JSON.parse(new TextDecoder().decode(bytes)).result.decision).toEqual({ acceptWithExecpolicyAmendment: { execpolicy_amendment: ['rm'] } })
+    expect(JSON.parse(new TextDecoder().decode(bytes)).result.decision).toEqual({
+      acceptWithExecpolicyAmendment: {
+        execpolicy_amendment: ['rm'],
+      },
+    })
   })
 
   it('sends an allowed host-policy amendment from the Host rule pill', async () => {
-    const hostDecision = { applyNetworkPolicyAmendment: { network_policy_amendment: { host: 'example.com', action: 'allow' } } }
-    const { onRespond } = renderActions(makeRequest({ availableDecisions: ['accept', 'decline', hostDecision] }))
+    const hostDecision = {
+      applyNetworkPolicyAmendment: {
+        network_policy_amendment: { host: 'example.com', action: 'allow' },
+      },
+    }
+    const { onRespond } = renderActions(makeRequest({
+      availableDecisions: ['accept', 'decline', hostDecision],
+    }))
 
     fireEvent.click(allowChoicePillGroup('Allow as').getByRole('radio', { name: 'Host rule' }))
     await fireEvent.click(screen.getByTestId('control-allow-btn'))
@@ -96,7 +136,19 @@ describe('codex control request actions', () => {
   })
 
   it('groups each supported allow decision and appends other decisions', () => {
-    renderActions(makeRequest({ availableDecisions: ['accept', 'decline', 'cancel', 'acceptForSession', { applyNetworkPolicyAmendment: { network_policy_amendment: { host: 'example.com', action: 'allow' } } }] }))
+    renderActions(makeRequest({
+      availableDecisions: [
+        'accept',
+        'decline',
+        'cancel',
+        'acceptForSession',
+        {
+          applyNetworkPolicyAmendment: {
+            network_policy_amendment: { host: 'example.com', action: 'allow' },
+          },
+        },
+      ],
+    }))
 
     const allowChoices = allowChoicePillGroup('Allow as')
     expect(allowChoices.getByRole('radio', { name: 'Once' })).toBeChecked()
@@ -113,9 +165,19 @@ describe('codex control request actions', () => {
   // duplicate KEYS. Two radios of one name let the user apply the wrong
   // permanent rule and make a by-name lookup match both.
   it('tells two host rules apart by their host', async () => {
-    const allowA = { applyNetworkPolicyAmendment: { network_policy_amendment: { host: 'a.example.com', action: 'allow' } } }
-    const allowB = { applyNetworkPolicyAmendment: { network_policy_amendment: { host: 'b.example.com', action: 'allow' } } }
-    const { onRespond } = renderActions(makeRequest({ availableDecisions: ['accept', allowA, allowB, 'decline'] }))
+    const allowA = {
+      applyNetworkPolicyAmendment: {
+        network_policy_amendment: { host: 'a.example.com', action: 'allow' },
+      },
+    }
+    const allowB = {
+      applyNetworkPolicyAmendment: {
+        network_policy_amendment: { host: 'b.example.com', action: 'allow' },
+      },
+    }
+    const { onRespond } = renderActions(makeRequest({
+      availableDecisions: ['accept', allowA, allowB, 'decline'],
+    }))
 
     const allowChoices = allowChoicePillGroup('Allow as')
     expect(allowChoices.queryByRole('radio', { name: 'Host rule' })).not.toBeInTheDocument()
@@ -130,9 +192,24 @@ describe('codex control request actions', () => {
   })
 
   it('tells two command rules apart by their command', () => {
-    const removeRule = { acceptWithExecpolicyAmendment: { execpolicy_amendment: ['rm'] } }
-    const moveRule = { acceptWithExecpolicyAmendment: { execpolicy_amendment: ['mv', '-f'] } }
-    renderActions(makeRequest({ availableDecisions: ['accept', removeRule, moveRule, 'decline'] }))
+    const removeRule = {
+      acceptWithExecpolicyAmendment: {
+        execpolicy_amendment: ['rm'],
+      },
+    }
+    const moveRule = {
+      acceptWithExecpolicyAmendment: {
+        execpolicy_amendment: ['mv', '-f'],
+      },
+    }
+    renderActions(makeRequest({
+      availableDecisions: [
+        'accept',
+        removeRule,
+        moveRule,
+        'decline',
+      ],
+    }))
 
     const allowChoices = allowChoicePillGroup('Allow as')
     expect(allowChoices.getByRole('radio', { name: 'Rule: rm' })).toBeInTheDocument()
@@ -142,7 +219,14 @@ describe('codex control request actions', () => {
   // `detail` is a constant for the two string decisions, so nothing could tell
   // a repeat apart. Both would answer identically, so one pill is the truth.
   it('draws one pill for a repeated string decision', () => {
-    renderActions(makeRequest({ availableDecisions: ['accept', 'accept', 'acceptForSession', 'decline'] }))
+    renderActions(makeRequest({
+      availableDecisions: [
+        'accept',
+        'accept',
+        'acceptForSession',
+        'decline',
+      ],
+    }))
 
     const allowChoices = allowChoicePillGroup('Allow as')
     expect(allowChoices.getAllByRole('radio')).toHaveLength(2)
@@ -156,8 +240,16 @@ describe('codex control request actions', () => {
     renderActions(makeRequest({
       availableDecisions: [
         'accept',
-        { acceptWithExecpolicyAmendment: { execpolicy_amendment: ['rm'] } },
-        { applyNetworkPolicyAmendment: { network_policy_amendment: { host: 'a.example.com', action: 'allow' } } },
+        {
+          acceptWithExecpolicyAmendment: {
+            execpolicy_amendment: ['rm'],
+          },
+        },
+        {
+          applyNetworkPolicyAmendment: {
+            network_policy_amendment: { host: 'a.example.com', action: 'allow' },
+          },
+        },
         'decline',
       ],
     }))
@@ -171,9 +263,20 @@ describe('codex control request actions', () => {
   // over the pills the group DRAWS, not over every candidate, or a detail
   // appears for a name no visible pill repeats.
   it('disambiguates a collision that survives the four-pill cut', () => {
-    const host = (name: string) => ({ applyNetworkPolicyAmendment: { network_policy_amendment: { host: name, action: 'allow' } } })
+    const host = (name: string) => ({
+      applyNetworkPolicyAmendment: {
+        network_policy_amendment: { host: name, action: 'allow' },
+      },
+    })
     renderActions(makeRequest({
-      availableDecisions: ['accept', host('a.example.com'), host('b.example.com'), host('c.example.com'), host('d.example.com'), 'decline'],
+      availableDecisions: [
+        'accept',
+        host('a.example.com'),
+        host('b.example.com'),
+        host('c.example.com'),
+        host('d.example.com'),
+        'decline',
+      ],
     }))
 
     const allowChoices = allowChoicePillGroup('Allow as')
@@ -187,13 +290,25 @@ describe('codex control request actions', () => {
   })
 
   it('keeps allow decisions beyond the four-pill limit in the menu', async () => {
-    const overflowHostRule = { applyNetworkPolicyAmendment: { network_policy_amendment: { host: 'overflow.example.com', action: 'allow' } } }
+    const overflowHostRule = {
+      applyNetworkPolicyAmendment: {
+        network_policy_amendment: { host: 'overflow.example.com', action: 'allow' },
+      },
+    }
     const { onRespond } = renderActions(makeRequest({
       availableDecisions: [
         'accept',
         'acceptForSession',
-        { acceptWithExecpolicyAmendment: { execpolicy_amendment: ['rm'] } },
-        { applyNetworkPolicyAmendment: { network_policy_amendment: { host: 'example.com', action: 'allow' } } },
+        {
+          acceptWithExecpolicyAmendment: {
+            execpolicy_amendment: ['rm'],
+          },
+        },
+        {
+          applyNetworkPolicyAmendment: {
+            network_policy_amendment: { host: 'example.com', action: 'allow' },
+          },
+        },
         overflowHostRule,
         'decline',
       ],
@@ -213,9 +328,21 @@ describe('codex control request actions', () => {
 
   it('clamps an obsolete saved allow choice to Once', async () => {
     const { onRespond } = renderActions(
-      makeRequest({ availableDecisions: ['accept', 'decline', { acceptWithExecpolicyAmendment: { execpolicy_amendment: ['rm'] } }] }),
+      makeRequest({
+        availableDecisions: [
+          'accept',
+          'decline',
+          {
+            acceptWithExecpolicyAmendment: {
+              execpolicy_amendment: ['rm'],
+            },
+          },
+        ],
+      }),
       false,
-      createControlAnswerState({ choices: { [CONTROL_ALLOW_CHOICE_ID]: 'gone' } }),
+      createControlAnswerState({
+        choices: { [CONTROL_ALLOW_CHOICE_ID]: 'gone' },
+      }),
     )
 
     expect(allowChoicePillGroup('Allow as').getByRole('radio', { name: 'Once' })).toBeChecked()
@@ -228,7 +355,9 @@ describe('codex control request actions', () => {
   })
 
   it('uses only the negative decision that Codex offers', async () => {
-    const { onRespond } = renderActions(makeRequest({ availableDecisions: ['accept', 'cancel'] }))
+    const { onRespond } = renderActions(makeRequest({
+      availableDecisions: ['accept', 'cancel'],
+    }))
 
     expect(screen.getByTestId('control-deny-btn')).toHaveTextContent('Cancel')
     expect(screen.queryByRole('radiogroup', { name: 'Allow as' })).not.toBeInTheDocument()
@@ -263,7 +392,9 @@ describe('codex control request actions', () => {
       jsonrpc: '2.0',
       id: 'request-1',
       result: {
-        permissions: { network: { enabled: true } },
+        permissions: {
+          network: { enabled: true },
+        },
         scope: 'turn',
       },
     })
@@ -273,7 +404,11 @@ describe('codex control request actions', () => {
     const request = makeRequest()
     request.payload = {
       method: 'item/permissions/requestApproval',
-      params: { permissions: { network: { enabled: true } } },
+      params: {
+        permissions: {
+          network: { enabled: true },
+        },
+      },
     }
     const { onRespond } = renderActions(request)
 
@@ -291,9 +426,15 @@ describe('codex control request actions', () => {
     const request = makeRequest()
     request.payload = {
       method: 'item/permissions/requestApproval',
-      params: { permissions: { network: { enabled: true } } },
+      params: {
+        permissions: {
+          network: { enabled: true },
+        },
+      },
     }
-    const answerState = createControlAnswerState({ choices: { [CONTROL_ALLOW_CHOICE_ID]: 'gone' } })
+    const answerState = createControlAnswerState({
+      choices: { [CONTROL_ALLOW_CHOICE_ID]: 'gone' },
+    })
     const { onRespond } = renderActions(request, false, answerState)
 
     expect(allowChoicePillGroup('Allow as').getByRole('radio', { name: 'Once' })).toBeChecked()
@@ -309,7 +450,11 @@ describe('codex control request actions', () => {
     const request = makeRequest()
     request.payload = {
       method: 'item/permissions/requestApproval',
-      params: { permissions: { network: { enabled: true } } },
+      params: {
+        permissions: {
+          network: { enabled: true },
+        },
+      },
     }
     const answerState = createControlAnswerState()
     const { onRespond } = renderActions(request, false, answerState)
@@ -328,7 +473,11 @@ describe('codex control request actions', () => {
     const request = makeRequest()
     request.payload = {
       method: 'item/permissions/requestApproval',
-      params: { permissions: { network: { enabled: true } } },
+      params: {
+        permissions: {
+          network: { enabled: true },
+        },
+      },
     }
     const { onRespond } = renderActions(request)
 
@@ -346,7 +495,11 @@ describe('codex control request actions', () => {
         'accept',
         'decline',
         'acceptForSession',
-        { acceptWithExecpolicyAmendment: { execpolicy_amendment: ['rm'] } },
+        {
+          acceptWithExecpolicyAmendment: {
+            execpolicy_amendment: ['rm'],
+          },
+        },
       ],
     }))
 
@@ -360,14 +513,18 @@ describe('codex control request actions', () => {
   // Codex offered no way to approve, so the banner offers none either. A
   // fabricated `accept` would answer a request that never carried it.
   it('draws no Allow when every offered decision refuses', () => {
-    renderActions(makeRequest({ availableDecisions: ['decline', 'cancel'] }))
+    renderActions(makeRequest({
+      availableDecisions: ['decline', 'cancel'],
+    }))
 
     expect(screen.queryByTestId('control-allow-btn')).not.toBeInTheDocument()
     expect(screen.getByTestId('control-deny-btn')).toHaveTextContent('Deny')
   })
 
   it('draws no Deny when every offered decision approves', () => {
-    renderActions(makeRequest({ availableDecisions: ['accept', 'acceptForSession'] }))
+    renderActions(makeRequest({
+      availableDecisions: ['accept', 'acceptForSession'],
+    }))
 
     expect(screen.queryByTestId('control-deny-btn')).not.toBeInTheDocument()
     expect(screen.getByTestId('control-allow-btn')).toHaveTextContent('Allow')
@@ -378,7 +535,14 @@ describe('codex control request actions', () => {
   // offer one. Removing Allow would leave the user unable to approve at all.
   it('keeps Allow when the parser dropped an unknown allow decision', async () => {
     const { onRespond } = renderActions(makeRequest({
-      availableDecisions: [{ acceptWithSandboxAmendment: { sandbox_amendment: ['/tmp'] } }, 'decline'],
+      availableDecisions: [
+        {
+          acceptWithSandboxAmendment: {
+            sandbox_amendment: ['/tmp'],
+          },
+        },
+        'decline',
+      ],
     }))
 
     await fireEvent.click(screen.getByTestId('control-allow-btn'))
@@ -392,19 +556,25 @@ describe('codex control request actions', () => {
   // Send feedback replaces the refusal, so the slot draws even where the request
   // carried no negative decision.
   it('still offers Send feedback when the request refuses nothing', () => {
-    renderActions(makeRequest({ availableDecisions: ['accept', 'acceptForSession'] }), true)
+    renderActions(makeRequest({
+      availableDecisions: ['accept', 'acceptForSession'],
+    }), true)
 
     expect(screen.getByTestId('control-deny-btn')).toHaveTextContent('Send feedback')
   })
 
   it('ignores malformed available decisions', () => {
-    renderActions(makeRequest({ availableDecisions: ['accept', null, 3, {}, 'decline'] }))
+    renderActions(makeRequest({
+      availableDecisions: ['accept', null, 3, {}, 'decline'],
+    }))
 
     expect(screen.queryByTestId('control-decision-unknown')).not.toBeInTheDocument()
   })
 
   it('sends the request before it applies all Codex bypass settings', async () => {
-    const { onRespond, onSettingChange } = renderActions(makeRequest({ availableDecisions: ['accept', 'decline'] }))
+    const { onRespond, onSettingChange } = renderActions(makeRequest({
+      availableDecisions: ['accept', 'decline'],
+    }))
 
     let finishResponse!: () => void
     onRespond.mockReturnValue(new Promise<void>((resolve) => {
@@ -423,7 +593,16 @@ describe('codex control request actions', () => {
 
   it('shows only Send feedback when the editor has content', () => {
     renderActions(makeRequest({
-      availableDecisions: ['accept', 'decline', 'cancel', { acceptWithExecpolicyAmendment: { execpolicy_amendment: ['rm'] } }],
+      availableDecisions: [
+        'accept',
+        'decline',
+        'cancel',
+        {
+          acceptWithExecpolicyAmendment: {
+            execpolicy_amendment: ['rm'],
+          },
+        },
+      ],
     }), true)
 
     expect(screen.getByTestId('control-deny-btn')).toHaveTextContent('Send feedback')
@@ -445,10 +624,15 @@ describe('codex control request actions', () => {
     expect(respondCall).toBeDefined()
     const [bytes, options] = respondCall ?? []
     expect(JSON.parse(new TextDecoder().decode(bytes))).toMatchObject({
-      response: { request_id: 'plan-1', response: { behavior: 'allow' } },
+      response: {
+        request_id: 'plan-1',
+        response: { behavior: 'allow' },
+      },
     })
     expect(JSON.parse(new TextDecoder().decode(bytes))).not.toHaveProperty('clearContext')
-    expect(options).toMatchObject({ planApproval: { clearContext: true } })
+    expect(options).toMatchObject({
+      planApproval: { clearContext: true },
+    })
     expect(JSON.parse(new TextDecoder().decode(bytes))).not.toHaveProperty('codexPlanModePrompt')
   })
 
@@ -462,10 +646,15 @@ describe('codex control request actions', () => {
     expect(respondCall).toBeDefined()
     const [bytes, options] = respondCall ?? []
     expect(JSON.parse(new TextDecoder().decode(bytes))).toMatchObject({
-      response: { request_id: 'plan-1', response: { behavior: 'allow' } },
+      response: {
+        request_id: 'plan-1',
+        response: { behavior: 'allow' },
+      },
     })
     expect(JSON.parse(new TextDecoder().decode(bytes))).not.toHaveProperty('permissionMode')
-    expect(options).toMatchObject({ planApproval: { permissionMode: 'never', clearContext: false } })
+    expect(options).toMatchObject({
+      planApproval: { permissionMode: 'never', clearContext: false },
+    })
     expect(JSON.parse(new TextDecoder().decode(bytes))).not.toHaveProperty('codexPlanModePrompt')
     // One RPC carries the response and its plan settings, so a separate setting change cannot race the restart.
     expect(onSettingChange).not.toHaveBeenCalled()
@@ -480,7 +669,9 @@ describe('codex control request actions', () => {
     await fireEvent.click(screen.getByTestId('control-allow-btn'))
 
     const [, options] = onRespond.mock.calls[0] ?? []
-    expect(options).toMatchObject({ planApproval: { permissionMode: CODEX_PERMISSION_PRESETS.smart.sets.permissionMode, clearContext: false } })
+    expect(options).toMatchObject({
+      planApproval: { permissionMode: CODEX_PERMISSION_PRESETS.smart.sets.permissionMode, clearContext: false },
+    })
     expect(CODEX_PERMISSION_PRESETS.smart.sets.permissionMode).toBe('auto-review')
     expect(onSettingChange).not.toHaveBeenCalled()
   })

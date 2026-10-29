@@ -43,7 +43,11 @@ codexTest('approves an escalated command through Codex auto-review and restores 
       relatedProof: async () => {
         // One agent session runs both passes, so each pass gives its tool call its own ID.
         const start = await modelScript.queue(
-          { toolCalls: [codexEscalatedCommandToolCall(`auto-review-allowed-${Number(reload)}`, `printf %s ${quotePosixShellArgument(marker)} > ${quotePosixShellArgument(file)}`)] },
+          {
+            toolCalls: [
+              codexEscalatedCommandToolCall(`auto-review-allowed-${Number(reload)}`, `printf %s ${quotePosixShellArgument(marker)} > ${quotePosixShellArgument(file)}`),
+            ],
+          },
           nativeTextStep(native, 'The reviewer approved the command.'),
         )
         await sendMessage(page, modelScript.prompt('Run the scripted command outside this workspace.'))

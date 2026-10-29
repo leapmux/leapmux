@@ -13,7 +13,9 @@ const TOOL_RETURN_MESSAGE = 'tool_return_message'
  */
 export function toolReturnRow(message: Pick<AgentChatMessage, 'content' | 'contentCompression'>): string | undefined {
   const raw = decompressContentToString(message.content, message.contentCompression)
-  return raw?.includes(TOOL_RETURN_MESSAGE) ? raw : undefined
+  return raw?.includes(TOOL_RETURN_MESSAGE)
+    ? raw
+    : undefined
 }
 
 /**

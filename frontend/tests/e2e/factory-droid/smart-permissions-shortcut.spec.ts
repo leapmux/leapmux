@@ -39,34 +39,48 @@ droidTest('uses native medium autonomy after Bypass startup and restores approva
     expect(settings.reasoningEffort).toBe(initial.reasoningEffort)
     expect((await currentNativeAgent(native)).agentSessionId).toBe(before.agentSessionId)
 
-    const oldText = pass === 0 ? 'before' : 'first edit'
-    const newText = pass === 0 ? 'first edit' : 'second edit'
+    const oldText = pass === 0
+      ? 'before'
+      : 'first edit'
+    const newText = pass === 0
+      ? 'first edit'
+      : 'second edit'
     const callId = `smart-edit-${pass}`
-    await expectNoNativeControl(native, { testId: 'control-banner', relatedProof: async () => {
-      const { resultRequest } = await runNativeToolTurn(native, {
-        toolCalls: [editToolCall(native.provider, callId, { path: note, before: oldText, after: newText })],
-        prompt: 'Apply the scripted edit under native Smart permissions.',
-        answer: `The Smart edit completed in pass ${pass}.`,
-        permissions: 'none',
-      })
-      expect(readDroidToolResult(resultRequest, callId, DROID_TOOL.Edit).text).toContain('has been updated successfully.')
-      expect(readFileSync(note, 'utf8')).toBe(newText)
-    } })
+    await expectNoNativeControl(native, {
+      testId: 'control-banner',
+      relatedProof: async () => {
+        const { resultRequest } = await runNativeToolTurn(native, {
+          toolCalls: [
+            editToolCall(native.provider, callId, { path: note, before: oldText, after: newText }),
+          ],
+          prompt: 'Apply the scripted edit under native Smart permissions.',
+          answer: `The Smart edit completed in pass ${pass}.`,
+          permissions: 'none',
+        })
+        expect(readDroidToolResult(resultRequest, callId, DROID_TOOL.Edit).text).toContain('has been updated successfully.')
+        expect(readFileSync(note, 'utf8')).toBe(newText)
+      },
+    })
 
     const mediumTarget = join(before.workingDir, `droid-smart-medium-${pass}.txt`)
     expect(existsSync(mediumTarget)).toBe(false)
     const mediumId = `smart-medium-${pass}`
     const mediumCommand = `node -e ${quotePosixShellArgument(`require("node:fs").writeFileSync(${JSON.stringify(mediumTarget)}, "SMART" + (40 + 2))`)}`
-    await expectNoNativeControl(native, { testId: 'control-banner', relatedProof: async () => {
-      const { resultRequest } = await runNativeToolTurn(native, {
-        toolCalls: [droidExecuteToolCall(mediumId, { command: mediumCommand, summary: 'Write a private medium-risk marker', riskLevel: 'medium' })],
-        prompt: 'Run the scripted medium-risk command under Smart permissions.',
-        answer: `The medium-risk command completed in pass ${pass}.`,
-        permissions: 'none',
-      })
-      expect(readDroidToolResult(resultRequest, mediumId, DROID_TOOL.Execute).exitCode).toBe(0)
-      expect(readFileSync(mediumTarget, 'utf8')).toBe('SMART42')
-    } })
+    await expectNoNativeControl(native, {
+      testId: 'control-banner',
+      relatedProof: async () => {
+        const { resultRequest } = await runNativeToolTurn(native, {
+          toolCalls: [
+            droidExecuteToolCall(mediumId, { command: mediumCommand, summary: 'Write a private medium-risk marker', riskLevel: 'medium' }),
+          ],
+          prompt: 'Run the scripted medium-risk command under Smart permissions.',
+          answer: `The medium-risk command completed in pass ${pass}.`,
+          permissions: 'none',
+        })
+        expect(readDroidToolResult(resultRequest, mediumId, DROID_TOOL.Execute).exitCode).toBe(0)
+        expect(readFileSync(mediumTarget, 'utf8')).toBe('SMART42')
+      },
+    })
 
     const target = join(before.workingDir, `droid-smart-high-${pass}.txt`)
     const command = `node -e ${quotePosixShellArgument(`require("node:fs").writeFileSync(${JSON.stringify(target)}, "blocked")`)}`
@@ -85,7 +99,9 @@ droidTest('uses native medium autonomy after Bypass startup and restores approva
 
 /** Droid ends a refused turn without a second model request. */
 async function rejectDroidTool(native: ManagedNativeScenarioContext, toolCall: MockModelToolCall, bannerText: string, expectUnchanged: () => void): Promise<void> {
-  const start = await native.modelScript.queue({ toolCalls: [toolCall] })
+  const start = await native.modelScript.queue({
+    toolCalls: [toolCall],
+  })
   await sendMessage(native.page, native.modelScript.prompt('Request the scripted operation that needs approval.'))
   await native.modelScript.waitForSteps(start + 1)
   const banner = await waitForControlBanner(native.page)

@@ -46,7 +46,9 @@ export function ResultDivider(props: { model: TurnEnd }): JSXElement {
       <div
         class={resultDivider}
         data-testid="result-divider"
-        style={props.model.isError ? { color: 'var(--danger)' } : undefined}
+        style={props.model.isError
+          ? { color: 'var(--danger)' }
+          : undefined}
       >
         {props.model.label}
         <Show when={dividerTotals(props.model.meta)}>

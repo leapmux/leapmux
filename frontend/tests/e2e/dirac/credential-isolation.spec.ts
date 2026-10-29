@@ -10,7 +10,14 @@ diracTest('runs the actual native turn with private configuration and mock crede
   await exerciseCredentialIsolation(native, {
     privateDirectories: [home],
     expectedCredential: MODEL_KEY,
-    inlineConfiguration: [JSON.stringify({ provider: environment.DIRAC_PROVIDER, model: environment.DIRAC_MODEL, apiKey: environment.DIRAC_API_KEY, baseUrl: environment.DIRAC_BASE_URL })],
+    inlineConfiguration: [
+      JSON.stringify({
+        provider: environment.DIRAC_PROVIDER,
+        model: environment.DIRAC_MODEL,
+        apiKey: environment.DIRAC_API_KEY,
+        baseUrl: environment.DIRAC_BASE_URL,
+      }),
+    ],
     configurationMarkers: ['deepseek-flash'],
   })
 })

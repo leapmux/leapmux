@@ -133,7 +133,9 @@ export function checkSchedule(draft: string, now: Date, existingStored?: string)
   if (at.getUTCFullYear() < 0 || at.getUTCFullYear() > 9999)
     return { verdict: 'invalid' }
   const wire = at.toISOString()
-  return at.getTime() > now.getTime() ? { verdict: 'valid', wire } : { verdict: 'notFuture', wire }
+  return at.getTime() > now.getTime()
+    ? { verdict: 'valid', wire }
+    : { verdict: 'notFuture', wire }
 }
 
 /** The message that states why a draft cannot be applied or sent. */

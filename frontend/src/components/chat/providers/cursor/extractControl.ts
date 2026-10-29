@@ -24,9 +24,15 @@ export function cursorExtractControl(input: ControlExtractionInput): ExtractedCo
     return {
       kind: 'permission',
       permission: {
-        title: name ? `Create Plan: ${name}` : 'Create Plan',
-        ...(reason !== undefined ? { reason } : {}),
-        ...(text ? { text } : {}),
+        title: name
+          ? `Create Plan: ${name}`
+          : 'Create Plan',
+        ...(reason !== undefined
+          ? { reason }
+          : {}),
+        ...(text
+          ? { text }
+          : {}),
         options: [],
       },
     }

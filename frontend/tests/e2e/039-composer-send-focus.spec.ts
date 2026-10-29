@@ -36,7 +36,9 @@ test.describe('composer send focus', () => {
 
     // Leaving the composer is what a phone user does to put the on-screen
     // keyboard away before they press Send.
-    await chatScrollContainer(page).click({ position: { x: 8, y: 8 } })
+    await chatScrollContainer(page).click({
+      position: { x: 8, y: 8 },
+    })
     await expect(editor).not.toBeFocused()
 
     await page.locator('[data-testid="send-button"]').click()

@@ -45,7 +45,9 @@ function surfaceOf<K extends ControlSurface['kind']>(
   surface: ControlSurface | undefined,
   kind: K,
 ): Extract<ControlSurface, { kind: K }> | undefined {
-  return surface?.kind === kind ? surface as Extract<ControlSurface, { kind: K }> : undefined
+  return surface?.kind === kind
+    ? surface as Extract<ControlSurface, { kind: K }>
+    : undefined
 }
 
 function questionOf(surface: ControlSurface | undefined) {
@@ -66,7 +68,10 @@ export const ControlRequestContent: Component<BannerContentProps> = (props) => {
       return prettifyJson(new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(original))
     }
     catch {
-      return prettifyJson({ encoding: 'base64', content: uint8ArrayToBase64(original) })
+      return prettifyJson({
+        encoding: 'base64',
+        content: uint8ArrayToBase64(original),
+      })
     }
   })
 
@@ -105,11 +110,15 @@ export const ControlRequestContent: Component<BannerContentProps> = (props) => {
               )}
             </Show>
             <IconButton
-              icon={copied() ? Check : Braces}
+              icon={copied()
+                ? Check
+                : Braces}
               size="sm"
               class={styles.controlBannerHoverAction}
               onClick={copy}
-              title={copied() ? 'Copied' : 'Copy Raw JSON'}
+              title={copied()
+                ? 'Copied'
+                : 'Copy Raw JSON'}
               data-testid="control-copy-json"
             />
           </div>
@@ -163,8 +172,12 @@ export const ControlRequestContent: Component<BannerContentProps> = (props) => {
                     fallback={(
                       <PlanApprovalContent
                         request={request()}
-                        {...(plan().permissions !== undefined ? { permissions: plan().permissions } : {})}
-                        {...(plan().details !== undefined ? { details: plan().details } : {})}
+                        {...(plan().permissions !== undefined
+                          ? { permissions: plan().permissions }
+                          : {})}
+                        {...(plan().details !== undefined
+                          ? { details: plan().details }
+                          : {})}
                       />
                     )}
                   >
@@ -225,7 +238,9 @@ export const ControlRequestActions: Component<BannerActionsProps> = (props) => {
   const dialogAnswer = () => {
     const dialog = surfaceOf(props.controlSurface, 'dialog')?.dialog
     const responder = pluginFor(props.agentProvider)?.controls?.dialogResponder
-    return dialog && responder ? { dialog, responder } : undefined
+    return dialog && responder
+      ? { dialog, responder }
+      : undefined
   }
   return (
     <Show when={props.request}>
@@ -233,7 +248,9 @@ export const ControlRequestActions: Component<BannerActionsProps> = (props) => {
         <fieldset
           data-testid="control-actions"
           disabled={!props.answerState.ready() || props.answerState.responsePending()}
-          aria-busy={!props.answerState.ready() || props.answerState.responsePending() ? 'true' : undefined}
+          aria-busy={!props.answerState.ready() || props.answerState.responsePending()
+            ? 'true'
+            : undefined}
           style={{ display: 'contents' }}
           ref={(element) => {
             const blockUntilReady = (event: MouseEvent) => {
@@ -268,7 +285,9 @@ export const ControlRequestActions: Component<BannerActionsProps> = (props) => {
                       return props.onRecordResponse()
                     })}
                   >
-                    {request().responseState === ControlResponseState.DELIVERED ? 'Save response' : 'Check status'}
+                    {request().responseState === ControlResponseState.DELIVERED
+                      ? 'Save response'
+                      : 'Check status'}
                   </button>
                 )}
                 />

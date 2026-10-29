@@ -32,7 +32,11 @@ export async function exerciseReasonixPlanAndNormalWrites(context: ManagedNative
     }
     const planCall = `reasonix-plan-write-${phase}`
     const planned = await modelScript.queue(
-      { toolCalls: [writeToolCall(context.provider, planCall, { path: planFile, content: 'plan mutation\n' })] },
+      {
+        toolCalls: [
+          writeToolCall(context.provider, planCall, { path: planFile, content: 'plan mutation\n' }),
+        ],
+      },
       nativeTextStep(context, 'The Plan check ended.'),
     )
     await sendMessage(page, modelScript.prompt('Try the scripted write in Plan mode.'))

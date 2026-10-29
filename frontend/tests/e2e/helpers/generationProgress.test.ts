@@ -48,9 +48,15 @@ vi.mock('./turnEndSound', () => ({
   },
 }))
 vi.mock('./providerToolCalls', () => ({
-  bashToolCall: (_provider: unknown, id: string, command: string) => ({ id, name: 'bash', arguments: { command } }),
+  bashToolCall: (_provider: unknown, id: string, command: string) => ({
+    id,
+    name: 'bash',
+    arguments: { command },
+  }),
 }))
-vi.mock('./toolOutputControl', () => ({ createToolOutputControl: () => fakes.output }))
+vi.mock('./toolOutputControl', () => ({
+  createToolOutputControl: () => fakes.output,
+}))
 vi.mock('./ui', () => ({
   answerControl: async (_page: unknown, decision: string) => { fakes.events.push(`answer:${decision}`) },
   assistantBubbles: () => fakes.rows('assistant'),
@@ -73,7 +79,10 @@ vi.mock('@playwright/test', async (importOriginal) => {
     }
     return actual.expect(value, message)
   }
-  return { ...actual, expect: Object.assign(fakeExpect, { poll: actual.expect.poll }) }
+  return {
+    ...actual,
+    expect: Object.assign(fakeExpect, { poll: actual.expect.poll }),
+  }
 })
 
 beforeEach(() => {
@@ -169,7 +178,11 @@ describe('installGenerationObservation', () => {
     element.style.gridTemplateRows = style.rows
     element.innerHTML = markup
     const rectangle = new DOMRect(0, 0, 100, 20)
-    const rectangles = Object.assign([rectangle], { item: (index: number) => index === 0 ? rectangle : null })
+    const rectangles = Object.assign([rectangle], {
+      item: (index: number) => index === 0
+        ? rectangle
+        : null,
+    })
     vi.spyOn(element, 'getClientRects').mockReturnValue(rectangles)
     document.body.append(element)
     installGenerationObservation()
@@ -221,7 +234,10 @@ describe('verifyCompletedGenerationOutput', () => {
   it('keeps both marker assertions when the provider needs no expansion', async () => {
     const assertVisible = vi.fn(async (_marker: string) => {})
     await verifyCompletedGenerationOutput('call', { first: 'FIRST42', second: 'SECOND77' }, { assertVisible })
-    expect(assertVisible.mock.calls).toEqual([['FIRST42'], ['SECOND77']])
+    expect(assertVisible.mock.calls).toEqual([
+      ['FIRST42'],
+      ['SECOND77'],
+    ])
   })
 
   it('propagates the preparation error before either marker assertion', async () => {
@@ -247,7 +263,12 @@ describe('verifyCompletedGenerationOutput', () => {
     expect(markers).toEqual(['FIRST42', 'SECOND77'])
   })
 
-  it.each([{ call: '', first: 'one', second: 'two' }, { call: 'call', first: '', second: 'two' }, { call: 'call', first: 'one', second: '' }, { call: 'call', first: 'same', second: 'same' }])('rejects invalid completed output proof %j', async ({ call, first, second }) => {
+  it.each([
+    { call: '', first: 'one', second: 'two' },
+    { call: 'call', first: '', second: 'two' },
+    { call: 'call', first: 'one', second: '' },
+    { call: 'call', first: 'same', second: 'same' },
+  ])('rejects invalid completed output proof %j', async ({ call, first, second }) => {
     const assertVisible = vi.fn(async (_marker: string) => {})
     await expect(verifyCompletedGenerationOutput(call, { first, second }, { assertVisible })).rejects.toThrow('distinct output markers')
     expect(assertVisible).not.toHaveBeenCalled()
@@ -285,7 +306,13 @@ describe('exerciseTokenProgress', () => {
     const [first, second] = released
     expect(first).toMatch(/^progress-first-/)
     expect(second).toBe(first!.replace('progress-first-', 'progress-second-'))
-    expect(fakes.events).toEqual(['agent', 'evaluate', 'queue', 'send', 'evaluate'])
+    expect(fakes.events).toEqual([
+      'agent',
+      'evaluate',
+      'queue',
+      'send',
+      'evaluate',
+    ])
   })
 
   it('ends a turn with no counter, then requires the exact answer marker of the turn again after the reload', async () => {
@@ -377,10 +404,20 @@ describe('exerciseOutputByteProgress', () => {
       },
     })
     await expect(exerciseOutputByteProgress(context, { supported: true, approveTool: true })).rejects.toBe(failure)
-    expect(queued).toEqual([[
-      { toolCalls: [{ id: PROGRESS_OUTPUT_CALL_ID, name: 'bash', arguments: { command: fakes.output.command } }] },
-      { text: 'The native output scenario completed.' },
-    ]])
+    expect(queued).toEqual([
+      [
+        {
+          toolCalls: [
+            {
+              id: PROGRESS_OUTPUT_CALL_ID,
+              name: 'bash',
+              arguments: { command: fakes.output.command },
+            },
+          ],
+        },
+        { text: 'The native output scenario completed.' },
+      ],
+    ])
     expect(fakes.events).toEqual([
       'agent',
       'evaluate',
@@ -403,7 +440,14 @@ describe('exerciseOutputByteProgress', () => {
       fakes.events.push('tool-start')
     }
     await expect(exerciseOutputByteProgress(context, { supported: false, waitForToolStart })).rejects.toBe(failure)
-    expect(fakes.events.slice(0, 6)).toEqual(['agent', 'evaluate', 'queue', 'send', 'tool-start', 'release-start-output'])
+    expect(fakes.events.slice(0, 6)).toEqual([
+      'agent',
+      'evaluate',
+      'queue',
+      'send',
+      'tool-start',
+      'release-start-output',
+    ])
     expect(fakes.events).not.toContain('banner')
   })
 
@@ -446,17 +490,32 @@ describe('exerciseOutputByteProgress', () => {
 describe('NativeTokenProgressCase', () => {
   it('refuses each option of the output byte scenario at compile time', () => {
     const cases: NativeTokenProgressCase[] = [
-      { supported: true, step: { reasoning: 'The step thinks first.' } },
+      {
+        supported: true,
+        step: { reasoning: 'The step thinks first.' },
+      },
       // @ts-expect-error The token scenario runs no tool, so it approves none.
       { supported: true, approveTool: true },
-      // @ts-expect-error The token scenario runs no output command.
-      { supported: true, outputMarkers: { first: 'FIRST42', second: 'SECOND77' } },
-      // @ts-expect-error The token scenario runs no output command.
-      { supported: true, waitForToolStart: async () => {} },
-      // @ts-expect-error The token scenario runs no output command.
-      { supported: true, afterOutputBoundary: async () => {} },
-      // @ts-expect-error The token scenario has no tool result.
-      { supported: true, prepareCompletedResultView: async () => {} },
+      {
+        supported: true,
+        // @ts-expect-error The token scenario runs no output command.
+        outputMarkers: { first: 'FIRST42', second: 'SECOND77' },
+      },
+      {
+        supported: true,
+        // @ts-expect-error The token scenario runs no output command.
+        waitForToolStart: async () => {},
+      },
+      {
+        supported: true,
+        // @ts-expect-error The token scenario runs no output command.
+        afterOutputBoundary: async () => {},
+      },
+      {
+        supported: true,
+        // @ts-expect-error The token scenario has no tool result.
+        prepareCompletedResultView: async () => {},
+      },
     ]
     expect(cases).toHaveLength(6)
   })
@@ -466,8 +525,11 @@ describe('NativeOutputByteProgressCase', () => {
   it('refuses the answer step of the token scenario at compile time', () => {
     const cases: NativeOutputByteProgressCase[] = [
       { supported: true, approveTool: true },
-      // @ts-expect-error The output byte scenario answers with its own step.
-      { supported: true, step: { reasoning: 'The step thinks first.' } },
+      {
+        supported: true,
+        // @ts-expect-error The output byte scenario answers with its own step.
+        step: { reasoning: 'The step thinks first.' },
+      },
     ]
     expect(cases).toHaveLength(2)
   })

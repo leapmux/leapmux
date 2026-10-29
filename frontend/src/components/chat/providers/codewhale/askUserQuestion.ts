@@ -50,8 +50,12 @@ export function codewhaleIsQuestionRequest(payload: Record<string, unknown>): bo
 export function codewhaleQuestionRecords(payload: Record<string, unknown>): Record<string, unknown>[] {
   const header = getToolInput(payload)[CODEWHALE_QUESTION_FIELD.Questions]
   const fromEvent = pickObject(pickObject(pickObject(payload, CODEWHALE_CONTROL_PAYLOAD.Event), CODEWHALE_ENVELOPE_FIELD.Payload), CODEWHALE_USER_INPUT_FIELD.Request)?.[CODEWHALE_QUESTION_FIELD.Questions]
-  const questions = Array.isArray(header) ? header : fromEvent
-  return Array.isArray(questions) ? questions.filter(isObject) : []
+  const questions = Array.isArray(header)
+    ? header
+    : fromEvent
+  return Array.isArray(questions)
+    ? questions.filter(isObject)
+    : []
 }
 
 /**
@@ -65,12 +69,21 @@ export function codewhaleQuestionText(question: Record<string, unknown>): string
 /** The options of one question. An option with no label has nothing to click, so it is dropped. */
 function codewhaleOptions(question: Record<string, unknown>): ControlQuestion['options'] {
   const options = question[CODEWHALE_QUESTION_FIELD.Options]
-  return (Array.isArray(options) ? options.filter(isObject) : []).flatMap((option) => {
+  return (Array.isArray(options)
+    ? options.filter(isObject)
+    : []).flatMap((option) => {
     const label = pickString(option, CODEWHALE_QUESTION_FIELD.Label)
     if (!label)
       return []
     const description = pickString(option, CODEWHALE_QUESTION_FIELD.Description)
-    return [{ label, ...(description ? { description } : {}) }]
+    return [
+      {
+        label,
+        ...(description
+          ? { description }
+          : {}),
+      },
+    ]
   })
 }
 
@@ -87,13 +100,19 @@ export function codewhaleQuestionsFromPayload(payload: Record<string, unknown>):
     if (!id || !text)
       return []
     const header = pickString(raw, CODEWHALE_QUESTION_FIELD.Header)
-    return [{
-      id,
-      question: text,
-      options: codewhaleOptions(raw),
-      ...(header && header !== text ? { header } : {}),
-      ...(raw[CODEWHALE_QUESTION_FIELD.MultiSelect] === true ? { multiSelect: true } : {}),
-    }]
+    return [
+      {
+        id,
+        question: text,
+        options: codewhaleOptions(raw),
+        ...(header && header !== text
+          ? { header }
+          : {}),
+        ...(raw[CODEWHALE_QUESTION_FIELD.MultiSelect] === true
+          ? { multiSelect: true }
+          : {}),
+      },
+    ]
   })
 }
 
@@ -104,14 +123,24 @@ export function codewhaleQuestionsFromToolInput(input: Record<string, unknown>):
     (question) => {
       const header = pickString(question, CODEWHALE_QUESTION_FIELD.Header)
       const text = codewhaleQuestionText(question)
-      return { ...(header && header !== text ? { header } : {}), question: text }
+      return {
+        ...(header && header !== text
+          ? { header }
+          : {}),
+        question: text,
+      }
     },
     (option) => {
       const label = pickString(option, CODEWHALE_QUESTION_FIELD.Label)
       if (!label)
         return null
       const description = pickString(option, CODEWHALE_QUESTION_FIELD.Description)
-      return { label, ...(description ? { description } : {}) }
+      return {
+        label,
+        ...(description
+          ? { description }
+          : {}),
+      }
     },
   )
 }
@@ -136,7 +165,11 @@ export function codewhaleAnswers(questions: ControlQuestion[], state: ControlAns
     if (chosen.length > 0)
       return chosen.map(label => codewhaleAnswer(id, label, label))
     const text = customTexts[index]?.trim()
-    return text ? [codewhaleAnswer(id, CODEWHALE_ANSWER_LABEL.Other, text)] : []
+    return text
+      ? [
+          codewhaleAnswer(id, CODEWHALE_ANSWER_LABEL.Other, text),
+        ]
+      : []
   })
 }
 

@@ -39,7 +39,14 @@ export function computedNativeToolOutput(options: { prefix?: string, lineCount?:
   lines[middle] += '-middle-77'
   const lastMarker = `${prefix}-complete-42`
   lines.push(lastMarker)
-  return { source, text: lines.join('\n'), firstMarker: lines[0]!, omittedMarker: lines[middle]!, lastMarker, lineMarker: `${prefix}-line-` }
+  return {
+    source,
+    text: lines.join('\n'),
+    firstMarker: lines[0]!,
+    omittedMarker: lines[middle]!,
+    lastMarker,
+    lineMarker: `${prefix}-line-`,
+  }
 }
 
 /**

@@ -13,7 +13,11 @@ import { RUN_ROOT_ENV } from '../helpers/runRoot'
 import { attachMuseChildReadinessFailure, MUSE_CHILD_GATE, openMuseChild, readMuseNativeControlRecords, readMuseNativeSessionLogs } from './subagent-common.muse'
 
 const probe = vi.hoisted(() => {
-  const row = { marker: 'row', filter: vi.fn(), first: vi.fn() }
+  const row = {
+    marker: 'row',
+    filter: vi.fn(),
+    first: vi.fn(),
+  }
   row.filter.mockReturnValue(row)
   row.first.mockReturnValue(row)
   return {
@@ -50,7 +54,9 @@ vi.mock('../helpers/nativeMessages', async importOriginal => ({
   ...await importOriginal<typeof import('../helpers/nativeMessages')>(),
   readNativeMessageSnapshot: probe.snapshot,
 }))
-vi.mock('../helpers/nativeScenario', () => ({ selectedAgentTabId: async () => 'parent-agent' }))
+vi.mock('../helpers/nativeScenario', () => ({
+  selectedAgentTabId: async () => 'parent-agent',
+}))
 vi.mock('../helpers/providerToolCalls', () => ({
   bashToolCall: (_provider: unknown, id: string) => ({ id }),
   codeExecutionToolCall: (_provider: unknown, id: string) => ({ id }),
@@ -64,7 +70,9 @@ vi.mock('../helpers/subagentRegistry', () => ({
 vi.mock('../helpers/ui', () => ({
   assistantBubbles: () => probe.row,
   sendMessage: async (_page: Page, text: string) => { probe.sent.push(text) },
-  tabById: () => ({ click: async () => {} }),
+  tabById: () => ({
+    click: async () => {},
+  }),
   waitForAgentIdle: async () => {},
 }))
 vi.mock('../helpers/retryUntilPass', () => ({
@@ -81,7 +89,11 @@ vi.mock('../helpers/retryUntilPass', () => ({
 vi.mock('@playwright/test', async () => {
   const { expect } = await import('vitest')
   return {
-    expect: (value: unknown) => value === probe.row ? { toHaveAttribute: async () => {} } : expect(value),
+    expect: (value: unknown) => value === probe.row
+      ? {
+          toHaveAttribute: async () => {},
+        }
+      : expect(value),
     test: {
       info: () => {
         if (probe.reportFailure)
@@ -109,32 +121,49 @@ const parentBytes = Buffer.from('{"unknown":9007199254740993}\n{"partial":')
 const childBytes = Buffer.from([0x7B, 0x22, 0x78, 0x22, 0x3A, 0xFF])
 
 function queue(activeTurn: boolean, activeTurnSteerable: boolean, revision = 41n): AgentInputQueueSnapshot {
-  return create(AgentInputQueueSnapshotSchema, { agentId: 'child-agent', activeTurn, activeTurnSteerable, revision })
+  return create(AgentInputQueueSnapshotSchema, {
+    agentId: 'child-agent',
+    activeTurn,
+    activeTurnSteerable,
+    revision,
+  })
 }
 
 function transcript(agentId: string): NativeMessageSnapshot {
-  const session = agentId === 'parent-agent' ? parentSession : childSession
+  const session = agentId === 'parent-agent'
+    ? parentSession
+    : childSession
   return {
     agentId,
     agentSessionId: session,
-    messages: [create(AgentChatMessageSchema, {
-      id: `${agentId}-message`,
-      seq: 9007199254740993n,
-      agentSessionId: session,
-      agentProvider: AgentProvider.MUSE_CODE,
-      source: MessageSource.AGENT,
-      spanId: 'native-span',
-      completion: MessageCompletion.COMPLETE,
-      content: Buffer.from('{"native":"original"}'),
-      contentCompression: ContentCompression.NONE,
-      supplementalContent: Buffer.from('{"provider":{"nativeRecords":[]}}'),
-      supplementalContentCompression: ContentCompression.NONE,
-    })],
+    messages: [
+      create(AgentChatMessageSchema, {
+        id: `${agentId}-message`,
+        seq: 9007199254740993n,
+        agentSessionId: session,
+        agentProvider: AgentProvider.MUSE_CODE,
+        source: MessageSource.AGENT,
+        spanId: 'native-span',
+        completion: MessageCompletion.COMPLETE,
+        content: Buffer.from('{"native":"original"}'),
+        contentCompression: ContentCompression.NONE,
+        supplementalContent: Buffer.from('{"provider":{"nativeRecords":[]}}'),
+        supplementalContentCompression: ContentCompression.NONE,
+      }),
+    ],
   }
 }
 
 function modelStatus(): MockModelScenarioStatus {
-  return { complete: false, nextStep: 1, stepCount: 2, ruleMatches: { held: 1 }, pendingGates: [MUSE_CHILD_GATE], requests: [], unexpectedRequests: [] }
+  return {
+    complete: false,
+    nextStep: 1,
+    stepCount: 2,
+    ruleMatches: { held: 1 },
+    pendingGates: [MUSE_CHILD_GATE],
+    requests: [],
+    unexpectedRequests: [],
+  }
 }
 
 function native(): ManagedNativeScenarioContext {
@@ -143,7 +172,12 @@ function native(): ManagedNativeScenarioContext {
     provider: AgentProvider.MUSE_CODE,
     workspaceId: 'workspace',
     providerAgent: { provider: AgentProvider.MUSE_CODE, prefix: 'muse' },
-    leapmuxServer: { hubUrl: 'http://127.0.0.1:1', adminToken: 'mock', workerId: 'worker', agentEnv: { XDG_DATA_HOME: dataHome } },
+    leapmuxServer: {
+      hubUrl: 'http://127.0.0.1:1',
+      adminToken: 'mock',
+      workerId: 'worker',
+      agentEnv: { XDG_DATA_HOME: dataHome },
+    },
     modelScript: {
       id: 'muse-readiness-unit',
       testDeadline: () => undefined,
@@ -197,7 +231,9 @@ beforeEach(() => {
   probe.sent = []
   probe.privatePath.mockImplementation(() => {})
   probe.openChild.mockResolvedValue('child-agent')
-  probe.readFile.mockImplementation(async path => path.includes(`${sep}subagent${sep}`) ? childBytes : parentBytes)
+  probe.readFile.mockImplementation(async path => path.includes(`${sep}subagent${sep}`)
+    ? childBytes
+    : parentBytes)
   probe.status.mockResolvedValue(modelStatus())
   probe.release.mockImplementation(async () => {
     probe.gateHeld = false
@@ -207,7 +243,9 @@ beforeEach(() => {
   let childReads = 0
   probe.queue.mockImplementation(async (_server, id) => id === 'parent-agent'
     ? create(AgentInputQueueSnapshotSchema, { agentId: id, activeTurn: true, revision: 40n })
-    : childReads++ === 0 ? probe.readiness! : probe.fresh!)
+    : childReads++ === 0
+      ? probe.readiness!
+      : probe.fresh!)
   probe.attach.mockResolvedValue(undefined)
 })
 
@@ -219,20 +257,42 @@ describe('readMuseNativeSessionLogs', () => {
   it('reads the exact same-root paths and preserves every raw byte and partial final line', async () => {
     const logs = await readMuseNativeSessionLogs(parentSession, childSession, dataHome)
     expect(probe.readFile.mock.calls).toEqual([
-      [join(rootPath, 'session.jsonl')],
-      [join(rootPath, 'subagent', childSession, 'session.jsonl')],
+      [
+        join(rootPath, 'session.jsonl'),
+      ],
+      [
+        join(rootPath, 'subagent', childSession, 'session.jsonl'),
+      ],
     ])
     expect(logs).toEqual({
-      parent: { status: 'fulfilled', value: { path: join(rootPath, 'session.jsonl'), bytes: parentBytes } },
-      child: { status: 'fulfilled', value: { path: join(rootPath, 'subagent', childSession, 'session.jsonl'), bytes: childBytes } },
+      parent: {
+        status: 'fulfilled',
+        value: {
+          path: join(rootPath, 'session.jsonl'),
+          bytes: parentBytes,
+        },
+      },
+      child: {
+        status: 'fulfilled',
+        value: {
+          path: join(rootPath, 'subagent', childSession, 'session.jsonl'),
+          bytes: childBytes,
+        },
+      },
     })
     expect(probe.privatePath.mock.calls).toEqual(probe.readFile.mock.calls.map(([path]) => [path, runRoot]))
   })
 
   it.each([
     { parent: 'not-a-session', want: 'UUIDv7 root session' },
-    { parent: parentSession.replace('-7000-', '-4000-'), want: 'UUIDv7 root session' },
-    { parent: parentSession.replace('-8000-', '-0000-'), want: 'UUIDv7 root session' },
+    {
+      parent: parentSession.replace('-7000-', '-4000-'),
+      want: 'UUIDv7 root session',
+    },
+    {
+      parent: parentSession.replace('-8000-', '-0000-'),
+      want: 'UUIDv7 root session',
+    },
     { parent: 'ffffffff-ffff-7000-8000-000000000001', want: 'four-digit storage date' },
     { child: '../another-session', want: 'distinct child UUID' },
     { child: parentSession, want: 'distinct child UUID' },
@@ -240,11 +300,17 @@ describe('readMuseNativeSessionLogs', () => {
     { data: 'relative/data', want: 'absolute normalized isolated data directory' },
     { data: `${dataHome}${sep}..${sep}share`, want: 'absolute normalized isolated data directory' },
     { data: `${dataHome}\0`, want: 'absolute normalized isolated data directory' },
-    { data: resolve('/isolated/leapmux-e2e-another/agent-home/.local/share'), want: 'outside the current isolated run' },
+    {
+      data: resolve('/isolated/leapmux-e2e-another/agent-home/.local/share'),
+      want: 'outside the current isolated run',
+    },
     { data: runRoot, want: 'outside the current isolated run' },
     { root: '', want: 'current isolated run root' },
     { root: 'relative/leapmux-e2e-run', want: 'current isolated run root' },
-    { root: resolve('/isolated/ordinary-directory'), want: 'current isolated run root' },
+    {
+      root: resolve('/isolated/ordinary-directory'),
+      want: 'current isolated run root',
+    },
   ])('refuses invalid identity, storage date or isolation before filesystem access: %j', async (input) => {
     if ('root' in input)
       vi.stubEnv(RUN_ROOT_ENV, input.root)
@@ -263,7 +329,9 @@ describe('readMuseNativeSessionLogs', () => {
     })
     const logs = await readMuseNativeSessionLogs(parentSession, childSession, dataHome)
     expect(logs[failed as 'parent' | 'child']).toEqual({ status: 'rejected', reason: failure })
-    expect(logs[failed === 'parent' ? 'child' : 'parent'].status).toBe('fulfilled')
+    expect(logs[failed === 'parent'
+      ? 'child'
+      : 'parent'].status).toBe('fulfilled')
     expect(probe.readFile).toHaveBeenCalledTimes(2)
   })
 
@@ -271,7 +339,11 @@ describe('readMuseNativeSessionLogs', () => {
     const logs = await readMuseNativeSessionLogs(parentSession, undefined, dataHome)
     expect(logs.parent.status).toBe('fulfilled')
     expect(logs.child.status).toBe('rejected')
-    expect(probe.readFile.mock.calls).toEqual([[join(rootPath, 'session.jsonl')]])
+    expect(probe.readFile.mock.calls).toEqual([
+      [
+        join(rootPath, 'session.jsonl'),
+      ],
+    ])
   })
 
   it('retains a containment refusal without reading or searching the refused file', async () => {
@@ -282,18 +354,39 @@ describe('readMuseNativeSessionLogs', () => {
     const logs = await readMuseNativeSessionLogs(parentSession, childSession, dataHome)
     expect(logs.parent.status).toBe('fulfilled')
     expect(logs.child.status).toBe('rejected')
-    expect(probe.readFile.mock.calls).toEqual([[join(rootPath, 'session.jsonl')]])
+    expect(probe.readFile.mock.calls).toEqual([
+      [
+        join(rootPath, 'session.jsonl'),
+      ],
+    ])
   })
 })
 
 describe('readMuseNativeControlRecords', () => {
   it('keeps the existing native control selection and malformed-line failure', async () => {
     const records = [
-      { payload: { kind: 'subagent_control' } },
-      { payload: { kind: 'command_intake' } },
-      { payload_type: 'runtime.command_intake.received', payload: { kind: 'future' } },
-      { payload: { kind: 'run', event: { kind: 'inbox_item_drained' } } },
-      { payload: { kind: 'run', event: { kind: 'other' } } },
+      {
+        payload: { kind: 'subagent_control' },
+      },
+      {
+        payload: { kind: 'command_intake' },
+      },
+      {
+        payload_type: 'runtime.command_intake.received',
+        payload: { kind: 'future' },
+      },
+      {
+        payload: {
+          kind: 'run',
+          event: { kind: 'inbox_item_drained' },
+        },
+      },
+      {
+        payload: {
+          kind: 'run',
+          event: { kind: 'other' },
+        },
+      },
     ]
     probe.readFile.mockResolvedValue(`${records.map(record => JSON.stringify(record)).join('\n')}\n`)
     expect(await readMuseNativeControlRecords(parentSession, dataHome)).toEqual(records.slice(0, 4))
@@ -317,15 +410,28 @@ describe('openMuseChild', () => {
     const evidence = attachedEvidence()
     expect(evidence.lastQueue).toMatchObject({ ...flags, revision: '41' })
     expect(evidence.queues.child.value).toMatchObject({ activeTurn: false, activeTurnSteerable: false, revision: '42' })
-    expect(evidence.model.value).toMatchObject({ pendingGates: [MUSE_CHILD_GATE], ruleMatches: { held: 1 }, nextStep: 1, stepCount: 2 })
+    expect(evidence.model.value).toMatchObject({
+      pendingGates: [MUSE_CHILD_GATE],
+      ruleMatches: { held: 1 },
+      nextStep: 1,
+      stepCount: 2,
+    })
     expect(evidence.transcripts.child.value).toMatchObject({ agentId: 'child-agent', agentSessionId: childSession })
     expect(evidence.transcripts.child.value.messages[0]).toMatchObject({
       seq: '9007199254740993',
       sessionId: childSession,
       spanId: 'native-span',
       completion: MessageCompletion.COMPLETE,
-      original: { status: 'fulfilled', value: { native: 'original' } },
-      supplement: { status: 'fulfilled', value: { provider: { nativeRecords: [] } } },
+      original: {
+        status: 'fulfilled',
+        value: { native: 'original' },
+      },
+      supplement: {
+        status: 'fulfilled',
+        value: {
+          provider: { nativeRecords: [] },
+        },
+      },
       originalBytesBase64: Buffer.from('{"native":"original"}').toString('base64'),
     })
     expect(probe.attach.mock.calls.find(([name]) => name === 'muse-held-parent-session.jsonl')?.[1].body).toEqual(parentBytes)
@@ -357,7 +463,11 @@ describe('openMuseChild', () => {
     expect(probe.snapshot.mock.calls.map(([, id]) => id)).toEqual(['parent-agent'])
     expect(probe.queue.mock.calls.map(([, id]) => id)).toEqual(['parent-agent'])
     expect(attachedEvidence().transcripts.child.status).toBe('rejected')
-    expect(probe.readFile.mock.calls).toEqual([[join(rootPath, 'session.jsonl')]])
+    expect(probe.readFile.mock.calls).toEqual([
+      [
+        join(rootPath, 'session.jsonl'),
+      ],
+    ])
     expect(probe.release).not.toHaveBeenCalled()
   })
 
@@ -412,7 +522,9 @@ describe('attachMuseChildReadinessFailure', () => {
   it('retains raw message bytes when a provider payload cannot decode', async () => {
     const snapshot = transcript('child-agent')
     snapshot.messages[0]!.content = Buffer.from('{"partial":')
-    probe.snapshot.mockImplementation(async (_context, id) => id === 'child-agent' ? snapshot : transcript(id))
+    probe.snapshot.mockImplementation(async (_context, id) => id === 'child-agent'
+      ? snapshot
+      : transcript(id))
     await attachMuseChildReadinessFailure(native(), { parentId: 'parent-agent', childId: 'child-agent' }, { attach: probe.attach })
     const row = attachedEvidence().transcripts.child.value.messages[0]!
     expect(row.original.status).toBe('rejected')

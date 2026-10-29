@@ -63,7 +63,12 @@ describe('normalizeBindAddr', () => {
 // error, i.e. the exact failed create this validation exists to prevent.
 describe('isLoopbackAddress', () => {
   describe('in IPv4', () => {
-    const accepts = ['127.0.0.1', '127.0.0.2', '127.0.0.0', '127.255.255.254']
+    const accepts = [
+      '127.0.0.1',
+      '127.0.0.2',
+      '127.0.0.0',
+      '127.255.255.254',
+    ]
     for (const addr of accepts) {
       it(`accepts ${addr}, in the 127.0.0.0/8 block`, () => {
         expect(isLoopbackAddress(addr)).toBe(true)
@@ -162,7 +167,17 @@ describe('isLoopbackAddress', () => {
   })
 
   describe('non-addresses', () => {
-    const rejects = ['', '   ', 'localhost', 'example.com', 'not-an-ip', 'my-host.local', '::/0', '127.0.0.1/8', '127.0.0.1:80']
+    const rejects = [
+      '',
+      '   ',
+      'localhost',
+      'example.com',
+      'not-an-ip',
+      'my-host.local',
+      '::/0',
+      '127.0.0.1/8',
+      '127.0.0.1:80',
+    ]
     for (const value of rejects) {
       it(`rejects ${JSON.stringify(value)}`, () => {
         expect(isLoopbackAddress(value)).toBe(false)

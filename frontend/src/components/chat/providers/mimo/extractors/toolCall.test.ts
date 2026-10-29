@@ -45,7 +45,12 @@ describe('mimoToolCall', () => {
         metadata: { output: 'hi\n', exit: 0, truncated: false },
       })
       expect(call.status).toBe('completed')
-      expect(call.kind === 'execute' && call.result).toEqual({ commands: [{ output: 'hi\n', exitCode: 0 }], unresolvedTerminals: [] })
+      expect(call.kind === 'execute' && call.result).toEqual({
+        commands: [
+          { output: 'hi\n', exitCode: 0 },
+        ],
+        unresolvedTerminals: [],
+      })
     })
 
     it('keeps the printed output of a command that failed', () => {
@@ -55,7 +60,12 @@ describe('mimoToolCall', () => {
         metadata: { output: 'partial\n', exit: 2 },
       })
       expect(call.status).toBe('failed')
-      expect(call.kind === 'execute' && call.result).toEqual({ commands: [{ output: 'partial\n', exitCode: 2 }], unresolvedTerminals: [] })
+      expect(call.kind === 'execute' && call.result).toEqual({
+        commands: [
+          { output: 'partial\n', exitCode: 2 },
+        ],
+        unresolvedTerminals: [],
+      })
     })
 
     it('reads a refused call as declined and an aborted one as cancelled', () => {
@@ -66,7 +76,11 @@ describe('mimoToolCall', () => {
       expect(declined.status).toBe('declined')
       const aborted = finished(MIMO_TOOL.Bash, input, { status: MIMO_TOOL_STATUS.Error, error: 'Tool execution aborted' })
       expect(aborted.status).toBe('cancelled')
-      const interrupted = finished(MIMO_TOOL.Bash, input, { status: MIMO_TOOL_STATUS.Error, error: 'stopped', metadata: { interrupted: true } })
+      const interrupted = finished(MIMO_TOOL.Bash, input, {
+        status: MIMO_TOOL_STATUS.Error,
+        error: 'stopped',
+        metadata: { interrupted: true },
+      })
       expect(interrupted.status).toBe('cancelled')
     })
 
@@ -82,9 +96,18 @@ describe('mimoToolCall', () => {
 
       it('states the value a completed script returned', () => {
         const output = '<exec status="completed">\n<return_value>\n2\n</return_value>\n</exec>'
-        const call = finished(MIMO_TOOL.Exec, script, { output, title: '1 tool calls', metadata: { status: 'completed', toolCalls: 1 } })
+        const call = finished(MIMO_TOOL.Exec, script, {
+          output,
+          title: '1 tool calls',
+          metadata: { status: 'completed', toolCalls: 1 },
+        })
         expect(call.status).toBe('completed')
-        expect(call.kind === 'execute' && call.result).toEqual({ commands: [{ output }], unresolvedTerminals: [] })
+        expect(call.kind === 'execute' && call.result).toEqual({
+          commands: [
+            { output },
+          ],
+          unresolvedTerminals: [],
+        })
       })
 
       it.each([
@@ -94,9 +117,18 @@ describe('mimoToolCall', () => {
         ['cancelled', 'cancelled'],
       ])('reads a script that ended with %s as %s, with what it printed', (status, expected) => {
         const output = `<exec status="${status}">\n<error_message>\nboom\n</error_message>\n</exec>`
-        const call = finished(MIMO_TOOL.Exec, script, { output, title: status, metadata: { status, toolCalls: 0 } })
+        const call = finished(MIMO_TOOL.Exec, script, {
+          output,
+          title: status,
+          metadata: { status, toolCalls: 0 },
+        })
         expect(call.status).toBe(expected)
-        expect(call.kind === 'execute' && call.result).toEqual({ commands: [{ output }], unresolvedTerminals: [] })
+        expect(call.kind === 'execute' && call.result).toEqual({
+          commands: [
+            { output },
+          ],
+          unresolvedTerminals: [],
+        })
       })
 
       // A script from a release that states no status reads as its call ended.
@@ -108,7 +140,10 @@ describe('mimoToolCall', () => {
       // Only a script states its outcome in the metadata. A shell command's
       // metadata carries no such word, and a stray one changes nothing.
       it('reads no script status on a shell command', () => {
-        const call = finished(MIMO_TOOL.Bash, input, { output: 'hi\n', metadata: { output: 'hi\n', exit: 0, status: 'code_error' } })
+        const call = finished(MIMO_TOOL.Bash, input, {
+          output: 'hi\n',
+          metadata: { output: 'hi\n', exit: 0, status: 'code_error' },
+        })
         expect(call.status).toBe('completed')
       })
     })
@@ -127,20 +162,33 @@ describe('mimoToolCall', () => {
     // The last update of a command that the turn cut short is the only record of
     // what the command printed before the cut.
     it('keeps the output that a cut command printed before the cut', () => {
-      const cut = toolFrame(MIMO_TOOL.Bash, { status: MIMO_TOOL_STATUS.Running, input, metadata: { output: 'partial\n' } })
+      const cut = toolFrame(MIMO_TOOL.Bash, {
+        status: MIMO_TOOL_STATUS.Running,
+        input,
+        metadata: { output: 'partial\n' },
+      })
       const call = providerToolCall(AgentProvider.MIMO_CODE, cut, {
         spanType: MIMO_TOOL.Bash,
         completion: MessageCompletion.INTERRUPTED,
         request: parsedFrame(openingFrame(MIMO_TOOL.Bash, input)),
       })
       expect(call?.status).toBe('cancelled')
-      expect(call?.kind === 'execute' && call.result).toEqual({ commands: [{ output: 'partial\n' }], unresolvedTerminals: [] })
+      expect(call?.kind === 'execute' && call.result).toEqual({
+        commands: [
+          { output: 'partial\n' },
+        ],
+        unresolvedTerminals: [],
+      })
     })
 
     // Only the row that the worker ended states the partial output. The opening row
     // of a call that still runs states none, although a later update is its result.
     it('states no partial output on an opening row', () => {
-      const later = parsedFrame(toolFrame(MIMO_TOOL.Bash, { status: MIMO_TOOL_STATUS.Running, input, metadata: { output: 'partial\n' } }))
+      const later = parsedFrame(toolFrame(MIMO_TOOL.Bash, {
+        status: MIMO_TOOL_STATUS.Running,
+        input,
+        metadata: { output: 'partial\n' },
+      }))
       const call = running(MIMO_TOOL.Bash, input, { result: later })
       expect(call.status).toBe('in_progress')
       expect(call.result).toBeUndefined()
@@ -149,7 +197,11 @@ describe('mimoToolCall', () => {
     // The opening row reads the call's final frame when the span holds it, so its
     // header states the outcome rather than a call still in flight.
     it('reads the final frame on the opening row', () => {
-      const result = parsedFrame(toolFrame(MIMO_TOOL.Bash, { input, output: 'hi\n', metadata: { output: 'hi\n', exit: 0 } }))
+      const result = parsedFrame(toolFrame(MIMO_TOOL.Bash, {
+        input,
+        output: 'hi\n',
+        metadata: { output: 'hi\n', exit: 0 },
+      }))
       const call = running(MIMO_TOOL.Bash, input, { result })
       expect(call.status).toBe('completed')
     })
@@ -163,9 +215,14 @@ describe('mimoToolCall', () => {
       expect(call.kind).toBe('read')
       expect(call.kind === 'read' && call.request).toEqual({ path: '/p/a.ts', offset: 1, limit: 2 })
       expect(call.kind === 'read' && call.result).toEqual({
-        lines: [{ num: 1, text: 'alpha' }, { num: 2, text: 'beta' }],
+        lines: [
+          { num: 1, text: 'alpha' },
+          { num: 2, text: 'beta' },
+        ],
         fallbackContent: 'alpha\nbeta',
-        trailing: [{ label: 'Range', text: 'Showing lines 1-2 of 9. Use offset=3 to continue.' }],
+        trailing: [
+          { label: 'Range', text: 'Showing lines 1-2 of 9. Use offset=3 to continue.' },
+        ],
       })
     })
 
@@ -175,7 +232,10 @@ describe('mimoToolCall', () => {
       })
       expect(call.kind).toBe('list')
       expect(call.kind === 'list' && call.result).toEqual({
-        entries: [{ path: 'a.ts' }, { path: 'b.ts' }],
+        entries: [
+          { path: 'a.ts' },
+          { path: 'b.ts' },
+        ],
         totalEntries: 5,
         truncated: true,
       })
@@ -184,10 +244,14 @@ describe('mimoToolCall', () => {
     it('draws the picture a view_image call attached', () => {
       const call = finished(MIMO_TOOL.ViewImage, { path: '/p/dot.png' }, {
         output: 'Image read successfully',
-        attachments: [{ type: 'file', mime: 'image/png', url: 'data:image/png;base64,iVBORw0KGgo=' }],
+        attachments: [
+          { type: 'file', mime: 'image/png', url: 'data:image/png;base64,iVBORw0KGgo=' },
+        ],
       })
       expect(call.kind).toBe('read')
-      expect(call.images).toEqual([{ mimeType: 'image/png', data: 'iVBORw0KGgo=', filePath: '/p/dot.png' }])
+      expect(call.images).toEqual([
+        { mimeType: 'image/png', data: 'iVBORw0KGgo=', filePath: '/p/dot.png' },
+      ])
     })
   })
 
@@ -197,10 +261,28 @@ describe('mimoToolCall', () => {
     it('states the change an edit asked for, then the diff that landed', () => {
       const input = { file_path: '/p/a.ts', old_string: 'alpha', new_string: 'omega' }
       const open = running(MIMO_TOOL.Edit, input)
-      expect(open.kind === 'edit' && open.request.changes).toEqual([{ filePath: '/p/a.ts', operation: 'edit', oldStr: 'alpha', newStr: 'omega', structuredPatch: null }])
-      const call = finished(MIMO_TOOL.Edit, input, { output: 'Edit applied successfully.', metadata: { diff, filediff: { file: '/p/a.ts', patch: diff } } })
-      expect((call.kind === 'edit' ? typedResult(call) : undefined)?.changes[0]?.filePath).toBe('/p/a.ts')
-      expect((call.kind === 'edit' ? typedResult(call) : undefined)?.changes[0]?.structuredPatch).toHaveLength(1)
+      expect(open.kind === 'edit' && open.request.changes).toEqual([
+        {
+          filePath: '/p/a.ts',
+          operation: 'edit',
+          oldStr: 'alpha',
+          newStr: 'omega',
+          structuredPatch: null,
+        },
+      ])
+      const call = finished(MIMO_TOOL.Edit, input, {
+        output: 'Edit applied successfully.',
+        metadata: {
+          diff,
+          filediff: { file: '/p/a.ts', patch: diff },
+        },
+      })
+      expect((call.kind === 'edit'
+        ? typedResult(call)
+        : undefined)?.changes[0]?.filePath).toBe('/p/a.ts')
+      expect((call.kind === 'edit'
+        ? typedResult(call)
+        : undefined)?.changes[0]?.structuredPatch).toHaveLength(1)
     })
 
     it('reads a new file as an add, and an overwrite as an edit', () => {
@@ -208,20 +290,36 @@ describe('mimoToolCall', () => {
         output: 'Wrote file successfully.',
         metadata: { diff: '--- /p/new.ts\n+++ /p/new.ts\n@@ -0,0 +1,1 @@\n+x\n', filepath: '/p/new.ts', exists: false },
       })
-      expect((added.kind === 'write' ? typedResult(added) : undefined)?.changes[0]?.operation).toBe('add')
+      expect((added.kind === 'write'
+        ? typedResult(added)
+        : undefined)?.changes[0]?.operation).toBe('add')
       const replaced = finished(MIMO_TOOL.Write, { file_path: '/p/a.ts', content: 'y\n' }, {
         output: 'Wrote file successfully.',
         metadata: { diff: '--- /p/a.ts\n+++ /p/a.ts\n@@ -1,1 +1,1 @@\n-x\n+y\n', filepath: '/p/a.ts', exists: true },
       })
-      expect((replaced.kind === 'write' ? typedResult(replaced) : undefined)?.changes[0]?.operation).toBe('edit')
+      expect((replaced.kind === 'write'
+        ? typedResult(replaced)
+        : undefined)?.changes[0]?.operation).toBe('edit')
     })
 
     it('reads each file of a patch', () => {
       const call = finished(MIMO_TOOL.ApplyPatch, { patch_text: '*** Begin Patch\n*** Update File: /p/a.ts\n@@\n-alpha\n+omega\n*** End Patch' }, {
         output: 'Success.',
-        metadata: { files: [{ filePath: '/p/a.ts', type: 'update', patch: diff }, { filePath: '/p/b.ts', movePath: '/p/c.ts', type: 'move', patch: '' }] },
+        metadata: {
+          files: [
+            { filePath: '/p/a.ts', type: 'update', patch: diff },
+            {
+              filePath: '/p/b.ts',
+              movePath: '/p/c.ts',
+              type: 'move',
+              patch: '',
+            },
+          ],
+        },
       })
-      const changes = call.kind === 'edit' ? typedResult(call)?.changes : undefined
+      const changes = call.kind === 'edit'
+        ? typedResult(call)?.changes
+        : undefined
       expect(changes?.map(change => [change.filePath, change.operation, change.previousPath])).toEqual([
         ['/p/a.ts', 'edit', undefined],
         ['/p/c.ts', 'move', '/p/b.ts'],
@@ -229,7 +327,13 @@ describe('mimoToolCall', () => {
     })
 
     it('reads every replacement of a multiedit', () => {
-      const call = running(MIMO_TOOL.MultiEdit, { file_path: '/p/a.ts', edits: [{ old_string: 'a', new_string: 'b' }, { old_string: 'c', new_string: 'd' }] })
+      const call = running(MIMO_TOOL.MultiEdit, {
+        file_path: '/p/a.ts',
+        edits: [
+          { old_string: 'a', new_string: 'b' },
+          { old_string: 'c', new_string: 'd' },
+        ],
+      })
       expect(call.kind === 'edit' && call.request.changes.map(change => change.newStr)).toEqual(['b', 'd'])
     })
 
@@ -238,13 +342,35 @@ describe('mimoToolCall', () => {
     it('reads the diff that each replacement of a multiedit landed', () => {
       const first = '--- /p/a.ts\n+++ /p/a.ts\n@@ -1,1 +1,1 @@\n-a\n+b\n'
       const second = '--- /p/a.ts\n+++ /p/a.ts\n@@ -3,1 +3,1 @@\n-c\n+d\n'
-      const call = finished(MIMO_TOOL.MultiEdit, { file_path: '/p/a.ts', edits: [{ old_string: 'a', new_string: 'b' }, { old_string: 'c', new_string: 'd' }] }, {
+      const call = finished(MIMO_TOOL.MultiEdit, {
+        file_path: '/p/a.ts',
+        edits: [
+          { old_string: 'a', new_string: 'b' },
+          { old_string: 'c', new_string: 'd' },
+        ],
+      }, {
         output: 'Edit applied successfully.',
         title: 'a.ts',
-        metadata: { results: [{ diff: first, filediff: { file: '/p/a.ts', patch: first } }, { diff: second, filediff: { file: '/p/a.ts', patch: second } }] },
+        metadata: {
+          results: [
+            {
+              diff: first,
+              filediff: { file: '/p/a.ts', patch: first },
+            },
+            {
+              diff: second,
+              filediff: { file: '/p/a.ts', patch: second },
+            },
+          ],
+        },
       })
-      const changes = call.kind === 'edit' ? typedResult(call)?.changes : undefined
-      expect(changes?.map(change => [change.filePath, change.structuredPatch?.[0]?.oldStart])).toEqual([['/p/a.ts', 1], ['/p/a.ts', 3]])
+      const changes = call.kind === 'edit'
+        ? typedResult(call)?.changes
+        : undefined
+      expect(changes?.map(change => [change.filePath, change.structuredPatch?.[0]?.oldStart])).toEqual([
+        ['/p/a.ts', 1],
+        ['/p/a.ts', 3],
+      ])
     })
 
     it('reads the diff a notebook edit landed', () => {
@@ -254,7 +380,9 @@ describe('mimoToolCall', () => {
         title: 'n.ipynb — replace cell c1',
         metadata: { diff: notebookDiff, edit_mode: 'replace', cell_id: 'c1' },
       })
-      const changes = call.kind === 'edit' ? typedResult(call)?.changes : undefined
+      const changes = call.kind === 'edit'
+        ? typedResult(call)?.changes
+        : undefined
       expect(changes?.map(change => change.filePath)).toEqual(['/p/n.ipynb'])
       expect(changes?.[0]?.structuredPatch).toHaveLength(1)
     })
@@ -266,23 +394,52 @@ describe('mimoToolCall', () => {
 
     it('states the requested change when no diff landed', () => {
       const call = finished(MIMO_TOOL.Edit, { file_path: '/p/a.ts', old_string: 'a', new_string: 'b' }, { output: 'Edit applied successfully.' })
-      expect((call.kind === 'edit' ? typedResult(call) : undefined)?.changes).toEqual([{ filePath: '/p/a.ts', operation: 'edit', oldStr: 'a', newStr: 'b', structuredPatch: null }])
+      expect((call.kind === 'edit'
+        ? typedResult(call)
+        : undefined)?.changes).toEqual([
+        {
+          filePath: '/p/a.ts',
+          operation: 'edit',
+          oldStr: 'a',
+          newStr: 'b',
+          structuredPatch: null,
+        },
+      ])
     })
   })
 
   describe('searches', () => {
     it('reads a glob listing', () => {
-      const call = finished(MIMO_TOOL.Glob, { pattern: '*.ts' }, { output: '/p/a.ts\n/p/b.ts', metadata: { count: 2, truncated: false } })
-      expect(call.kind === 'glob' && call.result).toMatchObject({ filenames: ['/p/a.ts', '/p/b.ts'], numFiles: 2, empty: false })
+      const call = finished(MIMO_TOOL.Glob, { pattern: '*.ts' }, {
+        output: '/p/a.ts\n/p/b.ts',
+        metadata: { count: 2, truncated: false },
+      })
+      expect(call.kind === 'glob' && call.result).toMatchObject({
+        filenames: ['/p/a.ts', '/p/b.ts'],
+        numFiles: 2,
+        empty: false,
+      })
     })
 
     it('reads a grep listing into structured matches', () => {
-      const call = finished(MIMO_TOOL.Grep, { pattern: 'alpha' }, { output: 'Found 1 matches\n/p/a.ts:\n  Line 3: alpha', metadata: { matches: 1, truncated: false } })
-      expect(call.kind === 'grep' && call.result).toMatchObject({ lines: [{ filePath: '/p/a.ts', lineNumber: 3, text: 'alpha' }], numFiles: 1, matchCount: 1 })
+      const call = finished(MIMO_TOOL.Grep, { pattern: 'alpha' }, {
+        output: 'Found 1 matches\n/p/a.ts:\n  Line 3: alpha',
+        metadata: { matches: 1, truncated: false },
+      })
+      expect(call.kind === 'grep' && call.result).toMatchObject({
+        lines: [
+          { filePath: '/p/a.ts', lineNumber: 3, text: 'alpha' },
+        ],
+        numFiles: 1,
+        matchCount: 1,
+      })
     })
 
     it('keeps a body it cannot read as text', () => {
-      const call = finished(MIMO_TOOL.Grep, { pattern: 'alpha' }, { output: 'something else', metadata: { matches: 1 } })
+      const call = finished(MIMO_TOOL.Grep, { pattern: 'alpha' }, {
+        output: 'something else',
+        metadata: { matches: 1 },
+      })
       expect(call.result).toEqual({ unparsed: true, text: 'something else' })
     })
 
@@ -292,7 +449,9 @@ describe('mimoToolCall', () => {
         metadata: { matches: 1, truncated: false },
       })
       expect(call.kind === 'grep' && call.result).toMatchObject({
-        lines: [{ filePath: '/p/a.ts', lineNumber: 3, text: 'alpha' }],
+        lines: [
+          { filePath: '/p/a.ts', lineNumber: 3, text: 'alpha' },
+        ],
         notice: 'Some paths were inaccessible and skipped',
         truncated: false,
       })
@@ -300,47 +459,94 @@ describe('mimoToolCall', () => {
   })
 
   describe('subagents', () => {
-    const spawn = { operation: { action: 'spawn', subagent_type: 'general', description: 'Helper', prompt: 'Work.' } }
+    const spawn = {
+      operation: {
+        action: 'spawn',
+        subagent_type: 'general',
+        description: 'Helper',
+        prompt: 'Work.',
+      },
+    }
 
     it('keeps an absent Worker registry link absent on both actor models', () => {
       const opening = running(MIMO_TOOL.Actor, spawn)
       expect(opening.id).toBe('prt_call-1')
-      expect(opening.kind === 'agent' ? opening.request.registryKey : null).toBeUndefined()
-      const result = finished(MIMO_TOOL.Actor, spawn, { output: 'Background sub-session started. actor_id: general-1', metadata: { actorId: 'general-1' } })
-      const run = result.kind === 'agent' ? typedResult(result)?.agents[0] : undefined
+      expect(opening.kind === 'agent'
+        ? opening.request.registryKey
+        : null).toBeUndefined()
+      const result = finished(MIMO_TOOL.Actor, spawn, {
+        output: 'Background sub-session started. actor_id: general-1',
+        metadata: { actorId: 'general-1' },
+      })
+      const run = result.kind === 'agent'
+        ? typedResult(result)?.agents[0]
+        : undefined
       expect(run).toBeDefined()
       expect(run?.registryKey).toBeUndefined()
     })
 
     it('states the launch and the registry row the worker keys by the call', () => {
       const call = running(MIMO_TOOL.Actor, spawn, { spanId: 'worker-spawn-span' })
-      expect(call.kind === 'agent' && call.request).toEqual({ description: 'Helper', agentType: 'general', prompt: 'Work.', registryKey: 'worker-spawn-span' })
+      expect(call.kind === 'agent' && call.request).toEqual({
+        description: 'Helper',
+        agentType: 'general',
+        prompt: 'Work.',
+        registryKey: 'worker-spawn-span',
+      })
       expect(call.title).toBe('Helper')
     })
 
     it('reads a background spawn as a running subagent', () => {
       const call = finished(MIMO_TOOL.Actor, spawn, {
         output: 'Background sub-session started. actor_id: general-1\nThe result will be delivered as a notification when complete.',
-        metadata: { actorId: 'general-1', model: { modelID: 'alpha' } },
+        metadata: {
+          actorId: 'general-1',
+          model: { modelID: 'alpha' },
+        },
       }, { spanId: 'worker-spawn-span' })
-      const run = call.kind === 'agent' ? typedResult(call)?.agents[0] : undefined
-      expect(run).toMatchObject({ agentId: 'general-1', outcome: 'running', registryKey: 'worker-spawn-span', body: 'Work.', bodyLabel: 'Prompt' })
-      expect(run?.metadata).toEqual([{ label: 'Agent ID', value: 'general-1' }, { label: 'Agent', value: 'general' }, { label: 'Model', value: 'alpha' }])
+      const run = call.kind === 'agent'
+        ? typedResult(call)?.agents[0]
+        : undefined
+      expect(run).toMatchObject({
+        agentId: 'general-1',
+        outcome: 'running',
+        registryKey: 'worker-spawn-span',
+        body: 'Work.',
+        bodyLabel: 'Prompt',
+      })
+      expect(run?.metadata).toEqual([
+        { label: 'Agent ID', value: 'general-1' },
+        { label: 'Agent', value: 'general' },
+        { label: 'Model', value: 'alpha' },
+      ])
     })
 
     it('reads a blocking run\'s report', () => {
-      const call = finished(MIMO_TOOL.Actor, { operation: { ...spawn.operation, action: 'run' } }, {
+      const call = finished(MIMO_TOOL.Actor, {
+        operation: { ...spawn.operation, action: 'run' },
+      }, {
         output: 'actor_id: explore-1 (to give this subagent more work, `send` it another message)\n\n<actor_result status="success" summary="Found it">\nThe answer is 42.\n</actor_result>',
         metadata: { actorId: 'explore-1' },
       })
-      const run = call.kind === 'agent' ? typedResult(call)?.agents[0] : undefined
-      expect(run).toMatchObject({ agentId: 'explore-1', outcome: 'completed', statusLabel: 'success', body: 'The answer is 42.' })
+      const run = call.kind === 'agent'
+        ? typedResult(call)?.agents[0]
+        : undefined
+      expect(run).toMatchObject({
+        agentId: 'explore-1',
+        outcome: 'completed',
+        statusLabel: 'success',
+        body: 'The answer is 42.',
+      })
     })
 
     it('reads a message to a subagent, and an operation on one', () => {
-      const send = running(MIMO_TOOL.Actor, { operation: { action: 'send', to_actor_id: 'general-1', content: 'Faster.' } })
+      const send = running(MIMO_TOOL.Actor, {
+        operation: { action: 'send', to_actor_id: 'general-1', content: 'Faster.' },
+      })
       expect(send.kind === 'message' && send.request).toEqual({ to: 'general-1', text: 'Faster.' })
-      const cancel = running(MIMO_TOOL.Actor, { operation: { action: 'cancel', actor_id: 'general-1' } })
+      const cancel = running(MIMO_TOOL.Actor, {
+        operation: { action: 'cancel', actor_id: 'general-1' },
+      })
       expect(cancel.kind === 'task' && cancel.request).toEqual({ action: 'stop', taskId: 'general-1' })
       const unread = running(MIMO_TOOL.Actor, { operation: '{"action":"spawn"}' })
       expect(unread.kind).toBe('other')
@@ -350,12 +556,21 @@ describe('mimoToolCall', () => {
     // the report. The report is still a report, and the note stays beside it.
     it('reads a blocking run\'s report after a task notice', () => {
       const note = 'note: task_id "T9" does not exist in this session; ran ad-hoc. Create it with the `task` tool first, or omit task_id.'
-      const call = finished(MIMO_TOOL.Actor, { operation: { ...spawn.operation, action: 'run', task_id: 'T9' } }, {
+      const call = finished(MIMO_TOOL.Actor, {
+        operation: { ...spawn.operation, action: 'run', task_id: 'T9' },
+      }, {
         output: `${note}\n\nactor_id: explore-1 (to give this subagent more work, \`send\` it another message)\n\n<actor_result status="success" summary="Found">\nThe answer is 42.\n</actor_result>`,
         metadata: { actorId: 'explore-1' },
       })
-      const run = call.kind === 'agent' ? typedResult(call)?.agents[0] : undefined
-      expect(run).toMatchObject({ agentId: 'explore-1', outcome: 'completed', statusLabel: 'success', body: 'The answer is 42.' })
+      const run = call.kind === 'agent'
+        ? typedResult(call)?.agents[0]
+        : undefined
+      expect(run).toMatchObject({
+        agentId: 'explore-1',
+        outcome: 'completed',
+        statusLabel: 'success',
+        body: 'The answer is 42.',
+      })
       expect(run?.metadata).toContainEqual({ label: 'Note', value: note })
     })
 
@@ -365,7 +580,9 @@ describe('mimoToolCall', () => {
         output: `${note}\nBackground sub-session started. actor_id: general-1\nThe result will be delivered as a notification when complete.`,
         metadata: { actorId: 'general-1' },
       })
-      const run = call.kind === 'agent' ? typedResult(call)?.agents[0] : undefined
+      const run = call.kind === 'agent'
+        ? typedResult(call)?.agents[0]
+        : undefined
       expect(run).toMatchObject({ agentId: 'general-1', outcome: 'running' })
       expect(run?.metadata).toContainEqual({ label: 'Note', value: note })
     })
@@ -373,7 +590,9 @@ describe('mimoToolCall', () => {
     // MiMo completes an `actor send` to an actor it does not know, and states the
     // failure in its title and its metadata alone.
     it('reads a message that reached no subagent as failed', () => {
-      const call = finished(MIMO_TOOL.Actor, { operation: { action: 'send', to_actor_id: 'ghost-1', content: 'hi' } }, {
+      const call = finished(MIMO_TOOL.Actor, {
+        operation: { action: 'send', to_actor_id: 'ghost-1', content: 'hi' },
+      }, {
         output: '{"inboxID":null,"error":"receiver not found"}',
         title: 'Send failed: receiver not found',
         metadata: { receiver_actor_id: 'ghost-1', error: 'receiver not found' },
@@ -384,7 +603,9 @@ describe('mimoToolCall', () => {
     })
 
     it('reads a delivered message as sent', () => {
-      const call = finished(MIMO_TOOL.Actor, { operation: { action: 'send', to_actor_id: 'general-1', content: 'hi' } }, {
+      const call = finished(MIMO_TOOL.Actor, {
+        operation: { action: 'send', to_actor_id: 'general-1', content: 'hi' },
+      }, {
         output: '{"inboxID":"01M37"}',
         title: 'Sent to general-1',
         metadata: { inboxID: '01M37', receiver_actor_id: 'general-1' },
@@ -396,23 +617,72 @@ describe('mimoToolCall', () => {
     // `status` states pending, running or idle; `wait` adds `timeout` and the last
     // outcome; `cancel` states `cancelled`; an actor MiMo cannot find is `unknown`.
     describe('an operation on a subagent', () => {
-      const operation = (action: string) => ({ operation: { action, actor_id: 'general-1' } })
+      const operation = (action: string) => ({
+        operation: { action, actor_id: 'general-1' },
+      })
       const outcomeOf = (action: string, metadata: Record<string, unknown>, output = JSON.stringify(metadata)) => {
         const call = finished(MIMO_TOOL.Actor, operation(action), { output, metadata })
         expect(call.status).toBe('completed')
-        return call.kind === 'task' ? typedResult(call)?.outcome : undefined
+        return call.kind === 'task'
+          ? typedResult(call)?.outcome
+          : undefined
       }
 
       it.each([
-        ['a wait on a subagent that failed', 'wait', { actor_id: 'general-1', status: 'idle', lastOutcome: 'failure' }, 'failed'],
-        ['a wait on a subagent that was cancelled', 'wait', { actor_id: 'general-1', status: 'idle', lastOutcome: 'cancelled' }, 'stopped'],
-        ['a wait on a subagent that succeeded', 'wait', { actor_id: 'general-1', status: 'idle', lastOutcome: 'success' }, 'completed'],
-        ['a wait that timed out while the subagent runs', 'wait', { actor_id: 'general-1', status: 'timeout' }, 'running'],
-        ['the status of a running subagent', 'status', { actor_id: 'general-1', status: 'running' }, 'running'],
-        ['the status of a subagent that waits for its first turn', 'status', { actor_id: 'general-1', status: 'pending' }, 'running'],
-        ['a cancel', 'cancel', { actor_id: 'general-1', status: 'cancelled' }, 'stopped'],
-        ['a cancel of a subagent that already ended', 'cancel', { actor_id: 'general-1', status: 'idle' }, 'completed'],
-        ['an operation on a subagent MiMo does not know', 'status', { actor_id: 'ghost-1', status: 'unknown' }, 'failed'],
+        [
+          'a wait on a subagent that failed',
+          'wait',
+          { actor_id: 'general-1', status: 'idle', lastOutcome: 'failure' },
+          'failed',
+        ],
+        [
+          'a wait on a subagent that was cancelled',
+          'wait',
+          { actor_id: 'general-1', status: 'idle', lastOutcome: 'cancelled' },
+          'stopped',
+        ],
+        [
+          'a wait on a subagent that succeeded',
+          'wait',
+          { actor_id: 'general-1', status: 'idle', lastOutcome: 'success' },
+          'completed',
+        ],
+        [
+          'a wait that timed out while the subagent runs',
+          'wait',
+          { actor_id: 'general-1', status: 'timeout' },
+          'running',
+        ],
+        [
+          'the status of a running subagent',
+          'status',
+          { actor_id: 'general-1', status: 'running' },
+          'running',
+        ],
+        [
+          'the status of a subagent that waits for its first turn',
+          'status',
+          { actor_id: 'general-1', status: 'pending' },
+          'running',
+        ],
+        [
+          'a cancel',
+          'cancel',
+          { actor_id: 'general-1', status: 'cancelled' },
+          'stopped',
+        ],
+        [
+          'a cancel of a subagent that already ended',
+          'cancel',
+          { actor_id: 'general-1', status: 'idle' },
+          'completed',
+        ],
+        [
+          'an operation on a subagent MiMo does not know',
+          'status',
+          { actor_id: 'ghost-1', status: 'unknown' },
+          'failed',
+        ],
       ])('reads %s', (_name, action, metadata, outcome) => {
         expect(outcomeOf(action, metadata)).toBe(outcome)
       })
@@ -436,7 +706,10 @@ describe('mimoToolCall', () => {
         ['running', 'running'],
         ['completed', 'completed'],
       ])('reads a workflow run that states %s as %s', (status, outcome) => {
-        const call = finished(MIMO_TOOL.Workflow, { operation: 'wait', run_id: 'wf_1' }, { output: status, metadata: { runID: 'wf_1', status } })
+        const call = finished(MIMO_TOOL.Workflow, { operation: 'wait', run_id: 'wf_1' }, {
+          output: status,
+          metadata: { runID: 'wf_1', status },
+        })
         expect(call.kind === 'task' && typedResult(call)?.outcome).toBe(outcome)
       })
     })
@@ -444,55 +717,129 @@ describe('mimoToolCall', () => {
 
   describe('to-dos', () => {
     it('draws the item a create added', () => {
-      const call = finished(MIMO_TOOL.Task, { operation: { action: 'create', summary: 'Ship it' } }, {
+      const call = finished(MIMO_TOOL.Task, {
+        operation: { action: 'create', summary: 'Ship it' },
+      }, {
         output: 'Created T1 (open): Ship it',
         title: 'Task created: T1',
         metadata: { id: 'T1', status: 'open' },
       })
       expect(call.title).toBe('Task created: T1')
-      expect((call.kind === 'todo' ? typedResult(call) : undefined)?.items).toEqual([{ id: 'T1', rowKey: 'T1', content: 'Ship it', status: 'pending', activeForm: '' }])
+      expect((call.kind === 'todo'
+        ? typedResult(call)
+        : undefined)?.items).toEqual([
+        {
+          id: 'T1',
+          rowKey: 'T1',
+          content: 'Ship it',
+          status: 'pending',
+          activeForm: '',
+        },
+      ])
     })
 
     it('draws the status a change left', () => {
-      const call = finished(MIMO_TOOL.Task, { operation: { action: 'done', id: 'T1', event_summary: 'shipped' } }, {
+      const call = finished(MIMO_TOOL.Task, {
+        operation: { action: 'done', id: 'T1', event_summary: 'shipped' },
+      }, {
         output: 'done → done',
         metadata: { id: 'T1', status: 'done' },
       })
-      expect(call.kind === 'todo' && call.result).toEqual({ items: [{ id: 'T1', rowKey: 'T1', content: 'T1', status: 'completed', activeForm: '' }], note: 'shipped' })
+      expect(call.kind === 'todo' && call.result).toEqual({
+        items: [
+          {
+            id: 'T1',
+            rowKey: 'T1',
+            content: 'T1',
+            status: 'completed',
+            activeForm: '',
+          },
+        ],
+        note: 'shipped',
+      })
     })
 
     it('draws every item a list printed', () => {
-      const call = finished(MIMO_TOOL.Task, { operation: { action: 'list' } }, { output: 'T1 in_progress — Ship it\nT2 blocked — Wait', metadata: { count: 2 } })
-      expect((call.kind === 'todo' ? typedResult(call) : undefined)?.items.map(item => [item.id, item.status])).toEqual([['T1', 'in_progress'], ['T2', 'pending']])
+      const call = finished(MIMO_TOOL.Task, {
+        operation: { action: 'list' },
+      }, {
+        output: 'T1 in_progress — Ship it\nT2 blocked — Wait',
+        metadata: { count: 2 },
+      })
+      expect((call.kind === 'todo'
+        ? typedResult(call)
+        : undefined)?.items.map(item => [item.id, item.status])).toEqual([
+        ['T1', 'in_progress'],
+        ['T2', 'pending'],
+      ])
     })
 
     it('draws the item a get read', () => {
-      const call = finished(MIMO_TOOL.Task, { operation: { action: 'get', id: 'T1' } }, {
+      const call = finished(MIMO_TOOL.Task, {
+        operation: { action: 'get', id: 'T1' },
+      }, {
         output: JSON.stringify({ id: 'T1', summary: 'Ship it', status: 'in_progress' }),
         title: 'Task T1',
       })
       expect(call.kind === 'todo' && call.request).toEqual({ items: [] })
-      expect((call.kind === 'todo' ? typedResult(call) : undefined)?.items).toEqual([{ id: 'T1', rowKey: 'T1', content: 'Ship it', status: 'in_progress', activeForm: '' }])
+      expect((call.kind === 'todo'
+        ? typedResult(call)
+        : undefined)?.items).toEqual([
+        {
+          id: 'T1',
+          rowKey: 'T1',
+          content: 'Ship it',
+          status: 'in_progress',
+          activeForm: '',
+        },
+      ])
     })
 
     it('draws the new text a rename gave', () => {
-      const call = finished(MIMO_TOOL.Task, { operation: { action: 'rename', id: 'T1', summary: 'Ship it today' } }, {
+      const call = finished(MIMO_TOOL.Task, {
+        operation: { action: 'rename', id: 'T1', summary: 'Ship it today' },
+      }, {
         output: 'Renamed T1',
         metadata: { id: 'T1', status: 'open' },
       })
-      expect((call.kind === 'todo' ? typedResult(call) : undefined)?.items).toEqual([{ id: 'T1', rowKey: 'T1', content: 'Ship it today', status: 'pending', activeForm: '' }])
+      expect((call.kind === 'todo'
+        ? typedResult(call)
+        : undefined)?.items).toEqual([
+        {
+          id: 'T1',
+          rowKey: 'T1',
+          content: 'Ship it today',
+          status: 'pending',
+          activeForm: '',
+        },
+      ])
     })
 
     it('draws an abandoned item as deleted, with its note', () => {
-      const call = finished(MIMO_TOOL.Task, { operation: { action: 'abandon', id: 'T2', event_summary: 'no longer needed' } }, {
+      const call = finished(MIMO_TOOL.Task, {
+        operation: { action: 'abandon', id: 'T2', event_summary: 'no longer needed' },
+      }, {
         output: 'open → abandoned',
         metadata: { id: 'T2', status: 'abandoned' },
       })
-      expect(call.kind === 'todo' && call.result).toEqual({ items: [{ id: 'T2', rowKey: 'T2', content: 'T2', status: 'deleted', activeForm: '' }], note: 'no longer needed' })
+      expect(call.kind === 'todo' && call.result).toEqual({
+        items: [
+          {
+            id: 'T2',
+            rowKey: 'T2',
+            content: 'T2',
+            status: 'deleted',
+            activeForm: '',
+          },
+        ],
+        note: 'no longer needed',
+      })
     })
 
     it('keeps an answer it cannot read as text', () => {
-      const call = finished(MIMO_TOOL.Task, { operation: { action: 'get', id: 'T1' } }, { output: 'No task T1.' })
+      const call = finished(MIMO_TOOL.Task, {
+        operation: { action: 'get', id: 'T1' },
+      }, { output: 'No task T1.' })
       expect(call.result).toEqual({ unparsed: true, text: 'No task T1.' })
     })
   })
@@ -522,7 +869,11 @@ describe('mimoToolCall', () => {
 
     it('reads a plan the reader rejected with no words as declined, with MiMo\'s answer', () => {
       const output = 'User chose to stay in plan mode and continue refining the plan.'
-      const call = finished(MIMO_TOOL.PlanExit, {}, { output, title: 'Staying in plan mode', metadata: { switched: false, feedback: '' } })
+      const call = finished(MIMO_TOOL.PlanExit, {}, {
+        output,
+        title: 'Staying in plan mode',
+        metadata: { switched: false, feedback: '' },
+      })
       expect(call.status).toBe('declined')
       expect(call.kind === 'switch_mode' && call.request).toEqual({ mode: 'build', declinedTitle: 'Plan sent back' })
       expect(call.result).toEqual({ text: output, format: 'plain' })
@@ -532,7 +883,11 @@ describe('mimoToolCall', () => {
     // that plan mode is not active: nothing was approved and nothing was sent back.
     it('reads a call outside plan mode as a plain completed call', () => {
       const output = 'You are not in plan mode. This tool is only effective in plan mode.'
-      const call = finished(MIMO_TOOL.PlanExit, {}, { output, title: 'Not in plan mode', metadata: { switched: false, feedback: '' } })
+      const call = finished(MIMO_TOOL.PlanExit, {}, {
+        output,
+        title: 'Not in plan mode',
+        metadata: { switched: false, feedback: '' },
+      })
       expect(call.kind).toBe('switch_mode')
       expect(call.status).toBe('completed')
       expect(call.title).toBe('Not in plan mode')
@@ -544,20 +899,47 @@ describe('mimoToolCall', () => {
   describe('questions', () => {
     it('reads each answer beside its question', () => {
       const call = finished(MIMO_TOOL.Question, {
-        questions: [{ question: 'Which database?', header: 'Database', options: [{ label: 'SQLite' }] }, { question: 'Why?', options: [] }],
-      }, { output: 'User has answered your questions.', metadata: { answers: [['SQLite'], []] } })
-      expect(call.kind === 'question' && call.result).toEqual({ answers: [{ header: 'Database', answer: 'SQLite' }, { header: 'Why?', answer: null }] })
+        questions: [
+          {
+            question: 'Which database?',
+            header: 'Database',
+            options: [
+              { label: 'SQLite' },
+            ],
+          },
+          { question: 'Why?', options: [] },
+        ],
+      }, {
+        output: 'User has answered your questions.',
+        metadata: {
+          answers: [
+            ['SQLite'],
+            [],
+          ],
+        },
+      })
+      expect(call.kind === 'question' && call.result).toEqual({
+        answers: [
+          { header: 'Database', answer: 'SQLite' },
+          { header: 'Why?', answer: null },
+        ],
+      })
     })
   })
 
   describe('scheduled jobs and workflows', () => {
     it('reads a cron schedule as a trigger it creates', () => {
-      const call = running(MIMO_TOOL.Cron, { operation: { action: 'schedule', cron: '0 9 * * 1', prompt: 'Report' } })
+      const call = running(MIMO_TOOL.Cron, {
+        operation: { action: 'schedule', cron: '0 9 * * 1', prompt: 'Report' },
+      })
       expect(call.kind === 'trigger' && call.request).toEqual({ action: 'create', name: 'Report', schedule: '0 9 * * 1' })
     })
 
     it('reads a workflow status call as a task read', () => {
-      const call = finished(MIMO_TOOL.Workflow, { operation: 'status', run_id: 'wf_1' }, { output: 'running', metadata: { runID: 'wf_1', status: 'running' } })
+      const call = finished(MIMO_TOOL.Workflow, { operation: 'status', run_id: 'wf_1' }, {
+        output: 'running',
+        metadata: { runID: 'wf_1', status: 'running' },
+      })
       expect(call.kind === 'task' && call.request).toEqual({ action: 'output', taskId: 'wf_1' })
       expect(call.kind === 'task' && call.result).toEqual({ outcome: 'running', output: 'running' })
     })
@@ -566,7 +948,11 @@ describe('mimoToolCall', () => {
   it('draws the generic card for a tool from a later release', () => {
     const call = finished('telepathy', { target: 'x' }, { output: 'done' })
     expect(call.kind).toBe('other')
-    expect(call.result).toEqual({ content: [{ type: 'text', text: 'done' }] })
+    expect(call.result).toEqual({
+      content: [
+        { type: 'text', text: 'done' },
+      ],
+    })
   })
 
   // A Model Context Protocol tool answers with text and file attachments. Each image
@@ -578,13 +964,18 @@ describe('mimoToolCall', () => {
         { type: 'file', mime: 'image/png', url: 'data:image/png;base64,iVBORw0KGgo=' },
         { type: 'file', mime: 'application/pdf', url: 'data:application/pdf;base64,JVBERi0=' },
       ],
-      metadata: { mcp: { isError: false } },
+      metadata: {
+        mcp: { isError: false },
+      },
     })
     expect(call.kind).toBe('other')
     expect(call.result).toEqual({
       content: [
         { type: 'text', text: 'Found it' },
-        { type: 'image', source: { mimeType: 'image/png', data: 'iVBORw0KGgo=' } },
+        {
+          type: 'image',
+          source: { mimeType: 'image/png', data: 'iVBORw0KGgo=' },
+        },
       ],
     })
   })
@@ -611,7 +1002,11 @@ describe('mimoToolCall', () => {
     const call = finished('', { target: 'x' }, { output: 'done' })
     expect(call.kind).toBe('unspecified')
     expect(call.label).toBeUndefined()
-    expect(call.result).toEqual({ content: [{ type: 'text', text: 'done' }] })
+    expect(call.result).toEqual({
+      content: [
+        { type: 'text', text: 'done' },
+      ],
+    })
   })
 
   // MiMo can end a call in an error that states no words. The row still states why
@@ -629,10 +1024,19 @@ describe('mimoToolCall', () => {
     it('draws the picture a read of an image file attached, on the path the call read', () => {
       const call = finished(MIMO_TOOL.Read, { file_path: '/p/dot.png' }, {
         output: 'Image read successfully',
-        attachments: [{ type: 'file', mime: 'image/png', filename: 'dot.png', url: 'data:image/png;base64,iVBORw0KGgo=' }],
+        attachments: [
+          {
+            type: 'file',
+            mime: 'image/png',
+            filename: 'dot.png',
+            url: 'data:image/png;base64,iVBORw0KGgo=',
+          },
+        ],
       })
       expect(call.kind).toBe('read')
-      expect(call.images).toEqual([{ mimeType: 'image/png', data: 'iVBORw0KGgo=', filePath: '/p/dot.png' }])
+      expect(call.images).toEqual([
+        { mimeType: 'image/png', data: 'iVBORw0KGgo=', filePath: '/p/dot.png' },
+      ])
       expect(call.result).toEqual({ unparsed: true, text: 'Image read successfully' })
     })
 
@@ -641,9 +1045,13 @@ describe('mimoToolCall', () => {
         output: '<path>/p/a.ts</path>\n<type>file</type>\n<content>\n1: alpha\n</content>\n<system-reminder>\nFollow AGENTS.md.\n</system-reminder>',
       })
       expect(call.kind === 'read' && call.result).toEqual({
-        lines: [{ num: 1, text: 'alpha' }],
+        lines: [
+          { num: 1, text: 'alpha' },
+        ],
         fallbackContent: 'alpha',
-        trailing: [{ label: 'System Reminder', text: 'Follow AGENTS.md.' }],
+        trailing: [
+          { label: 'System Reminder', text: 'Follow AGENTS.md.' },
+        ],
       })
     })
 
@@ -651,7 +1059,9 @@ describe('mimoToolCall', () => {
       const call = finished(MIMO_TOOL.Read, { file_path: '/p/a.ts' }, {
         output: '<path>/p/a.ts</path>\n<type>file</type>\n<content>\n1: alpha\n\n(End of file - total 1 lines)\n</content>\n<system-reminder>\nFollow AGENTS.md.\n</system-reminder>',
       })
-      expect(call.kind === 'read' ? typedResult(call)?.trailing : undefined).toEqual([
+      expect(call.kind === 'read'
+        ? typedResult(call)?.trailing
+        : undefined).toEqual([
         { label: 'Range', text: 'End of file - total 1 lines' },
         { label: 'System Reminder', text: 'Follow AGENTS.md.' },
       ])
@@ -664,12 +1074,24 @@ describe('mimoToolCall', () => {
       })
       expect(call.kind).toBe('list')
       expect(call.kind === 'list' && call.request).toEqual({ path: '/p' })
-      expect(call.kind === 'list' && call.result).toEqual({ entries: [{ path: 'e.ts' }], totalEntries: 9, offset: 5, truncated: true })
+      expect(call.kind === 'list' && call.result).toEqual({
+        entries: [
+          { path: 'e.ts' },
+        ],
+        totalEntries: 9,
+        offset: 5,
+        truncated: true,
+      })
     })
 
     it('reads a whole directory as a list that is not truncated', () => {
       const call = finished(MIMO_TOOL.Read, { file_path: '/p' }, { output: '<path>/p</path>\n<type>directory</type>\n<entries>\na.ts\n\n(1 entries)\n</entries>' })
-      expect(call.kind === 'list' && call.result).toEqual({ entries: [{ path: 'a.ts' }], truncated: false })
+      expect(call.kind === 'list' && call.result).toEqual({
+        entries: [
+          { path: 'a.ts' },
+        ],
+        truncated: false,
+      })
     })
 
     // Only the answer says whether a read hit a directory, so a read that has not
@@ -687,17 +1109,39 @@ describe('mimoToolCall', () => {
 
   describe('edits and writes', () => {
     it('states a replace-all edit', () => {
-      const call = running(MIMO_TOOL.Edit, { file_path: '/p/a.ts', old_string: 'a', new_string: 'b', replace_all: true })
+      const call = running(MIMO_TOOL.Edit, {
+        file_path: '/p/a.ts',
+        old_string: 'a',
+        new_string: 'b',
+        replace_all: true,
+      })
       expect(call.kind === 'edit' && call.request.replaceAll).toBe(true)
       // Only a true flag replaces every match.
-      const once = running(MIMO_TOOL.Edit, { file_path: '/p/a.ts', old_string: 'a', new_string: 'b', replace_all: 'yes' })
+      const once = running(MIMO_TOOL.Edit, {
+        file_path: '/p/a.ts',
+        old_string: 'a',
+        new_string: 'b',
+        replace_all: 'yes',
+      })
       expect(once.kind).toBe('edit')
-      expect(once.kind === 'edit' ? once.request : null).not.toHaveProperty('replaceAll')
+      expect(once.kind === 'edit'
+        ? once.request
+        : null).not.toHaveProperty('replaceAll')
     })
 
     it('states the requested body of a write that landed no diff', () => {
       const call = finished(MIMO_TOOL.Write, { file_path: '/p/new.ts', content: 'x\n' }, { output: 'Wrote file successfully.' })
-      expect(call.kind === 'write' ? typedResult(call)?.changes : undefined).toEqual([{ filePath: '/p/new.ts', operation: 'add', oldStr: '', newStr: 'x\n', structuredPatch: null }])
+      expect(call.kind === 'write'
+        ? typedResult(call)?.changes
+        : undefined).toEqual([
+        {
+          filePath: '/p/new.ts',
+          operation: 'add',
+          oldStr: '',
+          newStr: 'x\n',
+          structuredPatch: null,
+        },
+      ])
     })
 
     it('takes the generic card for a write that names no file', () => {
@@ -708,12 +1152,24 @@ describe('mimoToolCall', () => {
   describe('glob and grep answers', () => {
     it('states the notice of a glob that stopped at its limit', () => {
       const notice = 'Results are truncated: showing first 1 results. Consider using a more specific path or pattern.'
-      const call = finished(MIMO_TOOL.Glob, { pattern: '*.ts' }, { output: `/p/a.ts\n\n(${notice})`, metadata: { count: 1, truncated: true } })
-      expect(call.kind === 'glob' && call.result).toMatchObject({ filenames: ['/p/a.ts'], numFiles: 1, truncated: true, notice, empty: false })
+      const call = finished(MIMO_TOOL.Glob, { pattern: '*.ts' }, {
+        output: `/p/a.ts\n\n(${notice})`,
+        metadata: { count: 1, truncated: true },
+      })
+      expect(call.kind === 'glob' && call.result).toMatchObject({
+        filenames: ['/p/a.ts'],
+        numFiles: 1,
+        truncated: true,
+        notice,
+        empty: false,
+      })
     })
 
     it('reads a glob that found nothing as empty', () => {
-      const call = finished(MIMO_TOOL.Glob, { pattern: '*.rs' }, { output: 'No files found', metadata: { count: 0, truncated: false } })
+      const call = finished(MIMO_TOOL.Glob, { pattern: '*.rs' }, {
+        output: 'No files found',
+        metadata: { count: 0, truncated: false },
+      })
       expect(call.kind === 'glob' && call.result).toMatchObject({ filenames: [], numFiles: 0, empty: true })
     })
 
@@ -724,19 +1180,34 @@ describe('mimoToolCall', () => {
     })
 
     it('reads a grep that found nothing as empty, with its count', () => {
-      const call = finished(MIMO_TOOL.Grep, { pattern: 'zeta' }, { output: 'No files found', metadata: { matches: 0, truncated: false } })
-      expect(call.kind === 'grep' && call.result).toMatchObject({ lines: [], numFiles: 0, numLines: 0, matchCount: 0, empty: true })
+      const call = finished(MIMO_TOOL.Grep, { pattern: 'zeta' }, {
+        output: 'No files found',
+        metadata: { matches: 0, truncated: false },
+      })
+      expect(call.kind === 'grep' && call.result).toMatchObject({
+        lines: [],
+        numFiles: 0,
+        numLines: 0,
+        matchCount: 0,
+        empty: true,
+      })
     })
 
     it('counts each file of a grep once', () => {
-      const call = finished(MIMO_TOOL.Grep, { pattern: 'a' }, { output: 'Found 3 matches\n/p/a.ts:\n  Line 1: a\n  Line 2: a\n\n/p/b.ts:\n  Line 1: a', metadata: { matches: 3 } })
+      const call = finished(MIMO_TOOL.Grep, { pattern: 'a' }, {
+        output: 'Found 3 matches\n/p/a.ts:\n  Line 1: a\n  Line 2: a\n\n/p/b.ts:\n  Line 1: a',
+        metadata: { matches: 3 },
+      })
       expect(call.kind === 'grep' && call.result).toMatchObject({ numFiles: 2, numLines: 3, matchCount: 3 })
     })
   })
 
   describe('corpus searches', () => {
     it('states the words a code search printed as its matches', () => {
-      const call = finished(MIMO_TOOL.CodeSearch, { query: 'react hooks' }, { output: 'const [a, setA] = useState(0)', metadata: { truncated: true } })
+      const call = finished(MIMO_TOOL.CodeSearch, { query: 'react hooks' }, {
+        output: 'const [a, setA] = useState(0)',
+        metadata: { truncated: true },
+      })
       expect(call.kind === 'search' && call.result).toEqual({
         filenames: [],
         content: 'const [a, setA] = useState(0)',
@@ -774,7 +1245,9 @@ describe('mimoToolCall', () => {
     })
 
     it('states MiMo\'s own title on a scheduled job and on a session call', () => {
-      const cron = finished(MIMO_TOOL.Cron, { operation: { action: 'list' } }, { output: 'j1 0 9 * * 1', title: 'Jobs' })
+      const cron = finished(MIMO_TOOL.Cron, {
+        operation: { action: 'list' },
+      }, { output: 'j1 0 9 * * 1', title: 'Jobs' })
       expect(cron.title).toBe('Jobs')
       expect(cron.result).toEqual({ text: 'j1 0 9 * * 1', format: 'plain' })
       const session = finished(MIMO_TOOL.Session, { action: 'ask', session_id: 'ses_other', question: 'Status?' }, { output: 'All green.', title: 'Asked ses_other' })
@@ -795,12 +1268,16 @@ describe('mimoToolCall', () => {
       ['rename', 'update'],
       ['snooze', 'other'],
     ])('reads the %s action as %s', (action, expected) => {
-      const call = running(MIMO_TOOL.Cron, { operation: { action } })
+      const call = running(MIMO_TOOL.Cron, {
+        operation: { action },
+      })
       expect(call.kind === 'trigger' && call.request.action).toBe(expected)
     })
 
     it('states the job a call acts on', () => {
-      const call = running(MIMO_TOOL.Cron, { operation: { action: 'delete', id: 'j1' } })
+      const call = running(MIMO_TOOL.Cron, {
+        operation: { action: 'delete', id: 'j1' },
+      })
       expect(call.kind === 'trigger' && call.request).toEqual({ action: 'delete', triggerId: 'j1' })
     })
 
@@ -816,22 +1293,30 @@ describe('mimoToolCall', () => {
       ['wait', 'output'],
       ['cancel', 'stop'],
     ])('reads the actor %s as the %s action on its subagent', (action, expected) => {
-      const call = running(MIMO_TOOL.Actor, { operation: { action, actor_id: 'general-1' } })
+      const call = running(MIMO_TOOL.Actor, {
+        operation: { action, actor_id: 'general-1' },
+      })
       expect(call.kind === 'task' && call.request).toEqual({ action: expected, taskId: 'general-1' })
     })
 
     it('reads the model list as a list action with no subagent', () => {
-      const call = running(MIMO_TOOL.Actor, { operation: { action: 'models' } })
+      const call = running(MIMO_TOOL.Actor, {
+        operation: { action: 'models' },
+      })
       expect(call.kind === 'task' && call.request).toEqual({ action: 'list' })
     })
 
     it('reads the subagent from to_actor_id when the operation states no actor_id', () => {
-      const call = running(MIMO_TOOL.Actor, { operation: { action: 'wait', to_actor_id: 'general-2' } })
+      const call = running(MIMO_TOOL.Actor, {
+        operation: { action: 'wait', to_actor_id: 'general-2' },
+      })
       expect(call.kind === 'task' && call.request).toEqual({ action: 'output', taskId: 'general-2' })
     })
 
     it('takes the generic card for an actor action this build does not know', () => {
-      expect(running(MIMO_TOOL.Actor, { operation: { action: 'teleport', actor_id: 'general-1' } }).kind).toBe('other')
+      expect(running(MIMO_TOOL.Actor, {
+        operation: { action: 'teleport', actor_id: 'general-1' },
+      }).kind).toBe('other')
     })
 
     it.each([
@@ -846,7 +1331,11 @@ describe('mimoToolCall', () => {
     })
 
     it('states MiMo\'s own title for the operation', () => {
-      const call = finished(MIMO_TOOL.Workflow, { operation: 'status', run_id: 'wf_1' }, { output: 'running', title: 'Workflow wf_1', metadata: { status: 'running' } })
+      const call = finished(MIMO_TOOL.Workflow, { operation: 'status', run_id: 'wf_1' }, {
+        output: 'running',
+        title: 'Workflow wf_1',
+        metadata: { status: 'running' },
+      })
       expect(call.title).toBe('Workflow wf_1')
     })
 
@@ -856,28 +1345,40 @@ describe('mimoToolCall', () => {
       ['pending', 'running'],
       ['a word of a later release', 'completed'],
     ])('reads a workflow run that states %s as %s', (status, outcome) => {
-      const call = finished(MIMO_TOOL.Workflow, { operation: 'wait', run_id: 'wf_1' }, { output: status, metadata: { status } })
+      const call = finished(MIMO_TOOL.Workflow, { operation: 'wait', run_id: 'wf_1' }, {
+        output: status,
+        metadata: { status },
+      })
       expect(call.kind === 'task' && typedResult(call)?.outcome).toBe(outcome)
     })
 
     // A send that failed on the wire, not one that reached no subagent: the error
     // is the answer, and no status override applies.
     it('reads a send that ended in an error as failed, with the error', () => {
-      const call = finished(MIMO_TOOL.Actor, { operation: { action: 'send', to_actor_id: 'general-1', content: 'hi' } }, { status: MIMO_TOOL_STATUS.Error, error: 'inbox closed' })
+      const call = finished(MIMO_TOOL.Actor, {
+        operation: { action: 'send', to_actor_id: 'general-1', content: 'hi' },
+      }, { status: MIMO_TOOL_STATUS.Error, error: 'inbox closed' })
       expect(call.kind).toBe('message')
       expect(call.status).toBe('failed')
       expect(call.result).toEqual({ failure: true, text: 'inbox closed' })
     })
 
     it('states the metadata error of a send whose call states no title', () => {
-      const call = finished(MIMO_TOOL.Actor, { operation: { action: 'send', to_actor_id: 'ghost-1', content: 'hi' } }, { output: '{}', metadata: { error: 'receiver not found' } })
+      const call = finished(MIMO_TOOL.Actor, {
+        operation: { action: 'send', to_actor_id: 'ghost-1', content: 'hi' },
+      }, {
+        output: '{}',
+        metadata: { error: 'receiver not found' },
+      })
       expect(call.status).toBe('failed')
       expect(call.result).toEqual({ failure: true, text: 'receiver not found' })
     })
 
     // A spawn's answer that matches neither form is still the words MiMo wrote.
     it('keeps a spawn answer it cannot read as text', () => {
-      const call = finished(MIMO_TOOL.Actor, { operation: { action: 'spawn', description: 'Helper', prompt: 'Work.' } }, { output: 'The subagent is busy.' })
+      const call = finished(MIMO_TOOL.Actor, {
+        operation: { action: 'spawn', description: 'Helper', prompt: 'Work.' },
+      }, { output: 'The subagent is busy.' })
       expect(call.kind).toBe('agent')
       expect(call.result).toEqual({ unparsed: true, text: 'The subagent is busy.' })
     })
@@ -886,7 +1387,9 @@ describe('mimoToolCall', () => {
   describe('to-do rows', () => {
     // The renderer composes the header of a call that has not answered.
     it('states no title while the call runs', () => {
-      const call = running(MIMO_TOOL.Task, { operation: { action: 'create', summary: 'Ship it' } })
+      const call = running(MIMO_TOOL.Task, {
+        operation: { action: 'create', summary: 'Ship it' },
+      })
       expect(call.title).toBeUndefined()
       expect(call.kind === 'todo' && call.request.items.map(item => item.content)).toEqual(['Ship it'])
     })
@@ -897,13 +1400,28 @@ describe('mimoToolCall', () => {
   })
 
   describe('question rows', () => {
-    const questions = [{ question: 'Which database?', header: 'Database', options: [{ label: 'SQLite', description: 'A file.' }, { label: '' }] }]
+    const questions = [
+      {
+        question: 'Which database?',
+        header: 'Database',
+        options: [
+          { label: 'SQLite', description: 'A file.' },
+          { label: '' },
+        ],
+      },
+    ]
 
     it('heads a running question with its header, else its question', () => {
       const call = running(MIMO_TOOL.Question, { questions })
       expect(call.title).toBe('Database')
-      expect(call.kind === 'question' && call.request.questions[0]?.options).toEqual([{ label: 'SQLite', description: 'A file.' }])
-      expect(running(MIMO_TOOL.Question, { questions: [{ question: 'Which database?' }] }).title).toBe('Which database?')
+      expect(call.kind === 'question' && call.request.questions[0]?.options).toEqual([
+        { label: 'SQLite', description: 'A file.' },
+      ])
+      expect(running(MIMO_TOOL.Question, {
+        questions: [
+          { question: 'Which database?' },
+        ],
+      }).title).toBe('Which database?')
     })
 
     it('keeps an answer that states no answers list as text', () => {
@@ -912,11 +1430,26 @@ describe('mimoToolCall', () => {
     })
 
     it('joins several choices, and states no answer for a choice that is not text', () => {
-      const call = finished(MIMO_TOOL.Question, { questions: [...questions, { question: 'Why?' }] }, {
+      const call = finished(MIMO_TOOL.Question, {
+        questions: [
+          ...questions,
+          { question: 'Why?' },
+        ],
+      }, {
         output: 'User has answered your questions.',
-        metadata: { answers: [['SQLite', 'Postgres'], [7, '']] },
+        metadata: {
+          answers: [
+            ['SQLite', 'Postgres'],
+            [7, ''],
+          ],
+        },
       })
-      expect(call.kind === 'question' && call.result).toEqual({ answers: [{ header: 'Database', answer: 'SQLite, Postgres' }, { header: 'Why?', answer: null }] })
+      expect(call.kind === 'question' && call.result).toEqual({
+        answers: [
+          { header: 'Database', answer: 'SQLite, Postgres' },
+          { header: 'Why?', answer: null },
+        ],
+      })
     })
   })
 

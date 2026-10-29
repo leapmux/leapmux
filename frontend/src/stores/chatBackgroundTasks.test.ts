@@ -58,8 +58,18 @@ describe('protoBackgroundTaskToStore', () => {
     expect(backgroundTaskEndTooltip(finished.status)).toBe('The provider reports an end without a known outcome')
   })
   it('maps enum statuses to the union', () => {
-    expect(protoBackgroundTaskToStore(proto({ id: 'r1', status: BackgroundTaskStatus.RUNNING, title: 't', activeForm: 'a' })))
-      .toMatchObject({ rowKey: 'r1', kind: 'subagent', status: 'running', activity: 'a' })
+    expect(protoBackgroundTaskToStore(proto({
+      id: 'r1',
+      status: BackgroundTaskStatus.RUNNING,
+      title: 't',
+      activeForm: 'a',
+    })))
+      .toMatchObject({
+        rowKey: 'r1',
+        kind: 'subagent',
+        status: 'running',
+        activity: 'a',
+      })
   })
 
   it('maps a paused wire status to an idle open row', () => {
@@ -121,7 +131,12 @@ describe('sortBackgroundTasks', () => {
       item({ rowKey: 'running', status: 'running' }),
     ]
     const sorted = sortBackgroundTasks(items)
-    expect(sorted.map(i => i.rowKey)).toEqual(['running', 'pending', 'paused', 'completed'])
+    expect(sorted.map(i => i.rowKey)).toEqual([
+      'running',
+      'pending',
+      'paused',
+      'completed',
+    ])
   })
 })
 
@@ -176,7 +191,12 @@ describe('isActiveBackgroundTaskStatus', () => {
   })
 
   it('every finished status is inactive', () => {
-    for (const status of ['succeeded', 'failed', 'stopped', 'interrupted'] as const)
+    for (const status of [
+      'succeeded',
+      'failed',
+      'stopped',
+      'interrupted',
+    ] as const)
       expect(isActiveBackgroundTaskStatus(status)).toBe(false)
   })
 })
@@ -203,7 +223,9 @@ describe('chipTasksFor', () => {
   })
 
   it('is empty for a child that spawned nothing', () => {
-    const tasks = [row({ rowKey: 'self', childAgentId: 'child-1', parentAgentId: 'root-1' })]
+    const tasks = [
+      row({ rowKey: 'self', childAgentId: 'child-1', parentAgentId: 'root-1' }),
+    ]
     expect(chipTasksFor('child-1', tasks, true)).toEqual([])
   })
 
@@ -274,7 +296,9 @@ describe('filterBackgroundTasksByKind', () => {
   })
 
   it('returns an empty array when no row has that kind', () => {
-    expect(filterBackgroundTasksByKind([item({ rowKey: 'a', kind: 'subagent' })], 'shell')).toEqual([])
+    expect(filterBackgroundTasksByKind([
+      item({ rowKey: 'a', kind: 'subagent' }),
+    ], 'shell')).toEqual([])
     expect(filterBackgroundTasksByKind([], 'all')).toEqual([])
   })
 })
@@ -289,8 +313,12 @@ describe('filterBackgroundTasksByKind', () => {
  */
 describe('shouldShowBackgroundTasksSection', () => {
   it('shows the section for any row, finished ones included', () => {
-    expect(shouldShowBackgroundTasksSection([item({ rowKey: 'a', status: 'running' })], false)).toBe(true)
-    expect(shouldShowBackgroundTasksSection([item({ rowKey: 'a', status: 'succeeded' })], false)).toBe(true)
+    expect(shouldShowBackgroundTasksSection([
+      item({ rowKey: 'a', status: 'running' }),
+    ], false)).toBe(true)
+    expect(shouldShowBackgroundTasksSection([
+      item({ rowKey: 'a', status: 'succeeded' }),
+    ], false)).toBe(true)
   })
 
   it('hides the section for an empty registry that loaded fine', () => {
@@ -304,7 +332,9 @@ describe('shouldShowBackgroundTasksSection', () => {
   // A failure with rows still shows: the rows are what the user came for, and
   // the flag only decides visibility, never what replaces the content.
   it('shows the section when the load failed and rows survive', () => {
-    expect(shouldShowBackgroundTasksSection([item({ rowKey: 'a' })], true)).toBe(true)
+    expect(shouldShowBackgroundTasksSection([
+      item({ rowKey: 'a' }),
+    ], true)).toBe(true)
   })
 })
 
@@ -350,11 +380,18 @@ describe('createTabTaskScope', () => {
   // real `getAgentTab` answers with an AGENT tab or with nothing.
   const tabs: Record<string, { type: TabType, id: string, parentAgentId?: string, rootAgentId?: string }> = {
     'root-1': { type: TabType.AGENT, id: 'root-1' },
-    'child-1': { type: TabType.AGENT, id: 'child-1', parentAgentId: 'root-1', rootAgentId: 'root-1' },
+    'child-1': {
+      type: TabType.AGENT,
+      id: 'child-1',
+      parentAgentId: 'root-1',
+      rootAgentId: 'root-1',
+    },
   }
   const scope = (rows: BackgroundTaskItem[]) => createTabTaskScope({
     getAgentTab: id => tabs[id] as never,
-    tasksForRoot: rootId => (rootId === 'root-1' ? rows : []),
+    tasksForRoot: rootId => (rootId === 'root-1'
+      ? rows
+      : []),
   })
 
   it('resolves a child tab to its registry owner', () => {
@@ -370,7 +407,9 @@ describe('createTabTaskScope', () => {
   })
 
   it('hands a child tab its OWNER\'s registry, not an empty one', () => {
-    const rows = [row({ rowKey: 'mine', parentAgentId: 'child-1' })]
+    const rows = [
+      row({ rowKey: 'mine', parentAgentId: 'child-1' }),
+    ]
     // The whole reason the resolution exists: the dependency's `tasksForRoot('child-1')` answers
     // nothing, because only a root keys a registry.
     expect(scope(rows).rootTasksFor('child-1').map(t => t.rowKey)).toEqual(['mine'])

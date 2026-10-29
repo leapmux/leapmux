@@ -64,7 +64,9 @@ function unwrapToolUseError(text: string): string {
   const match = TOOL_USE_ERROR_RE.exec(text)
   // The group always participates in a match of this regex; `?? ''` is the
   // type-level guard alone.
-  return match ? (match[1] ?? '').trim() : text
+  return match
+    ? (match[1] ?? '').trim()
+    : text
 }
 
 /** The first `tool_use` block of a Claude assistant envelope, if it holds one. */
@@ -99,16 +101,24 @@ export function claudeToolRow(
     return null
   const content = getMessageContentArray(payload)
   const useBlock = toolUseBlock(content)
-  const resultBlock = useBlock ? null : toolResultBlock(content)
+  const resultBlock = useBlock
+    ? null
+    : toolResultBlock(content)
   if (!useBlock && !resultBlock)
     return null
 
   const toolUseResult = pickObject(payload, 'tool_use_result') ?? undefined
-  const id = useBlock ? pickString(useBlock, 'id') : pickString(resultBlock, 'tool_use_id')
+  const id = useBlock
+    ? pickString(useBlock, 'id')
+    : pickString(resultBlock, 'tool_use_id')
   // The paired REQUEST, matched by this row's own tool-use id. An unmatched
   // request belongs to another call in the same turn, and reading its arguments
   // would title this row with that call's file.
-  const paired = useBlock ? null : (sides.request ? extractToolUseInfo(sides.request, id || undefined) : null)
+  const paired = useBlock
+    ? null
+    : (sides.request
+        ? extractToolUseInfo(sides.request, id || undefined)
+        : null)
   const rawName = useBlock
     ? pickString(useBlock, 'name')
     : (spanType || pickString(toolUseResult, 'tool_name') || paired?.toolName || '')
@@ -130,7 +140,10 @@ export function claudeToolRow(
   const rawResultContent = resultBlock!.content
   const split = Array.isArray(rawResultContent)
     ? splitToolResultContent(rawResultContent, { text: 'text' })
-    : { text: String(rawResultContent ?? ''), images: [] }
+    : {
+        text: String(rawResultContent ?? ''),
+        images: [],
+      }
   const input = paired?.input ?? {}
   const resultContent = unwrapToolUseError(split.text)
   return {
@@ -145,10 +158,14 @@ export function claudeToolRow(
     // the tool has a structured result, and wins for that reason. The record
     // rides only when this row carries one, so the absent key stays absent.
     images: claudeImagesFromToolResult({
-      ...(toolUseResult !== undefined ? { toolUseResult } : {}),
+      ...(toolUseResult !== undefined
+        ? { toolUseResult }
+        : {}),
       blockImages: split.images,
       toolInput: input,
     }),
-    isError: typeof resultBlock!.is_error === 'boolean' ? resultBlock!.is_error : undefined,
+    isError: typeof resultBlock!.is_error === 'boolean'
+      ? resultBlock!.is_error
+      : undefined,
   }
 }

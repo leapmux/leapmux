@@ -6,11 +6,16 @@ import { countRows, waitForStoredEntry, writeEntry } from './storage'
 // Run the real poll with a short unit-test deadline.
 vi.mock('@playwright/test', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@playwright/test')>()
-  return { ...actual, expect: actual.expect.configure({ timeout: 500 }) }
+  return {
+    ...actual,
+    expect: actual.expect.configure({ timeout: 500 }),
+  }
 })
 
 /** A page whose `evaluate` runs the function here, against the fake IndexedDB of the test. */
-const page = { evaluate: async (body: (arg: unknown) => unknown, arg: unknown) => body(arg) } as unknown as Page
+const page = {
+  evaluate: async (body: (arg: unknown) => unknown, arg: unknown) => body(arg),
+} as unknown as Page
 
 /** An expiry that no test reaches. */
 const NEVER = Number.MAX_SAFE_INTEGER

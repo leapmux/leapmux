@@ -40,7 +40,9 @@ export function createPlaceholderPlugin(refs: Pick<PluginRefs, 'getDisabled' | '
             return DecorationSet.create(doc, [
               Decoration.node(0, doc.content.size, {
                 'class': 'is-editor-empty',
-                'data-placeholder': refs.getDisabled() ? refs.getDisabledPlaceholder() : refs.getPlaceholder(),
+                'data-placeholder': refs.getDisabled()
+                  ? refs.getDisabledPlaceholder()
+                  : refs.getPlaceholder(),
               }),
             ])
           }
@@ -502,7 +504,9 @@ function findCodeMarkRange(
     found = true
   }
 
-  return found ? { from: rangeFrom, to: rangeTo } : null
+  return found
+    ? { from: rangeFrom, to: rangeTo }
+    : null
 }
 
 /**

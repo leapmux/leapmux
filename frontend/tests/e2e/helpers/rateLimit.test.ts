@@ -16,7 +16,11 @@ vi.mock('./ui', () => ({
   waitForAgentIdle: async () => {
     events.push('idle')
   },
-  assistantBubbles: () => ({ filter: ({ hasText }: { hasText: string }) => ({ first: () => ({ fakeBubble: hasText }) }) }),
+  assistantBubbles: () => ({
+    filter: ({ hasText }: { hasText: string }) => ({
+      first: () => ({ fakeBubble: hasText }),
+    }),
+  }),
   openAgentInfoCard: async () => {
     events.push('card')
     return { fakeCard: true }
@@ -29,10 +33,16 @@ vi.mock('@playwright/test', async (importOriginal) => {
   return {
     ...actual,
     expect: (value: unknown) => {
-      if (typeof value === 'object' && value !== null && 'fakeBubble' in value)
-        return { toBeVisible: async () => events.push('answer visible') }
-      if (typeof value === 'object' && value !== null && 'fakeCard' in value)
-        return { toContainText: async (text: string) => events.push(`card shows ${text}`) }
+      if (typeof value === 'object' && value !== null && 'fakeBubble' in value) {
+        return {
+          toBeVisible: async () => events.push('answer visible'),
+        }
+      }
+      if (typeof value === 'object' && value !== null && 'fakeCard' in value) {
+        return {
+          toContainText: async (text: string) => events.push(`card shows ${text}`),
+        }
+      }
       return expect(value)
     },
   }
@@ -40,7 +50,10 @@ vi.mock('@playwright/test', async (importOriginal) => {
 
 beforeEach(() => {
   events.length = 0
-  vi.useFakeTimers({ now: new Date('2026-10-06T00:00:00Z'), toFake: ['Date'] })
+  vi.useFakeTimers({
+    now: new Date('2026-10-06T00:00:00Z'),
+    toFake: ['Date'],
+  })
 })
 
 afterEach(() => vi.useRealTimers())
@@ -60,7 +73,10 @@ function fakeScript(): { script: ModelScript, queued: MockModelStep[] } {
     },
     requestAt: async (stepIndex: number) => {
       events.push(`request ${stepIndex}`)
-      return { stepIndex, response: { status: 200, headers: {} } } as unknown as MockModelRequestRecord
+      return {
+        stepIndex,
+        response: { status: 200, headers: {} },
+      } as unknown as MockModelRequestRecord
     },
   } as unknown as ModelScript
   return { script, queued }
@@ -91,7 +107,11 @@ describe('exerciseRateLimitWindow', () => {
   function context(script: ModelScript, reload = vi.fn(async () => {
     events.push('reload')
   })) {
-    return { page: { reload } as unknown as Page, modelScript: script, provider: AgentProvider.CODEX }
+    return {
+      page: { reload } as unknown as Page,
+      modelScript: script,
+      provider: AgentProvider.CODEX,
+    }
   }
 
   it('queues the window, waits for its own step and the idle turn, and reads the card', async () => {
@@ -117,12 +137,28 @@ describe('exerciseRateLimitWindow', () => {
   it('reads the card again after a reload', async () => {
     const { script } = fakeScript()
     await exerciseRateLimitWindow(context(script), rateLimits, { reload: true })
-    expect(events.slice(-4)).toEqual(['reload', 'card', 'card shows 5-Hour Rate Limit', 'card shows 92% used'])
+    expect(events.slice(-4)).toEqual([
+      'reload',
+      'card',
+      'card shows 5-Hour Rate Limit',
+      'card shows 92% used',
+    ])
   })
 
   it('answers through the native text step of the provider', async () => {
     const { script, queued } = fakeScript()
-    await exerciseRateLimitWindow({ ...context(script), textStep: text => ({ toolCalls: [{ id: 'answer', name: 'answer', arguments: { text } }] }) }, rateLimits)
+    await exerciseRateLimitWindow({
+      ...context(script),
+      textStep: text => ({
+        toolCalls: [
+          {
+            id: 'answer',
+            name: 'answer',
+            arguments: { text },
+          },
+        ],
+      }),
+    }, rateLimits)
     expect(queued[0]?.text).toBeUndefined()
     expect(queued[0]?.toolCalls?.[0]?.name).toBe('answer')
     expect(queued[0]?.rateLimits).toEqual(rateLimits)

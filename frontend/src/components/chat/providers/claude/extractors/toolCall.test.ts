@@ -17,7 +17,12 @@ import { CLAUDE_TOOL_REQUEST_OVERRIDES } from './toolRequests'
 const REASON = 'File does not exist.'
 
 /** The span sides an isolated extraction resolves to nothing. */
-const NO_SIDES: ToolSpanContext = { request: undefined, result: undefined, role: 'other', visibleRows: { request: false, result: false } }
+const NO_SIDES: ToolSpanContext = {
+  request: undefined,
+  result: undefined,
+  role: 'other',
+  visibleRows: { request: false, result: false },
+}
 
 /** One Claude REQUEST row: the tool's name and the arguments it sent. */
 function requestRow(toolName: string, input: Record<string, unknown> = {}): ClaudeToolRow {
@@ -51,7 +56,11 @@ function resultRow(toolName: string, overrides: Partial<ClaudeToolRow> = {}): Cl
 }
 
 function factsOf(toolName: string, input: Record<string, unknown> = {}, result?: ClaudeToolRow): ClaudeCallFacts {
-  return { args: requestRow(toolName, input), result, context: {} }
+  return {
+    args: requestRow(toolName, input),
+    result,
+    context: {},
+  }
 }
 
 /**
@@ -128,13 +137,19 @@ describe('claudeSpec', () => {
   it('routes an MCP wire name to the mcp kind', () => {
     const payload = claudeSpec(requestRow('mcp__docs__lookup', { query: 'renderer' }), undefined, {})
     expect(payload.kind).toBe('mcp')
-    expect(payload.kind === 'mcp' && payload.request).toStrictEqual({ server: 'docs', tool: 'lookup', args: { query: 'renderer' } })
+    expect(payload.kind === 'mcp' && payload.request).toStrictEqual({
+      server: 'docs',
+      tool: 'lookup',
+      args: { query: 'renderer' },
+    })
   })
 
   it('takes the unspecified kind for a tool no vocabulary lists', () => {
     const payload = claudeSpec(requestRow('ToolNobodyNames', { anything: 1 }), undefined, {})
     expect(payload.kind).toBe('unspecified')
-    expect(payload.kind === 'unspecified' && payload.request).toStrictEqual({ args: { anything: 1 } })
+    expect(payload.kind === 'unspecified' && payload.request).toStrictEqual({
+      args: { anything: 1 },
+    })
   })
 
   // The todo family splits on the tool NAME under one kind: `TodoWrite` states a list,
@@ -143,7 +158,11 @@ describe('claudeSpec', () => {
     const payload = claudeSpec(
       requestRow(CLAUDE_TOOL_NAMES.TASK_CREATE, { subject: 'Write the parser' }),
       undefined,
-      { pairedResult: { task: { task_id: 'task-7', subject: 'Write the parser' } } },
+      {
+        pairedResult: {
+          task: { task_id: 'task-7', subject: 'Write the parser' },
+        },
+      },
     )
     expect(payload.kind).toBe('todo')
     expect(payload.title).toBe('Task created')
@@ -180,7 +199,11 @@ describe('a ToolSearch call', () => {
   it('leaves the matched tool names unread rather than drawing them as files', () => {
     const answered = resultRow(CLAUDE_TOOL_NAMES.TOOL_SEARCH, {
       resultContent: 'Read\nGlob',
-      toolUseResult: { tool_name: CLAUDE_TOOL_NAMES.TOOL_SEARCH, matches: ['Read', 'Glob'], total_deferred_tools: 19 },
+      toolUseResult: {
+        tool_name: CLAUDE_TOOL_NAMES.TOOL_SEARCH,
+        matches: ['Read', 'Glob'],
+        total_deferred_tools: 19,
+      },
     })
     const payload = claudeSpec(requestRow(CLAUDE_TOOL_NAMES.TOOL_SEARCH, { query: 'select:Read,Glob' }), answered, {})
     expect(payload.kind).toBe('search')
@@ -202,13 +225,22 @@ describe('a ToolSearch call', () => {
       type: 'user',
       message: {
         role: 'user',
-        content: [{
-          type: 'tool_result',
-          tool_use_id: 'tu_1',
-          content: [{ type: 'tool_reference', tool_name: 'Read' }, { type: 'tool_reference', tool_name: 'Glob' }],
-        }],
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'tu_1',
+            content: [
+              { type: 'tool_reference', tool_name: 'Read' },
+              { type: 'tool_reference', tool_name: 'Glob' },
+            ],
+          },
+        ],
       },
-      tool_use_result: { tool_name: CLAUDE_TOOL_NAMES.TOOL_SEARCH, matches: ['Read', 'Glob'], total_deferred_tools: 19 },
+      tool_use_result: {
+        tool_name: CLAUDE_TOOL_NAMES.TOOL_SEARCH,
+        matches: ['Read', 'Glob'],
+        total_deferred_tools: 19,
+      },
     }
     const answered = claudeToolRow(input(frame), CLAUDE_TOOL_NAMES.TOOL_SEARCH, NO_SIDES)
     expect(answered?.resultContent).toBe('')
@@ -243,12 +275,21 @@ describe('a Claude file change', () => {
   })
 
   it('states the landed diff of an answered edit', () => {
-    const answered = resultRow(CLAUDE_TOOL_NAMES.EDIT, { toolUseResult: { filePath: '/project/a.ts', oldString: 'before', newString: 'after' } })
+    const answered = resultRow(CLAUDE_TOOL_NAMES.EDIT, {
+      toolUseResult: { filePath: '/project/a.ts', oldString: 'before', newString: 'after' },
+    })
     const payload = claudeSpec(requestRow(CLAUDE_TOOL_NAMES.EDIT, { file_path: '/project/a.ts', old_string: 'before', new_string: 'after' }), answered, {})
     expect(payload.kind === 'edit' && payload.result).toStrictEqual({
       // A record that states no original file OMITS the key rather than stating
       // it undefined.
-      changes: [{ filePath: '/project/a.ts', structuredPatch: null, oldStr: 'before', newStr: 'after' }],
+      changes: [
+        {
+          filePath: '/project/a.ts',
+          structuredPatch: null,
+          oldStr: 'before',
+          newStr: 'after',
+        },
+      ],
     })
   })
 
@@ -272,10 +313,21 @@ describe('a Claude file change', () => {
  */
 describe('a generic Claude call', () => {
   it('states the words and the pictures in one content list', () => {
-    const answered = resultRow('ToolNobodyNames', { resultContent: 'rendered', images: [{ data: 'AAAA', mimeType: 'image/png' }] })
+    const answered = resultRow('ToolNobodyNames', {
+      resultContent: 'rendered',
+      images: [
+        { data: 'AAAA', mimeType: 'image/png' },
+      ],
+    })
     const payload = claudeSpec(requestRow('ToolNobodyNames'), answered, {})
     expect(payload.result).toStrictEqual({
-      content: [{ type: 'text', text: 'rendered' }, { type: 'image', source: { data: 'AAAA', mimeType: 'image/png' } }],
+      content: [
+        { type: 'text', text: 'rendered' },
+        {
+          type: 'image',
+          source: { data: 'AAAA', mimeType: 'image/png' },
+        },
+      ],
     })
     expect(payload.statusOverride).toBeUndefined()
   })
@@ -283,11 +335,23 @@ describe('a generic Claude call', () => {
   // A `ToolFailureResult` holds text alone, so a failed call that returned PICTURES keeps
   // them in the content and states its outcome word in `statusOverride` instead.
   it('keeps the pictures a failed call returned and states the outcome beside them', () => {
-    const answered = resultRow('ToolNobodyNames', { resultContent: REASON, isError: true, images: [{ data: 'AAAA', mimeType: 'image/png' }] })
+    const answered = resultRow('ToolNobodyNames', {
+      resultContent: REASON,
+      isError: true,
+      images: [
+        { data: 'AAAA', mimeType: 'image/png' },
+      ],
+    })
     const payload = claudeSpec(requestRow('ToolNobodyNames'), answered, {})
     expect(payload.statusOverride).toBe('failed')
     expect(payload.result).toStrictEqual({
-      content: [{ type: 'text', text: REASON }, { type: 'image', source: { data: 'AAAA', mimeType: 'image/png' } }],
+      content: [
+        { type: 'text', text: REASON },
+        {
+          type: 'image',
+          source: { data: 'AAAA', mimeType: 'image/png' },
+        },
+      ],
     })
   })
 

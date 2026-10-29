@@ -10,7 +10,15 @@ export const searchRenderer: ToolKindRenderer<'search'> = {
     return renderSearchTitle(call.request.pattern, call.request.paths[0], context?.workingDir, context?.homeDir) ?? call.title ?? 'Search'
   },
   result(call, view) {
-    return <SearchResultBody source={call.result} kind="search" {...(view.context !== undefined ? { context: view.context } : {})} />
+    return (
+      <SearchResultBody
+        source={call.result}
+        kind="search"
+        {...(view.context !== undefined
+          ? { context: view.context }
+          : {})}
+      />
+    )
   },
   resultMeta(call) {
     return {

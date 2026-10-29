@@ -22,7 +22,9 @@ mimoTest.describe('MiMo Code session goal', () => {
     await modelScript.rule({
       name: 'the judge finds the condition met',
       when: { system: JUDGE_SYSTEM },
-      respond: { text: verdict(true, 'The transcript says GOAL_DONE.') },
+      respond: {
+        text: verdict(true, 'The transcript says GOAL_DONE.'),
+      },
     })
     await modelScript.queue({ text: 'GOAL_DONE' })
     const objective = scriptedObjective(modelScript, 'Reply with the word GOAL_DONE.')
@@ -48,13 +50,17 @@ mimoTest.describe('MiMo Code session goal', () => {
       {
         name: 'the judge first finds the condition unmet',
         when: { system: JUDGE_SYSTEM },
-        respond: { text: verdict(false, 'The word SECOND_PASS is missing.') },
+        respond: {
+          text: verdict(false, 'The word SECOND_PASS is missing.'),
+        },
         once: true,
       },
       {
         name: 'the judge then finds the condition met',
         when: { system: JUDGE_SYSTEM },
-        respond: { text: verdict(true, 'The transcript says SECOND_PASS.') },
+        respond: {
+          text: verdict(true, 'The transcript says SECOND_PASS.'),
+        },
       },
     )
     await modelScript.queue({ text: 'FIRST_PASS' }, { text: 'SECOND_PASS' })

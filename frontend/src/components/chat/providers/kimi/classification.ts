@@ -57,9 +57,14 @@ export function classifyKimiMessage(input: ClassificationInput): MessageCategory
       // The plan an `ExitPlanMode` call proposes is drawn as the plan itself. The
       // retained copy of that start is the call's closing row, which is hidden for the
       // same reason the result of a plan call is: the plan row already states the plan.
-      if (kimiPlanText(parent) !== null)
-        return retained ? { kind: 'hidden' } : { kind: 'assistant_plan' }
-      return retained ? { kind: 'tool_result' } : { kind: 'tool_use' }
+      if (kimiPlanText(parent) !== null) {
+        return retained
+          ? { kind: 'hidden' }
+          : { kind: 'assistant_plan' }
+      }
+      return retained
+        ? { kind: 'tool_result' }
+        : { kind: 'tool_use' }
     }
     case KIMI_EVENT.ToolResult:
       // The plan row and the answer row already state the plan and the decision, and

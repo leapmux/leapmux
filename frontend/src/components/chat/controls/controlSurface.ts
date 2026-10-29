@@ -66,8 +66,12 @@ export function controlSurface(
   // under exactOptionalPropertyTypes, and every extractor treats them the same.
   const extracted = plugin?.controls?.extractControl?.({
     payload: request.payload,
-    ...(source === undefined ? {} : { source }),
-    ...(toolRequest === undefined ? {} : { request: toolRequest }),
+    ...(source === undefined
+      ? {}
+      : { source }),
+    ...(toolRequest === undefined
+      ? {}
+      : { request: toolRequest }),
   })
   if (extracted)
     return extracted
@@ -82,7 +86,10 @@ export function controlSurface(
   // -- the two halves of one banner read two different parts of the payload, and the
   // half the reader saw was not the half the agent received. `ControlJson` hides an
   // empty value, so the banner now draws the decision alone.
-  return { kind: 'permission', permission: { options: [] } }
+  return {
+    kind: 'permission',
+    permission: { options: [] },
+  }
 }
 
 /** The classification of ONE live control request, as reactive accessors. */

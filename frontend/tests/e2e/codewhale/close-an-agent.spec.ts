@@ -19,11 +19,17 @@ codewhaleTest('closes the UI tab and waits for owned process exit and Worker clo
       const owned = rows.filter(row => ownership.ownedPids.includes(row.pid))
       const runtime = owned.find((row) => {
         const command = row.rawCommand ?? row.command
-        const quote = command[0] === '"' || command[0] === '\'' ? command[0] : undefined
-        const end = quote ? command.indexOf(quote, 1) : command.search(/\s/)
+        const quote = command[0] === '"' || command[0] === '\''
+          ? command[0]
+          : undefined
+        const end = quote
+          ? command.indexOf(quote, 1)
+          : command.search(/\s/)
         if (quote && end < 0)
           return false
-        const executable = row.executable ?? command.slice(quote ? 1 : 0, end < 0 ? undefined : end)
+        const executable = row.executable ?? command.slice(quote ? 1 : 0, end < 0
+          ? undefined
+          : end)
         const executableName = basename(executable.replaceAll('\\', '/')).toLowerCase()
         const words = command.split(/\s+/).map(word => word.replaceAll('"', '').replaceAll('\'', ''))
         return ['codewhale', 'codewhale.exe'].includes(executableName)

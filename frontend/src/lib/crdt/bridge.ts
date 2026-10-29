@@ -118,7 +118,9 @@ export function getCRDTBridge(): CRDTBridge | null {
  */
 export function withBridge<T>(fn: (bridge: CRDTBridge) => T, fallback: T): T {
   const bridge = getCRDTBridge()
-  return bridge ? fn(bridge) : fallback
+  return bridge
+    ? fn(bridge)
+    : fallback
 }
 
 /**
@@ -136,7 +138,10 @@ export function withBridge<T>(fn: (bridge: CRDTBridge) => T, fallback: T): T {
  * an unreachable state is an untested branch pretending to be safety.
  */
 export function ctxFromBridge(bridge: CRDTBridge): OpBuilderCtx {
-  return { originClientId: bridge.originClientId(), clock: bridge.clock() }
+  return {
+    originClientId: bridge.originClientId(),
+    clock: bridge.clock(),
+  }
 }
 
 /**

@@ -80,7 +80,10 @@ export const container = style({
   'flexDirection': 'column',
   'height': '100%',
   'overflow': 'hidden',
-  'vars': { ...chatGutterVars, ...chatRailVars },
+  'vars': {
+    ...chatGutterVars,
+    ...chatRailVars,
+  },
   '@media': {
     /**
      * Phone gutters. The rail floats over the right edge, so 16px reserved there is pure
@@ -241,14 +244,20 @@ const loadingIndicatorBase = style({
 })
 
 /** "Loading older messages..." overlay, pinned top-center while scrolled up against the loaded top edge. */
-export const loadingOlderIndicator = style([loadingIndicatorBase, { top: 'var(--space-3)' }])
+export const loadingOlderIndicator = style([
+  loadingIndicatorBase,
+  { top: 'var(--space-3)' },
+])
 
 /**
  * "Loading newer messages..." overlay, pinned bottom-center. It takes the scroll-to-bottom
  * button's exact slot (same bottom-center anchor); ChatView hides that button while this is
  * shown (scroll.stalledNewer()) so the two never overlap.
  */
-export const loadingNewerIndicator = style([loadingIndicatorBase, { bottom: 'var(--space-3)' }])
+export const loadingNewerIndicator = style([
+  loadingIndicatorBase,
+  { bottom: 'var(--space-3)' },
+])
 
 export const inputArea = style({
   // ONE declaration owns every vertical gap in this column: the pause banner,
@@ -348,21 +357,26 @@ export const emptyChat = style({
   color: 'var(--faint-foreground)',
 })
 
-export const infoTrigger = style([chipBase, {
-  justifyContent: 'center',
-  gap: 'var(--space-1)',
-  padding: '2px',
-  fontSize: 'var(--text-8)',
-  vars: {
-    '--context-grid-inactive': 'var(--border)',
-    '--context-grid-warning': 'var(--warning)',
-  },
-  selectors: {
+export const infoTrigger = style([
+  chipBase,
+  {
+    justifyContent: 'center',
+    gap: 'var(--space-1)',
+    padding: '2px',
+    fontSize: 'var(--text-8)',
+    vars: {
+      '--context-grid-inactive': 'var(--border)',
+      '--context-grid-warning': 'var(--warning)',
+    },
+    selectors: {
     // Restated because chipBase's own hover rule replaces the declaration
     // block; the grid vars must survive the hover state.
-    '&:hover': { vars: { '--context-grid-inactive': 'var(--border)', '--context-grid-warning': 'var(--warning)' } } as Record<string, unknown>,
+      '&:hover': {
+        vars: { '--context-grid-inactive': 'var(--border)', '--context-grid-warning': 'var(--warning)' },
+      } as Record<string, unknown>,
+    },
   },
-}])
+])
 
 export const infoRow = style({
   display: 'flex',
@@ -406,11 +420,14 @@ export const infoValueWithIcon = style({
   minWidth: 0,
 })
 
-export const infoCopyButton = style([chipBase, {
-  justifyContent: 'center',
-  padding: '2px',
-  flexShrink: 0,
-}])
+export const infoCopyButton = style([
+  chipBase,
+  {
+    justifyContent: 'center',
+    padding: '2px',
+    flexShrink: 0,
+  },
+])
 
 export const infoRows = style({
   display: 'flex',

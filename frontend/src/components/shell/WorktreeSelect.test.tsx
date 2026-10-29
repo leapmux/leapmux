@@ -46,7 +46,9 @@ describe('WorktreeSelect', () => {
 
   it('abbreviates the path against the home directory it is given', () => {
     renderWorktreeSelect({
-      worktrees: [{ path: '/home/u/wt/x', branch: 'x' }],
+      worktrees: [
+        { path: '/home/u/wt/x', branch: 'x' },
+      ],
       homeDir: '/elsewhere',
     })
     // No `~/` when the path sits outside the home directory.
@@ -56,13 +58,21 @@ describe('WorktreeSelect', () => {
   it('shows the prompt while nothing is chosen', () => {
     // The `<option value="">Select a worktree...</option>` this replaced. A
     // menu has no empty option, so the prompt lives on the trigger.
-    renderWorktreeSelect({ worktrees: [{ path: '/a', branch: 'a' }], value: '' })
+    renderWorktreeSelect({
+      worktrees: [
+        { path: '/a', branch: 'a' },
+      ],
+      value: '',
+    })
     expect(menuTriggerText(MENU)).toContain('Select a worktree...')
   })
 
   it('fires onChange with the picked path', () => {
     const { onChange } = renderWorktreeSelect({
-      worktrees: [{ path: '/a', branch: 'a' }, { path: '/b', branch: 'b' }],
+      worktrees: [
+        { path: '/a', branch: 'a' },
+        { path: '/b', branch: 'b' },
+      ],
       value: '/a',
     })
     pickMenuValue(MENU, '/b')

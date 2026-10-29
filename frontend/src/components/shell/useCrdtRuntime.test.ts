@@ -29,7 +29,10 @@ import { useCrdtRuntime } from './useCrdtRuntime'
 // other export, adoptCheckpoint included, stays the real implementation.
 vi.mock('~/lib/crdt/checkpointStore', async (importOriginal) => {
   const actual = await importOriginal<typeof import('~/lib/crdt/checkpointStore')>()
-  return { ...actual, adoptCheckpoint: vi.fn(actual.adoptCheckpoint) }
+  return {
+    ...actual,
+    adoptCheckpoint: vi.fn(actual.adoptCheckpoint),
+  }
 })
 
 const opLog = createOpLogAppender()
@@ -51,7 +54,12 @@ vi.mock('./useUserEvents', () => ({
   }) => {
     userEventsSpy.ready = opts.ready ?? (() => true)
     userEventsSpy.onFatalClose = opts.onFatalClose ?? null
-    return { bootstrapped: () => false, clock: () => null, reconnect: () => {}, relayId: () => 0 }
+    return {
+      bootstrapped: () => false,
+      clock: () => null,
+      reconnect: () => {},
+      relayId: () => 0,
+    }
   },
   nextUserEventsRelayId: () => 1,
 }))
@@ -203,7 +211,9 @@ const WM = { physical: 10n, logical: 0n, clientId: 'c' }
 function seededState(userId: string) {
   return create(UserCrdtStateSchema, {
     userId,
-    workspaces: { 'ws-1': { workspaceId: 'ws-1' } },
+    workspaces: {
+      'ws-1': { workspaceId: 'ws-1' },
+    },
     maxHlc: WM,
     currentEpoch: 1n,
   })
@@ -218,14 +228,26 @@ function nodeFrameBytes(batchId: string, nodeId: string): Uint8Array {
   return toBinary(WatchUserEventSchema, create(WatchUserEventSchema, {
     event: {
       case: 'batch',
-      value: { batchId, ops: [{ body: { case: 'setNodeRegister', value: { nodeId } } }] },
+      value: {
+        batchId,
+        ops: [
+          {
+            body: {
+              case: 'setNodeRegister',
+              value: { nodeId },
+            },
+          },
+        ],
+      },
     },
   } as never))
 }
 
 async function opLogFrameCount(userId: string): Promise<number> {
   const read = await readCheckpoint(userId, CLIENT)
-  return read.status === 'ok' ? read.opLogFrames.length : -1
+  return read.status === 'ok'
+    ? read.opLogFrames.length
+    : -1
 }
 
 describe('useCrdtRuntime hydration gate', () => {
@@ -616,10 +638,14 @@ describe('useCrdtRuntime post-hydration compaction', () => {
 
   it('rewrites immediately when the replay was TRUNCATED', async () => {
     await seedCheckpoint('user-e')
-    await opLog.append('user-e', CLIENT, [nodeFrameBytes('good', 'n1')])
+    await opLog.append('user-e', CLIENT, [
+      nodeFrameBytes('good', 'n1'),
+    ])
     // A frame that cannot decode: hydration replays the prefix and reports
     // truncated, leaving the poison frame on disk.
-    await opLog.append('user-e', CLIENT, [new Uint8Array([0xFF, 0xFE, 0xFD])])
+    await opLog.append('user-e', CLIENT, [
+      new Uint8Array([0xFF, 0xFE, 0xFD]),
+    ])
     expect(await opLogFrameCount('user-e')).toBe(2)
 
     const { dispose } = mountRuntime(() => 'user-e')
@@ -652,7 +678,9 @@ describe('useCrdtRuntime post-hydration compaction', () => {
     // The counterweight: a routine delta-resumed reload must not pay a
     // checkpoint write it does not need.
     await seedCheckpoint('user-g')
-    await opLog.append('user-g', CLIENT, [nodeFrameBytes('b1', 'n1')])
+    await opLog.append('user-g', CLIENT, [
+      nodeFrameBytes('b1', 'n1'),
+    ])
 
     const { dispose } = mountRuntime(() => 'user-g')
     await settleUntil(() => userEventsSpy.ready!())

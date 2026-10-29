@@ -12,7 +12,11 @@ function messageEvent(content: Uint8Array, options: { replay?: boolean, seq?: bi
     content,
     contentCompression: options.compression ?? ContentCompression.NONE,
   })
-  return create(AgentEventSchema, { agentId: 'agent-1', replay: options.replay ?? false, event: { case: 'agentMessage', value: message } })
+  return create(AgentEventSchema, {
+    agentId: 'agent-1',
+    replay: options.replay ?? false,
+    event: { case: 'agentMessage', value: message },
+  })
 }
 
 function infoEvent(info: Record<string, unknown>, options: { replay?: boolean, seq?: bigint } = {}) {
@@ -21,24 +25,36 @@ function infoEvent(info: Record<string, unknown>, options: { replay?: boolean, s
 
 describe('contextUsageReading', () => {
   it('reads the usage map of a live session-info update, including an empty one', () => {
-    expect(contextUsageReading(infoEvent({ [SESSION_INFO_KEY.ContextUsage]: { usage_percent: 25 } }))).toEqual({ usage_percent: 25 })
+    expect(contextUsageReading(infoEvent({
+      [SESSION_INFO_KEY.ContextUsage]: { usage_percent: 25 },
+    }))).toEqual({ usage_percent: 25 })
     expect(contextUsageReading(infoEvent({ [SESSION_INFO_KEY.ContextUsage]: {} }))).toEqual({})
   })
 
   it('skips an update without usage, a replayed update, and a stored message', () => {
     expect(contextUsageReading(infoEvent({}))).toBeUndefined()
-    expect(contextUsageReading(infoEvent({ [SESSION_INFO_KEY.ContextUsage]: { usage_percent: 25 } }, { replay: true }))).toBeUndefined()
-    expect(contextUsageReading(infoEvent({ [SESSION_INFO_KEY.ContextUsage]: { usage_percent: 25 } }, { seq: 7n }))).toBeUndefined()
+    expect(contextUsageReading(infoEvent({
+      [SESSION_INFO_KEY.ContextUsage]: { usage_percent: 25 },
+    }, { replay: true }))).toBeUndefined()
+    expect(contextUsageReading(infoEvent({
+      [SESSION_INFO_KEY.ContextUsage]: { usage_percent: 25 },
+    }, { seq: 7n }))).toBeUndefined()
   })
 
   it('skips empty content, content that is not JSON, and a notification of another type', () => {
     expect(contextUsageReading(messageEvent(new Uint8Array()))).toBeUndefined()
     expect(contextUsageReading(messageEvent(new TextEncoder().encode('{not json')))).toBeUndefined()
-    expect(contextUsageReading(messageEvent(new TextEncoder().encode(JSON.stringify({ type: 'other', info: { [SESSION_INFO_KEY.ContextUsage]: {} } }))))).toBeUndefined()
+    expect(contextUsageReading(messageEvent(new TextEncoder().encode(JSON.stringify({
+      type: 'other',
+      info: { [SESSION_INFO_KEY.ContextUsage]: {} },
+    }))))).toBeUndefined()
   })
 
   it('skips an event that is not a chat message', () => {
-    expect(contextUsageReading(create(AgentEventSchema, { agentId: 'agent-1', event: { case: 'inputQueueChanged', value: {} } }))).toBeUndefined()
+    expect(contextUsageReading(create(AgentEventSchema, {
+      agentId: 'agent-1',
+      event: { case: 'inputQueueChanged', value: {} },
+    }))).toBeUndefined()
   })
 
   it('fails on invalid compressed content, and keeps the decoder error as the cause', () => {

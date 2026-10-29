@@ -10,8 +10,12 @@ import { fileChangeRenderer } from './fileChanges'
 export function renderWriteTitle(path: string | undefined, content: string | undefined, cwd?: string, homeDir?: string): JSX.Element | null {
   if (!path)
     return null
-  const lineCount = content ? countLines(content) : 0
-  const lineStr = lineCount > 0 ? ` (${pluralize(lineCount, 'line')})` : ''
+  const lineCount = content
+    ? countLines(content)
+    : 0
+  const lineStr = lineCount > 0
+    ? ` (${pluralize(lineCount, 'line')})`
+    : ''
   return (
     <>
       <span class={toolInputPath}>{relativizePath(path, cwd, homeDir)}</span>

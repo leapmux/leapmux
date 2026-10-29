@@ -16,11 +16,17 @@ test.describe('Agent Settings', () => {
     const autoOffered = await permissionModeOffered(page, CLAUDE_MODE.Auto)
     if (autoOffered)
       await expectSettingsChip(page, 'Auto Mode')
-    await expectPermissionShortcuts(page, { smart: autoOffered ? 'disabled' : 'absent', bypass: 'offered' })
+    await expectPermissionShortcuts(page, {
+      smart: autoOffered ? 'disabled' : 'absent',
+      bypass: 'offered',
+    })
 
     await applyPermissionPreset(page, 'bypass')
     await expectSettingsChip(page, 'Bypass Permissions')
-    await expectPermissionShortcuts(page, { smart: autoOffered ? 'offered' : 'absent', bypass: 'disabled' })
+    await expectPermissionShortcuts(page, {
+      smart: autoOffered ? 'offered' : 'absent',
+      bypass: 'disabled',
+    })
 
     if (autoOffered) {
       await applyPermissionPreset(page, 'smart')

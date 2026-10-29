@@ -39,7 +39,13 @@ function hasA11yProp(props: object): boolean {
  * still wins.
  */
 export function SvgIconFrame(props: LucideProps & { children: JSX.Element }) {
-  const [local, rest] = splitProps(props, ['size', 'color', 'strokeWidth', 'class', 'children'])
+  const [local, rest] = splitProps(props, [
+    'size',
+    'color',
+    'strokeWidth',
+    'class',
+    'children',
+  ])
   const size = () => local.size ?? 24
   return (
     <svg
@@ -53,7 +59,9 @@ export function SvgIconFrame(props: LucideProps & { children: JSX.Element }) {
       stroke-linecap="round"
       stroke-linejoin="round"
       class={local.class}
-      aria-hidden={hasA11yProp(rest) ? undefined : 'true'}
+      aria-hidden={hasA11yProp(rest)
+        ? undefined
+        : 'true'}
       {...rest}
     >
       {local.children}

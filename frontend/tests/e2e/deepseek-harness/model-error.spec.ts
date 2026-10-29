@@ -7,5 +7,10 @@ deepseekHarnessTest('shows the native model failure and accepts a later valid tu
 })
 
 deepseekHarnessTest('folds native retries and resolves the retry row', async ({ native }) => {
-  await exerciseModelRetry(native, { errors: [{ status: 503, message: 'Service unavailable' }, { status: 503, message: 'Service unavailable' }] })
+  await exerciseModelRetry(native, {
+    errors: [
+      { status: 503, message: 'Service unavailable' },
+      { status: 503, message: 'Service unavailable' },
+    ],
+  })
 })

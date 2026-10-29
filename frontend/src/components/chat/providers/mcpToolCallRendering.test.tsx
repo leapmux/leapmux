@@ -32,7 +32,14 @@ function makeMcpToolResult(content: unknown, isError = false) {
     type: 'user',
     message: {
       role: 'user',
-      content: [{ type: 'tool_result', tool_use_id: 'r1', content, is_error: isError }],
+      content: [
+        {
+          type: 'tool_result',
+          tool_use_id: 'r1',
+          content,
+          is_error: isError,
+        },
+      ],
     },
   }
 }
@@ -50,7 +57,10 @@ function renderCodexItem(item: Record<string, unknown>, context?: MessageContent
 describe('claude MCP tool_result rendering', () => {
   it('preserves resources returned with a failed MCP call', () => {
     const { container } = renderClaudeToolResult(makeMcpToolResult([
-      { type: 'resource', resource: { uri: 'probe://failure-details', text: 'Resource failure details' } },
+      {
+        type: 'resource',
+        resource: { uri: 'probe://failure-details', text: 'Resource failure details' },
+      },
     ], true), { spanType: 'mcp__docs__read' })
     expect(container.textContent).toContain('Resource failure details')
   })
@@ -105,11 +115,15 @@ describe('claude MCP tool_result rendering', () => {
       { type: 'image', mimeType: 'image/png', data: 'iVBORw0KGgo=' },
     ])
     // `premeasurePass` is set, so the assembled actions are never undefined.
-    const images = imageActionsFrom({ premeasurePass: () => true })
+    const images = imageActionsFrom({
+      premeasurePass: () => true,
+    })
     const { container } = renderClaudeToolResult(parsed, {
       spanType: 'mcp__playwright__screenshot',
       premeasureMode: true,
-      ...(images ? { images } : {}),
+      ...(images
+        ? { images }
+        : {}),
     })
     const img = container.querySelector('img')
     expect(img).not.toBeNull()
@@ -123,7 +137,11 @@ describe('claude MCP tool_result rendering', () => {
   // results/imageResult.test.ts (imageReservationStyle).
   it('reserves the intrinsic box for images with a sniffable header', () => {
     const parsed = makeMcpToolResult([
-      { type: 'image', mimeType: 'image/png', data: pngBase64(640, 480) },
+      {
+        type: 'image',
+        mimeType: 'image/png',
+        data: pngBase64(640, 480),
+      },
     ])
     const { container } = renderClaudeToolResult(parsed, {
       spanType: 'mcp__playwright__screenshot',
@@ -146,7 +164,11 @@ describe('claude MCP tool_result rendering', () => {
 
   it('drops the reservation when the decoded image disagrees with the sniffed ratio', () => {
     const parsed = makeMcpToolResult([
-      { type: 'image', mimeType: 'image/png', data: pngBase64(640, 480) },
+      {
+        type: 'image',
+        mimeType: 'image/png',
+        data: pngBase64(640, 480),
+      },
     ])
     const { container } = renderClaudeToolResult(parsed, {
       spanType: 'mcp__playwright__screenshot',
@@ -163,7 +185,11 @@ describe('claude MCP tool_result rendering', () => {
 
   it('keeps the reservation when the decoded image matches (within rounding slack)', () => {
     const parsed = makeMcpToolResult([
-      { type: 'image', mimeType: 'image/png', data: pngBase64(640, 480) },
+      {
+        type: 'image',
+        mimeType: 'image/png',
+        data: pngBase64(640, 480),
+      },
     ])
     const { container } = renderClaudeToolResult(parsed, {
       spanType: 'mcp__playwright__screenshot',
@@ -232,7 +258,11 @@ describe('codex mcpToolCall rendering', () => {
       server: 'docs',
       tool: 'read',
       status: 'completed',
-      result: { content: [{ type: 'text', text: 'first\nsecond\nthird\nfourth\nfifth' }] },
+      result: {
+        content: [
+          { type: 'text', text: 'first\nsecond\nthird\nfourth\nfifth' },
+        ],
+      },
     }, {
       getMessageUiState: () => expanded(),
       setMessageUiState: (_key, value) => setExpanded(value),
@@ -323,7 +353,9 @@ describe('codex dynamicToolCall rendering', () => {
       namespace: '',
       tool: 'screenshot',
       status: 'completed',
-      contentItems: [{ type: 'inputImage', imageUrl: 'https://example.com/x.png' }],
+      contentItems: [
+        { type: 'inputImage', imageUrl: 'https://example.com/x.png' },
+      ],
     })
     expect(container.querySelector('img')).toBeNull()
     const link = container.querySelector('a')
@@ -337,7 +369,9 @@ describe('codex dynamicToolCall rendering', () => {
       namespace: '',
       tool: 'screenshot',
       status: 'completed',
-      contentItems: [{ type: 'inputImage', imageUrl: 'data:image/png;base64,iVBORw0KGgo=' }],
+      contentItems: [
+        { type: 'inputImage', imageUrl: 'data:image/png;base64,iVBORw0KGgo=' },
+      ],
     })
     const img = container.querySelector('img')
     expect(img).not.toBeNull()

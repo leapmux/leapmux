@@ -57,35 +57,40 @@ async function exercisePermissionShortcut(context: ManagedNativeScenarioContext,
       await waitForNativeSettingsHydrated(context.page)
     }
     await options.settingsProof?.(await currentNativeAgent(context))
-    await expectNoNativeControl(context, { testId: 'control-banner', relatedProof: async () => {
+    await expectNoNativeControl(context, {
+      testId: 'control-banner',
+      relatedProof: async () => {
       // One agent session runs both passes. Each pass uses a distinct tool call ID and assistant answer.
       // The default command produces a distinct output marker also.
       // Each pass recreates the target, so the first removal cannot satisfy the second check.
-      const pass = Number(reload) + 1
-      const id = `native-${preset}-${Number(reload)}`
-      const output = `${outputPrefix}-${pass}-42`
-      const answer = `The native ${preset} command completed in pass ${pass}.`
-      const proof = options.commandProof?.(target, pass) ?? {
-        command: `rm -rf ${quotePosixShellArgument(target)}; ${printfMarkerCommand(`${outputPrefix}-${pass}-`, 42)}`,
-        resultProof: async (outcome: NativeToolOutcome) => {
-          expect(outcome.text).toContain(output)
-          // The command computes the output, so only execution can produce the complete marker.
-          await expect(messageBubbles(context.page).filter({ hasText: output }).first()).toBeVisible()
-        },
-      }
-      const steps = toolTurnSteps(
-        [bashToolCall(context.provider, id, proof.command)],
-        nativeTextStep(context, answer),
-        options.answerStep,
-      )
-      const start = await context.modelScript.queue(...steps)
-      await sendMessage(context.page, context.modelScript.prompt('Run the scripted removal under the current permission shortcut.'))
-      await context.modelScript.waitForSteps(start + steps.length)
-      await waitForAgentIdle(context.page)
-      expect(existsSync(target), 'The native command must remove its target.').toBe(false)
-      const request = await context.modelScript.requestAt(start + steps.length - 1)
-      await proof.resultProof(await nativeToolOutcome(context, request, id))
-      await expect(assistantBubbles(context.page).filter({ hasText: answer }).first()).toBeVisible()
-    } })
+        const pass = Number(reload) + 1
+        const id = `native-${preset}-${Number(reload)}`
+        const output = `${outputPrefix}-${pass}-42`
+        const answer = `The native ${preset} command completed in pass ${pass}.`
+        const proof = options.commandProof?.(target, pass) ?? {
+          command: `rm -rf ${quotePosixShellArgument(target)}; ${printfMarkerCommand(`${outputPrefix}-${pass}-`, 42)}`,
+          resultProof: async (outcome: NativeToolOutcome) => {
+            expect(outcome.text).toContain(output)
+            // The command computes the output, so only execution can produce the complete marker.
+            await expect(messageBubbles(context.page).filter({ hasText: output }).first()).toBeVisible()
+          },
+        }
+        const steps = toolTurnSteps(
+          [
+            bashToolCall(context.provider, id, proof.command),
+          ],
+          nativeTextStep(context, answer),
+          options.answerStep,
+        )
+        const start = await context.modelScript.queue(...steps)
+        await sendMessage(context.page, context.modelScript.prompt('Run the scripted removal under the current permission shortcut.'))
+        await context.modelScript.waitForSteps(start + steps.length)
+        await waitForAgentIdle(context.page)
+        expect(existsSync(target), 'The native command must remove its target.').toBe(false)
+        const request = await context.modelScript.requestAt(start + steps.length - 1)
+        await proof.resultProof(await nativeToolOutcome(context, request, id))
+        await expect(assistantBubbles(context.page).filter({ hasText: answer }).first()).toBeVisible()
+      },
+    })
   }
 }

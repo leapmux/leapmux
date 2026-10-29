@@ -23,7 +23,15 @@ async function askingSmartSession(context: ManagedNativeScenarioContext): Promis
   if (!workingDir)
     throw new Error('the Goose workspace has no working directory')
   await expectNativeOptionValue(context, 'permissionMode', GOOSE_MODE.SmartApprove)
-  await context.modelScript.rule({ name: `goose-permission-judge-${uniqueMarker()}`, when: { system: 'permission-safety classifier' }, respond: { toolCalls: [goosePermissionJudgmentToolCall('goose-permission-judge', [])] } })
+  await context.modelScript.rule({
+    name: `goose-permission-judge-${uniqueMarker()}`,
+    when: { system: 'permission-safety classifier' },
+    respond: {
+      toolCalls: [
+        goosePermissionJudgmentToolCall('goose-permission-judge', []),
+      ],
+    },
+  })
   return workingDir
 }
 
@@ -85,6 +93,8 @@ gooseTest('an always answer covers the same command in the next turn', async ({ 
     viewProof: () => expect(savedControlAnswer(native.page)).toHaveText('Allow always'),
     // Goose keeps the answer for the shell tool in its own configuration. Every later Goose spec of the run reads it,
     // and the Smart scenario requires a request for the same tool.
-    ruleFiles: [join(home, '.goose', 'config', 'permission.yaml')],
+    ruleFiles: [
+      join(home, '.goose', 'config', 'permission.yaml'),
+    ],
   })
 })

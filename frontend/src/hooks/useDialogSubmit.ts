@@ -93,5 +93,11 @@ export function useDialogSubmit(options: UseDialogSubmitOptions = {}) {
       await run(body)
     }
 
-  return { submitting, error, setError, run, formHandler }
+  return {
+    submitting,
+    error,
+    setError,
+    run,
+    formHandler,
+  }
 }

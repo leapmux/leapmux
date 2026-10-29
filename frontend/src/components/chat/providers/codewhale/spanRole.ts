@@ -10,7 +10,9 @@ import { codewhaleToolFrame, codewhaleToolSpanRole } from './extractors/toolComm
  */
 export function codewhaleSpanRole(parsed: ResolvedMessageContent): ToolSpanRole {
   const frame = codewhaleToolFrame(parsed.parentObject)
-  return frame ? codewhaleToolSpanRole(frame, parsed) : 'other'
+  return frame
+    ? codewhaleToolSpanRole(frame, parsed)
+    : 'other'
 }
 
 /**
@@ -26,5 +28,7 @@ export function codewhaleRelatedMessages(parsed: ResolvedMessageContent) {
   const role = codewhaleSpanRole(parsed)
   if (role === 'result')
     return ['request'] as const
-  return role === 'request' ? ['result'] as const : []
+  return role === 'request'
+    ? ['result'] as const
+    : []
 }

@@ -65,10 +65,14 @@ export class TauriRelayWebSocket {
         // by. A frame that cannot be decoded is dropped loudly instead.
         let ev: MessageEvent
         try {
-          ev = { data: base64ToArrayBuffer(payload as string) } as MessageEvent
+          ev = {
+            data: base64ToArrayBuffer(payload as string),
+          } as MessageEvent
         }
         catch (err) {
-          log.error('channel relay message payload was undecodable; dropping frame', { error: String(err) })
+          log.error('channel relay message payload was undecodable; dropping frame', {
+            error: String(err),
+          })
           return
         }
         this.invokeHandler('onmessage', this.onmessage, ev)
@@ -133,7 +137,9 @@ export class TauriRelayWebSocket {
       this.unlistenMessage = null
       this.unlistenClose = null
       this.readyState = WebSocket.CLOSED
-      const ev = new ErrorEvent('error', { message: String(err) })
+      const ev = new ErrorEvent('error', {
+        message: String(err),
+      })
       this.invokeHandler('onerror', this.onerror, ev)
       this.dispatch('error', ev)
       // A native WebSocket fires 'close' after 'error' on a failed connection, and
@@ -142,7 +148,11 @@ export class TauriRelayWebSocket {
       // for -- and to reclaim state should a future caller have channels open
       // when a relay reopen fails. This catch already runs asynchronously (a
       // promise rejection), so emitting synchronously matches handleClose.
-      this.emitClose({ code: 1006, reason: String(err), wasClean: false } as CloseEvent)
+      this.emitClose({
+        code: 1006,
+        reason: String(err),
+        wasClean: false,
+      } as CloseEvent)
     })
   }
 
@@ -185,7 +195,10 @@ export class TauriRelayWebSocket {
       (handler as (ev: Event) => void)(ev)
     }
     catch (err) {
-      log.error('channel relay handler threw', { handler: name, error: String(err) })
+      log.error('channel relay handler threw', {
+        handler: name,
+        error: String(err),
+      })
     }
   }
 
@@ -204,7 +217,10 @@ export class TauriRelayWebSocket {
         entry.handler(ev)
       }
       catch (err) {
-        log.error('channel relay listener threw', { type, error: String(err) })
+        log.error('channel relay listener threw', {
+          type,
+          error: String(err),
+        })
       }
       if (entry.once)
         this.removeEventListener(type, entry.handler)
@@ -235,7 +251,11 @@ export class TauriRelayWebSocket {
   private dispatchSend(b64: string): void {
     this.sendQueue = this.sendQueue.then(
       () => platformBridge.sendChannelMessage(b64),
-    ).catch((err) => { log.warn('channel relay send failed', { error: String(err) }) })
+    ).catch((err) => {
+      log.warn('channel relay send failed', {
+        error: String(err),
+      })
+    })
   }
 
   private flushPendingSends(): void {
@@ -297,7 +317,9 @@ export class TauriRelayWebSocket {
     // not be SILENT: until that next open, the orphaned relay holds its Hub
     // WebSocket and emits frames nobody consumes.
     platformBridge.closeChannelRelay(this.wrapperId).catch((err) => {
-      log.warn('channel relay close failed; leaving relay for successor adoption', { error: String(err) })
+      log.warn('channel relay close failed; leaving relay for successor adoption', {
+        error: String(err),
+      })
     })
   }
 

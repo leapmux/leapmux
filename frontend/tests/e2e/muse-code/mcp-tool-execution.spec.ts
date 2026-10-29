@@ -32,12 +32,23 @@ function museSettingsPath(home: string | undefined): string {
 async function withMuseEchoAgent(native: Awaited<ReturnType<typeof nativeContext>>, use: () => Promise<void>): Promise<void> {
   const settingsPath = museSettingsPath(native.leapmuxServer.agentEnv?.HOME)
   const work = newNativeWorkingDir(native, 'muse-echo-agent-')
-  const server = writeMcpEchoServer(work, { receiptLog: join(work, 'echo-receipt.json') })
+  const server = writeMcpEchoServer(work, {
+    receiptLog: join(work, 'echo-receipt.json'),
+  })
   const settings: unknown = JSON.parse(readFileSync(settingsPath, 'utf8'))
   if (typeof settings !== 'object' || settings === null || !('mcpServers' in settings))
     throw new Error('The private Muse settings hold no MCP server table.')
   const servers = (settings as { mcpServers: Record<string, unknown> }).mcpServers
-  const content = JSON.stringify({ ...(settings as object), mcpServers: { ...servers, [server.name]: { command: server.command, args: [...server.args] } } })
+  const content = JSON.stringify({
+    ...(settings as object),
+    mcpServers: {
+      ...servers,
+      [server.name]: {
+        command: server.command,
+        args: [...server.args],
+      },
+    },
+  })
   await withNativeConfigurationFile({ path: settingsPath, content, runDir: getGlobalState().tmpDir }, async () => {
     await openNativeAgent(native, { workingDir: work })
     await applyPermissionPreset(native.page, 'bypass')
@@ -46,18 +57,34 @@ async function withMuseEchoAgent(native: Awaited<ReturnType<typeof nativeContext
 }
 
 museTest('executes a real MCP echo through the native Muse model protocol', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-  const native = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+  const native = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+  })
   await withMuseEchoAgent(native, async () => {
     await exerciseMcpEcho(native, 'muse')
   })
 })
 
 museTest('preserves the exact native MCP call identity and result', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-  const native = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+  const native = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+  })
   await withMuseEchoAgent(native, async () => {
     const callId = 'muse-mcp-identity'
     const { resultRequest } = await runNativeToolTurn(native, {
-      toolCalls: [mcpToolCall(native.provider, callId, { server: 'echo_probe', tool: 'echo', input: { value: 'MUSE_MCP_IDENTITY' } })],
+      toolCalls: [
+        mcpToolCall(native.provider, callId, {
+          server: 'echo_probe',
+          tool: 'echo',
+          input: { value: 'MUSE_MCP_IDENTITY' },
+        }),
+      ],
       prompt: 'Call the echo server once with the identity value.',
       answer: 'The native MCP echo returned its identity value.',
       permissions: 'none',

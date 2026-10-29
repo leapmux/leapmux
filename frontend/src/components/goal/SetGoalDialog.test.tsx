@@ -13,7 +13,9 @@ function mount(props: { initialObjective?: string, onSubmit?: () => Promise<void
   const result = render(() => (
     <PreferencesProvider>
       <SetGoalDialog
-        {...(props.initialObjective !== undefined ? { initialObjective: props.initialObjective } : {})}
+        {...(props.initialObjective !== undefined
+          ? { initialObjective: props.initialObjective }
+          : {})}
         onSubmit={onSubmit}
         onClose={onClose}
       />
@@ -44,7 +46,10 @@ describe('SetGoalDialog', () => {
   it('blocks every close path while the goal request is pending', async () => {
     let refuse!: (reason: Error) => void
     const pending = new Promise<void>((_, reject) => refuse = reject)
-    const { getByTestId, getByRole, onClose } = mount({ initialObjective: 'Keep this objective', onSubmit: () => pending })
+    const { getByTestId, getByRole, onClose } = mount({
+      initialObjective: 'Keep this objective',
+      onSubmit: () => pending,
+    })
     await editorReady('Keep this objective')
     fireEvent.click(getByTestId('set-goal-submit'))
     const dialog = getByRole('dialog')
@@ -63,7 +68,10 @@ describe('SetGoalDialog', () => {
   it('keeps the objective until asynchronous delivery succeeds', async () => {
     let refuse!: (reason: Error) => void
     const pending = new Promise<void>((_, reject) => refuse = reject)
-    const { getByTestId, onClose, onSubmit } = mount({ initialObjective: 'Keep this objective', onSubmit: () => pending })
+    const { getByTestId, onClose, onSubmit } = mount({
+      initialObjective: 'Keep this objective',
+      onSubmit: () => pending,
+    })
     const editor = await editorReady('Keep this objective')
     fireEvent.click(getByTestId('set-goal-submit'))
     expect(onClose).not.toHaveBeenCalled()
@@ -80,7 +88,10 @@ describe('SetGoalDialog', () => {
   it('closes after asynchronous delivery succeeds', async () => {
     let finish!: () => void
     const pending = new Promise<void>(resolve => finish = resolve)
-    const { getByTestId, onClose } = mount({ initialObjective: 'Deliver this objective', onSubmit: () => pending })
+    const { getByTestId, onClose } = mount({
+      initialObjective: 'Deliver this objective',
+      onSubmit: () => pending,
+    })
     await editorReady('Deliver this objective')
     fireEvent.click(getByTestId('set-goal-submit'))
     expect(onClose).not.toHaveBeenCalled()
@@ -106,7 +117,10 @@ describe('SetGoalDialog', () => {
   it('does not close a new dialog when an old submission finishes after disposal', async () => {
     let finish!: () => void
     const pending = new Promise<void>(resolve => finish = resolve)
-    const { getByTestId, onClose, unmount } = mount({ initialObjective: 'Old objective', onSubmit: () => pending })
+    const { getByTestId, onClose, unmount } = mount({
+      initialObjective: 'Old objective',
+      onSubmit: () => pending,
+    })
     await editorReady('Old objective')
     fireEvent.click(getByTestId('set-goal-submit'))
     unmount()

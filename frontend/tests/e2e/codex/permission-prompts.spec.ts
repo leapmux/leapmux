@@ -36,7 +36,9 @@ codexTest.describe('codex permission requests', () => {
       testId: 'control-banner',
       relatedProof: async () => {
         ({ resultRequest } = await runNativeToolTurn(native, {
-          toolCalls: [bashToolCall(native.provider, 'safe-command', 'printf %s codex-safe-42')],
+          toolCalls: [
+            bashToolCall(native.provider, 'safe-command', 'printf %s codex-safe-42'),
+          ],
           prompt: 'Run the safe command once.',
           answer: 'The safe command finished.',
         }))
@@ -87,7 +89,11 @@ codexTest.describe('codex permission requests', () => {
     await expectSettingsOptionChosen(page, 'permissionMode-on-request')
 
     const start = await modelScript.queue(
-      { toolCalls: [codexEscalatedCommandToolCall('deny-command', writeCommand(file, 'denied-42'))] },
+      {
+        toolCalls: [
+          codexEscalatedCommandToolCall('deny-command', writeCommand(file, 'denied-42')),
+        ],
+      },
     )
     await sendMessage(page, modelScript.prompt('Request approval for the scripted command.'))
     await modelScript.waitForSteps(start + 1)
@@ -152,7 +158,9 @@ codexTest.describe('codex permission requests', () => {
       beforeDecision: () => expect(existsSync(file)).toBe(false),
       firstProof: () => expect(readFileSync(file, 'utf8')).toBe('rule-42'),
       secondProof: () => expect(readFileSync(file, 'utf8')).toBe('rule-42rule-42'),
-      ruleFiles: [join(codexHome, 'rules', 'default.rules')],
+      ruleFiles: [
+        join(codexHome, 'rules', 'default.rules'),
+      ],
     })
   })
 
@@ -166,7 +174,12 @@ codexTest.describe('codex permission requests', () => {
     const directory = newProviderWorkingDir(CODEX_AGENT, 'codex-mcp-permission-')
     const server = writeMcpPermissionServer(directory)
     await withAskingMcpServer(codexHome, server, async () => {
-      const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+      const context = await nativeContext({
+        page,
+        modelScript,
+        leapmuxServer,
+        workspaceId: authenticatedEmptyWorkspace.workspaceId,
+      })
       await openProviderAgent(leapmuxServer, context.workspaceId, CODEX_AGENT, { workingDir: directory })
       await openWorkspace(page, context.workspaceId)
       await exerciseNativePermissionDecision(context, {
@@ -229,7 +242,11 @@ codexTest.describe('codex approval UI', () => {
     // The answer step reads the result of the approved command; the fallback answers any request that Codex adds.
     await modelScript.fallback({ text: 'The command finished.' })
     const start = await modelScript.queue(
-      { toolCalls: [bashToolCall(native.provider, 'approval-call', APPROVAL_COMMAND)] },
+      {
+        toolCalls: [
+          bashToolCall(native.provider, 'approval-call', APPROVAL_COMMAND),
+        ],
+      },
       { text: 'The approved command finished.' },
     )
     await sendMessage(page, modelScript.prompt('Run this exact command.'))

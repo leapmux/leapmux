@@ -26,7 +26,10 @@ export interface SoloServerFixtures {
 
 /** Spread these into `test.extend` to give a spec a private solo hub for each test that asks for one. */
 export const soloServerFixtures: Fixtures<SoloServerFixtures> = {
-  soloListenHost: ['127.0.0.1', { option: true }],
+  soloListenHost: [
+    '127.0.0.1',
+    { option: true },
+  ],
   soloServer: async ({ soloListenHost }, use) => {
     const solo = await startSoloServer({ listenHost: soloListenHost })
     await withCleanup(() => use(solo), () => stopSoloServer(solo))

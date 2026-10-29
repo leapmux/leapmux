@@ -25,7 +25,14 @@ export async function attachQoderWorkerFrames(
     ListAgentMessagesResponseSchema,
     { agentId, limit: 200 },
   )
-  const markers = ['spawn-qoder', 'parent_tool_use_id', '"type":"result"', 'task_started', 'task_notification', 'Workflow']
+  const markers = [
+    'spawn-qoder',
+    'parent_tool_use_id',
+    '"type":"result"',
+    'task_started',
+    'task_notification',
+    'Workflow',
+  ]
   const rows = (response.messages ?? []).flatMap((message) => {
     const raw = decompressContentToString(message.content, message.contentCompression)
     if (!raw)
@@ -35,7 +42,12 @@ export async function attachQoderWorkerFrames(
       : Math.min(...markers.map(marker => raw.indexOf(marker)).filter(index => index >= 0))
     if (!Number.isFinite(first))
       return []
-    return [{ seq: message.seq.toString(), excerpt: raw.slice(Math.max(0, first - 250), first + 4500) }]
+    return [
+      {
+        seq: message.seq.toString(),
+        excerpt: raw.slice(Math.max(0, first - 250), first + 4500),
+      },
+    ]
   }).slice(0, 60)
   const name = `qoder-${transcript}-worker-frames`
   const path = testInfo.outputPath(`${name}.json`)

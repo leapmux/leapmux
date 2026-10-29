@@ -33,8 +33,10 @@ describe('entry-server boot splash polarity', () => {
     expect(src).toContain('BOOT_SPLASH_LABEL')
     expect(src).toContain('BOOT_SPLASH_STATIC_ID')
     expect(src).toContain('BootSplashIcon')
-    // StartServer's pre-rendered assets prop must not land in the head —
+    // StartServer hands the page event's assets to useAssets, which appends
+    // them to the head unfiltered. The handler takes the list first, and
     // BootDocumentHeadAssets re-emits a filtered set so splash paints first.
-    expect(src).not.toContain('{assets}')
+    expect(src).toContain('takeBootDocumentAssets(event)')
+    expect(src).toContain('<BootDocumentHeadAssets assets={bootAssets} />')
   })
 })

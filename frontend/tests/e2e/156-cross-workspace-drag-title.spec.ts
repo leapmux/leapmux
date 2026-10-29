@@ -46,13 +46,17 @@ test.describe('Cross-workspace sidebar drag preserves title and icon', () => {
     // test could not see the regression.
     const wsATitle = 'Source Agent'
     const wsBTitle = 'Target Agent'
-    const { workspaceId: wsA, agentIds: [wsAAgentId] } = await createWorkspaceWithAgentsViaAPI(leapmuxServer, 'Drag Source', { agentTitles: [wsATitle] })
+    const { workspaceId: wsA, agentIds: [wsAAgentId] } = await createWorkspaceWithAgentsViaAPI(leapmuxServer, 'Drag Source', {
+      agentTitles: [wsATitle],
+    })
     if (!wsAAgentId)
       throw new Error('The source workspace opened no agent.')
 
     // Show wsB, the destination. In the original report, the target
     // workspace was active at the time of the drag.
-    const { workspaceId: wsB } = await showWorkspaceWithAgents(page, leapmuxServer, 'Drag Target', { agentTitles: [wsBTitle] })
+    const { workspaceId: wsB } = await showWorkspaceWithAgents(page, leapmuxServer, 'Drag Target', {
+      agentTitles: [wsBTitle],
+    })
     await agentTabs(page).first().waitFor()
     // Poll: the title is worker-side metadata, fetched asynchronously after
     // the tab itself renders from the CRDT projection. A one-shot read races

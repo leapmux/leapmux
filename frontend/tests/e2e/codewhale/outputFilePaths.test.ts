@@ -22,5 +22,10 @@ const frame = {
 }
 
 describe('readCodewhaleNativeOutput', () => {
-  runNativeOutputReaderCases({ read: readCodewhaleNativeOutput, frame, path, pointerError: 'The native Codewhale result has no filesystem pointer.' })
+  runNativeOutputReaderCases({
+    read: readCodewhaleNativeOutput,
+    frame,
+    path,
+    pointerError: 'The native Codewhale result has no filesystem pointer.',
+  })
 })

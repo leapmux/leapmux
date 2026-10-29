@@ -11,7 +11,10 @@ import { ohMyPiTest } from '../ohmypi-fixtures'
 ohMyPiTest.describe('Oh My Pi basic chat', () => {
   ohMyPiTest('reports model usage in the agent info card', async ({ native }) => {
     const { page, modelScript } = native
-    const step = await modelScript.queue({ text: 'Usage recorded.', usage: { ...SCRIPTED_CONTEXT_USAGE } })
+    const step = await modelScript.queue({
+      text: 'Usage recorded.',
+      usage: { ...SCRIPTED_CONTEXT_USAGE },
+    })
     await sendMessage(page, modelScript.prompt('Reply once.'))
     await modelScript.waitForSteps(step + 1)
     await waitForAgentIdle(page)

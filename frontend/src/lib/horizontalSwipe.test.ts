@@ -24,7 +24,9 @@ function mount(opts: { row?: HTMLElement } = {}): Harness {
   root.appendChild(row)
   document.body.appendChild(root)
   const swipes: SwipeDirection[] = []
-  const detach = attachHorizontalSwipe(root, { onSwipe: d => swipes.push(d) })
+  const detach = attachHorizontalSwipe(root, {
+    onSwipe: d => swipes.push(d),
+  })
   harness = { root, row, swipes, detach }
   return harness
 }
@@ -72,7 +74,9 @@ function watchTouchMoveListeners(el: HTMLElement): { count: () => number } {
       live.delete(listener)
     remove(type, listener, options)
   })
-  return { count: () => live.size }
+  return {
+    count: () => live.size,
+  }
 }
 
 /** Press, travel through `path`, and lift at the last point. */
@@ -163,7 +167,10 @@ describe('attachHorizontalSwipe', () => {
 
   it('reports nothing for a mouse drag', () => {
     const h = mount()
-    const path = [{ x: 200, y: 300 }, { x: 320, y: 300 }]
+    const path = [
+      { x: 200, y: 300 },
+      { x: 320, y: 300 },
+    ]
     h.row.dispatchEvent(pointerEvent('pointerdown', { ...path[0] }))
     h.row.dispatchEvent(pointerEvent('pointermove', { ...path[1] }))
     h.row.dispatchEvent(pointerEvent('pointerup', { ...path[1] }))
@@ -188,7 +195,13 @@ describe('attachHorizontalSwipe', () => {
     const h = mount()
     h.row.dispatchEvent(pointerEvent('pointerdown', { x: 200, y: 300, pointerType: 'touch' }))
     h.row.dispatchEvent(pointerEvent('pointermove', { x: 240, y: 300, pointerType: 'touch' }))
-    h.row.dispatchEvent(pointerEvent('pointerdown', { x: 100, y: 300, pointerType: 'touch', pointerId: 2, isPrimary: false }))
+    h.row.dispatchEvent(pointerEvent('pointerdown', {
+      x: 100,
+      y: 300,
+      pointerType: 'touch',
+      pointerId: 2,
+      isPrimary: false,
+    }))
     h.row.dispatchEvent(pointerEvent('pointerup', { x: 320, y: 300, pointerType: 'touch' }))
     expect(h.swipes).toEqual([])
   })
@@ -196,30 +209,55 @@ describe('attachHorizontalSwipe', () => {
   it('ignores travel that belongs to another pointer', () => {
     const h = mount()
     h.row.dispatchEvent(pointerEvent('pointerdown', { x: 200, y: 300, pointerType: 'touch' }))
-    h.row.dispatchEvent(pointerEvent('pointermove', { x: 320, y: 300, pointerType: 'touch', pointerId: 7 }))
-    h.row.dispatchEvent(pointerEvent('pointerup', { x: 320, y: 300, pointerType: 'touch', pointerId: 7 }))
+    h.row.dispatchEvent(pointerEvent('pointermove', {
+      x: 320,
+      y: 300,
+      pointerType: 'touch',
+      pointerId: 7,
+    }))
+    h.row.dispatchEvent(pointerEvent('pointerup', {
+      x: 320,
+      y: 300,
+      pointerType: 'touch',
+      pointerId: 7,
+    }))
     expect(h.swipes).toEqual([])
   })
 
   describe('presses that belong to someone else', () => {
     it.each([
-      ['an input', () => document.createElement('input')],
-      ['a textarea', () => document.createElement('textarea')],
-      ['an editing host', () => {
-        const el = document.createElement('div')
-        el.setAttribute('contenteditable', 'true')
-        return el
-      }],
-      ['a popover', () => {
-        const el = document.createElement('div')
-        el.setAttribute('popover', '')
-        return el
-      }],
-      ['a region that declares touch-action', () => {
-        const el = document.createElement('div')
-        el.setAttribute('style', 'touch-action: none')
-        return el
-      }],
+      [
+        'an input',
+        () => document.createElement('input'),
+      ],
+      [
+        'a textarea',
+        () => document.createElement('textarea'),
+      ],
+      [
+        'an editing host',
+        () => {
+          const el = document.createElement('div')
+          el.setAttribute('contenteditable', 'true')
+          return el
+        },
+      ],
+      [
+        'a popover',
+        () => {
+          const el = document.createElement('div')
+          el.setAttribute('popover', '')
+          return el
+        },
+      ],
+      [
+        'a region that declares touch-action',
+        () => {
+          const el = document.createElement('div')
+          el.setAttribute('style', 'touch-action: none')
+          return el
+        },
+      ],
     ])('declines a press inside %s', (_label, build) => {
       const owner = build()
       const inner = document.createElement('span')
@@ -302,7 +340,12 @@ describe('attachHorizontalSwipe', () => {
 
     it('declines a press from a button other than the contact', () => {
       const h = mount()
-      h.row.dispatchEvent(pointerEvent('pointerdown', { x: 200, y: 300, pointerType: 'touch', button: 2 }))
+      h.row.dispatchEvent(pointerEvent('pointerdown', {
+        x: 200,
+        y: 300,
+        pointerType: 'touch',
+        button: 2,
+      }))
       h.row.dispatchEvent(pointerEvent('pointermove', { x: 320, y: 300, pointerType: 'touch' }))
       h.row.dispatchEvent(pointerEvent('pointerup', { x: 320, y: 300, pointerType: 'touch' }))
       expect(h.swipes).toEqual([])
@@ -531,7 +574,9 @@ describe('attachHorizontalSwipe', () => {
       // while no gesture is locked, so only the count shows a listener that a
       // declined press added.
       it('refuses nothing for a press the recognizer declined', () => {
-        const h = mount({ row: document.createElement('input') })
+        const h = mount({
+          row: document.createElement('input'),
+        })
         const listening = watchTouchMoveListeners(h.row)
         h.row.dispatchEvent(pointerEvent('pointerdown', { x: 200, y: 300, pointerType: 'touch' }))
         document.body.dispatchEvent(pointerEvent('pointermove', { x: 220, y: 300, pointerType: 'touch' }))
@@ -654,7 +699,13 @@ describe('attachHorizontalSwipe', () => {
       h.row.dispatchEvent(pointerEvent('pointermove', { x: 200 + SWIPE_MIN_PX + 40, y: 300, pointerType: 'touch' }))
       expect(h.swipes).toEqual(['right'])
 
-      h.row.dispatchEvent(pointerEvent('pointerdown', { x: 100, y: 300, pointerType: 'touch', pointerId: 2, isPrimary: false }))
+      h.row.dispatchEvent(pointerEvent('pointerdown', {
+        x: 100,
+        y: 300,
+        pointerType: 'touch',
+        pointerId: 2,
+        isPrimary: false,
+      }))
       h.row.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }))
 
       expect(clicked).not.toHaveBeenCalled()

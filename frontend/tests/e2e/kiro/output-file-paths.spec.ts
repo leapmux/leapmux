@@ -19,7 +19,10 @@ import { kiroToolResult } from './toolResult'
 
 function nativeKiroResult(snapshot: NativeMessageSnapshot, callId: string) {
   const records = snapshot.messages.filter(message => message.agentSessionId === snapshot.agentSessionId && message.spanId === callId)
-    .map(message => ({ original: nativeMessageBody(message), supplement: readKiroToolSupplement(message) }))
+    .map(message => ({
+      original: nativeMessageBody(message),
+      supplement: readKiroToolSupplement(message),
+    }))
     .filter(record => isObject(record.original) && acpClosedToolCall(record.original, callId, ['completed']))
   const record = records[0]
   if (records.length !== 1 || !record || !isObject(record.original))
@@ -29,12 +32,22 @@ function nativeKiroResult(snapshot: NativeMessageSnapshot, callId: string) {
 
 /** Read the Kiro receipt and every original row of its call, so the Worker proof requires the rows unchanged too. */
 function readKiroReceiptWithRows(snapshot: NativeMessageSnapshot, callId: string) {
-  return { ...readKiroNativeOutput(snapshot, callId), rows: snapshot.messages.filter(message => message.spanId === callId).map(nativeMessageBody) }
+  return {
+    ...readKiroNativeOutput(snapshot, callId),
+    rows: snapshot.messages.filter(message => message.spanId === callId).map(nativeMessageBody),
+  }
 }
 
 kiroTest('keeps native shell output inline without an output file path', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }, testInfo) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-  await openProviderAgent(leapmuxServer, context.workspaceId, KIRO_AGENT, { optionValues: { [KIRO_OPTION.PolicyPreset]: KIRO_POLICY_PRESET.AllowAll } })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+  })
+  await openProviderAgent(leapmuxServer, context.workspaceId, KIRO_AGENT, {
+    optionValues: { [KIRO_OPTION.PolicyPreset]: KIRO_POLICY_PRESET.AllowAll },
+  })
   await openWorkspace(page, context.workspaceId)
   await captureNativeToolOutput(context, testInfo, {
     output: computedNativeToolOutput({ lineCount: 200, padding: 20 }),
@@ -63,8 +76,15 @@ kiroTest('keeps native shell output inline without an output file path', async (
 })
 
 kiroTest('keeps the offloaded native shell path and exact preview after reload', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }, testInfo) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-  await openProviderAgent(leapmuxServer, context.workspaceId, KIRO_AGENT, { optionValues: { [KIRO_OPTION.PolicyPreset]: KIRO_POLICY_PRESET.AllowAll } })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+  })
+  await openProviderAgent(leapmuxServer, context.workspaceId, KIRO_AGENT, {
+    optionValues: { [KIRO_OPTION.PolicyPreset]: KIRO_POLICY_PRESET.AllowAll },
+  })
   await openWorkspace(page, context.workspaceId)
   const home = leapmuxServer.agentEnv.HOME
   if (!home)
@@ -78,14 +98,14 @@ kiroTest('keeps the offloaded native shell path and exact preview after reload',
       const reference = pickObject(pickObject(pickObject(saved.original, '_meta'), 'kiro'), 'outputTransformation')
       expect(reference?.kind).toBe('offloaded')
       if (typeof reference?.absFilePath !== 'string')
-        throw new Error('The native Kiro result contains no output path.')
+        throw new TypeError('The native Kiro result contains no output path.')
       const path = reference.absFilePath
       assertPrivateNativePath(path, home)
       expect(basename(dirname(dirname(path)))).toBe(capture.agent.agentSessionId)
       expect(basename(path)).toMatch(/^execute_bash-[a-f0-9]{8}\.txt$/u)
       const output = pickObject(saved.original, 'rawOutput')
       if (typeof output?.output !== 'string' || typeof output.message !== 'string')
-        throw new Error('The Kiro result contains no native output preview and reference.')
+        throw new TypeError('The Kiro result contains no native output preview and reference.')
       expect(output?.exitCode).toBe(0)
       expect(output?.output).not.toContain(capture.output.omittedMarker)
       expect(output?.message).toContain(path)

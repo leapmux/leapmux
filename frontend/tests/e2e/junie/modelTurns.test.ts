@@ -3,7 +3,11 @@ import { describe, expect, it } from 'vitest'
 import { junieModelTurns } from './modelTurns'
 
 function request(messages: unknown[]): MockModelRequestRecord {
-  return { protocol: 'openai-chat-completions', path: '/chat/completions', body: { messages } }
+  return {
+    protocol: 'openai-chat-completions',
+    path: '/chat/completions',
+    body: { messages },
+  }
 }
 
 describe('junieModelTurns', () => {
@@ -38,11 +42,17 @@ describe('junieModelTurns', () => {
     const turns = junieModelTurns(request([
       { role: 'user', content: 'Read the `## PROJECT STRUCTURE` block and answer.' },
     ]))
-    expect(turns).toEqual([{ role: 'user', text: 'Read the `## PROJECT STRUCTURE` block and answer.' }])
+    expect(turns).toEqual([
+      { role: 'user', text: 'Read the `## PROJECT STRUCTURE` block and answer.' },
+    ])
   })
 
   it('refuses a request of another protocol or without a message array', () => {
     expect(() => junieModelTurns({ protocol: 'anthropic-messages', path: '/v1/messages', body: {} })).toThrow('chat-completions')
-    expect(() => junieModelTurns({ protocol: 'openai-chat-completions', path: '/chat/completions', body: { messages: 'not an array' } })).toThrow('no message array')
+    expect(() => junieModelTurns({
+      protocol: 'openai-chat-completions',
+      path: '/chat/completions',
+      body: { messages: 'not an array' },
+    })).toThrow('no message array')
   })
 })

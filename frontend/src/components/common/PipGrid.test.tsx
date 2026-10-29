@@ -9,7 +9,9 @@ afterEach(cleanup)
 const NUMBERED = Array.from({ length: PIP_GRID_PIPS }, (_, i) => `#00000${i}`)
 
 function pipsOf(container: HTMLElement): SVGRectElement[] {
-  return [...container.querySelectorAll('rect')]
+  return [
+    ...container.querySelectorAll('rect'),
+  ]
 }
 
 describe('PipGrid', () => {
@@ -28,7 +30,17 @@ describe('PipGrid', () => {
     const placed = pipsOf(container).map(r => `${r.getAttribute('x')},${r.getAttribute('y')}`)
     // Row-major, so index 4 is row 1 column 1 and both coordinates step once.
     // A pip is 3 wide and the step is 4, which leaves the 1-unit gap.
-    expect(placed).toEqual(['0,0', '4,0', '8,0', '0,4', '4,4', '8,4', '0,8', '4,8', '8,8'])
+    expect(placed).toEqual([
+      '0,0',
+      '4,0',
+      '8,0',
+      '0,4',
+      '4,4',
+      '8,4',
+      '0,8',
+      '4,8',
+      '8,8',
+    ])
     for (const rect of pipsOf(container)) {
       expect(rect.getAttribute('width')).toBe('3')
       expect(rect.getAttribute('height')).toBe('3')

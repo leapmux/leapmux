@@ -42,7 +42,9 @@ export function ReadResultView(props: {
   // Memoized (like useDiffTokens' `lang`) so the hook's 2-4 reads per reactive pass --
   // both effects' currentKey(), the seed, and syncTokenize -- don't each re-run extname()
   // + the EXT_TO_LANG lookup.
-  const lang = createMemo(() => props.filePath ? guessLanguage(props.filePath) : undefined)
+  const lang = createMemo(() => props.filePath
+    ? guessLanguage(props.filePath)
+    : undefined)
   // Memoized so the O(lines) join isn't rebuilt on every read -- the hook reads `code`
   // from both effects' currentKey() plus syncTokenize (2-3x per reactive pass).
   const code = () => display().code
@@ -89,7 +91,9 @@ export function ReadResultView(props: {
             <div class={codeViewLine} data-line-num={line.num ?? undefined}>
               <span
                 class={codeViewLineNumber}
-                style={{ width: lineNumWidth() }}
+                style={{
+                  width: lineNumWidth(),
+                }}
               >
                 {line.num}
               </span>

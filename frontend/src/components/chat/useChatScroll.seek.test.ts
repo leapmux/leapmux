@@ -10,7 +10,11 @@ import { installScrollTestEnv, makeFakeScrollDiv, virtualizerNoOps } from './use
 installScrollTestEnv()
 
 function mkMsgs(seqs: number[]): AgentChatMessage[] {
-  return seqs.map(s => ({ id: `m${s}`, seq: BigInt(s), source: MessageSource.USER } as AgentChatMessage))
+  return seqs.map(s => ({
+    id: `m${s}`,
+    seq: BigInt(s),
+    source: MessageSource.USER,
+  } as AgentChatMessage))
 }
 
 /** A virtualizer stub that resolves an anchor to `Number(seq) * 200` scrollTop. */
@@ -22,7 +26,9 @@ function seekVirt(): ChatScrollVirtualizer {
     updateViewport: () => {},
     anchorAt: () => ({ id: 'x', offsetWithinRow: 0 }),
     scrollTopNearAnchor: () => null,
-    scrollTopForAnchor: (a: ScrollAnchor) => (a.seq !== undefined ? Number(a.seq) * 200 : null),
+    scrollTopForAnchor: (a: ScrollAnchor) => (a.seq !== undefined
+      ? Number(a.seq) * 200
+      : null),
   }
 }
 
@@ -83,7 +89,9 @@ describe('useChatScroll jump to seq', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -125,7 +133,9 @@ describe('useChatScroll jump to seq', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -172,7 +182,9 @@ describe('useChatScroll jump to seq', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -216,7 +228,9 @@ describe('useChatScroll jump to seq', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -262,7 +276,9 @@ describe('useChatScroll jump to seq', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -337,7 +353,10 @@ describe('useChatScroll jump to seq', () => {
       div.setClientHeight(500)
       div.setScrollTop(0)
       const [messages] = createSignal(mkMsgs([1, 2, 3]))
-      const hook = useChatScroll({ virtualizer: seekVirt(), messages })
+      const hook = useChatScroll({
+        virtualizer: seekVirt(),
+        messages,
+      })
       hook.attachListRef(div.el)
 
       hook.previewScrollTo(1200)

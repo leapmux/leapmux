@@ -50,7 +50,10 @@ export function authorizeURL(hubUrl: string, request: AuthorizeRequest = {}): st
 
 /** The body of a consent POST that answers one request with `decision`. */
 export function consentForm(request: AuthorizeRequest, decision: 'allow' | 'deny'): Record<string, string> {
-  return { ...authorizeParams(request), decision }
+  return {
+    ...authorizeParams(request),
+    decision,
+  }
 }
 
 /** The app that a registration created, and its secret: the empty string for a public client, which has none. */

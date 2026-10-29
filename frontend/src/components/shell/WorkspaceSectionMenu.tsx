@@ -110,8 +110,12 @@ export const WorkspaceSectionMenu: Component<WorkspaceSectionMenuProps> = (props
       return []
     const rows = listRepoStartPoints(props.getTabs(), props.repoGitStore, {
       // Omitted when absent: the option type takes no explicit undefined.
-      ...(props.workerInfoFn === undefined ? {} : { workerInfoFn: props.workerInfoFn }),
-      ...(props.isWorkerOnline === undefined ? {} : { isWorkerOnline: props.isWorkerOnline }),
+      ...(props.workerInfoFn === undefined
+        ? {}
+        : { workerInfoFn: props.workerInfoFn }),
+      ...(props.isWorkerOnline === undefined
+        ? {}
+        : { isWorkerOnline: props.isWorkerOnline }),
       limit: MAX_REPO_ROWS,
     })
     // The remembered mode is resolved HERE, inside the gate, so each row is a
@@ -128,7 +132,12 @@ export const WorkspaceSectionMenu: Component<WorkspaceSectionMenuProps> = (props
     return rows.map((row) => {
       const sp = row.startPoint
       const mode = readStickyGitMode(gitModeStickyKey(sp.workerId, sp.gitToplevel))
-      return { ...row, detail: mode === undefined ? undefined : GIT_MODE_LABELS[mode] }
+      return {
+        ...row,
+        detail: mode === undefined
+          ? undefined
+          : GIT_MODE_LABELS[mode],
+      }
     })
   })
 
@@ -173,12 +182,16 @@ export const WorkspaceSectionMenu: Component<WorkspaceSectionMenuProps> = (props
           // renders children eagerly into the DOM, so an unconditional test id
           // would put one node per workspace section in the document and every
           // Playwright lookup would fail strict mode.
-          data-testid={props.section.sectionType === SectionType.WORKSPACES_IN_PROGRESS ? 'sidebar-new-workspace' : undefined}
+          data-testid={props.section.sectionType === SectionType.WORKSPACES_IN_PROGRESS
+            ? 'sidebar-new-workspace'
+            : undefined}
           onClick={() => props.onNewWorkspace({ kind: 'directory' })}
         >
           <DropdownMenuItemContent
             label="New workspace..."
-            {...(newWorkspaceHint !== undefined ? { detail: newWorkspaceHint } : {})}
+            {...(newWorkspaceHint !== undefined
+              ? { detail: newWorkspaceHint }
+              : {})}
           />
         </button>
 
@@ -204,7 +217,9 @@ export const WorkspaceSectionMenu: Component<WorkspaceSectionMenuProps> = (props
                       renders the same as the undefined the memo computes. */}
                   <DropdownMenuItemContent
                     label={repo.label}
-                    {...(repo.detail === undefined ? {} : { detail: repo.detail })}
+                    {...(repo.detail === undefined
+                      ? {}
+                      : { detail: repo.detail })}
                   />
                 </button>
               )}
@@ -253,7 +268,10 @@ export const WorkspaceSectionMenu: Component<WorkspaceSectionMenuProps> = (props
                   label={sortKeyLabel(key)}
                   checked={workspaceSortOrder().key === key}
                   data-testid={`workspace-sort-key-${key}`}
-                  onSelect={() => setWorkspaceSortOrder({ ...workspaceSortOrder(), key })}
+                  onSelect={() => setWorkspaceSortOrder({
+                    ...workspaceSortOrder(),
+                    key,
+                  })}
                 />
               )}
             </For>
@@ -268,7 +286,10 @@ export const WorkspaceSectionMenu: Component<WorkspaceSectionMenuProps> = (props
                   label={sortDirectionLabel(workspaceSortOrder().key, direction)}
                   checked={workspaceSortOrder().direction === direction}
                   data-testid={`workspace-sort-direction-${direction}`}
-                  onSelect={() => setWorkspaceSortOrder({ ...workspaceSortOrder(), direction })}
+                  onSelect={() => setWorkspaceSortOrder({
+                    ...workspaceSortOrder(),
+                    direction,
+                  })}
                 />
               )}
             </For>

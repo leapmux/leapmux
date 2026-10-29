@@ -83,7 +83,9 @@ function documentHostTarget(raw: string): URL | null {
   if (!URL.canParse(raw, base))
     return null
   const target = new URL(raw, base)
-  return target.host === location.host ? target : null
+  return target.host === location.host
+    ? target
+    : null
 }
 
 function refusal(what: string, target: URL): string {
@@ -97,8 +99,12 @@ function guardFetch(): void {
   if (typeof realFetch !== 'function' || isGuarded(realFetch))
     return
   const guardedFetch: typeof fetch = (input, init) => {
-    const request = typeof input === 'string' || input instanceof URL ? undefined : input
-    const raw = request ? request.url : String(input)
+    const request = typeof input === 'string' || input instanceof URL
+      ? undefined
+      : input
+    const raw = request
+      ? request.url
+      : String(input)
     const target = documentHostTarget(raw)
     if (!target)
       return realFetch(input, init)

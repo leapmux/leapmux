@@ -19,10 +19,26 @@ describe('kilo classify', () => {
   // Attachment caps, assembled-text handling, config_option_update hiding (empty
   // payload), and the ACP interrupt request are the standard stub behaviours. Kilo's POPULATED
   // config_option_update case below is the genuine divergence and stays inline.
-  describeACPProviderBasics(AgentProvider.KILO, { text: true, image: true, pdf: true, audio: ['audio/wav', 'audio/mpeg', 'audio/mp3', 'audio/aac', 'audio/ogg', 'audio/flac', 'audio/webm'], binary: false })
+  describeACPProviderBasics(AgentProvider.KILO, {
+    text: true,
+    image: true,
+    pdf: true,
+    audio: [
+      'audio/wav',
+      'audio/mpeg',
+      'audio/mp3',
+      'audio/aac',
+      'audio/ogg',
+      'audio/flac',
+      'audio/webm',
+    ],
+    binary: false,
+  })
 
   it('maps bypass to the family Auto-approve option and offers no smart preset', () => {
-    expect(plugin.controls?.permissionPresets?.bypass).toEqual({ sets: { [OPENCODE_OPTION.AutoApprove]: 'true' } })
+    expect(plugin.controls?.permissionPresets?.bypass).toEqual({
+      sets: { [OPENCODE_OPTION.AutoApprove]: 'true' },
+    })
     expect(plugin.controls?.permissionPresets?.smart).toBeUndefined()
   })
 
@@ -56,7 +72,12 @@ describe('kilo classify', () => {
       status: 'completed',
       kind: 'execute',
       title: 'bash',
-      content: [{ type: 'content', content: { type: 'text', text: 'output' } }],
+      content: [
+        {
+          type: 'content',
+          content: { type: 'text', text: 'output' },
+        },
+      ],
     }
     expect(plugin?.transcript.classify(input(parent))).toEqual({ kind: 'tool_use' })
   })
@@ -114,7 +135,15 @@ describe('kilo classify', () => {
   it('hides config_option_update', () => {
     const parent = {
       sessionUpdate: 'config_option_update',
-      configOptions: [{ id: 'model', currentValue: 'm1', options: [{ value: 'm1' }] }],
+      configOptions: [
+        {
+          id: 'model',
+          currentValue: 'm1',
+          options: [
+            { value: 'm1' },
+          ],
+        },
+      ],
     }
     expect(plugin?.transcript.classify(input(parent))).toEqual({ kind: 'hidden' })
   })
@@ -136,7 +165,12 @@ describe('kilo classify', () => {
   })
 
   it('classifies settings_changed as notification', () => {
-    const parent = { type: 'settings_changed', changes: { model: { old: 'a', new: 'b' } } }
+    const parent = {
+      type: 'settings_changed',
+      changes: {
+        model: { old: 'a', new: 'b' },
+      },
+    }
     expect(plugin?.transcript.classify(input(parent)).kind).toBe('notification')
   })
 
@@ -144,7 +178,9 @@ describe('kilo classify', () => {
     const parent = { type: 'agent_error', error: 'something went wrong' }
     expect(plugin?.transcript.classify(input(parent))).toEqual({
       kind: 'notification',
-      entries: [{ kind: 'text', text: 'something went wrong' }],
+      entries: [
+        { kind: 'text', text: 'something went wrong' },
+      ],
     })
   })
 
@@ -160,7 +196,12 @@ describe('kilo classify', () => {
   })
 
   it('hides JSON-RPC response envelope', () => {
-    const parent = { id: 5, result: { outcome: { optionId: 'once' } } }
+    const parent = {
+      id: 5,
+      result: {
+        outcome: { optionId: 'once' },
+      },
+    }
     expect(plugin?.transcript.classify(input(parent))).toEqual({ kind: 'hidden' })
   })
 
@@ -172,11 +213,15 @@ describe('kilo classify', () => {
   it('handles notification thread wrappers', () => {
     const wrapper = {
       old_seqs: [1],
-      messages: [{ type: 'interrupted' }],
+      messages: [
+        { type: 'interrupted' },
+      ],
     }
     expect(plugin?.transcript.classify(input(undefined, wrapper))).toEqual({
       kind: 'notification',
-      entries: [{ kind: 'text', text: 'Interrupted' }],
+      entries: [
+        { kind: 'text', text: 'Interrupted' },
+      ],
     })
   })
 
@@ -199,9 +244,15 @@ describe('stored system frames (kilo)', () => {
   const plugin = providerFor(AgentProvider.KILO)!
 
   it('leaves a stored system frame unknown', () => {
-    for (const parent of [{ type: 'system', subtype: 'init' }, { type: 'system', subtype: 'compact_boundary' }]) {
+    for (const parent of [
+      { type: 'system', subtype: 'init' },
+      { type: 'system', subtype: 'compact_boundary' },
+    ]) {
       expect(plugin?.transcript.classify(input(parent))).toStrictEqual({ kind: 'unknown' })
-      expect(plugin?.transcript.classify(input(parent, { old_seqs: [], messages: [parent] }))).toStrictEqual({ kind: 'unknown' })
+      expect(plugin?.transcript.classify(input(parent, {
+        old_seqs: [],
+        messages: [parent],
+      }))).toStrictEqual({ kind: 'unknown' })
     }
   })
 })
@@ -210,11 +261,16 @@ describe('kilo result divider', () => {
   const plugin = providerFor(AgentProvider.KILO)!
 
   it('maps end_turn to "Turn ended"', () => {
-    expect(acpResultDivider({ stopReason: 'end_turn', usage: { totalTokens: 100 } })).toEqual({ label: 'Turn ended' })
+    expect(acpResultDivider({
+      stopReason: 'end_turn',
+      usage: { totalTokens: 100 },
+    })).toEqual({ label: 'Turn ended' })
   })
 
   it('maps a missing stopReason to "Turn ended"', () => {
-    expect(acpResultDivider({ usage: { totalTokens: 100 } })).toEqual({ label: 'Turn ended' })
+    expect(acpResultDivider({
+      usage: { totalTokens: 100 },
+    })).toEqual({ label: 'Turn ended' })
   })
 
   it('maps a non-end_turn stopReason to "Turn ended (reason)"', () => {
@@ -267,7 +323,9 @@ describe('kilo plan mode', () => {
   const plugin = providerFor(AgentProvider.KILO)!
 
   it('reads the current mode from optionValues.primaryAgent', () => {
-    expect(plugin?.configuration?.planMode?.currentMode({ optionValues: { primaryAgent: 'plan' } })).toBe('plan')
+    expect(plugin?.configuration?.planMode?.currentMode({
+      optionValues: { primaryAgent: 'plan' },
+    })).toBe('plan')
     expect(plugin?.configuration?.planMode?.currentMode({ optionValues: {} })).toBe('code')
   })
 
@@ -306,7 +364,12 @@ describe('kilo tool_call_update renderer', () => {
         output: 'abc123 fix something\ndef456 add feature',
         metadata: { exit: 0, description: 'Shows recent commit messages', truncated: false },
       },
-      content: [{ type: 'content', content: { type: 'text', text: 'abc123 fix something\ndef456 add feature' } }],
+      content: [
+        {
+          type: 'content',
+          content: { type: 'text', text: 'abc123 fix something\ndef456 add feature' },
+        },
+      ],
     }
     const category = plugin?.transcript.classify(input(toolUse))
     expect(category.kind).toBe('tool_use')
@@ -324,7 +387,10 @@ describe('kilo tool_call_update renderer', () => {
       kind: 'execute',
       title: 'Run failing command',
       rawInput: { command: 'false' },
-      rawOutput: { error: 'command failed', metadata: { exit: 1 } },
+      rawOutput: {
+        error: 'command failed',
+        metadata: { exit: 1 },
+      },
       content: [],
     }
     const { container } = renderACPRow(AgentProvider.KILO, toolUse)
@@ -340,7 +406,12 @@ describe('kilo tool_call_update renderer', () => {
       kind: 'edit',
       title: 'src/main.ts',
       content: [
-        { type: 'diff', path: 'src/main.ts', oldText: 'const a = 1', newText: 'const a = 2' },
+        {
+          type: 'diff',
+          path: 'src/main.ts',
+          oldText: 'const a = 1',
+          newText: 'const a = 2',
+        },
       ],
     }
     const category = plugin?.transcript.classify(input(toolUse))
@@ -360,12 +431,31 @@ describe('kilo tool_call_update renderer', () => {
 describe('kilo refused tool calls', () => {
   const REJECTED = 'The user rejected permission to use this specific tool call.'
   const RAW_INPUT = { command: 'printf provider-steer-ready', description: 'Print the marker' }
-  const opening = { sessionUpdate: 'tool_call', toolCallId: 'refused-call', status: 'pending', kind: 'execute', title: 'bash', rawInput: RAW_INPUT }
+  const opening = {
+    sessionUpdate: 'tool_call',
+    toolCallId: 'refused-call',
+    status: 'pending',
+    kind: 'execute',
+    title: 'bash',
+    rawInput: RAW_INPUT,
+  }
 
   const callOf = (error: string) => providerToolCall(
     AgentProvider.KILO,
-    { sessionUpdate: 'tool_call_update', toolCallId: 'refused-call', status: 'failed', kind: 'execute', title: 'bash', rawInput: RAW_INPUT, content: acpTextContent(error), rawOutput: { error } },
-    { request: input(opening, null, AgentProvider.KILO) as ParsedMessageContent, spanType: 'tool_call_update' },
+    {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'refused-call',
+      status: 'failed',
+      kind: 'execute',
+      title: 'bash',
+      rawInput: RAW_INPUT,
+      content: acpTextContent(error),
+      rawOutput: { error },
+    },
+    {
+      request: input(opening, null, AgentProvider.KILO) as ParsedMessageContent,
+      spanType: 'tool_call_update',
+    },
   )
 
   it.each([
@@ -384,7 +474,14 @@ describe('kilo refused tool calls', () => {
     const { container } = renderACPToolPair(
       AgentProvider.KILO,
       { kind: 'execute', title: 'bash', rawInput: RAW_INPUT },
-      { kind: 'execute', title: 'bash', rawInput: RAW_INPUT, status: 'failed', content: acpTextContent(REJECTED), rawOutput: { error: REJECTED } },
+      {
+        kind: 'execute',
+        title: 'bash',
+        rawInput: RAW_INPUT,
+        status: 'failed',
+        content: acpTextContent(REJECTED),
+        rawOutput: { error: REJECTED },
+      },
     )
     expect(container.textContent).toContain('Declined')
     expect(container.textContent).not.toContain('Error')
@@ -414,7 +511,9 @@ describe('kilo isAskUserQuestion', () => {
   it('returns false for permission requests', () => {
     const payload = {
       method: 'requestPermission',
-      params: { toolCall: { toolCallId: 'tc-1' } },
+      params: {
+        toolCall: { toolCallId: 'tc-1' },
+      },
     }
     expect(plugin?.controls?.askUserQuestion!.isRequest(payload)).toBe(false)
   })
@@ -442,7 +541,9 @@ describe('the kilo permission sender', () => {
     expect(parsed).toMatchObject({
       jsonrpc: '2.0',
       id: '5',
-      result: { outcome: { outcome: 'selected', optionId: 'once' } },
+      result: {
+        outcome: { outcome: 'selected', optionId: 'once' },
+      },
     })
   })
 })
@@ -459,16 +560,35 @@ describe('kilo sendOpenCodeQuestionResponse', () => {
     })
 
     await sendOpenCodeQuestionResponse(onRespond, 'que_1', [
-      { question: 'Action?', options: [{ label: 'Build' }] },
-      { question: 'Env?', options: [{ label: 'Dev' }] },
-    ], createControlAnswerState({ selections: { 0: ['Build'], 1: [] }, customTexts: { 1: 'Dev' } }))
+      {
+        question: 'Action?',
+        options: [
+          { label: 'Build' },
+        ],
+      },
+      {
+        question: 'Env?',
+        options: [
+          { label: 'Dev' },
+        ],
+      },
+    ], createControlAnswerState({
+      selections: {
+        0: ['Build'],
+        1: [],
+      },
+      customTexts: { 1: 'Dev' },
+    }))
 
     const parsed = decode(captured!)
     expect(parsed).toMatchObject({
       jsonrpc: '2.0',
       id: 'que_1',
       result: {
-        answers: [['Build'], ['Dev']],
+        answers: [
+          ['Build'],
+          ['Dev'],
+        ],
       },
     })
   })

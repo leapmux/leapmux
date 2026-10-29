@@ -88,7 +88,9 @@ export function compareNames(a: string, b: string): number {
     return byCollator
   if (a === b)
     return 0
-  return a < b ? -1 : 1
+  return a < b
+    ? -1
+    : 1
 }
 
 /**
@@ -107,7 +109,9 @@ export function compareNames(a: string, b: string): number {
  */
 export function fileExtension(name: string): string {
   const base = name.slice(lastSepIndex(name, 'win32') + 1)
-  return base.lastIndexOf('.') > 0 ? extname(base) : ''
+  return base.lastIndexOf('.') > 0
+    ? extname(base)
+    : ''
 }
 
 /**
@@ -152,11 +156,15 @@ export function compareOptionalValue<V extends string | number>(
   if (av === undefined || bv === undefined) {
     if (av === bv)
       return undefined
-    return av === undefined ? 1 : -1
+    return av === undefined
+      ? 1
+      : -1
   }
   if (av === bv)
     return undefined
-  return (av < bv ? -1 : 1) * flip
+  return (av < bv
+    ? -1
+    : 1) * flip
 }
 
 /**
@@ -176,17 +184,25 @@ export function compareOptionalValue<V extends string | number>(
  *    happens before the direction flip, so "unknown" never migrates to the top.
  */
 export function makeFileComparator<T>(order: FileSortOrder, fields: FileSortFields<T>): (a: T, b: T) => number {
-  const flip = order.direction === 'desc' ? -1 : 1
+  const flip = order.direction === 'desc'
+    ? -1
+    : 1
 
   const byName = (a: T, b: T) => compareNames(fields.name(a), fields.name(b))
 
   return (a, b) => {
     const aDir = fields.isDir(a)
-    if (aDir !== fields.isDir(b))
-      return aDir ? -1 : 1
+    if (aDir !== fields.isDir(b)) {
+      return aDir
+        ? -1
+        : 1
+    }
 
-    if (aDir)
-      return order.key === 'name' ? byName(a, b) * flip : byName(a, b)
+    if (aDir) {
+      return order.key === 'name'
+        ? byName(a, b) * flip
+        : byName(a, b)
+    }
 
     switch (order.key) {
       case 'name':
@@ -211,7 +227,9 @@ export function makeFileComparator<T>(order: FileSortOrder, fields: FileSortFiel
       case 'type': {
         const aExt = fileExtension(fields.name(a))
         const bExt = fileExtension(fields.name(b))
-        return aExt === bExt ? byName(a, b) : compareNames(aExt, bExt) * flip
+        return aExt === bExt
+          ? byName(a, b)
+          : compareNames(aExt, bExt) * flip
       }
     }
   }

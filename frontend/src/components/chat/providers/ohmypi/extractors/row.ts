@@ -23,10 +23,14 @@ export function ohMyPiExtractRow(input: RowExtractionInput): ChatRow | null {
   const payload = parsed.parentObject
   switch (category.kind) {
     case 'assistant_text': {
-      const text = isObject(payload) ? ohMyPiContentText(payload) : ''
+      const text = isObject(payload)
+        ? ohMyPiContentText(payload)
+        : ''
       // A message with no text block has nothing to show; it is not a row this
       // provider failed to read.
-      return text ? { kind: 'assistant-text', text } : { kind: 'hidden' }
+      return text
+        ? { kind: 'assistant-text', text }
+        : { kind: 'hidden' }
     }
     case 'tool_use':
     case 'tool_result':
@@ -42,7 +46,9 @@ export function ohMyPiExtractRow(input: RowExtractionInput): ChatRow | null {
 
 /** The call id a span side carries, or null when the side states none. */
 function sideCallId(side: ParsedMessageContent | undefined): string | null {
-  return (side ? ohMyPiExtractTool(side.parentObject)?.toolCallId : '') || null
+  return (side
+    ? ohMyPiExtractTool(side.parentObject)?.toolCallId
+    : '') || null
 }
 
 /**
@@ -58,7 +64,11 @@ function ohMyPiToolSpanRow(payload: unknown, parsed: ParsedMessageContent, span:
   if (!own)
     return null
   const mine = (side: ParsedMessageContent | undefined) => !!side && sideCallId(side) === own.toolCallId
-  const row = ohMyPiToolRow(payload, mine(span.request) ? span.request : undefined, mine(span.result) ? span.result : undefined, parsed.completion)
+  const row = ohMyPiToolRow(payload, mine(span.request)
+    ? span.request
+    : undefined, mine(span.result)
+    ? span.result
+    : undefined, parsed.completion)
   if (!row)
     return null
   return toolCallRow(ohMyPiToolCall(row, parsed.completion), ohMyPiToolSpanRowRole(row), span.visibleRows)

@@ -34,14 +34,23 @@ interface ShellRun {
 
 /** Start `<shell> <flags> -c <command>` and collect its streams. The afterEach hook kills a run that a test leaves behind. */
 function startShell({ path, flags }: ShellUnderTest, command: string, env: NodeJS.ProcessEnv = process.env): ShellRun {
-  const child = spawn(path, [...flags, '-c', command], { cwd: directory, env, stdio: ['ignore', 'pipe', 'pipe'] })
+  const child = spawn(path, [...flags, '-c', command], {
+    cwd: directory,
+    env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
   children.push(child)
   let stdout = ''
   let stderr = ''
   child.stdout.on('data', chunk => stdout += String(chunk))
   child.stderr.on('data', chunk => stderr += String(chunk))
   const exit = new Promise<number | null>(resolveExit => child.on('close', code => resolveExit(code)))
-  return { child, stdout: () => stdout, stderr: () => stderr, exit }
+  return {
+    child,
+    stdout: () => stdout,
+    stderr: () => stderr,
+    exit,
+  }
 }
 
 /**
@@ -76,7 +85,10 @@ interface ShellUnderTest {
 const SHELLS: ShellUnderTest[] = [
   { path: '/bin/sh', flags: [] },
   { path: '/bin/bash', flags: [] },
-  { path: '/bin/zsh', flags: ['-f'] },
+  {
+    path: '/bin/zsh',
+    flags: ['-f'],
+  },
   { path: '/bin/dash', flags: [] },
 ]
 
@@ -141,7 +153,10 @@ describe('OutputGate hold', () => {
     const gate = createOutputGate(directory)
     const first = startShell(shell, gate.hold('printf \'ONE%s\\n\' 1'), env)
     const second = startShell(shell, gate.hold('printf \'TWO%s\\n\' 2'), env)
-    await vi.waitFor(() => expect([first.stdout(), second.stdout()]).toEqual(['ONE1\n', 'TWO2\n']), { timeout: DEADLINE_MS, interval: 5 })
+    await vi.waitFor(() => expect([
+      first.stdout(),
+      second.stdout(),
+    ]).toEqual(['ONE1\n', 'TWO2\n']), { timeout: DEADLINE_MS, interval: 5 })
     // Both shells check the one release file, so the calls of `sleep` come from both.
     await vi.waitFor(() => expect(polls()).toBeGreaterThanOrEqual(6), { timeout: DEADLINE_MS, interval: 5 })
     expect([first.child.exitCode, second.child.exitCode]).toEqual([null, null])
@@ -225,7 +240,14 @@ describe('runWithGatedOutput', () => {
   function fakeGated(shown: () => Promise<void>) {
     const released = deferred()
     const release = vi.fn(() => released.resolve())
-    const gated: GatedOutput = { gate: { releasePath: '/unused', hold: command => command, release }, shown }
+    const gated: GatedOutput = {
+      gate: {
+        releasePath: '/unused',
+        hold: command => command,
+        release,
+      },
+      shown,
+    }
     return { gated, release, released: released.promise }
   }
 
@@ -274,7 +296,11 @@ describe('runWithGatedOutput', () => {
     const failure = new Error('the operation failed')
     const releaseFailure = new Error('the release failed')
     const gated: GatedOutput = {
-      gate: { releasePath: '/unused', hold: command => command, release: () => { throw releaseFailure } },
+      gate: {
+        releasePath: '/unused',
+        hold: command => command,
+        release: () => { throw releaseFailure },
+      },
       shown: () => new Promise<void>(() => {}),
     }
     const error = await runWithGatedOutput(gated, () => Promise.reject(failure)).then(() => null, (caught: unknown) => caught)

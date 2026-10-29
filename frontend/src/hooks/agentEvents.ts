@@ -164,7 +164,10 @@ export function wireRunningToolToUpdate(value: unknown): ToolProgressUpdate | un
 
   // An absent session becomes an empty string, as it does in messageSpanKey.
   // The progress update and its row therefore use the same key.
-  const update: ToolProgressUpdate = { spanId, agentSessionId: pickString(value, RUNNING_TOOL_FIELD.AgentSessionId) }
+  const update: ToolProgressUpdate = {
+    spanId,
+    agentSessionId: pickString(value, RUNNING_TOOL_FIELD.AgentSessionId),
+  }
   // Use a finite, non-negative elapsed time.
   // A non-finite value produces an invalid duration label, and a negative value is not a duration.
   const elapsed = pickCounter(value, RUNNING_TOOL_FIELD.ElapsedSeconds)
@@ -207,7 +210,9 @@ export function wireGoalProgressToUpdate(value: unknown): GoalProgress | undefin
   assignDefined(update, 'tokenBudget', pickCounter(value, GOAL_PROGRESS_FIELD.TokenBudget))
   assignDefined(update, 'timeUsedSeconds', pickCounter(value, GOAL_PROGRESS_FIELD.TimeUsedSeconds))
   assignDefined(update, 'iterations', pickCounter(value, GOAL_PROGRESS_FIELD.Iterations))
-  return Object.keys(update).length > 0 ? update : undefined
+  return Object.keys(update).length > 0
+    ? update
+    : undefined
 }
 
 /**
@@ -265,7 +270,9 @@ export function handleAgentSessionInfo(
   const { agentSessionStore, chatStore } = stores
   if (transcriptOnly || (delivery.phase === 'replay' && !agentSessionStore.acceptsReplay(agentId, delivery.replayId ?? 0n)))
     return true
-  const info = isObject(parsed.topLevel.info) ? parsed.topLevel.info : undefined
+  const info = isObject(parsed.topLevel.info)
+    ? parsed.topLevel.info
+    : undefined
   const updates = wireSessionInfoToUpdates(info)
   const rateLimits = wireRateLimitUpdateFromSessionInfo(info)
   const generationProgress = wireGenerationProgress(info)
@@ -292,7 +299,9 @@ export function handleAgentSessionInfo(
         chatStore.setTurnRetryOffer(agentId, {
           turnId,
           model,
-          ...(learnMoreUrl !== '' ? { learnMoreUrl } : {}),
+          ...(learnMoreUrl !== ''
+            ? { learnMoreUrl }
+            : {}),
         })
       }
     }
@@ -304,7 +313,9 @@ export function handleAgentSessionInfo(
     }
     else if (isObject(value)) {
       const trigger = pickString(value, COMPACTION_FIELD.Trigger)
-      chatStore.setLiveCompaction(agentId, trigger ? { trigger } : {})
+      chatStore.setLiveCompaction(agentId, trigger
+        ? { trigger }
+        : {})
     }
   }
   if (info && SESSION_INFO_KEY.PromptSuggestion in info) {
@@ -338,7 +349,11 @@ export function handleAgentSessionInfo(
   if (Object.keys(updates).length > 0) {
     agentSessionStore.updateInfo(agentId, updates, {
       delivery,
-      ...(rateLimits ? { rateLimits: { mode: rateLimits.mode } } : {}),
+      ...(rateLimits
+        ? {
+            rateLimits: { mode: rateLimits.mode },
+          }
+        : {}),
     })
   }
   return true
@@ -348,7 +363,13 @@ export function handleAgentSessionInfo(
 export type CatchUpPhase = 'catchingUp' | 'live'
 
 function messageMetadataDelivery(msg: AgentChatMessage, phase: CatchUpPhase, replayId: bigint): SessionMetadataDelivery {
-  return { phase: phase === 'live' ? 'live' : 'replay', replayId, seq: msg.seq }
+  return {
+    phase: phase === 'live'
+      ? 'live'
+      : 'replay',
+    replayId,
+    seq: msg.seq,
+  }
 }
 
 /**
@@ -660,21 +681,33 @@ export function buildAgentStatusTabUpdate(
   settingsFields: Partial<AgentTab>,
 ): Partial<AgentTab> {
   return {
-    ...(hasStatus ? { agentStatus: sc.status, agentSessionId: sc.agentSessionId } : {}),
-    ...(hasStatus ? { supportsSteering: sc.supportsSteering, supportsPreemption: sc.supportsPreemption } : {}),
+    ...(hasStatus
+      ? { agentStatus: sc.status, agentSessionId: sc.agentSessionId }
+      : {}),
+    ...(hasStatus
+      ? { supportsSteering: sc.supportsSteering, supportsPreemption: sc.supportsPreemption }
+      : {}),
     // Set the server's startup error on STARTUP_FAILED and clear it on ACTIVE.
     // Other status values retain the existing error.
-    ...(sc.status === AgentStatus.STARTUP_FAILED ? { startupError: sc.startupError } : {}),
-    ...(sc.status === AgentStatus.ACTIVE ? { startupError: '' } : {}),
+    ...(sc.status === AgentStatus.STARTUP_FAILED
+      ? { startupError: sc.startupError }
+      : {}),
+    ...(sc.status === AgentStatus.ACTIVE
+      ? { startupError: '' }
+      : {}),
     // Show the startup phase while the status is STARTING.
     // Clear it on another explicit status. Retain it when the event supplies no status.
     ...(sc.status === AgentStatus.STARTING
       ? { startupMessage: sc.startupMessage }
-      : hasStatus ? { startupMessage: '' } : {}),
+      : hasStatus
+        ? { startupMessage: '' }
+        : {}),
     // Include the confirmed catalog and the current values after pending-axis suppression.
     ...settingsFields,
     // The tab stores repository identity. repoGitStore stores the complete git state.
-    ...(sc.gitStatus?.toplevel ? { gitToplevel: sc.gitStatus.toplevel } : {}),
+    ...(sc.gitStatus?.toplevel
+      ? { gitToplevel: sc.gitStatus.toplevel }
+      : {}),
   }
 }
 
@@ -742,7 +775,23 @@ export function handleControlRequest(
     log.warn('Keeping a control request whose payload is malformed', { agentId: cr.agentId, requestId: cr.requestId, err })
     payloadFault = 'malformed'
   }
-  controlStore.addRequest(cr.agentId, { requestId: cr.requestId, agentId: cr.agentId, agentSessionId: cr.agentSessionId, payload, ...(payloadFault ? { payloadFault } : {}), originalPayload: cr.payload, agentProvider: cr.agentProvider, claimToken: cr.claimToken, sourceSeq: cr.sourceSeq, responseState: cr.responseState, ...(cr.nonBlocking ? { nonBlocking: true } : {}) })
+  controlStore.addRequest(cr.agentId, {
+    requestId: cr.requestId,
+    agentId: cr.agentId,
+    agentSessionId: cr.agentSessionId,
+    payload,
+    ...(payloadFault
+      ? { payloadFault }
+      : {}),
+    originalPayload: cr.payload,
+    agentProvider: cr.agentProvider,
+    claimToken: cr.claimToken,
+    sourceSeq: cr.sourceSeq,
+    responseState: cr.responseState,
+    ...(cr.nonBlocking
+      ? { nonBlocking: true }
+      : {}),
+  })
   if (catchUpPhase === 'live') {
     // Set the hidden tab's badge when its agent needs an answer.
     // Use the same tile visibility rule as FULL watch mode.
@@ -791,7 +840,9 @@ export function handleActivityChanged(
   const detail: AgentSettledEventDetail = {
     agentId,
     state: value.state,
-    ...(value.numToolUses === undefined ? {} : { numToolUses: value.numToolUses }),
+    ...(value.numToolUses === undefined
+      ? {}
+      : { numToolUses: value.numToolUses }),
   }
   window.dispatchEvent(new CustomEvent(AGENT_SETTLED_EVENT, { detail }))
 }

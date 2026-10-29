@@ -13,15 +13,33 @@ zcodeTest('groups the subagents of a native CreateWorkflow run under the run', a
   const { page, modelScript } = native
   await modelScript.fallback({ text: 'Workflow notification noted.' })
   await modelScript.rule(
-    { name: 'the alpha subagent answers', when: { user: 'ZFLOW_ALPHA' }, respond: { text: 'alpha done' }, once: true },
-    { name: 'the beta subagent answers', when: { user: 'ZFLOW_BETA' }, respond: { text: 'beta done' }, once: true },
+    {
+      name: 'the alpha subagent answers',
+      when: { user: 'ZFLOW_ALPHA' },
+      respond: { text: 'alpha done' },
+      once: true,
+    },
+    {
+      name: 'the beta subagent answers',
+      when: { user: 'ZFLOW_BETA' },
+      respond: { text: 'beta done' },
+      once: true,
+    },
   )
   const alphaTask = JSON.stringify(modelScript.prompt('ZFLOW_ALPHA: reply with alpha done.'))
   const betaTask = JSON.stringify(modelScript.prompt('ZFLOW_BETA: reply with beta done.'))
   const script = `const [a, b] = await Promise.all([agent("alpha").ask(${alphaTask}), agent("beta").ask(${betaTask})]);\nreturn { alpha: a, beta: b };`
   const start = await modelScript.queue(
-    { toolCalls: [zcodeWorkflowSkillToolCall('load-workflow-skill')] },
-    { toolCalls: [zcodeCreateWorkflowToolCall('create-workflow', WORKFLOW_NAME, script)] },
+    {
+      toolCalls: [
+        zcodeWorkflowSkillToolCall('load-workflow-skill'),
+      ],
+    },
+    {
+      toolCalls: [
+        zcodeCreateWorkflowToolCall('create-workflow', WORKFLOW_NAME, script),
+      ],
+    },
     { text: 'The workflow launched.' },
   )
   await sendMessage(page, modelScript.prompt('Use a workflow to compute two answers.'))

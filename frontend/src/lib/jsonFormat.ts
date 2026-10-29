@@ -23,8 +23,12 @@ export function prettifyJson(input: unknown, lineLength = DEFAULT_JSON_LINE_LENG
     return String(input)
 
   try {
-    const columns = Number.isFinite(lineLength) && lineLength >= 1 ? Math.floor(lineLength) : DEFAULT_JSON_LINE_LENGTH
-    const selected = columns === DEFAULT_JSON_LINE_LENGTH ? formatter : createFormatter(columns)
+    const columns = Number.isFinite(lineLength) && lineLength >= 1
+      ? Math.floor(lineLength)
+      : DEFAULT_JSON_LINE_LENGTH
+    const selected = columns === DEFAULT_JSON_LINE_LENGTH
+      ? formatter
+      : createFormatter(columns)
     return selected.Reformat(raw)
   }
   catch {

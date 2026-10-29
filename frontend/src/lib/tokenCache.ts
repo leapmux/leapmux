@@ -32,8 +32,12 @@ interface RawToken {
  */
 export function toCachedTokens(lines: ReadonlyArray<ReadonlyArray<RawToken>>): CachedToken[][] {
   return lines.map(line => line.map((t): CachedToken => {
-    const className = t.htmlStyle === undefined ? undefined : recordShikiStyle(shikiStyleDecl(t.htmlStyle))
-    return className === undefined ? { content: t.content } : { content: t.content, className }
+    const className = t.htmlStyle === undefined
+      ? undefined
+      : recordShikiStyle(shikiStyleDecl(t.htmlStyle))
+    return className === undefined
+      ? { content: t.content }
+      : { content: t.content, className }
   }))
 }
 
@@ -70,7 +74,9 @@ function hasTextDecoration(decl: string): boolean {
  */
 export function mergeLineTokens(lines: ReadonlyArray<ReadonlyArray<RawToken>>): RawToken[][] {
   return lines.map((line) => {
-    const decls = line.map(t => t.htmlStyle === undefined ? '' : shikiStyleDecl(t.htmlStyle))
+    const decls = line.map(t => t.htmlStyle === undefined
+      ? ''
+      : shikiStyleDecl(t.htmlStyle))
 
     // Pass 1: fold whitespace-only runs into the next token.
     const wsMerged: RawToken[] = []
@@ -111,7 +117,9 @@ export function mergeLineTokens(lines: ReadonlyArray<ReadonlyArray<RawToken>>): 
       const decl = wsDecls[i]
       if (token === undefined || decl === undefined)
         continue
-      const prevDecl = mergedDecls.length > 0 ? mergedDecls[mergedDecls.length - 1] : undefined
+      const prevDecl = mergedDecls.length > 0
+        ? mergedDecls[mergedDecls.length - 1]
+        : undefined
       if (prevDecl === decl && !hasTextDecoration(decl)) {
         const prev = merged[merged.length - 1]
         if (prev !== undefined) {
@@ -157,7 +165,9 @@ export function internTokenLines(lines: ReadonlyArray<ReadonlyArray<RawToken>>):
       return [-1, t.content]
     // Kind-prefixed key so a STRING style can never collide with an object
     // style whose JSON happens to equal it.
-    const key = typeof s === 'string' ? `s:${s}` : `o:${JSON.stringify(s)}`
+    const key = typeof s === 'string'
+      ? `s:${s}`
+      : `o:${JSON.stringify(s)}`
     let index = indexByKey.get(key)
     if (index === undefined) {
       index = styles.length
@@ -177,8 +187,12 @@ export function internTokenLines(lines: ReadonlyArray<ReadonlyArray<RawToken>>):
 export function expandInternedTokenLines(interned: InternedTokenLines): CachedToken[][] {
   const classNames = interned.styles.map(s => recordShikiStyle(shikiStyleDecl(s)))
   return interned.lines.map(line => line.map(([styleIndex, content]): CachedToken => {
-    const className = styleIndex < 0 ? undefined : classNames[styleIndex]
-    return className === undefined ? { content } : { content, className }
+    const className = styleIndex < 0
+      ? undefined
+      : classNames[styleIndex]
+    return className === undefined
+      ? { content }
+      : { content, className }
   }))
 }
 

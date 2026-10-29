@@ -39,13 +39,15 @@ afterEach(() => {
 
 function makeProps() {
   const sectionStore = createSectionStore()
-  sectionStore.setSections([{
-    id: 'files',
-    name: 'Files',
-    position: 'a',
-    sidebar: Sidebar.RIGHT,
-    sectionType: SectionType.FILES,
-  } as any])
+  sectionStore.setSections([
+    {
+      id: 'files',
+      name: 'Files',
+      position: 'a',
+      sidebar: Sidebar.RIGHT,
+      sectionType: SectionType.FILES,
+    } as any,
+  ])
 
   return {
     sectionStore,
@@ -70,7 +72,9 @@ function makeProps() {
     onFileOpen: vi.fn(),
     onFileMention: vi.fn(),
     onOpenTerminal: vi.fn(),
-    gitStatusStore: { refresh: vi.fn() },
+    gitStatusStore: {
+      refresh: vi.fn(),
+    },
     activeFilePath: '/repo/file.ts',
     hasActiveFileTab: true,
     showGoalsAndTodos: false,

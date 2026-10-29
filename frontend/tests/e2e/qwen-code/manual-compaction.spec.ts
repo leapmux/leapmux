@@ -15,7 +15,9 @@ qwenTest.describe('Qwen Code Basic Chat', () => {
   qwenTest('states its own refused compression as a status row, not a failed prompt', async ({ native }) => {
     const { page, modelScript } = native
     await seedManualCompactionConversation(native)
-    await modelScript.fallback({ text: compactionSummaryText(QWEN_COMPACTION) })
+    await modelScript.fallback({
+      text: compactionSummaryText(QWEN_COMPACTION),
+    })
     await sendMessage(page, '/compact')
     await waitForAgentIdle(page)
     await expect(messageContents(page).filter({ hasText: 'Qwen Code did not compact the context' })).toHaveCount(1)

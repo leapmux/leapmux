@@ -15,7 +15,10 @@ import { qoderEndpointCacheRecords } from './qoderSurface'
 
 const setupBoundary = vi.hoisted(() => {
   const original: { execute?: typeof import('node:child_process').execFileSync } = {}
-  return { execute: vi.fn<typeof import('node:child_process').execFileSync>(), original }
+  return {
+    execute: vi.fn<typeof import('node:child_process').execFileSync>(),
+    original,
+  }
 })
 
 /**
@@ -24,7 +27,9 @@ const setupBoundary = vi.hoisted(() => {
  * The Letta setup test supplies its own controlled binary through mockImplementationOnce.
  */
 function executeWithoutInstalledLetta(actual: typeof import('node:child_process').execFileSync) {
-  return (file: string, args?: readonly string[], options?: ExecFileSyncOptions) => /^letta(?:\.cmd|\.exe)?$/i.test(basename(file)) ? Buffer.alloc(0) : actual(file, args, options)
+  return (file: string, args?: readonly string[], options?: ExecFileSyncOptions) => /^letta(?:\.cmd|\.exe)?$/i.test(basename(file))
+    ? Buffer.alloc(0)
+    : actual(file, args, options)
 }
 
 vi.mock('node:child_process', async (importOriginal) => {
@@ -42,7 +47,9 @@ vi.mock('node:child_process', async (importOriginal) => {
           callback(null, setupBoundary.execute(file, args, options).toString(), '')
         }
         catch (error) {
-          callback(error instanceof Error ? error : new Error(String(error)), '', '')
+          callback(error instanceof Error
+            ? error
+            : new Error(String(error)), '', '')
         }
       })
       return new actual.ChildProcess()
@@ -82,7 +89,9 @@ describe('createMockAgentEnvironment', () => {
       const mcp = patch.flatMap(row => row.insert ?? [])
       expect(mcp).toHaveLength(1)
       expect(mcp[0]?.config.command).toBe(process.execPath)
-      expect(mcp[0]?.config.args).toEqual([join(directory, 'mcp-echo.mjs')])
+      expect(mcp[0]?.config.args).toEqual([
+        join(directory, 'mcp-echo.mjs'),
+      ])
     }
     finally {
       for (const [index, name] of names.entries()) {
@@ -139,7 +148,9 @@ describe('createMockAgentEnvironment', () => {
   it('passes the private temporary root to both Letta setup commands before it returns', async () => {
     const binaries = join(directory, 'controlled-binaries')
     mkdirSync(binaries)
-    const letta = join(binaries, process.platform === 'win32' ? `letta${exeExtensionOnPath()}` : 'letta')
+    const letta = join(binaries, process.platform === 'win32'
+      ? `letta${exeExtensionOnPath()}`
+      : 'letta')
     writeFileSync(letta, 'controlled setup boundary', { mode: 0o755 })
     const beforePath = process.env.PATH
     const calls: Array<{ args: readonly string[], env: NodeJS.ProcessEnv | undefined }> = []
@@ -152,7 +163,10 @@ describe('createMockAgentEnvironment', () => {
     setupBoundary.execute.mockImplementationOnce(capture).mockImplementationOnce(capture)
     try {
       const { env } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
-      expect(calls.map(call => call.args.slice(0, 2))).toEqual([['backend', 'local'], ['connect', 'openai-compatible']])
+      expect(calls.map(call => call.args.slice(0, 2))).toEqual([
+        ['backend', 'local'],
+        ['connect', 'openai-compatible'],
+      ])
       for (const call of calls) {
         for (const key of ['TMPDIR', 'TEMP', 'TMP'] as const)
           expect(call.env?.[key], key).toBe(join(directory, 'tmp'))
@@ -175,7 +189,9 @@ describe('createMockAgentEnvironment', () => {
   it('turns the Letta Code updater off for both setup commands, whatever the run inherits', async () => {
     const binaries = join(directory, 'controlled-binaries')
     mkdirSync(binaries)
-    const letta = join(binaries, process.platform === 'win32' ? `letta${exeExtensionOnPath()}` : 'letta')
+    const letta = join(binaries, process.platform === 'win32'
+      ? `letta${exeExtensionOnPath()}`
+      : 'letta')
     writeFileSync(letta, 'controlled setup boundary', { mode: 0o755 })
     const beforePath = process.env.PATH
     const beforeSwitch = process.env.DISABLE_AUTOUPDATER
@@ -207,7 +223,10 @@ describe('createMockAgentEnvironment', () => {
   it('passes its private temporary root to an actual Node subprocess', async () => {
     const { env } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
     const output = execFileSync(process.execPath, ['-e', 'process.stdout.write(require("node:os").tmpdir())'], {
-      env: { ...process.env, ...env },
+      env: {
+        ...process.env,
+        ...env,
+      },
       encoding: 'utf8',
     })
     expect(output).toBe(join(directory, 'tmp'))
@@ -228,7 +247,11 @@ describe('createMockAgentEnvironment', () => {
     process.env.PATH = shimDir
     try {
       const { env } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
-      expect(env.PATH?.split(delimiter)).toEqual([join(directory, 'cli-shims'), installDir, shimDir])
+      expect(env.PATH?.split(delimiter)).toEqual([
+        join(directory, 'cli-shims'),
+        installDir,
+        shimDir,
+      ])
     }
     finally {
       if (before === undefined)
@@ -263,7 +286,9 @@ describe('createMockAgentEnvironment', () => {
 
   it('advertises each pinned model identifier once', async () => {
     expect(new Set(MOCK_MODEL_IDS).size).toBe(MOCK_MODEL_IDS.length)
-    expect([...MOCK_MODEL_IDS].sort()).toEqual([...new Set(Object.values(MOCK_MODELS))].sort())
+    expect([...MOCK_MODEL_IDS].sort()).toEqual([
+      ...new Set(Object.values(MOCK_MODELS)),
+    ].sort())
   })
 
   it('states no Pi package without a real home directory to find them in', async () => {
@@ -282,7 +307,15 @@ describe('createMockAgentEnvironment', () => {
     const settings = JSON.parse(readFileSync(join(piAgentDir, 'settings.json'), 'utf8'))
     expect(settings.packages).not.toContain(join(realHomeDir, '.pi', 'agent', 'npm', 'node_modules', 'pi-mcp-adapter'))
     expect(JSON.parse(readFileSync(join(piAgentDir, 'mcp.json'), 'utf8'))).toEqual({
-      mcpServers: { echo_probe: { command: process.execPath, args: [join(directory, 'mcp-echo.mjs')], exposure: 'direct' } },
+      mcpServers: {
+        echo_probe: {
+          command: process.execPath,
+          args: [
+            join(directory, 'mcp-echo.mjs'),
+          ],
+          exposure: 'direct',
+        },
+      },
     })
   })
 
@@ -297,7 +330,10 @@ describe('createMockAgentEnvironment', () => {
   it.runIf(process.platform !== 'win32')('gives each agent the private Pi wrapper, which turns off the context files', async () => {
     const { env } = await createMockAgentEnvironment(directory, 'http://127.0.0.1:43210')
     const wrapper = join(directory, 'cli-shims', 'pi')
-    const installed = findBinary('pi', { ...process.env, ...agentSearchPathEnv() })
+    const installed = findBinary('pi', {
+      ...process.env,
+      ...agentSearchPathEnv(),
+    })
     if (installed === null) {
       expect(existsSync(wrapper)).toBe(false)
       return
@@ -362,7 +398,13 @@ describe('createMockAgentEnvironment', () => {
     // A spec that asserts a private path needs the directory before the agent writes to it.
     // A spec that runs first on a shard sees no earlier agent write. The Claude Code credential spec failed that way.
     const directoryVariables = Object.entries(env).filter(([name]) => /^HOME$|_DIR$|_HOME$|_ROOT$|_OVERRIDE$/.test(name))
-    for (const name of ['CLAUDE_CONFIG_DIR', 'ZCODE_STORAGE_DIR', 'KIRO_DATA_DIR', 'GROK_FILE_LOCK_SLOT_DIR', 'XDG_DATA_HOME'])
+    for (const name of [
+      'CLAUDE_CONFIG_DIR',
+      'ZCODE_STORAGE_DIR',
+      'KIRO_DATA_DIR',
+      'GROK_FILE_LOCK_SLOT_DIR',
+      'XDG_DATA_HOME',
+    ])
       expect(directoryVariables.map(([variable]) => variable), `${name} is a directory variable of the run`).toContain(name)
     for (const [name, path] of directoryVariables) {
       if (!path?.startsWith(`${directory}${sep}`))
@@ -458,7 +500,12 @@ describe('createMockAgentEnvironment', () => {
     expect(codewhale).toContain('[tools]\nuser_input_timeout_seconds = 0')
     const echoServer = join(directory, 'mcp-echo.mjs')
     expect(JSON.parse(readFileSync(join(env.CODEWHALE_HOME!, 'mcp.json'), 'utf8'))).toEqual({
-      servers: { echo_probe: { command: process.execPath, args: [echoServer] } },
+      servers: {
+        echo_probe: {
+          command: process.execPath,
+          args: [echoServer],
+        },
+      },
     })
     expect(readFileSync(echoServer, 'utf8')).toContain('MCP_ECHO:')
   })
@@ -480,7 +527,10 @@ describe('createMockAgentEnvironment', () => {
         provider: 'deepseek',
         wire_model_id: CODEWHALE_VISION_MODEL_ID,
         endpoint_key: 'chat',
-        modalities: { input: ['text', 'image'], output: ['text'] },
+        modalities: {
+          input: ['text', 'image'],
+          output: ['text'],
+        },
         source: { kind: 'live', base_url_fingerprint: fingerprint, fetched_at: entry.fetched_at },
       }),
     ]))
@@ -510,7 +560,14 @@ describe('createMockAgentEnvironment', () => {
     expect(kimi).toContain(`[models."${KIMI_MOCK_MODELS.plain}"]`)
     expect(kimi).toContain(`[models."${KIMI_MOCK_MODELS.alternateThinking}"]\nprovider = "${MOCK_PROVIDER_IDS.kimi}"\nmodel = "${MOCK_MODELS.deepseek}"`)
     expect(JSON.parse(readFileSync(join(env.KIMI_CODE_HOME!, 'mcp.json'), 'utf8'))).toEqual({
-      mcpServers: { echo_probe: { command: process.execPath, args: [join(directory, 'mcp-echo.mjs')] } },
+      mcpServers: {
+        echo_probe: {
+          command: process.execPath,
+          args: [
+            join(directory, 'mcp-echo.mjs'),
+          ],
+        },
+      },
     })
   })
 
@@ -518,7 +575,9 @@ describe('createMockAgentEnvironment', () => {
     // A new identifier would change the catalog every provider reads.
     for (const [name, alias] of Object.entries(KIMI_MOCK_MODELS)) {
       const [provider, model] = alias.split('/')
-      expect(provider, name).toBe(name === 'account' ? 'kimi-code' : MOCK_PROVIDER_IDS.kimi)
+      expect(provider, name).toBe(name === 'account'
+        ? 'kimi-code'
+        : MOCK_PROVIDER_IDS.kimi)
       expect(MOCK_MODEL_IDS).toContain(model)
     }
   })
@@ -546,7 +605,12 @@ describe('createMockAgentEnvironment', () => {
     // records each host that omp tries to reach.
     expect(env.PI_PROXY).toBe('http://127.0.0.1:43210')
     // omp reads an empty value as unset, so the developer's own value cannot reach it.
-    for (const name of ['PI_CONFIG_FILES', 'PI_CONFIG_DIR', 'OMP_AUTH_BROKER_URL', 'OMP_AUTH_BROKER_TOKEN'])
+    for (const name of [
+      'PI_CONFIG_FILES',
+      'PI_CONFIG_DIR',
+      'OMP_AUTH_BROKER_URL',
+      'OMP_AUTH_BROKER_TOKEN',
+    ])
       expect(env[name], name).toBe('')
 
     const models = JSON.parse(readFileSync(join(ohMyPiAgentDir, 'models.yml'), 'utf8'))
@@ -559,7 +623,15 @@ describe('createMockAgentEnvironment', () => {
     expect(models.providers[MOCK_PROVIDER_IDS.ohMyPi].models[1].id).toBe(OH_MY_PI_ALT_MODEL_WIRE_ID)
     expect(OH_MY_PI_ALT_MODEL_ID).toBe(`${MOCK_PROVIDER_IDS.ohMyPi}/${OH_MY_PI_ALT_MODEL_WIRE_ID}`)
     expect(JSON.parse(readFileSync(join(ohMyPiAgentDir, 'mcp.json'), 'utf8'))).toEqual({
-      mcpServers: { echo_probe: { type: 'stdio', command: process.execPath, args: [join(directory, 'mcp-echo.mjs')] } },
+      mcpServers: {
+        echo_probe: {
+          type: 'stdio',
+          command: process.execPath,
+          args: [
+            join(directory, 'mcp-echo.mjs'),
+          ],
+        },
+      },
     })
   })
 
@@ -569,7 +641,14 @@ describe('createMockAgentEnvironment', () => {
     const model = `${MOCK_PROVIDER_IDS.ohMyPi}/${MOCK_MODELS.ohMyPi}`
 
     expect(config.modelRoles).toEqual({ default: model, task: `${model}:off` })
-    expect(config.disabledProviders).toEqual(expect.arrayContaining(['anthropic', 'openai', 'ollama', 'lm-studio', 'llama.cpp', 'web']))
+    expect(config.disabledProviders).toEqual(expect.arrayContaining([
+      'anthropic',
+      'openai',
+      'ollama',
+      'lm-studio',
+      'llama.cpp',
+      'web',
+    ]))
     expect(config.disabledProviders).not.toContain(MOCK_PROVIDER_IDS.ohMyPi)
     expect(config).toMatchObject({
       todo: { reminders: false },
@@ -602,7 +681,13 @@ describe('createMockAgentEnvironment', () => {
     expect(openCode.model).toBe(`${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.zai}`)
     expect(openCode.enabled_providers).toEqual([MOCK_PROVIDER_IDS.openCode])
     expect(openCode.compaction).toEqual({ tail_turns: 2 })
-    expect(openCode.mcp.echo_probe).toEqual({ type: 'local', command: [process.execPath, join(directory, 'mcp-echo.mjs')] })
+    expect(openCode.mcp.echo_probe).toEqual({
+      type: 'local',
+      command: [
+        process.execPath,
+        join(directory, 'mcp-echo.mjs'),
+      ],
+    })
   })
 
   // MiMo takes the OpenCode family's provider block under its own variable names.
@@ -627,8 +712,17 @@ describe('createMockAgentEnvironment', () => {
     expect(mimo.model).toBe(`${MOCK_PROVIDER_IDS.openCode}/${MOCK_MODELS.zai}`)
     expect(mimo.enabled_providers).toEqual([MOCK_PROVIDER_IDS.openCode])
     const confirmationServer = join(env.MIMOCODE_HOME!, 'mcp-confirmation.mjs')
-    expect(mimo.mcp.form_probe).toEqual({ type: 'local', command: [process.execPath, confirmationServer] })
-    expect(mimo.mcp.echo_probe).toEqual({ type: 'local', command: [process.execPath, join(directory, 'mcp-echo.mjs')] })
+    expect(mimo.mcp.form_probe).toEqual({
+      type: 'local',
+      command: [process.execPath, confirmationServer],
+    })
+    expect(mimo.mcp.echo_probe).toEqual({
+      type: 'local',
+      command: [
+        process.execPath,
+        join(directory, 'mcp-echo.mjs'),
+      ],
+    })
     expect(readFileSync(confirmationServer, 'utf8')).toContain('elicitation/create')
     expect(mimo.agent.title).toEqual({ disable: true })
     for (const retry of Object.values(mimo.retry))
@@ -702,9 +796,17 @@ describe('createMockAgentEnvironment', () => {
     const providers = JSON.parse(readFileSync(join(env.HOME!, '.commandcode', 'providers.json'), 'utf8'))
     const modelName = (id: string) => id.split('/')[1]!
     expect(providers.provider['leapmux-e2e'].models).toEqual({
-      [modelName(COMMAND_CODE_MODEL_ID)]: { contextWindow: 131072, reasoning: true, reasoningEfforts: ['low', 'high'] },
+      [modelName(COMMAND_CODE_MODEL_ID)]: {
+        contextWindow: 131072,
+        reasoning: true,
+        reasoningEfforts: ['low', 'high'],
+      },
       [modelName(COMMAND_CODE_ALT_MODEL_ID)]: { contextWindow: 131072 },
-      [modelName(COMMAND_CODE_REASONING_MODEL_ID)]: { contextWindow: 131072, reasoning: true, reasoningEfforts: ['low', 'medium', 'high'] },
+      [modelName(COMMAND_CODE_REASONING_MODEL_ID)]: {
+        contextWindow: 131072,
+        reasoning: true,
+        reasoningEfforts: ['low', 'medium', 'high'],
+      },
     })
   })
 
@@ -795,7 +897,12 @@ describe('createMockAgentEnvironment', () => {
       XDG_CACHE_HOME: join(homeDir, '.cache'),
       XDG_STATE_HOME: join(homeDir, '.local', 'state'),
     })
-    for (const key of ['XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_CACHE_HOME', 'XDG_STATE_HOME'])
+    for (const key of [
+      'XDG_CONFIG_HOME',
+      'XDG_DATA_HOME',
+      'XDG_CACHE_HOME',
+      'XDG_STATE_HOME',
+    ])
       expect(env[key]!.startsWith(realHomeDir), key).toBe(false)
   })
 
@@ -830,7 +937,12 @@ describe('createMockAgentEnvironment', () => {
       modes: {},
       providers: {
         [CLINE_PROVIDER_ID]: {
-          settings: { provider: CLINE_PROVIDER_ID, apiKey: 'leapmux-e2e-model-key', model: MOCK_MODELS.cline, baseUrl: 'http://127.0.0.1:43210/v1' },
+          settings: {
+            provider: CLINE_PROVIDER_ID,
+            apiKey: 'leapmux-e2e-model-key',
+            model: MOCK_MODELS.cline,
+            baseUrl: 'http://127.0.0.1:43210/v1',
+          },
           // Cline ignores a file whose entry states no UTC update time.
           updatedAt: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/),
           tokenSource: 'manual',
@@ -840,10 +952,24 @@ describe('createMockAgentEnvironment', () => {
     expect(MOCK_MODEL_IDS).toContain(MOCK_MODELS.cline)
     expect(JSON.parse(readFileSync(join(dataDir, 'settings', 'global-settings.json'), 'utf8'))).toEqual({ telemetryOptOut: true, autoUpdateEnabled: false })
     expect(JSON.parse(readFileSync(join(dataDir, 'settings', 'cline_mcp_settings.json'), 'utf8'))).toEqual({
-      mcpServers: { echo_probe: { transport: { type: 'stdio', command: process.execPath, args: [join(directory, 'mcp-echo.mjs')] } } },
+      mcpServers: {
+        echo_probe: {
+          transport: {
+            type: 'stdio',
+            command: process.execPath,
+            args: [
+              join(directory, 'mcp-echo.mjs'),
+            ],
+          },
+        },
+      },
     })
     const flags = JSON.parse(readFileSync(join(dataDir, 'cache', 'feature-flags.json'), 'utf8'))
-    expect(flags).toMatchObject({ version: 2, userId: null, flagsPayload: { featureFlags: {}, featureFlagPayloads: {} } })
+    expect(flags).toMatchObject({
+      version: 2,
+      userId: null,
+      flagsPayload: { featureFlags: {}, featureFlagPayloads: {} },
+    })
     expect(flags.updatedAt).toBeGreaterThan(0)
   })
 
@@ -894,7 +1020,9 @@ describe('createMockAgentEnvironment', () => {
     expect(env.JUNIE_HOME!.startsWith(realHomeDir)).toBe(false)
     const config = JSON.parse(readFileSync(env.JUNIE_CONFIG_LOCATION!, 'utf8'))
     const agentLocations = config['agent-locations']
-    expect(agentLocations).toEqual([join(directory, 'junie-agents')])
+    expect(agentLocations).toEqual([
+      join(directory, 'junie-agents'),
+    ])
     if (!Array.isArray(agentLocations) || typeof agentLocations[0] !== 'string')
       return
     const childProfile = readFileSync(join(agentLocations[0], 'leapmux-e2e-child.md'), 'utf8')
@@ -923,12 +1051,14 @@ describe('createMockAgentEnvironment', () => {
     expect(JUNIE_RESPONSES_MODEL).toBe('custom:mock-responses')
     expect(existsSync(join(config['model-locations'][0], 'mock-effort.json'))).toBe(false)
     expect(config.provider).toBe(JUNIE_PROXY_PROVIDER)
-    expect(config.proxies).toEqual([{
-      'name': JUNIE_PROXY_PROVIDER,
-      'kind': 'OpenAI',
-      'api-url': 'http://127.0.0.1:43210',
-      'headers': ['Authorization: Bearer leapmux-e2e-model-key'],
-    }])
+    expect(config.proxies).toEqual([
+      {
+        'name': JUNIE_PROXY_PROVIDER,
+        'kind': 'OpenAI',
+        'api-url': 'http://127.0.0.1:43210',
+        'headers': ['Authorization: Bearer leapmux-e2e-model-key'],
+      },
+    ])
     expect(JUNIE_NATIVE_EFFORT_MODEL).toBe('gpt-5.3-codex')
   })
 
@@ -942,7 +1072,11 @@ describe('createMockAgentEnvironment', () => {
     for (const flags of ['-lic', '-ic']) {
       const resolved = execFileSync('/bin/zsh', [flags, 'command -v security || true; command -v junie || true'], {
         cwd: directory,
-        env: { ...process.env, ZDOTDIR: hostileStartup, ...env },
+        env: {
+          ...process.env,
+          ZDOTDIR: hostileStartup,
+          ...env,
+        },
         encoding: 'utf8',
       }).trim().split('\n')
       expect(resolved[0]).toBe(join(shimDir!, 'security'))
@@ -1018,7 +1152,12 @@ describe('createMockAgentEnvironment', () => {
     for (const file of ['qoder-client-endpoint-cache.json', 'qoder-client-endpoint-cache-public.json']) {
       const v2 = JSON.parse(readFileSync(join(cacheDir, file), 'utf8'))
       expect(v2).toEqual(expectedCaches.v2)
-      for (const purpose of ['center', 'inference', 'securityInference', 'openapi'])
+      for (const purpose of [
+        'center',
+        'inference',
+        'securityInference',
+        'openapi',
+      ])
         expect(v2.entries.prod.endpointSets[purpose].selected).toBe(origin)
     }
 
@@ -1028,12 +1167,22 @@ describe('createMockAgentEnvironment', () => {
     const settings = JSON.parse(readFileSync(join(qoderHome, 'settings.json'), 'utf8'))
     expect(Object.keys(settings.providers)).toEqual(['mockprov'])
     expect(settings.providers.mockprov.models).toEqual([
-      { model: MOCK_MODELS.deepseek, displayName: 'Mock Model', capabilities: { vision: true } },
-      { model: MOCK_MODELS.qoder, displayName: 'Alternate Mock Model', capabilities: { vision: true } },
+      {
+        model: MOCK_MODELS.deepseek,
+        displayName: 'Mock Model',
+        capabilities: { vision: true },
+      },
+      {
+        model: MOCK_MODELS.qoder,
+        displayName: 'Alternate Mock Model',
+        capabilities: { vision: true },
+      },
     ])
     expect(settings.mcpServers.form_probe).toEqual({
       command: process.execPath,
-      args: [join(qoderHome, 'form-server.mjs')],
+      args: [
+        join(qoderHome, 'form-server.mjs'),
+      ],
     })
     expect(existsSync(settings.mcpServers.form_probe.args[0])).toBe(true)
     expect(settings.modelConfigs).toBeUndefined()
@@ -1044,7 +1193,13 @@ describe('createMockAgentEnvironment', () => {
     if (process.platform !== 'win32' && findBinary('qodercli')) {
       expect(existsSync(launcher)).toBe(true)
       unlinkSync(env.QODER_SDK_AUTH_PAYLOAD_FILE!)
-      execFileSync(launcher, ['--version'], { env: { ...process.env, ...env }, timeout: 10_000 })
+      execFileSync(launcher, ['--version'], {
+        env: {
+          ...process.env,
+          ...env,
+        },
+        timeout: 10_000,
+      })
       expect(JSON.parse(readFileSync(env.QODER_SDK_AUTH_PAYLOAD_FILE!, 'utf8'))).toMatchObject({ type: 'accessToken' })
     }
     else {
@@ -1119,15 +1274,30 @@ describe('createMockAgentEnvironment', () => {
       baseUrl: 'http://127.0.0.1:43210/v1',
       envKey: 'LEAPMUX_E2E_MODEL_API_KEY',
       capabilities: { vision: true },
-      generationConfig: { modalities: { image: true, pdf: true } },
+      generationConfig: {
+        modalities: { image: true, pdf: true },
+      },
     })
-    expect(qwen.modelProviders.openai[1]).toMatchObject({ id: QWEN_ALT_MODEL_WIRE_ID, generationConfig: { modalities: { image: true, pdf: true } } })
+    expect(qwen.modelProviders.openai[1]).toMatchObject({
+      id: QWEN_ALT_MODEL_WIRE_ID,
+      generationConfig: {
+        modalities: { image: true, pdf: true },
+      },
+    })
     expect(QWEN_ALT_MODEL_ID).toBe(`${QWEN_ALT_MODEL_WIRE_ID}(openai)`)
-    expect(qwen.modelProviders.openai[2]).toMatchObject({ id: QWEN_PLAIN_MODEL_WIRE_ID, capabilities: { vision: true } })
+    expect(qwen.modelProviders.openai[2]).toMatchObject({
+      id: QWEN_PLAIN_MODEL_WIRE_ID,
+      capabilities: { vision: true },
+    })
     expect(qwen.modelProviders.openai[2].capabilities.reasoning).toBeUndefined()
     expect(QWEN_PLAIN_MODEL_ID).toBe(`${QWEN_PLAIN_MODEL_WIRE_ID}(openai)`)
     expect(qwen.model.name).toBe(MOCK_MODELS.qwen)
-    expect(qwen.mcpServers.echo_probe).toEqual({ command: process.execPath, args: [join(directory, 'mcp-echo.mjs')] })
+    expect(qwen.mcpServers.echo_probe).toEqual({
+      command: process.execPath,
+      args: [
+        join(directory, 'mcp-echo.mjs'),
+      ],
+    })
     expect(qwen.tools.approvalMode).toBe('default')
     expect(qwen.memory).toEqual({ enableManagedAutoMemory: false, enableManagedAutoDream: false })
     expect(qwen.ui.enableFollowupSuggestions).toBe(false)
@@ -1180,7 +1350,10 @@ describe('createMockAgentEnvironment updater switches', () => {
     const text = (...path: string[]) => readFileSync(join(...path), 'utf8')
 
     // omp's update notice and its plugin auto-update: no variable or flag names either key.
-    expect(json(ohMyPiAgentDir, 'config.yml')).toMatchObject({ startup: { checkUpdate: false }, marketplace: { autoUpdate: 'off' } })
+    expect(json(ohMyPiAgentDir, 'config.yml')).toMatchObject({
+      startup: { checkUpdate: false },
+      marketplace: { autoUpdate: 'off' },
+    })
     // Qwen Code reads the key from the file that QWEN_HOME selects.
     expect(env.QWEN_HOME).toBe(join(homeDir, '.qwen'))
     expect(json(homeDir, '.qwen', 'settings.json').general).toMatchObject({ enableAutoUpdate: false })

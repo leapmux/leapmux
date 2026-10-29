@@ -85,7 +85,10 @@ export const CliPathDialog: Component<CliPathDialogProps> = (props) => {
       handleResult(result)
     }
     catch (err) {
-      setOutcome({ kind: 'io_error', message: formatErrorMessage(err) })
+      setOutcome({
+        kind: 'io_error',
+        message: formatErrorMessage(err),
+      })
     }
     finally {
       setBusy(false)
@@ -263,7 +266,9 @@ export const CliPathDialog: Component<CliPathDialogProps> = (props) => {
             <footer class={actionsFooter}>
               <Show when={outcomeValue.kind === 'needs_sudo' || outcomeValue.kind === 'parent_missing'}>
                 <button type="button" class="outline" onClick={copy}>
-                  {copied() ? 'Copied' : 'Copy command'}
+                  {copied()
+                    ? 'Copied'
+                    : 'Copy command'}
                 </button>
               </Show>
               <button type="button" onClick={props.onClose}>

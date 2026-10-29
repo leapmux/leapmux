@@ -30,7 +30,12 @@ describe('rowLayoutMeasurement', () => {
     expect(rowLayoutMeasurement(element)).toBe(0)
   })
 
-  it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])('rejects zero height without a usable width of %s', (width) => {
+  it.each([
+    0,
+    -1,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+  ])('rejects zero height without a usable width of %s', (width) => {
     expect(rowLayoutMeasurement(row(0, width))).toBeUndefined()
   })
 
@@ -53,7 +58,12 @@ describe('rowLayoutMeasurement', () => {
     expect(rowLayoutMeasurement(undefined)).toBeUndefined()
   })
 
-  it.each([-1, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])('rejects an invalid height of %s', (height) => {
+  it.each([
+    -1,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.NEGATIVE_INFINITY,
+  ])('rejects an invalid height of %s', (height) => {
     expect(rowLayoutMeasurement(row(height))).toBeUndefined()
   })
 
@@ -61,7 +71,9 @@ describe('rowLayoutMeasurement', () => {
     const element = row(0)
     const image = document.createElement('img')
     let complete = false
-    Object.defineProperty(image, 'complete', { get: () => complete })
+    Object.defineProperty(image, 'complete', {
+      get: () => complete,
+    })
     element.append(image)
     expect(rowLayoutMeasurement(element)).toBeUndefined()
     complete = true
@@ -71,7 +83,9 @@ describe('rowLayoutMeasurement', () => {
   it('preserves a positive reserved image box before decoding finishes', () => {
     const element = row(24)
     const image = document.createElement('img')
-    Object.defineProperty(image, 'complete', { get: () => false })
+    Object.defineProperty(image, 'complete', {
+      get: () => false,
+    })
     element.append(image)
     expect(rowLayoutMeasurement(element)).toBe(24)
   })

@@ -84,7 +84,11 @@ function TestConsumer() {
   const auth = useAuth()
   return (
     <div>
-      <span data-testid="authenticated">{auth.isAuthenticated() ? 'yes' : 'no'}</span>
+      <span data-testid="authenticated">
+        {auth.isAuthenticated()
+          ? 'yes'
+          : 'no'}
+      </span>
       <span data-testid="username">{auth.user()?.username ?? 'none'}</span>
       <span data-testid="bootstrap-error">{auth.bootstrapError() ?? 'none'}</span>
     </div>
@@ -112,7 +116,9 @@ function renderWithAuthCapture(): { auth: () => AuthState } {
       <TestConsumer />
     </AuthProvider>
   ))
-  return { auth: () => captured! }
+  return {
+    auth: () => captured!,
+  }
 }
 
 describe('AuthContext', () => {
@@ -160,7 +166,9 @@ describe('AuthContext', () => {
       expect(document.documentElement.getAttribute(BOOT_SPLASH_PHASE_ATTRIBUTE)).toBe('session')
     })
 
-    session.resolve({ user: { id: 'u1', username: 'testuser', isAdmin: false } })
+    session.resolve({
+      user: { id: 'u1', username: 'testuser', isAdmin: false },
+    })
     await vi.waitFor(() => {
       expect(document.documentElement.getAttribute(BOOT_SPLASH_PHASE_ATTRIBUTE)).toBe('workspaces')
     })
@@ -306,7 +314,12 @@ describe('AuthContext', () => {
     // Simulate: user just returned from OAuth callback with a valid session cookie.
     // AuthContext.onMount calls getCurrentUser, which succeeds because the cookie is set.
     mockGetCurrentUser.mockResolvedValue({
-      user: { id: 'u2', username: 'oauth-user', isAdmin: false, oauthProviders: ['Google'] },
+      user: {
+        id: 'u2',
+        username: 'oauth-user',
+        isAdmin: false,
+        oauthProviders: ['Google'],
+      },
     })
 
     renderWithAuth()
@@ -324,14 +337,18 @@ describe('AuthContext', () => {
     // eagerly rather than left to the lazy per-request identity check -- and the
     // desktop sidecar's tunnels (which carry no identity of their own) must be
     // reset so they cannot keep relaying under the old user.
-    mockGetCurrentUser.mockResolvedValue({ user: { id: 'u1', username: 'alice', isAdmin: false } })
+    mockGetCurrentUser.mockResolvedValue({
+      user: { id: 'u1', username: 'alice', isAdmin: false },
+    })
     const { auth } = renderWithAuthCapture()
     await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
     mockCloseAll.mockClear()
     mockResetTunnels.mockClear()
     mockResetTunnels.mockResolvedValue(undefined)
 
-    mockLogin.mockResolvedValue({ user: { id: 'u2', username: 'bob', isAdmin: false } })
+    mockLogin.mockResolvedValue({
+      user: { id: 'u2', username: 'bob', isAdmin: false },
+    })
     await auth().login('bob', 'pw')
 
     expect(mockCloseAll).toHaveBeenCalledOnce()
@@ -342,13 +359,17 @@ describe('AuthContext', () => {
   it('does not drop pooled channels when re-authenticating as the same user', async () => {
     // Re-login as the SAME identity (a session refresh) is not a transition, so
     // the pooled channels -- already correct for this user -- must be kept.
-    mockGetCurrentUser.mockResolvedValue({ user: { id: 'u1', username: 'alice', isAdmin: false } })
+    mockGetCurrentUser.mockResolvedValue({
+      user: { id: 'u1', username: 'alice', isAdmin: false },
+    })
     const { auth } = renderWithAuthCapture()
     await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
     mockCloseAll.mockClear()
     mockResetTunnels.mockClear()
 
-    mockLogin.mockResolvedValue({ user: { id: 'u1', username: 'alice', isAdmin: false } })
+    mockLogin.mockResolvedValue({
+      user: { id: 'u1', username: 'alice', isAdmin: false },
+    })
     await auth().login('alice', 'pw')
 
     expect(mockCloseAll).not.toHaveBeenCalled()
@@ -356,7 +377,9 @@ describe('AuthContext', () => {
   })
 
   it('drops pooled channels and resets sidecar tunnels on logout', async () => {
-    mockGetCurrentUser.mockResolvedValue({ user: { id: 'u1', username: 'alice', isAdmin: false } })
+    mockGetCurrentUser.mockResolvedValue({
+      user: { id: 'u1', username: 'alice', isAdmin: false },
+    })
     const { auth } = renderWithAuthCapture()
     await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
     mockCloseAll.mockClear()
@@ -379,7 +402,9 @@ describe('AuthContext', () => {
       expect(document.documentElement.getAttribute(BOOT_SPLASH_PHASE_ATTRIBUTE)).toBe('ready')
     })
 
-    mockLogin.mockResolvedValue({ user: { id: 'u1', username: 'alice', isAdmin: false } })
+    mockLogin.mockResolvedValue({
+      user: { id: 'u1', username: 'alice', isAdmin: false },
+    })
     await auth().login('alice', 'pw')
 
     expect(document.documentElement.getAttribute(BOOT_SPLASH_PHASE_ATTRIBUTE)).toBe('workspaces')
@@ -391,7 +416,9 @@ describe('AuthContext', () => {
     // account creation, but a future impersonation seed or server-side session swap
     // that changes the id must release too; the old imperative wiring only released
     // at login/logout/auth-error and would have leaked the previous user's channels.
-    mockGetCurrentUser.mockResolvedValue({ user: { id: 'u1', username: 'alice', isAdmin: false } })
+    mockGetCurrentUser.mockResolvedValue({
+      user: { id: 'u1', username: 'alice', isAdmin: false },
+    })
     const { auth } = renderWithAuthCapture()
     await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
     mockCloseAll.mockClear()
@@ -454,7 +481,9 @@ describe('AuthContext', () => {
   it('adopts every signal on a refresh, not only the user', async () => {
     const resend = timestampFromDate(new Date(Date.now() + 60 * 1000))
     const deadline = timestampFromDate(new Date(Date.now() + 2 * 60 * 60 * 1000))
-    mockGetCurrentUser.mockResolvedValue({ user: { id: 'u1', username: 'alice', isAdmin: false } })
+    mockGetCurrentUser.mockResolvedValue({
+      user: { id: 'u1', username: 'alice', isAdmin: false },
+    })
     const { auth } = renderWithAuthCapture()
     await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
 
@@ -477,7 +506,9 @@ describe('AuthContext', () => {
   describe('a stale GetCurrentUser response', () => {
     it('does not revert a freshly proven elevation', async () => {
       const deadline = timestampFromDate(new Date(Date.now() + 2 * 60 * 60 * 1000))
-      mockGetCurrentUser.mockResolvedValue({ user: { id: 'u1', username: 'alice', isAdmin: false } })
+      mockGetCurrentUser.mockResolvedValue({
+        user: { id: 'u1', username: 'alice', isAdmin: false },
+      })
       const { auth } = renderWithAuthCapture()
       await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
 
@@ -491,7 +522,9 @@ describe('AuthContext', () => {
       await auth().elevateWithPassword('secret')
       expect(auth().elevationExpiresAt()).toBe(deadline)
 
-      inFlight.resolve({ user: { id: 'u1', username: 'alice', isAdmin: false } })
+      inFlight.resolve({
+        user: { id: 'u1', username: 'alice', isAdmin: false },
+      })
       await refreshing
 
       // `readCurrentUser` discards the older answer. Adopting it would make Preferences
@@ -502,7 +535,9 @@ describe('AuthContext', () => {
 
     it('does not revert a newer response that already landed', async () => {
       const resend = timestampFromDate(new Date(Date.now() + 60 * 1000))
-      mockGetCurrentUser.mockResolvedValue({ user: { id: 'u1', username: 'alice', isAdmin: false } })
+      mockGetCurrentUser.mockResolvedValue({
+        user: { id: 'u1', username: 'alice', isAdmin: false },
+      })
       const { auth } = renderWithAuthCapture()
       await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
 
@@ -517,7 +552,9 @@ describe('AuthContext', () => {
       await auth().refreshUser()
       expect(auth().user()?.username).toBe('renamed')
 
-      first.resolve({ user: { id: 'u1', username: 'alice', isAdmin: false } })
+      first.resolve({
+        user: { id: 'u1', username: 'alice', isAdmin: false },
+      })
       await firstRefresh
 
       expect(auth().user()?.username).toBe('renamed')
@@ -534,7 +571,12 @@ describe('AuthContext', () => {
      */
     it('does not revert a same-identity user that landed first', async () => {
       mockGetCurrentUser.mockResolvedValue({
-        user: { id: 'u1', username: 'alice', emailVerified: false, isAdmin: false },
+        user: {
+          id: 'u1',
+          username: 'alice',
+          emailVerified: false,
+          isAdmin: false,
+        },
       })
       const { auth } = renderWithAuthCapture()
       await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
@@ -548,7 +590,14 @@ describe('AuthContext', () => {
       )
       expect(auth().user()?.emailVerified).toBe(true)
 
-      inFlight.resolve({ user: { id: 'u1', username: 'alice', emailVerified: false, isAdmin: false } })
+      inFlight.resolve({
+        user: {
+          id: 'u1',
+          username: 'alice',
+          emailVerified: false,
+          isAdmin: false,
+        },
+      })
       await refreshing
 
       expect(auth().user()?.emailVerified).toBe(true)
@@ -563,7 +612,9 @@ describe('AuthContext', () => {
      */
     it('does not revert a cooldown a resend recorded while it was out', async () => {
       const resend = timestampFromDate(new Date(Date.now() + 60 * 1000))
-      mockGetCurrentUser.mockResolvedValue({ user: { id: 'u1', username: 'alice', isAdmin: false } })
+      mockGetCurrentUser.mockResolvedValue({
+        user: { id: 'u1', username: 'alice', isAdmin: false },
+      })
       const { auth } = renderWithAuthCapture()
       await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
 
@@ -573,7 +624,9 @@ describe('AuthContext', () => {
 
       auth().setVerificationResendAvailableAt(resend)
 
-      inFlight.resolve({ user: { id: 'u1', username: 'alice', isAdmin: false } })
+      inFlight.resolve({
+        user: { id: 'u1', username: 'alice', isAdmin: false },
+      })
       await refreshing
 
       expect(auth().verificationResendAvailableAt()).toBe(resend)
@@ -588,7 +641,9 @@ describe('AuthContext', () => {
   describe('the step-up ceremonies', () => {
     it('adopts the window a password proved', async () => {
       const deadline = timestampFromDate(new Date(Date.now() + 2 * 60 * 60 * 1000))
-      mockGetCurrentUser.mockResolvedValue({ user: { id: 'u1', username: 'alice', isAdmin: false } })
+      mockGetCurrentUser.mockResolvedValue({
+        user: { id: 'u1', username: 'alice', isAdmin: false },
+      })
       const { auth } = renderWithAuthCapture()
       await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
 
@@ -601,7 +656,9 @@ describe('AuthContext', () => {
 
     it('adopts the window a passkey proved', async () => {
       const deadline = timestampFromDate(new Date(Date.now() + 2 * 60 * 60 * 1000))
-      mockGetCurrentUser.mockResolvedValue({ user: { id: 'u1', username: 'alice', isAdmin: false } })
+      mockGetCurrentUser.mockResolvedValue({
+        user: { id: 'u1', username: 'alice', isAdmin: false },
+      })
       const { auth } = renderWithAuthCapture()
       await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
 
@@ -634,7 +691,9 @@ describe('AuthContext', () => {
     // The hub's own message reaches the form: "current password is incorrect"
     // and the rate-limit refusal are both sentences the user can act on.
     it('rethrows the hub refusal, and adopts nothing', async () => {
-      mockGetCurrentUser.mockResolvedValue({ user: { id: 'u1', username: 'alice', isAdmin: false } })
+      mockGetCurrentUser.mockResolvedValue({
+        user: { id: 'u1', username: 'alice', isAdmin: false },
+      })
       const { auth } = renderWithAuthCapture()
       await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
 
@@ -699,7 +758,9 @@ describe('AuthContext', () => {
     }
 
     async function signedIn() {
-      mockGetCurrentUser.mockResolvedValue({ user: { id: 'u1', username: 'alice', isAdmin: false } })
+      mockGetCurrentUser.mockResolvedValue({
+        user: { id: 'u1', username: 'alice', isAdmin: false },
+      })
       const captured = renderWithAuthCapture()
       await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
       return captured
@@ -716,7 +777,9 @@ describe('AuthContext', () => {
     it('leaves the mirror alone when the response reports nothing', async () => {
       const { auth } = await signedIn()
 
-      await slidingRequest(async () => ({ header: new Headers() }) as never)
+      await slidingRequest(async () => ({
+        header: new Headers(),
+      }) as never)
 
       expect(auth().elevationExpiresAt()).toBeUndefined()
     })
@@ -738,7 +801,9 @@ describe('AuthContext', () => {
       expect(auth().elevationExpiresAt()).toBeDefined()
 
       // The read answers with no window, because it left before the slide.
-      reading.resolve({ user: { id: 'u1', username: 'alice', isAdmin: false } })
+      reading.resolve({
+        user: { id: 'u1', username: 'alice', isAdmin: false },
+      })
       await refreshing
 
       expect(timestampDate(auth().elevationExpiresAt()!).toISOString()).toBe(later.toISOString())
@@ -811,7 +876,9 @@ describe('AuthContext', () => {
   it('does not drop pooled channels on the initial session restore', async () => {
     // null -> first-user is not an identity SWAP: there is nothing pooled to release,
     // and a spurious resetTunnels must not fire on a fresh page load.
-    mockGetCurrentUser.mockResolvedValue({ user: { id: 'u1', username: 'alice', isAdmin: false } })
+    mockGetCurrentUser.mockResolvedValue({
+      user: { id: 'u1', username: 'alice', isAdmin: false },
+    })
     renderWithAuth()
     await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
 
@@ -823,7 +890,9 @@ describe('AuthContext', () => {
     // resetTunnels is best-effort: a rejected sidecar RPC (e.g. the sidecar
     // restarts) must be logged, not break the logout flow or surface as an
     // unhandled rejection.
-    mockGetCurrentUser.mockResolvedValue({ user: { id: 'u1', username: 'alice', isAdmin: false } })
+    mockGetCurrentUser.mockResolvedValue({
+      user: { id: 'u1', username: 'alice', isAdmin: false },
+    })
     const { auth } = renderWithAuthCapture()
     await vi.waitFor(() => expect(screen.getByTestId('username')).toHaveTextContent('alice'))
     mockResetTunnels.mockRejectedValueOnce(new Error('sidecar gone'))
@@ -872,7 +941,9 @@ describe('AuthContext storage namespace', () => {
   }
 
   it('points storage at the account before anything can render for it', async () => {
-    mockGetCurrentUser.mockResolvedValue({ user: { id: 'alice', username: 'alice', isAdmin: false } })
+    mockGetCurrentUser.mockResolvedValue({
+      user: { id: 'alice', username: 'alice', isAdmin: false },
+    })
 
     // Read the namespace from a component that REQUIRES the identity -- the shape
     // `AuthGuard` has. `Show` is a render effect, so this body runs ahead of
@@ -904,7 +975,9 @@ describe('AuthContext storage namespace', () => {
   // the key for it is.
   it('serves a stored preference from the first render that can ask for one', async () => {
     await seedStoredPrefs('alice', { diffView: 'split' })
-    mockGetCurrentUser.mockResolvedValue({ user: { id: 'alice', username: 'alice', isAdmin: false } })
+    mockGetCurrentUser.mockResolvedValue({
+      user: { id: 'alice', username: 'alice', isAdmin: false },
+    })
 
     let seenWhileRendering: unknown
     let captured!: AuthState
@@ -936,7 +1009,9 @@ describe('AuthContext storage namespace', () => {
         throw new Error('the profile is corrupt')
       },
     })
-    mockGetCurrentUser.mockResolvedValue({ user: { id: 'alice', username: 'alice', isAdmin: false } })
+    mockGetCurrentUser.mockResolvedValue({
+      user: { id: 'alice', username: 'alice', isAdmin: false },
+    })
 
     const { auth } = renderWithAuthCapture()
 
@@ -954,7 +1029,9 @@ describe('AuthContext storage namespace', () => {
   // namespace at an account the mirror no longer holds -- which
   // `setStorageAccount` refuses, loudly, in the middle of a sign-in.
   it('does not publish an identity a newer one superseded mid-hydration', async () => {
-    mockGetCurrentUser.mockResolvedValue({ user: { id: 'alice', username: 'alice', isAdmin: false } })
+    mockGetCurrentUser.mockResolvedValue({
+      user: { id: 'alice', username: 'alice', isAdmin: false },
+    })
     const { auth } = renderWithAuthCapture()
     await untilTrue(() => !auth().loading())
     expect(screen.getByTestId('username')).toHaveTextContent('alice')
@@ -985,7 +1062,9 @@ describe('AuthContext storage namespace', () => {
   // away and the hub's consent gate answers with a page that has no way forward.
   // The guard in `readCurrentUser` runs BEFORE the await and cannot see this.
   it('does not apply a superseded response\'s elevation window', async () => {
-    mockGetCurrentUser.mockResolvedValue({ user: { id: 'alice', username: 'alice', isAdmin: false } })
+    mockGetCurrentUser.mockResolvedValue({
+      user: { id: 'alice', username: 'alice', isAdmin: false },
+    })
     const { auth } = renderWithAuthCapture()
     await untilTrue(() => !auth().loading())
     expect(screen.getByTestId('username')).toHaveTextContent('alice')
@@ -1010,7 +1089,9 @@ describe('AuthContext storage namespace', () => {
   // makes -- a draft flush, a layout snapshot -- belong to the account that
   // LEAVES. Clearing the namespace would make every one of them throw.
   it('keeps the namespace after a sign-out', async () => {
-    mockGetCurrentUser.mockResolvedValue({ user: { id: 'alice', username: 'alice', isAdmin: false } })
+    mockGetCurrentUser.mockResolvedValue({
+      user: { id: 'alice', username: 'alice', isAdmin: false },
+    })
     const { auth } = renderWithAuthCapture()
     await untilTrue(() => !auth().loading())
     expect(screen.getByTestId('username')).toHaveTextContent('alice')
@@ -1027,7 +1108,9 @@ describe('AuthContext storage namespace', () => {
   // hub.", with a Retry that hits the identical throw every time.
   it('treats a user with no id as signed out, not as a failed bootstrap', async () => {
     const error = vi.spyOn(console, 'error').mockImplementation(() => {})
-    mockGetCurrentUser.mockResolvedValue({ user: { id: '', username: 'nobody', isAdmin: false } })
+    mockGetCurrentUser.mockResolvedValue({
+      user: { id: '', username: 'nobody', isAdmin: false },
+    })
     const { auth } = renderWithAuthCapture()
 
     await untilTrue(() => !auth().loading())

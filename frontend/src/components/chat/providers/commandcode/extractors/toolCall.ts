@@ -28,7 +28,13 @@ function generic<K extends ToolKind>(kind: K, facts: ToolFacts): ToolCall {
   const spec: ToolCallSpecVariant<K> = {
     kind,
     request: DEFAULT_TOOL_REQUESTS[kind](facts.args),
-    ...(facts.landed ? { result: facts.failed ? failedResult(facts.text) : unparsedResult(facts.text) } : {}),
+    ...(facts.landed
+      ? {
+          result: facts.failed
+            ? failedResult(facts.text)
+            : unparsedResult(facts.text),
+        }
+      : {}),
   }
   return createToolCall(facts.envelope, spec)
 }
@@ -51,10 +57,15 @@ const COMMAND_CODE_EXIT_LINES = /^Exit code: (-?\d+)(?: \([^\n]*\))?(?:\n\([^\n]
  */
 function commandCodeShellResult(text: string): CommandResult {
   const lines = COMMAND_CODE_EXIT_LINES.exec(text)
-  const exitCode = lines ? Number(lines[1]) : 0
+  const exitCode = lines
+    ? Number(lines[1])
+    : 0
   if (!lines || !Number.isSafeInteger(exitCode) || exitCode === 0)
     return { output: text }
-  return { output: text.slice(lines[0].length), exitCode }
+  return {
+    output: text.slice(lines[0].length),
+    exitCode,
+  }
 }
 
 export function commandCodeToolCall(input: RowExtractionInput): ToolCall | null {
@@ -62,14 +73,28 @@ export function commandCodeToolCall(input: RowExtractionInput): ToolCall | null 
   const id = pickString(own, 'toolCallId')
   if (!own || !id)
     return null
-  const same = (event: Record<string, unknown> | undefined) => event && pickString(event, 'toolCallId') === id ? event : undefined
+  const same = (event: Record<string, unknown> | undefined) => event && pickString(event, 'toolCallId') === id
+    ? event
+    : undefined
   const siblingRequest = same(commandCodeEvent(input.span.request?.parentObject))
   const siblingResult = same(commandCodeEvent(input.span.result?.parentObject))
-  const request = own.type === COMMAND_CODE_EVENT.ToolQueued ? own : siblingRequest?.type === COMMAND_CODE_EVENT.ToolQueued ? siblingRequest : undefined
-  const result = COMMAND_CODE_TOOL_RESULTS.has(pickString(own, 'type')) ? own : COMMAND_CODE_TOOL_RESULTS.has(pickString(siblingResult, 'type')) ? siblingResult : undefined
+  const request = own.type === COMMAND_CODE_EVENT.ToolQueued
+    ? own
+    : siblingRequest?.type === COMMAND_CODE_EVENT.ToolQueued
+      ? siblingRequest
+      : undefined
+  const result = COMMAND_CODE_TOOL_RESULTS.has(pickString(own, 'type'))
+    ? own
+    : COMMAND_CODE_TOOL_RESULTS.has(pickString(siblingResult, 'type'))
+      ? siblingResult
+      : undefined
   const name = pickString(request, 'toolName') || pickString(own, 'toolName')
-  const blocks = result && Array.isArray(result.result) ? result.result.filter(isObject) : []
-  const text = result ? commandCodeText(result.result) || commandCodeError(result.error) || pickString(result, 'hookOutput') || pickString(result, 'message') : ''
+  const blocks = result && Array.isArray(result.result)
+    ? result.result.filter(isObject)
+    : []
+  const text = result
+    ? commandCodeText(result.result) || commandCodeError(result.error) || pickString(result, 'hookOutput') || pickString(result, 'message')
+    : ''
   const declined = result?.type === COMMAND_CODE_EVENT.ToolDenied || result?.type === COMMAND_CODE_EVENT.ToolHookBlocked
   const failed = result?.type === COMMAND_CODE_EVENT.ToolErrored
   const facts: ToolFacts = {
@@ -84,7 +109,9 @@ export function commandCodeToolCall(input: RowExtractionInput): ToolCall | null 
       name,
       lifecycle: {
         frameStatus: 'unstated',
-        providerOutcome: declined ? 'declined' : failed ? 'failed' : null,
+        providerOutcome: declined
+          ? 'declined'
+          : failed ? 'failed' : null,
         retainedOutcome: retainedOutcome(input.completion ?? input.resolved.completion),
         rowFinal: result !== undefined || retainedRowIsFinal(input.completion ?? input.resolved.completion),
         resultFrameLanded: result !== undefined,
@@ -97,28 +124,54 @@ export function commandCodeToolCall(input: RowExtractionInput): ToolCall | null 
   switch (kind) {
     case 'execute': {
       const request = DEFAULT_TOOL_REQUESTS.execute(facts.args)
-      const args = Array.isArray(facts.args.args) ? facts.args.args.filter((item): item is string => typeof item === 'string') : []
-      request.command += args.length ? ` ${args.map(item => JSON.stringify(item)).join(' ')}` : ''
+      const args = Array.isArray(facts.args.args)
+        ? facts.args.args.filter((item): item is string => typeof item === 'string')
+        : []
+      request.command += args.length
+        ? ` ${args.map(item => JSON.stringify(item)).join(' ')}`
+        : ''
       return createToolCall(facts.envelope, {
         kind: 'execute',
         request,
         label: 'Shell',
-        ...(facts.landed ? { result: { commands: [commandCodeShellResult(facts.text)], unresolvedTerminals: [] } } : {}),
+        ...(facts.landed
+          ? {
+              result: {
+                commands: [
+                  commandCodeShellResult(facts.text),
+                ],
+                unresolvedTerminals: [],
+              },
+            }
+          : {}),
       })
     }
     case 'read': {
       const images = facts.blocks.flatMap((block) => {
         const image = parseImageBlock(block)
-        return image ? [image] : []
+        return image
+          ? [image]
+          : []
       })
       return createToolCall(facts.envelope, {
         kind: 'read',
         request: DEFAULT_TOOL_REQUESTS.read(facts.args),
-        ...(facts.landed ? { result: { lines: null, fallbackContent: facts.text }, images } : {}),
+        ...(facts.landed
+          ? {
+              result: { lines: null, fallbackContent: facts.text },
+              images,
+            }
+          : {}),
       })
     }
     case 'write':
-      return generic(kind, { ...facts, args: { ...facts.args, new_string: pickString(facts.args, 'content') } })
+      return generic(kind, {
+        ...facts,
+        args: {
+          ...facts.args,
+          new_string: pickString(facts.args, 'content'),
+        },
+      })
     case 'edit':
       return generic(kind, facts)
     case 'mcp': {
@@ -126,12 +179,28 @@ export function commandCodeToolCall(input: RowExtractionInput): ToolCall | null 
       return createToolCall(facts.envelope, {
         kind: 'mcp',
         request: { server: tool?.server ?? '', tool: tool?.tool ?? name, args: facts.args },
-        ...(facts.landed ? { result: { content: facts.blocks.map(parseMcpContentItem) } } : {}),
+        ...(facts.landed
+          ? {
+              result: {
+                content: facts.blocks.map(parseMcpContentItem),
+              },
+            }
+          : {}),
       })
     }
     case 'todo': {
-      const items = input.todoSnapshot ? [input.todoSnapshot] : []
-      return createToolCall(facts.envelope, { kind: 'todo', request: { items }, ...(facts.landed ? { result: { items, note: facts.text } } : {}) })
+      const items = input.todoSnapshot
+        ? [input.todoSnapshot]
+        : []
+      return createToolCall(facts.envelope, {
+        kind: 'todo',
+        request: { items },
+        ...(facts.landed
+          ? {
+              result: { items, note: facts.text },
+            }
+          : {}),
+      })
     }
     case 'agent': {
       const request = DEFAULT_TOOL_REQUESTS.agent(facts.args)
@@ -140,15 +209,26 @@ export function commandCodeToolCall(input: RowExtractionInput): ToolCall | null 
       const nativeID = /^agent_id: ([\w-]+)$/m.exec(facts.text)?.[1]
       return createToolCall(facts.envelope, {
         kind: 'agent',
-        request: { ...request, ...(agentType ? { agentType } : {}) },
+        request: {
+          ...request,
+          ...(agentType
+            ? { agentType }
+            : {}),
+        },
         ...(facts.landed
-          ? { result: { agents: [{
-              description: request.description,
-              agentId: nativeID ?? facts.envelope.id,
-              outcome: background ? 'running' : 'completed',
-              metadata: [],
-              body: facts.text,
-            }] } }
+          ? {
+              result: {
+                agents: [
+                  {
+                    description: request.description,
+                    agentId: nativeID ?? facts.envelope.id,
+                    outcome: background ? 'running' : 'completed',
+                    metadata: [],
+                    body: facts.text,
+                  },
+                ],
+              },
+            }
           : {}),
       })
     }

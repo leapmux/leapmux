@@ -5,6 +5,8 @@ export const waitRenderer = proseRenderer<'wait'>({
   icon: Hourglass,
   label: 'Wait',
   title(call) {
-    return call.request.durationMs !== undefined ? `${call.request.durationMs / 1000}s` : call.title ?? 'Wait'
+    return call.request.durationMs !== undefined
+      ? `${call.request.durationMs / 1000}s`
+      : call.title ?? 'Wait'
   },
 })

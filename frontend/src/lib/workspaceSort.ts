@@ -105,14 +105,19 @@ export function sortWorkspaces(
   if (order.key === 'manual')
     return workspaces
 
-  const flip = order.direction === 'desc' ? -1 : 1
+  const flip = order.direction === 'desc'
+    ? -1
+    : 1
   const byTitle = (a: Workspace, b: Workspace) => compareNames(a.title || '', b.title || '')
 
   // Resolved ONCE per workspace, not once per comparison. `recencyOf` scans
   // every tab of a workspace to find its highest activation counter, and a
   // comparator runs O(n log n) times.
   const recency = order.key === 'recent'
-    ? new Map(workspaces.map(w => [w.id, recencyOf(w.id)]))
+    ? new Map(workspaces.map(w => [
+        w.id,
+        recencyOf(w.id),
+      ]))
     : undefined
 
   return [...workspaces].sort((a, b) => {

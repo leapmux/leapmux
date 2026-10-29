@@ -48,7 +48,9 @@ export function DragHandle(props: DragHandleProps): JSX.Element {
       ref={(el) => {
         ref = el
       }}
-      class={`${props.visibility === 'always' ? styles.dragHandle : styles.dragHandleAuto} ${props.class ?? ''}`}
+      class={`${props.visibility === 'always'
+        ? styles.dragHandle
+        : styles.dragHandleAuto} ${props.class ?? ''}`}
       data-drag-handle=""
       data-testid={props.testId}
       aria-hidden="true"

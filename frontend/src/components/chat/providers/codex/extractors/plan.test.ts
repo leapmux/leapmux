@@ -26,14 +26,35 @@ describe('codexTurnPlanTodos', () => {
       ],
     })
     expect(source).toEqual([
-      { rowKey: '0:one', content: 'one', status: 'pending', activeForm: 'one' },
-      { rowKey: '1:two', content: 'two', status: 'in_progress', activeForm: 'two' },
-      { rowKey: '2:three', content: 'three', status: 'completed', activeForm: 'three' },
+      {
+        rowKey: '0:one',
+        content: 'one',
+        status: 'pending',
+        activeForm: 'one',
+      },
+      {
+        rowKey: '1:two',
+        content: 'two',
+        status: 'in_progress',
+        activeForm: 'two',
+      },
+      {
+        rowKey: '2:three',
+        content: 'three',
+        status: 'completed',
+        activeForm: 'three',
+      },
     ])
   })
 
   it('skips entries without a step', () => {
-    expect(codexTurnPlanTodos({ plan: [{ step: 'a' }, {}, null] })).toHaveLength(1)
+    expect(codexTurnPlanTodos({
+      plan: [
+        { step: 'a' },
+        {},
+        null,
+      ],
+    })).toHaveLength(1)
   })
 })
 

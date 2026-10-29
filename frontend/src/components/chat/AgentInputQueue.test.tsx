@@ -54,12 +54,17 @@ function renderQueue(overrides: {
   // A SIGNAL, not a fixed value, because the Worker pushes a whole new snapshot
   // for every queue event -- new objects, new array, same ids. `push` replays
   // that, which is what the keyed-row cases below need.
-  const [snapshot, setSnapshot] = createSignal(snapshotOf(overrides.items ?? [item('one'), item('two')]))
+  const [snapshot, setSnapshot] = createSignal(snapshotOf(overrides.items ?? [
+    item('one'),
+    item('two'),
+  ]))
   render(() => (
     <AgentInputQueue
       snapshot={snapshot()}
       clientId="client-a"
-      {...(overrides.activeEditInputId !== undefined ? { activeEditInputId: overrides.activeEditInputId } : {})}
+      {...(overrides.activeEditInputId !== undefined
+        ? { activeEditInputId: overrides.activeEditInputId }
+        : {})}
       supportsSteering={overrides.supportsSteering ?? false}
       supportsPreemption={overrides.supportsPreemption ?? false}
       {...handlers}
@@ -74,10 +79,20 @@ function renderQueue(overrides: {
 
 describe('AgentInputQueue', () => {
   it('labels an awaiting-echo row and disables its actions', () => {
-    renderQueue({ items: [item('sent', { state: AgentInputState.AWAITING_ECHO }), item('next')] })
+    renderQueue({
+      items: [
+        item('sent', { state: AgentInputState.AWAITING_ECHO }),
+        item('next'),
+      ],
+    })
     const row = screen.getByTestId('queued-input-sent')
     expect(row).toHaveTextContent('Sent, waiting for the agent to read it')
-    for (const name of ['Move Up', 'Move Down', 'Edit', 'Delete'])
+    for (const name of [
+      'Move Up',
+      'Move Down',
+      'Edit',
+      'Delete',
+    ])
       expect(within(row).getByRole('button', { name })).toBeDisabled()
     expect(screen.getByTestId('queue-drag-handle-sent').className).toContain('dragHandleInert')
     expect(row).toHaveAttribute('data-input-state', String(AgentInputState.AWAITING_ECHO))
@@ -86,24 +101,42 @@ describe('AgentInputQueue', () => {
   it('offers Steer on the first queued row behind an awaiting-echo row', async () => {
     const handlers = renderQueue({
       supportsSteering: true,
-      items: [item('sent', { state: AgentInputState.AWAITING_ECHO }), item('next', { canSteer: true })],
+      items: [
+        item('sent', { state: AgentInputState.AWAITING_ECHO }),
+        item('next', { canSteer: true }),
+      ],
     })
     await fireEvent.click(within(screen.getByTestId('queued-input-next')).getByRole('button', { name: 'Steer' }))
     expect(handlers.onSteer).toHaveBeenCalledWith(expect.objectContaining({ id: 'next' }))
   })
 
   it('disables takeover on an awaiting-echo row when another row has an edit owner', () => {
-    renderQueue({ items: [item('sent', { state: AgentInputState.AWAITING_ECHO }), item('edited', { editOwnerClientId: 'other' })] })
+    renderQueue({
+      items: [
+        item('sent', { state: AgentInputState.AWAITING_ECHO }),
+        item('edited', { editOwnerClientId: 'other' }),
+      ],
+    })
     expect(within(screen.getByTestId('queued-input-sent')).getByRole('button', { name: 'Take Over' })).toBeDisabled()
   })
 
   it('renders operation, state, text, and attachment metadata', () => {
     renderQueue({
-      items: [item('compact', {
-        text: '/compact',
-        kind: AgentInputKind.COMPACT_CONTEXT,
-        attachments: [{ $typeName: 'leapmux.v1.QueuedAgentInputAttachment', filename: 'a.txt', mimeType: 'text/plain', size: 4n, order: 0 }],
-      })],
+      items: [
+        item('compact', {
+          text: '/compact',
+          kind: AgentInputKind.COMPACT_CONTEXT,
+          attachments: [
+            {
+              $typeName: 'leapmux.v1.QueuedAgentInputAttachment',
+              filename: 'a.txt',
+              mimeType: 'text/plain',
+              size: 4n,
+              order: 0,
+            },
+          ],
+        }),
+      ],
     })
     expect(screen.getByText('/compact')).toBeInTheDocument()
     expect(screen.getByText(/Compact context · Queued · a\.txt \(4 B\)/)).toBeInTheDocument()
@@ -111,7 +144,9 @@ describe('AgentInputQueue', () => {
 
   it('renders the Answer label for a question answer input', () => {
     renderQueue({
-      items: [item('answer', { text: 'Red', kind: AgentInputKind.QUESTION_ANSWER })],
+      items: [
+        item('answer', { text: 'Red', kind: AgentInputKind.QUESTION_ANSWER }),
+      ],
     })
     expect(screen.getByText('Red')).toBeInTheDocument()
     expect(screen.getByText(/Answer · Queued/)).toBeInTheDocument()
@@ -128,14 +163,26 @@ describe('AgentInputQueue', () => {
   // item out of the list before it looks the target up. `index + 1` would name
   // the item's own new position, which makes the button a silent no-op.
   it('moves an input down with the keyboard action', async () => {
-    const handlers = renderQueue({ items: [item('one'), item('two'), item('three')] })
+    const handlers = renderQueue({
+      items: [
+        item('one'),
+        item('two'),
+        item('three'),
+      ],
+    })
     const first = screen.getByTestId('queued-input-one')
     await fireEvent.click(within(first).getByRole('button', { name: 'Move Down' }))
     expect(handlers.onMove).toHaveBeenCalledWith(expect.objectContaining({ id: 'one' }), 'three')
   })
 
   it('moves the second-to-last input to the end with the keyboard action', async () => {
-    const handlers = renderQueue({ items: [item('one'), item('two'), item('three')] })
+    const handlers = renderQueue({
+      items: [
+        item('one'),
+        item('two'),
+        item('three'),
+      ],
+    })
     const second = screen.getByTestId('queued-input-two')
     await fireEvent.click(within(second).getByRole('button', { name: 'Move Down' }))
     expect(handlers.onMove).toHaveBeenCalledWith(expect.objectContaining({ id: 'two' }), '')
@@ -145,7 +192,13 @@ describe('AgentInputQueue', () => {
   // whose head dispatches leaves the other row no destination at all, which the
   // case below covers.
   it('gives a dispatching row an inert grip, so it offers no drag it cannot do', () => {
-    renderQueue({ items: [item('one', { state: AgentInputState.DISPATCHING }), item('two'), item('three')] })
+    renderQueue({
+      items: [
+        item('one', { state: AgentInputState.DISPATCHING }),
+        item('two'),
+        item('three'),
+      ],
+    })
     const dispatching = screen.getByTestId('queue-drag-handle-one')
     const movable = screen.getByTestId('queue-drag-handle-two')
     // Hidden rather than REMOVED, so the grip keeps its flex slot and the row's
@@ -158,7 +211,13 @@ describe('AgentInputQueue', () => {
   })
 
   it('withholds the drag activators from a dispatching row grip', async () => {
-    const handlers = renderQueue({ items: [item('one', { state: AgentInputState.DISPATCHING }), item('two'), item('three')] })
+    const handlers = renderQueue({
+      items: [
+        item('one', { state: AgentInputState.DISPATCHING }),
+        item('two'),
+        item('three'),
+      ],
+    })
     await flush()
     // An affordance that cannot drag must not behave like one. Hiding the grip
     // is only half of it: without withholding the activators, a press that
@@ -175,7 +234,12 @@ describe('AgentInputQueue', () => {
   // move onto the row itself. A row count cannot see this, which is why the
   // affordance follows the count of MOVABLE rows.
   it('offers no drag when the only other row is dispatching', async () => {
-    const handlers = renderQueue({ items: [item('one', { state: AgentInputState.DISPATCHING }), item('two')] })
+    const handlers = renderQueue({
+      items: [
+        item('one', { state: AgentInputState.DISPATCHING }),
+        item('two'),
+      ],
+    })
     await flush()
     const row = screen.getByTestId('queued-input-two')
     const grip = screen.getByTestId('queue-drag-handle-two')
@@ -196,11 +260,19 @@ describe('AgentInputQueue', () => {
   // The head finishes dispatching, so a second movable row appears and the drag
   // affordance must come back on its own.
   it('restores the drag affordance once a dispatching head becomes queued', async () => {
-    const handlers = renderQueue({ items: [item('one', { state: AgentInputState.DISPATCHING }), item('two')] })
+    const handlers = renderQueue({
+      items: [
+        item('one', { state: AgentInputState.DISPATCHING }),
+        item('two'),
+      ],
+    })
     await flush()
     expect(screen.getByTestId('queued-input-two').className).not.toContain('itemDraggable')
 
-    handlers.push([item('one'), item('two')])
+    handlers.push([
+      item('one'),
+      item('two'),
+    ])
     await flush()
 
     expect(screen.getByTestId('queued-input-two').className).toContain('itemDraggable')
@@ -208,7 +280,12 @@ describe('AgentInputQueue', () => {
   })
 
   it('removes all drag wiring when the queue shrinks to one input', async () => {
-    const handlers = renderQueue({ items: [item('one'), item('two')] })
+    const handlers = renderQueue({
+      items: [
+        item('one'),
+        item('two'),
+      ],
+    })
     await flush()
     const row = screen.getByTestId('queued-input-one')
     const grip = screen.getByTestId('queue-drag-handle-one')
@@ -216,7 +293,9 @@ describe('AgentInputQueue', () => {
     expect(row.className).toContain('itemDraggable')
     expect(grip.className).not.toContain('dragHandleInert')
 
-    handlers.push([item('one')])
+    handlers.push([
+      item('one'),
+    ])
     await flush()
 
     expect(row.className).not.toContain('itemDraggable')
@@ -233,7 +312,12 @@ describe('AgentInputQueue', () => {
   })
 
   it('turns a drop into onMove, which is the wiring the arithmetic tests cannot reach', async () => {
-    const handlers = renderQueue({ items: [item('one'), item('two')] })
+    const handlers = renderQueue({
+      items: [
+        item('one'),
+        item('two'),
+      ],
+    })
     await flush()
     // Drives the REAL sensor and the real solid-dnd context, so this covers
     // `onDragEnd`, the `SortableProvider` ids, and the `qi-` prefix on both
@@ -251,7 +335,11 @@ describe('AgentInputQueue', () => {
 
   it('drops onto the first slot the dispatching head leaves free', async () => {
     const handlers = renderQueue({
-      items: [item('one', { state: AgentInputState.DISPATCHING }), item('two'), item('three')],
+      items: [
+        item('one', { state: AgentInputState.DISPATCHING }),
+        item('two'),
+        item('three'),
+      ],
     })
     await flush()
     // The head is a droppable like any other, so it used to win this collision:
@@ -269,14 +357,22 @@ describe('AgentInputQueue', () => {
   })
 
   it('keeps an armed Delete armed across a snapshot the Worker pushes', async () => {
-    const handlers = renderQueue({ items: [item('one'), item('two')] })
+    const handlers = renderQueue({
+      items: [
+        item('one'),
+        item('two'),
+      ],
+    })
     await fireEvent.click(within(screen.getByTestId('queued-input-one')).getByRole('button', { name: 'Delete' }))
     expect(screen.getByRole('button', { name: 'Confirm delete?' })).toBeInTheDocument()
 
     // Any queue event at all delivers a whole new snapshot with new objects. A
     // reference-keyed list rebuilt every row here, so the armed state vanished
     // between the user's two clicks and the second click merely re-armed.
-    handlers.push([item('one'), item('two', { state: AgentInputState.FAILED, error: 'offline' })])
+    handlers.push([
+      item('one'),
+      item('two', { state: AgentInputState.FAILED, error: 'offline' }),
+    ])
     await flush()
 
     const armed = screen.getByRole('button', { name: 'Confirm delete?' })
@@ -286,12 +382,20 @@ describe('AgentInputQueue', () => {
   })
 
   it('follows a row into DISPATCHING without remounting it', async () => {
-    const handlers = renderQueue({ items: [item('one'), item('two')] })
+    const handlers = renderQueue({
+      items: [
+        item('one'),
+        item('two'),
+      ],
+    })
     await flush()
     const grip = screen.getByTestId('queue-drag-handle-one')
     expect(grip.className).not.toContain('dragHandleInert')
 
-    handlers.push([item('one', { state: AgentInputState.DISPATCHING }), item('two')])
+    handlers.push([
+      item('one', { state: AgentInputState.DISPATCHING }),
+      item('two'),
+    ])
     await flush()
 
     // The SAME node, because the row's key did not change. Every per-item read
@@ -303,20 +407,32 @@ describe('AgentInputQueue', () => {
   })
 
   it('does not move an item across a dispatching head', () => {
-    renderQueue({ items: [item('one', { state: AgentInputState.DISPATCHING }), item('two')] })
+    renderQueue({
+      items: [
+        item('one', { state: AgentInputState.DISPATCHING }),
+        item('two'),
+      ],
+    })
     const second = screen.getByTestId('queued-input-two')
     expect(within(second).getByRole('button', { name: 'Move Up' })).toBeDisabled()
   })
 
   it('shows Take Over for an edit owned by another client', async () => {
-    const handlers = renderQueue({ items: [item('one', { editOwnerClientId: 'client-b' })] })
+    const handlers = renderQueue({
+      items: [
+        item('one', { editOwnerClientId: 'client-b' }),
+      ],
+    })
     await fireEvent.click(screen.getByRole('button', { name: 'Take Over' }))
     expect(handlers.onEdit).toHaveBeenCalledWith(expect.objectContaining({ id: 'one' }), true)
   })
 
   it('requires takeover before editing a different item', async () => {
     const handlers = renderQueue({
-      items: [item('one', { editOwnerClientId: 'client-a' }), item('two')],
+      items: [
+        item('one', { editOwnerClientId: 'client-a' }),
+        item('two'),
+      ],
       activeEditInputId: 'one',
     })
     const second = screen.getByTestId('queued-input-two')
@@ -328,14 +444,20 @@ describe('AgentInputQueue', () => {
   })
 
   it('resumes an owned edit that this panel has not loaded', async () => {
-    const handlers = renderQueue({ items: [item('one', { editOwnerClientId: 'client-a' })] })
+    const handlers = renderQueue({
+      items: [
+        item('one', { editOwnerClientId: 'client-a' }),
+      ],
+    })
     await fireEvent.click(screen.getByRole('button', { name: 'Resume Edit' }))
     expect(handlers.onEdit).toHaveBeenCalledWith(expect.objectContaining({ id: 'one' }), false)
   })
 
   it('cancels the owned edit that this panel loaded', async () => {
     const handlers = renderQueue({
-      items: [item('one', { editOwnerClientId: 'client-a' })],
+      items: [
+        item('one', { editOwnerClientId: 'client-a' }),
+      ],
       activeEditInputId: 'one',
     })
     await fireEvent.click(screen.getByRole('button', { name: 'Cancel Edit' }))
@@ -348,7 +470,10 @@ describe('AgentInputQueue', () => {
   it('offers Steer for the head that the Worker marks steerable', async () => {
     const handlers = renderQueue({
       supportsSteering: true,
-      items: [item('one', { canSteer: true }), item('two', { canSteer: true })],
+      items: [
+        item('one', { canSteer: true }),
+        item('two', { canSteer: true }),
+      ],
     })
     expect(screen.getAllByRole('button', { name: 'Steer' })).toHaveLength(1)
     expect(screen.getByTestId('queued-input-one')).toContainElement(screen.getByRole('button', { name: 'Steer' }))
@@ -359,12 +484,22 @@ describe('AgentInputQueue', () => {
   })
 
   it('does not offer Steer for a head that the Worker refuses to steer', () => {
-    renderQueue({ supportsSteering: true, items: [item('one', { canSteer: false })] })
+    renderQueue({
+      supportsSteering: true,
+      items: [
+        item('one', { canSteer: false }),
+      ],
+    })
     expect(screen.queryByRole('button', { name: 'Steer' })).not.toBeInTheDocument()
   })
 
   it('does not offer Steer when the provider does not support steering', () => {
-    renderQueue({ supportsSteering: false, items: [item('one', { canSteer: true })] })
+    renderQueue({
+      supportsSteering: false,
+      items: [
+        item('one', { canSteer: true }),
+      ],
+    })
     expect(screen.queryByRole('button', { name: 'Steer' })).not.toBeInTheDocument()
   })
 
@@ -374,7 +509,10 @@ describe('AgentInputQueue', () => {
   it('offers Preempt for a head the Worker marks preemptable when the provider cannot steer', async () => {
     const handlers = renderQueue({
       supportsPreemption: true,
-      items: [item('one', { canPreempt: true }), item('two', { canPreempt: true })],
+      items: [
+        item('one', { canPreempt: true }),
+        item('two', { canPreempt: true }),
+      ],
     })
     expect(screen.getAllByRole('button', { name: 'Preempt' })).toHaveLength(1)
     expect(screen.getByTestId('queued-input-one')).toContainElement(screen.getByRole('button', { name: 'Preempt' }))
@@ -386,50 +524,85 @@ describe('AgentInputQueue', () => {
   })
 
   it('does not offer Preempt when the provider can steer', () => {
-    renderQueue({ supportsSteering: true, supportsPreemption: true, items: [item('one', { canPreempt: true, canSteer: true })] })
+    renderQueue({
+      supportsSteering: true,
+      supportsPreemption: true,
+      items: [
+        item('one', { canPreempt: true, canSteer: true }),
+      ],
+    })
     expect(screen.queryByRole('button', { name: 'Preempt' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Steer' })).toBeInTheDocument()
   })
 
   it('does not offer Preempt for a head the Worker refuses to preempt', () => {
-    renderQueue({ supportsPreemption: true, items: [item('one', { canPreempt: false })] })
+    renderQueue({
+      supportsPreemption: true,
+      items: [
+        item('one', { canPreempt: false }),
+      ],
+    })
     expect(screen.queryByRole('button', { name: 'Preempt' })).not.toBeInTheDocument()
   })
 
   it('offers Retry for a failed head', async () => {
-    const handlers = renderQueue({ items: [item('one', { state: AgentInputState.FAILED, error: 'offline' })] })
+    const handlers = renderQueue({
+      items: [
+        item('one', { state: AgentInputState.FAILED, error: 'offline' }),
+      ],
+    })
     expect(screen.getByText('offline')).toBeInTheDocument()
     await fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
     expect(handlers.onRetry).toHaveBeenCalledWith(expect.objectContaining({ id: 'one' }), false)
   })
 
   it('does not offer Retry while the failed head is edited', () => {
-    renderQueue({ items: [item('one', { state: AgentInputState.FAILED, editOwnerClientId: 'client-a' })] })
+    renderQueue({
+      items: [
+        item('one', { state: AgentInputState.FAILED, editOwnerClientId: 'client-a' }),
+      ],
+    })
     expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument()
   })
 
   it('marks a delivery-uncertain retry as requiring confirmation', async () => {
-    const handlers = renderQueue({ items: [item('one', { state: AgentInputState.DELIVERY_UNCERTAIN })] })
+    const handlers = renderQueue({
+      items: [
+        item('one', { state: AgentInputState.DELIVERY_UNCERTAIN }),
+      ],
+    })
     await fireEvent.click(screen.getByRole('button', { name: 'Retry' }))
     expect(handlers.onRetry).toHaveBeenCalledWith(expect.objectContaining({ id: 'one' }), true)
   })
 
   it('keeps the first Delete click from deleting', async () => {
-    const handlers = renderQueue({ items: [item('one')] })
+    const handlers = renderQueue({
+      items: [
+        item('one'),
+      ],
+    })
     await fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
     expect(handlers.onDelete).not.toHaveBeenCalled()
     expect(screen.queryByRole('button', { name: 'Delete' })).not.toBeInTheDocument()
   })
 
   it('deletes on the second Delete click', async () => {
-    const handlers = renderQueue({ items: [item('one')] })
+    const handlers = renderQueue({
+      items: [
+        item('one'),
+      ],
+    })
     await fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
     await fireEvent.click(screen.getByRole('button', { name: 'Confirm delete?' }))
     expect(handlers.onDelete).toHaveBeenCalledWith(expect.objectContaining({ id: 'one' }))
   })
 
   it('arms Delete as an outline, never as a filled danger button', async () => {
-    renderQueue({ items: [item('one')] })
+    renderQueue({
+      items: [
+        item('one'),
+      ],
+    })
     await fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
     const armed = screen.getByRole('button', { name: 'Confirm delete?' })
     // `data-variant` alone paints a filled danger background. Keeping the
@@ -440,7 +613,11 @@ describe('AgentInputQueue', () => {
   })
 
   it('disarms Delete when the button loses focus', async () => {
-    const handlers = renderQueue({ items: [item('one')] })
+    const handlers = renderQueue({
+      items: [
+        item('one'),
+      ],
+    })
     await fireEvent.click(screen.getByRole('button', { name: 'Delete' }))
     await fireEvent.blur(screen.getByRole('button', { name: 'Confirm delete?' }))
     await new Promise(resolve => setTimeout(resolve, 0))
@@ -449,9 +626,20 @@ describe('AgentInputQueue', () => {
   })
 
   it('gives every row action a name although the row renders no button text', () => {
-    renderQueue({ items: [item('one'), item('two')], supportsSteering: true })
+    renderQueue({
+      items: [
+        item('one'),
+        item('two'),
+      ],
+      supportsSteering: true,
+    })
     const first = screen.getByTestId('queued-input-one')
-    for (const name of ['Move Up', 'Move Down', 'Edit', 'Delete']) {
+    for (const name of [
+      'Move Up',
+      'Move Down',
+      'Edit',
+      'Delete',
+    ]) {
       // `getByRole` throws when the name matches nothing, so the lookup itself
       // proves the aria-label. The icon needs its own assertion: an EMPTY
       // button has no text content either, so the text check alone passes for a
@@ -464,7 +652,10 @@ describe('AgentInputQueue', () => {
 
   it('puts Steer last, as the one action that keeps a visible label', () => {
     renderQueue({
-      items: [item('one', { canSteer: true }), item('two')],
+      items: [
+        item('one', { canSteer: true }),
+        item('two'),
+      ],
       supportsSteering: true,
     })
     const first = screen.getByTestId('queued-input-one')
@@ -506,12 +697,20 @@ describe('AgentInputQueue scheduled rows', () => {
   })
 
   it('shows no schedule text on an immediate row', () => {
-    renderQueue({ items: [item('now')] })
+    renderQueue({
+      items: [
+        item('now'),
+      ],
+    })
     expect(screen.getByTestId('queued-input-now')).not.toHaveTextContent('Scheduled for')
   })
 
   it('renders an unreadable timestamp as no schedule rather than Invalid Date', () => {
-    renderQueue({ items: [item('broken', { scheduledAt: 'not-a-time', reorderSegment: 2 })] })
+    renderQueue({
+      items: [
+        item('broken', { scheduledAt: 'not-a-time', reorderSegment: 2 }),
+      ],
+    })
     const row = screen.getByTestId('queued-input-broken')
     expect(row).not.toHaveTextContent('Scheduled for')
     expect(row).not.toHaveTextContent('Invalid Date')
@@ -519,7 +718,11 @@ describe('AgentInputQueue scheduled rows', () => {
 
   it('keeps the schedule text on a past-due row that still waits', () => {
     const past = '2020-01-01T00:00:00.000Z'
-    renderQueue({ items: [item('waiting', { scheduledAt: past })] })
+    renderQueue({
+      items: [
+        item('waiting', { scheduledAt: past }),
+      ],
+    })
     expect(screen.getByTestId('queued-input-waiting')).toHaveTextContent('Scheduled for')
   })
 

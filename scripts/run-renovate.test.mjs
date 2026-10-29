@@ -20,11 +20,13 @@ async function exitedProcessTree(detached) {
   const source = `const {spawn}=require('node:child_process'); const child=spawn(process.execPath,['-e','process.send("ready"); setInterval(()=>{},1000)'],{detached:${detached},stdio:['ignore','inherit','inherit','ipc']}); child.once('message',()=>process.stdout.write(String(child.pid)+'\\n',()=>process.exit(0)));`
   const running = runWithTimeout(process.execPath, ['-e', source], {
     stdio: ['ignore', 'pipe', 'pipe'],
-    output: { write: (data) => {
-      output += data
-      if (output.includes('\n'))
-        descendant = Number(output.split('\n')[0])
-    } },
+    output: {
+      write: (data) => {
+        output += data
+        if (output.includes('\n'))
+          descendant = Number(output.split('\n')[0])
+      },
+    },
     runtime: {
       spawn: (...args) => {
         leader = spawn(...args)
@@ -51,7 +53,14 @@ async function exitedProcessTree(detached) {
     expire,
     stoppedGroup: () => stoppedGroup,
     cleanup: async () => {
-      for (const pid of [...(stoppedGroup ? [] : [-leaderPid]), ...(detached ? [descendant] : [])]) {
+      for (const pid of [
+        ...(stoppedGroup
+          ? []
+          : [-leaderPid]),
+        ...(detached
+          ? [descendant]
+          : []),
+      ]) {
         if (!Number.isInteger(pid) || pid === 0)
           continue
         try {
@@ -78,12 +87,32 @@ describe('runWithTimeout', () => {
     expect(JSON.parse(result.stdout)).toMatchObject({ message: 'closed consumer', signal: 'SIGKILL', listeners: 0 })
   })
   it('handles child output errors until the source closes', async () => {
-    const child = Object.assign(new EventEmitter(), { pid: 42, exitCode: null, signalCode: null, stdout: new EventEmitter(), stderr: new EventEmitter(), unref() {} })
+    const child = Object.assign(new EventEmitter(), {
+      pid: 42,
+      exitCode: null,
+      signalCode: null,
+      stdout: new EventEmitter(),
+      stderr: new EventEmitter(),
+      unref() {},
+    })
     child.stdout.destroy = child.stderr.destroy = () => {}
-    const sink = new Writable({ write(_data, _encoding, callback) {
-      callback()
-    } })
-    const result = runWithTimeout('fixture', [], { output: { write() {} }, streams: { stdout: sink, stderr: sink }, runtime: { spawn: () => child, kill() {}, setTimeout: () => 0, clearTimeout() {} } })
+    const sink = new Writable({
+      write(_data, _encoding, callback) {
+        callback()
+      },
+    })
+    const result = runWithTimeout('fixture', [], {
+      output: {
+        write() {},
+      },
+      streams: { stdout: sink, stderr: sink },
+      runtime: {
+        spawn: () => child,
+        kill() {},
+        setTimeout: () => 0,
+        clearTimeout() {},
+      },
+    })
     child.stderr.emit('error', new Error('child stream failed'))
     await expect(result).rejects.toThrow('child stream failed')
     child.stderr.emit('error', new Error('later source error'))
@@ -93,15 +122,31 @@ describe('runWithTimeout', () => {
   it('rejects asynchronous forwarding failures even after the child closes and releases stream listeners', async () => {
     let finishWrite
     let stopped = 0
-    const destination = new Writable({ write(_data, _encoding, callback) {
-      finishWrite = callback
-    } })
-    const child = Object.assign(new EventEmitter(), { pid: 42, exitCode: null, signalCode: null, stdout: new EventEmitter(), stderr: new EventEmitter(), unref() {} })
+    const destination = new Writable({
+      write(_data, _encoding, callback) {
+        finishWrite = callback
+      },
+    })
+    const child = Object.assign(new EventEmitter(), {
+      pid: 42,
+      exitCode: null,
+      signalCode: null,
+      stdout: new EventEmitter(),
+      stderr: new EventEmitter(),
+      unref() {},
+    })
     child.stdout.destroy = child.stderr.destroy = () => {}
     const result = runWithTimeout('fixture', [], {
-      output: { write() {} },
+      output: {
+        write() {},
+      },
       streams: { stdout: destination, stderr: destination },
-      runtime: { spawn: () => child, kill() { stopped++ }, setTimeout: () => 0, clearTimeout() {} },
+      runtime: {
+        spawn: () => child,
+        kill() { stopped++ },
+        setTimeout: () => 0,
+        clearTimeout() {},
+      },
     })
     child.stdout.emit('data', Buffer.from('fixture'))
     child.emit('close', 0, null)
@@ -115,10 +160,17 @@ describe('runWithTimeout', () => {
   })
   it('preserves the original diagnostic failure when termination emits another error', async () => {
     const child = new EventEmitter()
-    Object.assign(child, { pid: 42, stdout: new EventEmitter(), stderr: new EventEmitter(), unref() {} })
+    Object.assign(child, {
+      pid: 42,
+      stdout: new EventEmitter(),
+      stderr: new EventEmitter(),
+      unref() {},
+    })
     child.stdout.destroy = child.stderr.destroy = () => {}
     const result = runWithTimeout('fixture', [], {
-      output: { write() { throw new Error('original diagnostic failure') } },
+      output: {
+        write() { throw new Error('original diagnostic failure') },
+      },
       runtime: {
         spawn: () => child,
         kill() { child.emit('error', new Error('termination failure')) },
@@ -130,7 +182,10 @@ describe('runWithTimeout', () => {
     await expect(result).rejects.toThrow('original diagnostic failure')
   })
   it('reports cancellation signals separately from the execution deadline', () => {
-    for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143]]) {
+    for (const [signal, code] of [
+      ['SIGINT', 130],
+      ['SIGTERM', 143],
+    ]) {
       const source = `import {EventEmitter} from 'node:events'; import {runWithTimeout} from ${JSON.stringify(new URL('./run-renovate.mjs', import.meta.url).href)}; const child=Object.assign(new EventEmitter(),{pid:42,unref(){}}); const result=runWithTimeout('fixture',[],{runtime:{spawn:()=>child,kill(){},setTimeout:()=>0,clearTimeout(){}}}); process.emit(${JSON.stringify(signal)}); console.log(JSON.stringify(await result));`
       const result = spawnSync('node', ['--input-type=module', '-e', source], { encoding: 'utf8' })
       expect(result.status, result.stderr).toBe(0)
@@ -184,7 +239,9 @@ describe('runWithTimeout', () => {
   it('reports a failed diagnostic write and stops the execution', async () => {
     await expect(runWithTimeout(process.execPath, ['-e', 'console.log("fixture output"); setInterval(() => {}, 1000)'], {
       stdio: ['ignore', 'pipe', 'pipe'],
-      output: { write: () => { throw new Error('diagnostic write failed') } },
+      output: {
+        write: () => { throw new Error('diagnostic write failed') },
+      },
     })).rejects.toThrow('diagnostic write failed')
   })
 })

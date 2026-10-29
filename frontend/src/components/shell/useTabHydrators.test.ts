@@ -40,7 +40,13 @@ beforeEach(() => {
   mockListTerminals.mockResolvedValue({ terminals: [], verdicts: [] })
   mockGetTabPayload.mockReset()
   mockGetTabPayload.mockResolvedValue({
-    payload: { workingDir: '/repo', kind: { case: 'file', value: { filePath: '/repo/nested/x.ts' } } },
+    payload: {
+      workingDir: '/repo',
+      kind: {
+        case: 'file',
+        value: { filePath: '/repo/nested/x.ts' },
+      },
+    },
   })
 })
 
@@ -131,8 +137,12 @@ function applyLiveStatus(
       agentId,
       workerOnline: true,
       status: event.status,
-      ...(event.gitStatus !== undefined ? { gitStatus: event.gitStatus } : {}),
-      ...(event.optionGroups !== undefined ? { optionGroups: event.optionGroups } : {}),
+      ...(event.gitStatus !== undefined
+        ? { gitStatus: event.gitStatus }
+        : {}),
+      ...(event.optionGroups !== undefined
+        ? { optionGroups: event.optionGroups }
+        : {}),
     }),
     'live',
     {
@@ -187,7 +197,9 @@ function applyLiveTerminalStatus(
  */
 /** `setup`, plus one COMPANION terminal in the detached family. */
 function setupWithCompanion(terminalId: string, workspaceId = 'ws-test') {
-  return setup(workspaceId, () => [{ id: terminalId, workerId: 'w1', workspaceId }])
+  return setup(workspaceId, () => [
+    { id: terminalId, workerId: 'w1', workspaceId },
+  ])
 }
 
 function setup(workspaceId = 'ws-test', detachedTerminals?: () => readonly { id: string, workerId: string, workspaceId: string }[]) {
@@ -211,12 +223,22 @@ function setup(workspaceId = 'ws-test', detachedTerminals?: () => readonly { id:
         repoGitStore,
         agentActivityStore,
         // The optional hooks stay omitted when the harness passed none.
-        ...(onlineWorkerIds !== undefined ? { onlineWorkerIds } : {}),
-        ...(settingsPendingAxes !== undefined ? { settingsPendingAxes } : {}),
+        ...(onlineWorkerIds !== undefined
+          ? { onlineWorkerIds }
+          : {}),
+        ...(settingsPendingAxes !== undefined
+          ? { settingsPendingAxes }
+          : {}),
       }),
     add(type: TabType, id: string, workerId = 'w1', tileId = harness.rootTileId) {
       seq += 1
-      emitAddTab({ type, id, tileId, position: `p${seq}`, workerId })
+      emitAddTab({
+        type,
+        id,
+        tileId,
+        position: `p${seq}`,
+        workerId,
+      })
     },
   }
 }
@@ -235,12 +257,19 @@ describe('useTabHydrators', () => {
 
       expect(mockListAgents).toHaveBeenCalledTimes(1)
       expect(mockListAgents.mock.calls[0]?.[0]).toBe('w1')
-      expect(mockListAgents.mock.calls[0]?.[1]).toEqual({ tabIds: ['a1'] })
+      expect(mockListAgents.mock.calls[0]?.[1]).toEqual({
+        tabIds: ['a1'],
+      })
       d()
     })
 
     it('writes the fetched fields onto the tab', async () => {
-      mockListAgents.mockResolvedValue({ agents: [agentInfo('a1')], verdicts: [] })
+      mockListAgents.mockResolvedValue({
+        agents: [
+          agentInfo('a1'),
+        ],
+        verdicts: [],
+      })
       const s = setup()
       const d = createRoot((dispose) => {
         s.add(TabType.AGENT, 'a1')
@@ -301,12 +330,14 @@ describe('useTabHydrators', () => {
     // spinner for the rest of the turn. The exact value belongs to the close guard.
     it('seeds the published state, not the exact one', async () => {
       mockListAgents.mockResolvedValue({
-        agents: [agentInfo('a1', {
+        agents: [
+          agentInfo('a1', {
           // A settle is waiting: the derivation says idle, the client was told
           // working, and the client must keep holding working.
-          activityState: AgentActivityState.IDLE,
-          publishedActivityState: AgentActivityState.WORKING,
-        })],
+            activityState: AgentActivityState.IDLE,
+            publishedActivityState: AgentActivityState.WORKING,
+          }),
+        ],
         verdicts: [],
       })
       const s = setup()
@@ -330,11 +361,22 @@ describe('useTabHydrators', () => {
     // never opened is just as bare as one in the active workspace, and the
     // sidebar renders it either way.
     it('hydrates tabs in a workspace that is not the active one', async () => {
-      mockListAgents.mockResolvedValue({ agents: [agentInfo('elsewhere')], verdicts: [] })
+      mockListAgents.mockResolvedValue({
+        agents: [
+          agentInfo('elsewhere'),
+        ],
+        verdicts: [],
+      })
       const s = setup('ws-active')
       const d = createRoot((dispose) => {
         seedWorkspace(s.harness, 'ws-other', 'tile-other')
-        emitAddTab({ type: TabType.AGENT, id: 'elsewhere', tileId: 'tile-other', position: 'a', workerId: 'w1' })
+        emitAddTab({
+          type: TabType.AGENT,
+          id: 'elsewhere',
+          tileId: 'tile-other',
+          position: 'a',
+          workerId: 'w1',
+        })
         s.mount()
         return dispose
       })
@@ -380,7 +422,12 @@ describe('useTabHydrators', () => {
     // Once hydrated the predicate goes false, so a later unrelated tab change
     // must not re-ask. Without that the hydrator re-fetches forever.
     it('does not re-fetch a tab that already has its record', async () => {
-      mockListAgents.mockResolvedValue({ agents: [agentInfo('a1')], verdicts: [] })
+      mockListAgents.mockResolvedValue({
+        agents: [
+          agentInfo('a1'),
+        ],
+        verdicts: [],
+      })
       const s = setup()
       const d = createRoot((dispose) => {
         s.add(TabType.AGENT, 'a1')
@@ -444,7 +491,9 @@ describe('useTabHydrators', () => {
       expect(s.view.getAgentTab('a1')?.agentStatus).toBe(AgentStatus.ACTIVE)
 
       reply.settle({
-        agents: [agentInfo('a1', { status: AgentStatus.STARTING, startupMessage: 'Starting Claude Code…' })],
+        agents: [
+          agentInfo('a1', { status: AgentStatus.STARTING, startupMessage: 'Starting Claude Code…' }),
+        ],
         verdicts: [],
       })
       await flush()
@@ -463,7 +512,9 @@ describe('useTabHydrators', () => {
 
       applyLiveStatus(s, 'a1', { status: AgentStatus.ACTIVE })
       reply.settle({
-        agents: [agentInfo('a1', { status: AgentStatus.STARTING, title: 'Agent Liz', workingDir: '/repo' })],
+        agents: [
+          agentInfo('a1', { status: AgentStatus.STARTING, title: 'Agent Liz', workingDir: '/repo' }),
+        ],
         verdicts: [],
       })
       await flush()
@@ -480,7 +531,12 @@ describe('useTabHydrators', () => {
       const { s, dispose } = await mountWithHeldReply(['a1'], reply)
 
       applyLiveStatus(s, 'a1', { status: AgentStatus.INACTIVE })
-      reply.settle({ agents: [agentInfo('a1', { status: AgentStatus.ACTIVE })], verdicts: [] })
+      reply.settle({
+        agents: [
+          agentInfo('a1', { status: AgentStatus.ACTIVE }),
+        ],
+        verdicts: [],
+      })
       await flush()
       await flush()
 
@@ -490,7 +546,12 @@ describe('useTabHydrators', () => {
 
     it('applies the reply status when the live event came before the call', async () => {
       // The worker read the status after that event, so the reply is the newer answer.
-      mockListAgents.mockResolvedValue({ agents: [agentInfo('a1', { status: AgentStatus.INACTIVE })], verdicts: [] })
+      mockListAgents.mockResolvedValue({
+        agents: [
+          agentInfo('a1', { status: AgentStatus.INACTIVE }),
+        ],
+        verdicts: [],
+      })
       const s = setup()
       const dispose = createRoot((d) => {
         s.add(TabType.AGENT, 'a1')
@@ -514,7 +575,12 @@ describe('useTabHydrators', () => {
         status: AgentStatus.UNSPECIFIED,
         gitStatus: create(GitRepoStatusSchema, { toplevel: '/repo', branch: 'main' }),
       })
-      reply.settle({ agents: [agentInfo('a1', { status: AgentStatus.ACTIVE })], verdicts: [] })
+      reply.settle({
+        agents: [
+          agentInfo('a1', { status: AgentStatus.ACTIVE }),
+        ],
+        verdicts: [],
+      })
       await flush()
       await flush()
 
@@ -549,15 +615,32 @@ describe('useTabHydrators', () => {
     // catalog again until the next settings change, and the model menu shows the
     // older choices until then.
     describe('a catalog that a live event wrote', () => {
-      const FALLBACK = { id: 'model', label: 'Model', currentValue: 'sonnet', options: [{ id: 'sonnet', label: 'sonnet' }] }
+      const FALLBACK = {
+        id: 'model',
+        label: 'Model',
+        currentValue: 'sonnet',
+        options: [
+          { id: 'sonnet', label: 'sonnet' },
+        ],
+      }
 
       it('keeps the catalog of an ACTIVE event over the catalog of a STARTING reply', async () => {
         const reply = heldReply()
         const { s, dispose } = await mountWithHeldReply(['a1'], reply)
 
-        applyLiveStatus(s, 'a1', { status: AgentStatus.ACTIVE, optionGroups: [modelGroup('opus', ['opus', 'sonnet'])] })
+        applyLiveStatus(s, 'a1', {
+          status: AgentStatus.ACTIVE,
+          optionGroups: [
+            modelGroup('opus', ['opus', 'sonnet']),
+          ],
+        })
         reply.settle({
-          agents: [agentInfo('a1', { status: AgentStatus.STARTING, optionGroups: [FALLBACK] })],
+          agents: [
+            agentInfo('a1', {
+              status: AgentStatus.STARTING,
+              optionGroups: [FALLBACK],
+            }),
+          ],
           verdicts: [],
         })
         await flush()
@@ -575,9 +658,19 @@ describe('useTabHydrators', () => {
         const { s, dispose } = await mountWithHeldReply(['a1'], reply)
 
         // A settings refresh: no status, so it says nothing about the lifecycle.
-        applyLiveStatus(s, 'a1', { status: AgentStatus.UNSPECIFIED, optionGroups: [modelGroup('opus', ['opus', 'sonnet'])] })
+        applyLiveStatus(s, 'a1', {
+          status: AgentStatus.UNSPECIFIED,
+          optionGroups: [
+            modelGroup('opus', ['opus', 'sonnet']),
+          ],
+        })
         reply.settle({
-          agents: [agentInfo('a1', { status: AgentStatus.ACTIVE, optionGroups: [FALLBACK] })],
+          agents: [
+            agentInfo('a1', {
+              status: AgentStatus.ACTIVE,
+              optionGroups: [FALLBACK],
+            }),
+          ],
           verdicts: [],
         })
         await flush()
@@ -598,7 +691,12 @@ describe('useTabHydrators', () => {
 
         applyLiveStatus(s, 'a1', { status: AgentStatus.STARTING })
         reply.settle({
-          agents: [agentInfo('a1', { status: AgentStatus.STARTING, optionGroups: [FALLBACK] })],
+          agents: [
+            agentInfo('a1', {
+              status: AgentStatus.STARTING,
+              optionGroups: [FALLBACK],
+            }),
+          ],
           verdicts: [],
         })
         await flush()
@@ -615,7 +713,11 @@ describe('useTabHydrators', () => {
         const { s, dispose } = await mountWithHeldReply(['a1'], reply)
 
         reply.settle({
-          agents: [agentInfo('a1', { optionGroups: [FALLBACK] })],
+          agents: [
+            agentInfo('a1', {
+              optionGroups: [FALLBACK],
+            }),
+          ],
           verdicts: [],
         })
         await flush()
@@ -628,13 +730,24 @@ describe('useTabHydrators', () => {
       it('applies the reply catalog when the live event came before the call', async () => {
         // The worker read the catalog after that event, so the reply is the newer answer.
         mockListAgents.mockResolvedValue({
-          agents: [agentInfo('a1', { optionGroups: [modelGroup('sonnet', ['opus', 'sonnet'])] })],
+          agents: [
+            agentInfo('a1', {
+              optionGroups: [
+                modelGroup('sonnet', ['opus', 'sonnet']),
+              ],
+            }),
+          ],
           verdicts: [],
         })
         const s = setup()
         const dispose = createRoot((d) => {
           s.add(TabType.AGENT, 'a1')
-          applyLiveStatus(s, 'a1', { status: AgentStatus.ACTIVE, optionGroups: [modelGroup('opus', ['opus'])] })
+          applyLiveStatus(s, 'a1', {
+            status: AgentStatus.ACTIVE,
+            optionGroups: [
+              modelGroup('opus', ['opus']),
+            ],
+          })
           s.mount()
           return d
         })
@@ -651,11 +764,20 @@ describe('useTabHydrators', () => {
         const reply = heldReply()
         const { s, dispose } = await mountWithHeldReply(['a1', 'a2'], reply)
 
-        applyLiveStatus(s, 'a1', { status: AgentStatus.UNSPECIFIED, optionGroups: [modelGroup('opus', ['opus'])] })
+        applyLiveStatus(s, 'a1', {
+          status: AgentStatus.UNSPECIFIED,
+          optionGroups: [
+            modelGroup('opus', ['opus']),
+          ],
+        })
         reply.settle({
           agents: [
-            agentInfo('a1', { optionGroups: [FALLBACK] }),
-            agentInfo('a2', { optionGroups: [FALLBACK] }),
+            agentInfo('a1', {
+              optionGroups: [FALLBACK],
+            }),
+            agentInfo('a2', {
+              optionGroups: [FALLBACK],
+            }),
           ],
           verdicts: [],
         })
@@ -671,9 +793,20 @@ describe('useTabHydrators', () => {
         const reply = heldReply()
         const { s, dispose } = await mountWithHeldReply(['a1'], reply)
 
-        applyLiveStatus(s, 'a1', { status: AgentStatus.UNSPECIFIED, optionGroups: [modelGroup('opus', ['opus'])] })
+        applyLiveStatus(s, 'a1', {
+          status: AgentStatus.UNSPECIFIED,
+          optionGroups: [
+            modelGroup('opus', ['opus']),
+          ],
+        })
         reply.settle({
-          agents: [agentInfo('a1', { title: 'Agent Liz', workingDir: '/repo', optionGroups: [FALLBACK] })],
+          agents: [
+            agentInfo('a1', {
+              title: 'Agent Liz',
+              workingDir: '/repo',
+              optionGroups: [FALLBACK],
+            }),
+          ],
           verdicts: [],
         })
         await flush()
@@ -689,7 +822,12 @@ describe('useTabHydrators', () => {
     it('holds back a re-ask reply that a live event overtook', async () => {
       const s = setup()
       const [online, setOnline] = createSignal<ReadonlySet<string>>(new Set(['w1']))
-      mockListAgents.mockResolvedValue({ agents: [agentInfo('a1', { status: AgentStatus.ACTIVE })], verdicts: [] })
+      mockListAgents.mockResolvedValue({
+        agents: [
+          agentInfo('a1', { status: AgentStatus.ACTIVE }),
+        ],
+        verdicts: [],
+      })
       const dispose = createRoot((d) => {
         s.add(TabType.AGENT, 'a1')
         s.mount(() => online())
@@ -710,7 +848,12 @@ describe('useTabHydrators', () => {
 
       // The worker restarts the agent and the stream reports each end of it.
       applyLiveStatus(s, 'a1', { status: AgentStatus.INACTIVE })
-      reply.settle({ agents: [agentInfo('a1', { status: AgentStatus.ACTIVE })], verdicts: [] })
+      reply.settle({
+        agents: [
+          agentInfo('a1', { status: AgentStatus.ACTIVE }),
+        ],
+        verdicts: [],
+      })
       await flush()
       await flush()
 
@@ -725,7 +868,12 @@ describe('useTabHydrators', () => {
     // never goes false and the hydrator re-asks the worker on every tick until
     // the channel closes.
     it('stops asking once the worker has answered, even with no title', async () => {
-      mockListTerminals.mockResolvedValue({ terminals: [terminalInfo('t1', { title: '' })], verdicts: [] })
+      mockListTerminals.mockResolvedValue({
+        terminals: [
+          terminalInfo('t1', { title: '' }),
+        ],
+        verdicts: [],
+      })
       const s = setup()
       const d = createRoot((dispose) => {
         s.add(TabType.TERMINAL, 't1')
@@ -753,7 +901,12 @@ describe('useTabHydrators', () => {
     // companion stayed DISCONNECTED for the life of the page and
     // `handleTerminalInput` dropped every keystroke into a live-looking panel.
     it('re-asks for a companion terminal the offline sweep disconnected', async () => {
-      mockListTerminals.mockResolvedValue({ terminals: [terminalInfo('q1', { title: 'zsh' })], verdicts: [] })
+      mockListTerminals.mockResolvedValue({
+        terminals: [
+          terminalInfo('q1', { title: 'zsh' }),
+        ],
+        verdicts: [],
+      })
       const s = setupWithCompanion('q1')
       const d = createRoot((dispose) => {
         s.metadata.patch('q1', { terminalStatus: TerminalStatus.DISCONNECTED })
@@ -769,7 +922,12 @@ describe('useTabHydrators', () => {
     })
 
     it('writes the fetched terminal fields onto the tab', async () => {
-      mockListTerminals.mockResolvedValue({ terminals: [terminalInfo('t1', { title: 'zsh' })], verdicts: [] })
+      mockListTerminals.mockResolvedValue({
+        terminals: [
+          terminalInfo('t1', { title: 'zsh' }),
+        ],
+        verdicts: [],
+      })
       const s = setup()
       const d = createRoot((dispose) => {
         s.add(TabType.TERMINAL, 't1')
@@ -816,7 +974,9 @@ describe('useTabHydrators', () => {
       expect(s.view.getTerminalTab('t1')?.status).toBe(TerminalStatus.READY)
 
       reply.settle({
-        terminals: [terminalInfo('t1', { status: TerminalStatus.STARTING, startupMessage: 'Starting zsh…' })],
+        terminals: [
+          terminalInfo('t1', { status: TerminalStatus.STARTING, startupMessage: 'Starting zsh…' }),
+        ],
         verdicts: [],
       })
       await flush()
@@ -835,14 +995,16 @@ describe('useTabHydrators', () => {
 
       applyLiveTerminalStatus(s, 't1', { status: TerminalStatus.READY })
       reply.settle({
-        terminals: [terminalInfo('t1', {
-          status: TerminalStatus.STARTING,
-          title: 'zsh',
-          cols: 132,
-          rows: 40,
-          screen: new Uint8Array([104, 105]),
-          screenEndOffset: 2n,
-        })],
+        terminals: [
+          terminalInfo('t1', {
+            status: TerminalStatus.STARTING,
+            title: 'zsh',
+            cols: 132,
+            rows: 40,
+            screen: new Uint8Array([104, 105]),
+            screenEndOffset: 2n,
+          }),
+        ],
         verdicts: [],
       })
       await flush()
@@ -863,7 +1025,9 @@ describe('useTabHydrators', () => {
 
       applyLiveTerminalStatus(s, 't1', { status: TerminalStatus.STARTUP_FAILED, startupError: 'no such shell' })
       reply.settle({
-        terminals: [terminalInfo('t1', { status: TerminalStatus.STARTING, startupMessage: 'Starting zsh…' })],
+        terminals: [
+          terminalInfo('t1', { status: TerminalStatus.STARTING, startupMessage: 'Starting zsh…' }),
+        ],
         verdicts: [],
       })
       await flush()
@@ -881,7 +1045,12 @@ describe('useTabHydrators', () => {
       const { s, dispose } = await mountWithHeldReply(['t1'], reply)
 
       markTerminalExited(s.metadata, 't1')
-      reply.settle({ terminals: [terminalInfo('t1', { status: TerminalStatus.READY, exited: false })], verdicts: [] })
+      reply.settle({
+        terminals: [
+          terminalInfo('t1', { status: TerminalStatus.READY, exited: false }),
+        ],
+        verdicts: [],
+      })
       await flush()
       await flush()
 
@@ -897,7 +1066,9 @@ describe('useTabHydrators', () => {
 
       applyLiveTerminalStatus(s, 't1', { status: TerminalStatus.STARTING, startupMessage: 'Starting zsh…' })
       reply.settle({
-        terminals: [terminalInfo('t1', { status: TerminalStatus.STARTING, startupMessage: 'Creating worktree…' })],
+        terminals: [
+          terminalInfo('t1', { status: TerminalStatus.STARTING, startupMessage: 'Creating worktree…' }),
+        ],
         verdicts: [],
       })
       await flush()
@@ -916,7 +1087,12 @@ describe('useTabHydrators', () => {
       const { s, dispose } = await mountWithHeldReply(['t1'], reply)
 
       applyLiveTerminalStatus(s, 't1', { status: TerminalStatus.READY })
-      reply.settle({ terminals: [terminalInfo('t1', { status: TerminalStatus.READY, exited: true })], verdicts: [] })
+      reply.settle({
+        terminals: [
+          terminalInfo('t1', { status: TerminalStatus.READY, exited: true }),
+        ],
+        verdicts: [],
+      })
       await flush()
       await flush()
 
@@ -935,7 +1111,12 @@ describe('useTabHydrators', () => {
 
       applyLiveTerminalStatus(s, 't1', { status: TerminalStatus.READY })
       expect(s.view.getTerminalTab('t1')?.status, 'the live handler leaves DISCONNECTED alone').toBe(TerminalStatus.DISCONNECTED)
-      reply.settle({ terminals: [terminalInfo('t1', { status: TerminalStatus.READY })], verdicts: [] })
+      reply.settle({
+        terminals: [
+          terminalInfo('t1', { status: TerminalStatus.READY }),
+        ],
+        verdicts: [],
+      })
       await flush()
       await flush()
 
@@ -945,7 +1126,12 @@ describe('useTabHydrators', () => {
 
     it('applies the reply status when the live event came before the call', async () => {
       // The worker read the state after that event, so the reply is the newer answer.
-      mockListTerminals.mockResolvedValue({ terminals: [terminalInfo('t1', { status: TerminalStatus.STARTUP_FAILED, startupError: 'no such shell' })], verdicts: [] })
+      mockListTerminals.mockResolvedValue({
+        terminals: [
+          terminalInfo('t1', { status: TerminalStatus.STARTUP_FAILED, startupError: 'no such shell' }),
+        ],
+        verdicts: [],
+      })
       const s = setup()
       const dispose = createRoot((d) => {
         s.add(TabType.TERMINAL, 't1')
@@ -991,7 +1177,12 @@ describe('useTabHydrators', () => {
       applyLiveTerminalStatus(s, 't1', { status: TerminalStatus.STARTING, startupMessage: 'Starting zsh…' })
       expect(s.view.getTerminalTab('t1')?.status, 'a STARTING event moves a DISCONNECTED tab').toBe(TerminalStatus.STARTING)
       applyLiveTerminalStatus(s, 't1', { status: TerminalStatus.READY })
-      reply.settle({ terminals: [terminalInfo('t1', { status: TerminalStatus.STARTING, startupMessage: 'Starting zsh…' })], verdicts: [] })
+      reply.settle({
+        terminals: [
+          terminalInfo('t1', { status: TerminalStatus.STARTING, startupMessage: 'Starting zsh…' }),
+        ],
+        verdicts: [],
+      })
       await flush()
       await flush()
 
@@ -1029,7 +1220,15 @@ describe('useTabHydrators', () => {
       mockGetTabPayload.mockResolvedValueOnce({
         payload: {
           workingDir: '/repo',
-          kind: { case: 'image', value: { agentId: 'a1', seq: 42n, imageIndex: 1, title: 'Read' } },
+          kind: {
+            case: 'image',
+            value: {
+              agentId: 'a1',
+              seq: 42n,
+              imageIndex: 1,
+              title: 'Read',
+            },
+          },
         },
       })
       const s = setup()
@@ -1141,7 +1340,12 @@ describe('useTabHydrators', () => {
    */
   describe('hydration is tracked explicitly', () => {
     it('does not re-fetch a tab the worker has already answered for', async () => {
-      mockListTerminals.mockResolvedValue({ terminals: [terminalInfo('t1')], verdicts: [] })
+      mockListTerminals.mockResolvedValue({
+        terminals: [
+          terminalInfo('t1'),
+        ],
+        verdicts: [],
+      })
       const s = setup()
       const d = createRoot((dispose) => {
         s.add(TabType.TERMINAL, 't1')
@@ -1174,7 +1378,12 @@ describe('useTabHydrators', () => {
      * page reload.
      */
     it('re-asks for a terminal the worker marked DISCONNECTED', async () => {
-      mockListTerminals.mockResolvedValue({ terminals: [terminalInfo('t1', { title: 'zsh' })], verdicts: [] })
+      mockListTerminals.mockResolvedValue({
+        terminals: [
+          terminalInfo('t1', { title: 'zsh' }),
+        ],
+        verdicts: [],
+      })
       const s = setup()
       const d = createRoot((dispose) => {
         s.add(TabType.TERMINAL, 't1')
@@ -1198,7 +1407,12 @@ describe('useTabHydrators', () => {
     })
 
     it('goes quiet again once the reply resolves the disconnected terminal', async () => {
-      mockListTerminals.mockResolvedValue({ terminals: [terminalInfo('t1', { title: 'zsh' })], verdicts: [] })
+      mockListTerminals.mockResolvedValue({
+        terminals: [
+          terminalInfo('t1', { title: 'zsh' }),
+        ],
+        verdicts: [],
+      })
       const s = setup()
       const d = createRoot((dispose) => {
         s.add(TabType.TERMINAL, 't1')
@@ -1246,7 +1460,12 @@ describe('useTabHydrators', () => {
     // The regression: a local resize writes `cols`, so a `cols`-keyed predicate
     // would drop this tab and it would never receive its title or status.
     it('still hydrates a terminal whose dimensions were set locally first', async () => {
-      mockListTerminals.mockResolvedValue({ terminals: [terminalInfo('t1', { title: 'zsh' })], verdicts: [] })
+      mockListTerminals.mockResolvedValue({
+        terminals: [
+          terminalInfo('t1', { title: 'zsh' }),
+        ],
+        verdicts: [],
+      })
       const s = setup()
       const d = createRoot((dispose) => {
         s.add(TabType.TERMINAL, 't1')
@@ -1271,7 +1490,12 @@ describe('useTabHydrators', () => {
       vi.useFakeTimers()
       try {
         // t1 answered for, t2 silently missing.
-        mockListTerminals.mockResolvedValue({ terminals: [terminalInfo('t1')], verdicts: [] })
+        mockListTerminals.mockResolvedValue({
+          terminals: [
+            terminalInfo('t1'),
+          ],
+          verdicts: [],
+        })
         const s = setup()
         const d = createRoot((dispose) => {
           s.add(TabType.TERMINAL, 't1')
@@ -1308,7 +1532,9 @@ describe('useTabHydrators', () => {
       vi.useFakeTimers()
       try {
         mockListTerminals.mockResolvedValue({
-          terminals: [terminalInfo('t1')],
+          terminals: [
+            terminalInfo('t1'),
+          ],
           verdicts: [
             { tabId: 't1', status: TabHydrationStatus.FOUND },
             { tabId: 't2', status: TabHydrationStatus.ABSENT },
@@ -1373,7 +1599,12 @@ describe('useTabHydrators', () => {
         expect(mockListTerminals, 'the budget really is spent').toHaveBeenCalledTimes(exhausted)
 
         // The hub reports it back. The tab set has not changed.
-        mockListTerminals.mockResolvedValue({ terminals: [terminalInfo('t1', { title: 'zsh' })], verdicts: [] })
+        mockListTerminals.mockResolvedValue({
+          terminals: [
+            terminalInfo('t1', { title: 'zsh' }),
+          ],
+          verdicts: [],
+        })
         setOnline(new Set(['w1']))
         await vi.advanceTimersByTimeAsync(0)
 
@@ -1419,7 +1650,12 @@ describe('useTabHydrators', () => {
     it('re-asks for an already hydrated agent when its worker comes back', async () => {
       const s = setup()
       const [online, setOnline] = createSignal<ReadonlySet<string>>(new Set(['w1']))
-      mockListAgents.mockResolvedValue({ agents: [agentInfo('a1', { title: 'Before' })], verdicts: [] })
+      mockListAgents.mockResolvedValue({
+        agents: [
+          agentInfo('a1', { title: 'Before' }),
+        ],
+        verdicts: [],
+      })
       const d = createRoot((dispose) => {
         s.add(TabType.AGENT, 'a1')
         s.mount(() => online())
@@ -1434,7 +1670,12 @@ describe('useTabHydrators', () => {
       // still `hydrated`.
       setOnline(new Set<string>())
       await flush()
-      mockListAgents.mockResolvedValue({ agents: [agentInfo('a1', { title: 'After' })], verdicts: [] })
+      mockListAgents.mockResolvedValue({
+        agents: [
+          agentInfo('a1', { title: 'After' }),
+        ],
+        verdicts: [],
+      })
       setOnline(new Set(['w1']))
       await flush()
       await flush()
@@ -1457,14 +1698,21 @@ describe('useTabHydrators', () => {
       const [online, setOnline] = createSignal<ReadonlySet<string>>(new Set(['w1']))
       // `currentValue` is the field the mapper reads. With any other name the
       // reply carries no `optionValues` at all, and the test cannot fail.
-      const groups = [{
-        id: 'model',
-        label: 'Model',
-        currentValue: 'sonnet',
-        options: [{ id: 'sonnet', label: 'Sonnet' }, { id: 'opus', label: 'Opus' }],
-      }]
+      const groups = [
+        {
+          id: 'model',
+          label: 'Model',
+          currentValue: 'sonnet',
+          options: [
+            { id: 'sonnet', label: 'Sonnet' },
+            { id: 'opus', label: 'Opus' },
+          ],
+        },
+      ]
       mockListAgents.mockResolvedValue({
-        agents: [agentInfo('a1', { optionGroups: groups })],
+        agents: [
+          agentInfo('a1', { optionGroups: groups }),
+        ],
         verdicts: [],
       })
       const d = createRoot((dispose) => {
@@ -1477,7 +1725,9 @@ describe('useTabHydrators', () => {
       await flush()
 
       // The optimistic edit the user made while the reply was on its way.
-      s.metadata.patch('a1', { optionValues: { model: 'opus' } })
+      s.metadata.patch('a1', {
+        optionValues: { model: 'opus' },
+      })
       setOnline(new Set<string>())
       await flush()
       setOnline(new Set(['w1']))
@@ -1533,7 +1783,9 @@ describe('useTabHydrators', () => {
       vi.useFakeTimers()
       try {
         mockListTerminals.mockResolvedValue({
-          terminals: [terminalInfo('t1')],
+          terminals: [
+            terminalInfo('t1'),
+          ],
           verdicts: [
             { tabId: 't1', status: TabHydrationStatus.FOUND },
             { tabId: 't2', status: TabHydrationStatus.UNSPECIFIED },
@@ -1565,7 +1817,12 @@ describe('useTabHydrators', () => {
       // behaviour is the safe default: never silently retire a live tab.
       vi.useFakeTimers()
       try {
-        mockListTerminals.mockResolvedValue({ terminals: [terminalInfo('t1')], verdicts: [] })
+        mockListTerminals.mockResolvedValue({
+          terminals: [
+            terminalInfo('t1'),
+          ],
+          verdicts: [],
+        })
         const s = setup()
         const d = createRoot((dispose) => {
           s.add(TabType.TERMINAL, 't1')

@@ -15,8 +15,18 @@ const artifactConfig: Pick<PlaywrightTestConfig, 'outputDir' | 'reporter'> = out
       outputDir: join(outputFileDirectory, 'test-results'),
       reporter: [
         ['list'],
-        ['blob', { outputDir: join(outputFileDirectory, 'blob-report') }],
-        ['json', { outputFile: join(outputFileDirectory, 'report.json') }],
+        [
+          'blob',
+          {
+            outputDir: join(outputFileDirectory, 'blob-report'),
+          },
+        ],
+        [
+          'json',
+          {
+            outputFile: join(outputFileDirectory, 'report.json'),
+          },
+        ],
       ],
     }
 

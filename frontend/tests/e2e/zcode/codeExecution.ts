@@ -22,12 +22,18 @@ export function zcodeWorkflowLaunch(text: string): ZCodeWorkflowLaunch {
 }
 
 function tag(text: string, name: 'run_id' | 'status' | 'owned_by_this_session' | 'result' | 'error'): string | undefined {
-  const opening = name === 'error' ? `<${name} code="[^"]*">` : `<${name}>`
+  const opening = name === 'error'
+    ? `<${name} code="[^"]*">`
+    : `<${name}>`
   const matches = Array.from(text.matchAll(new RegExp(`${opening}([\\s\\S]*?)<\\/${name}>`, 'gu')))
   if (matches.length > 1)
     throw new Error(`The native ZCode workflow repeats its ${name} field.`)
   const value = matches[0]?.[1]
-  return value === undefined ? undefined : name === 'result' ? value : decodeNativeXmlText(value)
+  return value === undefined
+    ? undefined
+    : name === 'result'
+      ? value
+      : decodeNativeXmlText(value)
 }
 
 /** Require the exact owned run's final result, including an empty native value. */
@@ -42,7 +48,11 @@ export function zcodeWorkflowCompletion(text: string, runId: string): ZCodeWorkf
   if (status === 'completed') {
     if (result === undefined || error !== undefined || !result.startsWith('\n') || !result.endsWith('\n'))
       throw new Error('The native ZCode script has no exact final output.')
-    return { runId, status: 'completed', text: result.slice(1, -1) }
+    return {
+      runId,
+      status: 'completed',
+      text: result.slice(1, -1),
+    }
   }
   if (error === undefined)
     throw new Error('The native ZCode script has no exact execution error.')
@@ -58,7 +68,9 @@ export function zcodeStoredWorkflowCompletion(frames: readonly unknown[], sessio
   if (results.length !== 1)
     throw new Error('The native ZCode read requires one exact persisted result.')
   const frame = results[0]
-  const result = frame && isObject(frame.payload) ? frame.payload.result : undefined
+  const result = frame && isObject(frame.payload)
+    ? frame.payload.result
+    : undefined
   if (!frame || frame.sessionId !== sessionId || !isObject(result) || result.success === false
     || result.truncated === true || typeof result.content !== 'string') {
     throw new Error('The native ZCode read is incomplete or belongs to another session.')

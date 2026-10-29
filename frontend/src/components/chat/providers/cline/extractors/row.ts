@@ -23,7 +23,9 @@ export function clineExtractRow(input: RowExtractionInput): ChatRow | null {
       return clineTextRow(payload)
     case 'assistant_thinking': {
       const text = pickString(clinePayload(payload, CLINE_EVENT.ReasoningFinished), CLINE_FIELD.Reasoning)
-      return text.trim() ? { kind: 'assistant-thinking', text } : null
+      return text.trim()
+        ? { kind: 'assistant-thinking', text }
+        : null
     }
     case 'tool_use':
     case 'tool_result':
@@ -48,7 +50,12 @@ function clineTextRow(payload: Record<string, unknown> | undefined): ChatRow {
   const media = pickObject(clinePayload(payload, CLINE_EVENT.AssistantMedia), CLINE_FIELD.Media)
   if (media) {
     const type = pickString(media, 'mediaType') || pickString(media, 'mimeType') || pickString(media, 'type')
-    return { kind: 'assistant-text', text: type ? `The model returned media (${type}).` : 'The model returned media.' }
+    return {
+      kind: 'assistant-text',
+      text: type
+        ? `The model returned media (${type}).`
+        : 'The model returned media.',
+    }
   }
   return { kind: 'hidden' }
 }
@@ -65,7 +72,11 @@ function clineToolSpanRow(parsed: ParsedMessageContent, span: RowExtractionInput
     return null
   const ownId = clineSideCallId(parsed)
   const mine = (side: ParsedMessageContent | undefined) => side !== undefined && clineSideCallId(side) === ownId
-  const row = clineToolRow(payload, mine(span.request) ? span.request : undefined, mine(span.result) ? span.result : undefined, parsed.completion)
+  const row = clineToolRow(payload, mine(span.request)
+    ? span.request
+    : undefined, mine(span.result)
+    ? span.result
+    : undefined, parsed.completion)
   if (!row)
     return null
   return toolCallRow(clineToolCall(row, parsed.completion), clineToolSpanRowRole(row), span.visibleRows)

@@ -73,8 +73,11 @@ describe('goalActionsFromProto', () => {
   })
 
   it('round-trips through goalActionToProto', () => {
-    for (const action of ['set', 'clear', 'pause', 'resume'] as const)
-      expect(goalActionsFromProto([goalActionToProto(action)])).toEqual([action])
+    for (const action of ['set', 'clear', 'pause', 'resume'] as const) {
+      expect(goalActionsFromProto([
+        goalActionToProto(action),
+      ])).toEqual([action])
+    }
   })
 })
 
@@ -85,7 +88,10 @@ describe('goalActionState', () => {
 
   // Hide an unsupported action instead of displaying a control that cannot run.
   it('hides an action the agent does not support', () => {
-    expect(goalActionState({ current: active, actions: ['set', 'clear'] }, 'pause')).toEqual({ kind: 'hidden' })
+    expect(goalActionState({
+      current: active,
+      actions: ['set', 'clear'],
+    }, 'pause')).toEqual({ kind: 'hidden' })
     // An absent current key and an explicit undefined key both mean that there is no goal.
     expect(goalActionState({ actions: [] }, 'set')).toEqual({ kind: 'hidden' })
   })
@@ -93,18 +99,34 @@ describe('goalActionState', () => {
   // Pause and Resume require different states.
   // A supported action that the current state refuses stays visible with its reason.
   it('enables pause only for an active goal, and resume only for a paused one', () => {
-    expect(goalActionState({ current: active, actions: [...all] }, 'pause')).toEqual({ kind: 'enabled' })
-    expect(goalActionState({ current: active, actions: [...all] }, 'resume'))
+    expect(goalActionState({
+      current: active,
+      actions: [...all],
+    }, 'pause')).toEqual({ kind: 'enabled' })
+    expect(goalActionState({
+      current: active,
+      actions: [...all],
+    }, 'resume'))
       .toEqual({ kind: 'disabled', reason: 'Only a paused goal can be resumed' })
-    expect(goalActionState({ current: paused, actions: [...all] }, 'resume')).toEqual({ kind: 'enabled' })
-    expect(goalActionState({ current: paused, actions: [...all] }, 'pause'))
+    expect(goalActionState({
+      current: paused,
+      actions: [...all],
+    }, 'resume')).toEqual({ kind: 'enabled' })
+    expect(goalActionState({
+      current: paused,
+      actions: [...all],
+    }, 'pause'))
       .toEqual({ kind: 'disabled', reason: 'Only an active goal can be paused' })
   })
 
   // Set requires no current goal because it creates the first goal.
   it('enables set when there is no goal at all', () => {
-    expect(goalActionState({ actions: ['set'] }, 'set')).toEqual({ kind: 'enabled' })
-    expect(goalActionState({ actions: ['set', 'clear'] }, 'clear'))
+    expect(goalActionState({
+      actions: ['set'],
+    }, 'set')).toEqual({ kind: 'enabled' })
+    expect(goalActionState({
+      actions: ['set', 'clear'],
+    }, 'clear'))
       .toEqual({ kind: 'disabled', reason: 'This session has no goal' })
   })
 
@@ -112,11 +134,20 @@ describe('goalActionState', () => {
   // Refuse both actions with their existing state requirements.
   it('refuses both pause and resume for a dormant goal, with a reason', () => {
     const dormant = protoGoalToStore(protoGoal({ status: AgentGoalStatus.DORMANT }))
-    expect(goalActionState({ current: dormant, actions: [...all] }, 'pause'))
+    expect(goalActionState({
+      current: dormant,
+      actions: [...all],
+    }, 'pause'))
       .toEqual({ kind: 'disabled', reason: 'Only an active goal can be paused' })
-    expect(goalActionState({ current: dormant, actions: [...all] }, 'resume'))
+    expect(goalActionState({
+      current: dormant,
+      actions: [...all],
+    }, 'resume'))
       .toEqual({ kind: 'disabled', reason: 'Only a paused goal can be resumed' })
-    expect(goalActionState({ current: dormant, actions: [...all] }, 'clear')).toEqual({ kind: 'enabled' })
+    expect(goalActionState({
+      current: dormant,
+      actions: [...all],
+    }, 'clear')).toEqual({ kind: 'enabled' })
   })
 
   /**
@@ -124,10 +155,17 @@ describe('goalActionState', () => {
    * It has no separate argument that could supply another agent's action list.
    */
   it('reads the goal and the verb list from the same surface', () => {
-    const surface: GoalSurface = { current: paused, progress: {}, actions: [...all] }
+    const surface: GoalSurface = {
+      current: paused,
+      progress: {},
+      actions: [...all],
+    }
     expect(goalActionState(surface, 'resume')).toEqual({ kind: 'enabled' })
     // Remove the action from the same surface's supported list.
-    expect(goalActionState({ ...surface, actions: ['set'] }, 'resume')).toEqual({ kind: 'hidden' })
+    expect(goalActionState({
+      ...surface,
+      actions: ['set'],
+    }, 'resume')).toEqual({ kind: 'hidden' })
   })
 })
 
@@ -162,8 +200,16 @@ describe('goalStatusLabel', () => {
 })
 
 describe('shouldShowGoalsAndTodosSection', () => {
-  const oneTodo: TodoItem = { rowKey: '1', content: 'Ship', status: 'pending', activeForm: '' }
-  const settable: GoalSurface = { progress: {}, actions: ['set'] }
+  const oneTodo: TodoItem = {
+    rowKey: '1',
+    content: 'Ship',
+    status: 'pending',
+    activeForm: '',
+  }
+  const settable: GoalSurface = {
+    progress: {},
+    actions: ['set'],
+  }
 
   it('shows the section for a to-do', () => {
     expect(shouldShowGoalsAndTodosSection([oneTodo], undefined)).toBe(true)
@@ -189,7 +235,12 @@ describe('shouldShowGoalsAndTodosSection', () => {
 })
 
 describe('shared unknown goals', () => {
-  it.each(['provider-future-state', 'active', 'blocked', ''])('retains native detail %j under the explicit unknown status', (statusDetail) => {
+  it.each([
+    'provider-future-state',
+    'active',
+    'blocked',
+    '',
+  ])('retains native detail %j under the explicit unknown status', (statusDetail) => {
     const wire = create(AgentGoalSchema, {
       nativeId: 'native-unknown-goal',
       objective: 'Ship the exact objective',
@@ -202,7 +253,9 @@ describe('shared unknown goals', () => {
       nativeId: 'native-unknown-goal',
       objective: 'Ship the exact objective',
       status: 'unknown',
-      ...(statusDetail === '' ? {} : { statusDetail }),
+      ...(statusDetail === ''
+        ? {}
+        : { statusDetail }),
       createdAt: '2026-10-09T00:00:00.000Z',
     })
     expect(wire.status).toBe(AgentGoalStatus.UNKNOWN)
@@ -227,7 +280,11 @@ describe('shared unknown goals', () => {
 
   it('retains supported clear and replace controls while refusing pause and resume for unknown', () => {
     const current = protoGoalToStore(create(AgentGoalSchema, { objective: 'Keep the goal', status: AgentGoalStatus.UNKNOWN }))
-    const surface: GoalSurface = { current, progress: {}, actions: ['set', 'clear', 'pause', 'resume'] }
+    const surface: GoalSurface = {
+      current,
+      progress: {},
+      actions: ['set', 'clear', 'pause', 'resume'],
+    }
     expect(goalActionState(surface, 'pause')).toEqual({ kind: 'disabled', reason: 'Only an active goal can be paused' })
     expect(goalActionState(surface, 'resume')).toEqual({ kind: 'disabled', reason: 'Only a paused goal can be resumed' })
     expect(goalActionState(surface, 'set')).toEqual({ kind: 'enabled' })

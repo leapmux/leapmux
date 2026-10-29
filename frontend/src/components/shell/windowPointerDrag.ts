@@ -86,7 +86,9 @@ export function useWindowPointerDrag(): WindowPointerDragController {
       opts.onMove(e)
     }
 
-    const coalescer = opts.coalesce ? createRafCoalescer(dispatchMove) : null
+    const coalescer = opts.coalesce
+      ? createRafCoalescer(dispatchMove)
+      : null
 
     const onMove: (e: PointerEvent) => void = coalescer
       ? e => coalescer.push(e)

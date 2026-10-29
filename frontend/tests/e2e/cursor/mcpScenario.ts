@@ -72,7 +72,11 @@ export async function exerciseCursorMcpSession(context: ManagedNativeScenarioCon
     additionalTestIds: ['control-question-group'],
     relatedProof: async () => {
       // Cursor answers its own Run with the tool result, so the turn uses one model step.
-      const form = await modelScript.queue({ toolCalls: [mcpToolCall(context.provider, 'cursor-form', { server: server.name, tool: 'ask', input: {} })] })
+      const form = await modelScript.queue({
+        toolCalls: [
+          mcpToolCall(context.provider, 'cursor-form', { server: server.name, tool: 'ask', input: {} }),
+        ],
+      })
       await sendMessage(page, modelScript.prompt(`Call the ${server.name} ask tool exactly once.`))
       await modelScript.waitForSteps(form + 1)
       await waitForAgentIdle(page)
@@ -84,7 +88,11 @@ export async function exerciseCursorMcpSession(context: ManagedNativeScenarioCon
   await page.reload()
   await expect(assistantBubbles(page).filter({ hasText: 'FORM_ROUND_TRIP_DECLINED' }).first()).toBeVisible()
 
-  const echo = await modelScript.queue({ toolCalls: [mcpToolCall(context.provider, 'cursor-echo', { server: server.name, tool: 'echo', input: echoArguments })] })
+  const echo = await modelScript.queue({
+    toolCalls: [
+      mcpToolCall(context.provider, 'cursor-echo', { server: server.name, tool: 'echo', input: echoArguments }),
+    ],
+  })
   await sendMessage(page, modelScript.prompt(`Call the ${server.name} echo tool with the supplied values.`))
   await modelScript.waitForSteps(echo + 1)
   await waitForAgentIdle(page)

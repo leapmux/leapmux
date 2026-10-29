@@ -13,10 +13,19 @@ export function reasonixNotificationEntry(message: Record<string, unknown>): Not
   const text = pickString(pickObject(message, 'content'), 'text')
   if (message.sessionUpdate !== ACP_UPDATE.AgentMessageChunk || text === '')
     return []
-  if (text.startsWith(REASONIX_NOTICE_PREFIX.Compacted))
-    return [{ kind: 'compaction', phase: 'end', outcome: 'completed' }]
-  if (text.startsWith(REASONIX_NOTICE_PREFIX.Warning))
-    return [{ kind: 'text', text: text.slice(REASONIX_NOTICE_PREFIX.Warning.length).trim() }]
+  if (text.startsWith(REASONIX_NOTICE_PREFIX.Compacted)) {
+    return [
+      { kind: 'compaction', phase: 'end', outcome: 'completed' },
+    ]
+  }
+  if (text.startsWith(REASONIX_NOTICE_PREFIX.Warning)) {
+    return [
+      {
+        kind: 'text',
+        text: text.slice(REASONIX_NOTICE_PREFIX.Warning.length).trim(),
+      },
+    ]
+  }
   return []
 }
 

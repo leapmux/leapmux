@@ -4,7 +4,16 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { createCodebuddyEnvironment } from './codebuddyEnvironment'
 
 let homeDir: string
-const options = () => ({ homeDir, baseURL: 'http://127.0.0.1:4567/v1', modelKey: 'unit-key', modelID: 'unit-model', alternateModelID: 'unit-alt', startModel: 'custom-local:unit-model' })
+function options() {
+  return {
+    homeDir,
+    baseURL: 'http://127.0.0.1:4567/v1',
+    modelKey: 'unit-key',
+    modelID: 'unit-model',
+    alternateModelID: 'unit-alt',
+    startModel: 'custom-local:unit-model',
+  }
+}
 
 beforeEach(() => {
   const scratch = resolve(import.meta.dirname, '../../../../.tmp')
@@ -23,13 +32,19 @@ describe('createCodebuddyEnvironment', () => {
     }
     createCodebuddyEnvironment(configured)
     const models = JSON.parse(readFileSync(join(homeDir, '.codebuddy', 'models.json'), 'utf8'))
-    expect(models.models[0]).toMatchObject({ supportsReasoning: true, reasoning: { defaultEffort: 'medium' } })
+    expect(models.models[0]).toMatchObject({
+      supportsReasoning: true,
+      reasoning: { defaultEffort: 'medium' },
+    })
     expect(models.models[1]).toHaveProperty('supportsReasoning', false)
     expect(models.models[1]).not.toHaveProperty('reasoning')
   })
 
   it('preserves an explicit false thinking preference in the private profile', () => {
-    const configured = { ...options(), thinkingEnabled: false }
+    const configured = {
+      ...options(),
+      thinkingEnabled: false,
+    }
     createCodebuddyEnvironment(configured)
     expect(JSON.parse(readFileSync(join(homeDir, '.codebuddy', 'settings.json'), 'utf8')))
       .toEqual({ model: 'custom-local:unit-model', alwaysThinkingEnabled: false })
@@ -40,7 +55,13 @@ describe('createCodebuddyEnvironment', () => {
     expect(env.CODEBUDDY_CONFIG_DIR).toBe(join(homeDir, '.codebuddy'))
     const models = JSON.parse(readFileSync(join(env.CODEBUDDY_CONFIG_DIR!, 'models.json'), 'utf8'))
     expect(models.models).toEqual([
-      expect.objectContaining({ id: 'unit-model', name: 'Mock Model', apiKey: 'unit-key', url: 'http://127.0.0.1:4567/v1/chat/completions', supportsImages: true }),
+      expect.objectContaining({
+        id: 'unit-model',
+        name: 'Mock Model',
+        apiKey: 'unit-key',
+        url: 'http://127.0.0.1:4567/v1/chat/completions',
+        supportsImages: true,
+      }),
       expect.objectContaining({ id: 'unit-alt', name: 'Alternate Mock Model', url: 'http://127.0.0.1:4567/v1/chat/completions' }),
     ])
     expect(models.availableModels).toEqual(['unit-model', 'unit-alt'])
@@ -52,7 +73,12 @@ describe('createCodebuddyEnvironment', () => {
   })
 
   it('turns off telemetry, trace collection, and the updater', () => {
-    expect(createCodebuddyEnvironment(options())).toMatchObject({ DISABLE_TELEMETRY: '1', DISABLE_GALILEO: '1', DISABLE_AUTOUPDATER: '1', CODEBUDDY_DISABLE_TRACE_COLLECTOR: '1' })
+    expect(createCodebuddyEnvironment(options())).toMatchObject({
+      DISABLE_TELEMETRY: '1',
+      DISABLE_GALILEO: '1',
+      DISABLE_AUTOUPDATER: '1',
+      CODEBUDDY_DISABLE_TRACE_COLLECTOR: '1',
+    })
   })
 
   // CodeBuddy reads CODEBUDDY.md and AGENTS.md from each directory above its working directory, up to the root of the

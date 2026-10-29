@@ -8,7 +8,17 @@ import { qoderEndpointCacheRecords } from './qoderSurface'
 
 let runDirectory: string
 let previousPath: string | undefined
-const options = () => ({ homeDir: join(runDirectory, 'home'), shimsDirectory: join(runDirectory, 'shims'), origin: 'http://127.0.0.1:4567', baseURL: 'http://127.0.0.1:4567/v1', modelKey: 'unit-key', modelID: 'unit-model', alternateModelID: 'unit-alt' })
+function options() {
+  return {
+    homeDir: join(runDirectory, 'home'),
+    shimsDirectory: join(runDirectory, 'shims'),
+    origin: 'http://127.0.0.1:4567',
+    baseURL: 'http://127.0.0.1:4567/v1',
+    modelKey: 'unit-key',
+    modelID: 'unit-model',
+    alternateModelID: 'unit-alt',
+  }
+}
 
 beforeEach(() => {
   const scratch = resolve(import.meta.dirname, '../../../../.tmp')
@@ -38,13 +48,21 @@ describe('createQoderEnvironment', () => {
     expect(Object.keys(settings.providers)).toEqual(['mockprov'])
     expect(settings.providers.mockprov).toMatchObject({ baseUrl: 'http://127.0.0.1:4567/v1', apiKey: 'unit-key' })
     expect(settings.providers.mockprov.models.map((model: { model: string }) => model.model)).toEqual(['unit-model', 'unit-alt'])
-    expect(settings.mcpServers.form_probe).toEqual({ command: process.execPath, args: [join(qoderHome, 'form-server.mjs')] })
+    expect(settings.mcpServers.form_probe).toEqual({
+      command: process.execPath,
+      args: [
+        join(qoderHome, 'form-server.mjs'),
+      ],
+    })
     expect(existsSync(join(qoderHome, 'form-server.mjs'))).toBe(true)
     expect(settings.modelConfigs).toBeUndefined()
   })
 
   it('writes both endpoint cache formats for the given origin, with the current time', () => {
-    vi.useFakeTimers({ now: new Date('2026-10-06T00:00:00Z'), toFake: ['Date'] })
+    vi.useFakeTimers({
+      now: new Date('2026-10-06T00:00:00Z'),
+      toFake: ['Date'],
+    })
     createQoderEnvironment(options())
     const cacheDir = join(runDirectory, 'home', '.qoder', '.cache')
     const expected = qoderEndpointCacheRecords('http://127.0.0.1:4567', Date.parse('2026-10-06T00:00:00Z'))
@@ -88,7 +106,12 @@ describe('createQoderEnvironment', () => {
     process.env.PATH = binaries
     const env = createQoderEnvironment(options())
     unlinkSync(env.QODER_SDK_AUTH_PAYLOAD_FILE!)
-    execFileSync(join(runDirectory, 'shims', 'qodercli'), ['--version'], { env: { ...process.env, ...env } })
+    execFileSync(join(runDirectory, 'shims', 'qodercli'), ['--version'], {
+      env: {
+        ...process.env,
+        ...env,
+      },
+    })
     expect(JSON.parse(readFileSync(env.QODER_SDK_AUTH_PAYLOAD_FILE!, 'utf8'))).toEqual({ type: 'accessToken', accessToken: 'unit-key' })
     expect(readFileSync(join(runDirectory, 'started'), 'utf8')).toBe('--version')
   })

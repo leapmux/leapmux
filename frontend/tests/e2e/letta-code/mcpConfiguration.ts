@@ -51,7 +51,9 @@ export function parseLettaConversation(value: unknown, conversationId: string, b
 function settingsAgents(value: unknown): { settings: Record<string, unknown>, agents: Record<string, unknown>[] } {
   if (!isObject(value))
     throw new Error('The native Letta settings must be an object.')
-  const agents = value.agents === undefined ? [] : value.agents
+  const agents = value.agents === undefined
+    ? []
+    : value.agents
   if (!Array.isArray(agents) || !agents.every(isObject))
     throw new Error('The native Letta agents settings must be an array of objects.')
   return { settings: value, agents }
@@ -60,7 +62,9 @@ function settingsAgents(value: unknown): { settings: Record<string, unknown>, ag
 function matchingEntry(agents: Record<string, unknown>[], identity: LettaConversationIdentity): number {
   if (!identity.agentId.trim() || !identity.baseUrl.startsWith('local:') || !isAbsolute(identity.baseUrl.slice('local:'.length)))
     throw new Error('The native Letta MCP settings require an agent ID and an absolute local backend.')
-  const matches = agents.flatMap((entry, index) => entry.agentId === identity.agentId && entry.baseUrl === identity.baseUrl ? [index] : [])
+  const matches = agents.flatMap((entry, index) => entry.agentId === identity.agentId && entry.baseUrl === identity.baseUrl
+    ? [index]
+    : [])
   if (matches.length > 1)
     throw new Error('The native Letta MCP settings contain duplicate agent and backend entries.')
   return matches[0] ?? -1
@@ -83,14 +87,34 @@ export function setLettaMcpSettings(value: unknown, identity: LettaConversationI
   validateServers(servers)
   const { settings, agents } = settingsAgents(value)
   const index = matchingEntry(agents, identity)
-  const entry: Record<string, unknown> | undefined = index < 0 ? { agentId: identity.agentId, baseUrl: identity.baseUrl } : agents[index]
+  const entry: Record<string, unknown> | undefined = index < 0
+    ? { agentId: identity.agentId, baseUrl: identity.baseUrl }
+    : agents[index]
   if (!entry)
     throw new Error('The matched native Letta MCP entry disappeared before its update.')
   const previous: PreviousLettaMcpSettings = index < 0
     ? { kind: 'entry-absent' }
-    : Object.hasOwn(entry, 'mcpServers') ? { kind: 'field-present', value: entry.mcpServers } : { kind: 'field-absent' }
-  const next = { ...entry, mcpServers: servers.map(server => ({ ...server, args: [...server.args] })) }
-  return { settings: { ...settings, agents: index < 0 ? [...agents, next] : agents.map((entry, entryIndex) => entryIndex === index ? next : entry) }, previous }
+    : Object.hasOwn(entry, 'mcpServers')
+      ? { kind: 'field-present', value: entry.mcpServers }
+      : { kind: 'field-absent' }
+  const next = {
+    ...entry,
+    mcpServers: servers.map(server => ({
+      ...server,
+      args: [...server.args],
+    })),
+  }
+  return {
+    settings: {
+      ...settings,
+      agents: index < 0
+        ? [...agents, next]
+        : agents.map((entry, entryIndex) => entryIndex === index
+            ? next
+            : entry),
+    },
+    previous,
+  }
 }
 
 /** Restore the MCP field and retain newer native settings. */
@@ -105,7 +129,14 @@ export function restoreLettaMcpSettings(value: unknown, identity: LettaConversat
   else
     delete entry.mcpServers
   const removeEntry = previous.kind === 'entry-absent' && Object.keys(entry).every(key => key === 'agentId' || key === 'baseUrl')
-  return { ...settings, agents: agents.flatMap((current, entryIndex) => entryIndex !== index ? [current] : removeEntry ? [] : [entry]) }
+  return {
+    ...settings,
+    agents: agents.flatMap((current, entryIndex) => entryIndex !== index
+      ? [current]
+      : removeEntry
+        ? []
+        : [entry]),
+  }
 }
 
 function writeSettings(path: string, value: Record<string, unknown>): void {

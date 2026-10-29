@@ -17,9 +17,18 @@ describe('parseToolOutcome', () => {
   it.each([
     ['no metadata', undefined],
     ['a non-object', 'note'],
-    ['another metadata field', { duration_ms: 4 }],
-    ['a note with no source', metadata({ [TOOL_OUTCOME.FieldOutcome]: TOOL_OUTCOME.OutcomeUnknown })],
-    ['a note with no outcome', metadata({ [TOOL_OUTCOME.FieldSource]: TOOL_OUTCOME.SourceBatchSummary })],
+    [
+      'another metadata field',
+      { duration_ms: 4 },
+    ],
+    [
+      'a note with no source',
+      metadata({ [TOOL_OUTCOME.FieldOutcome]: TOOL_OUTCOME.OutcomeUnknown }),
+    ],
+    [
+      'a note with no outcome',
+      metadata({ [TOOL_OUTCOME.FieldSource]: TOOL_OUTCOME.SourceBatchSummary }),
+    ],
   ])('returns null for %s', (_label, value) => {
     expect(parseToolOutcome(value)).toBeNull()
   })

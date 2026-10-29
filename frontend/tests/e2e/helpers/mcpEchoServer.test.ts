@@ -13,12 +13,31 @@ function executeEcho(argumentsValue: unknown) {
     const receiptLog = join(directory, 'receipt.json')
     const server = writeMcpEchoServer(directory, { receiptLog })
     const requests = [
-      { jsonrpc: '2.0', id: 0, method: 'initialize', params: { protocolVersion: '2025-03-26', capabilities: { roots: { listChanged: false } } } },
+      {
+        jsonrpc: '2.0',
+        id: 0,
+        method: 'initialize',
+        params: {
+          protocolVersion: '2025-03-26',
+          capabilities: {
+            roots: { listChanged: false },
+          },
+        },
+      },
       { jsonrpc: '2.0', id: 1, method: 'tools/list' },
-      { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'echo', arguments: argumentsValue } },
+      {
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/call',
+        params: { name: 'echo', arguments: argumentsValue },
+      },
     ]
     const output = execFileSync(server.command, [...server.args], { input: `${requests.map(request => JSON.stringify(request)).join('\n')}\n`, encoding: 'utf8', timeout: 30000 })
-    return { server, receipt: readMcpServerReceipt(receiptLog), replies: output.trim().split('\n').map(line => JSON.parse(line) as { id: number, result?: { content: Array<{ text: string }>, serverInfo?: { name: string } }, error?: { code: number } }) }
+    return {
+      server,
+      receipt: readMcpServerReceipt(receiptLog),
+      replies: output.trim().split('\n').map(line => JSON.parse(line) as { id: number, result?: { content: Array<{ text: string }>, serverInfo?: { name: string } }, error?: { code: number } }),
+    }
   }
   finally {
     rmSync(directory, { recursive: true, force: true })
@@ -30,20 +49,61 @@ describe('writeMcpEchoServer', () => {
     const { server, receipt, replies } = executeEcho({ value: 'ACTUAL_NATIVE_ECHO' })
     expect(server.name).toBe(MCP_ECHO_SERVER_NAME)
     expect(replies.find(reply => reply.id === 0)?.result?.serverInfo?.name).toBe(server.name)
-    expect(mcpCallExchange(receipt)).toMatchObject({ id: 2, name: 'echo', arguments: { value: 'ACTUAL_NATIVE_ECHO' }, result: { content: [{ type: 'text', text: 'MCP_ECHO:ACTUAL_NATIVE_ECHO' }] } })
+    expect(mcpCallExchange(receipt)).toMatchObject({
+      id: 2,
+      name: 'echo',
+      arguments: { value: 'ACTUAL_NATIVE_ECHO' },
+      result: {
+        content: [
+          { type: 'text', text: 'MCP_ECHO:ACTUAL_NATIVE_ECHO' },
+        ],
+      },
+    })
   })
 
   it.each(['ACTUAL_NATIVE_ECHO', '', 'Native UTF-8 零 🔒'])('records the actual catalog and computed native result for %s', (value) => {
     const { receipt, replies } = executeEcho({ value })
-    expect(receipt.initializeCapabilities).toEqual({ roots: { listChanged: false } })
-    expect(receipt.toolCatalogs).toMatchObject([{ id: 1, tools: [{ name: 'echo', inputSchema: { type: 'object', required: ['value'], properties: { value: { type: 'string' } } } }] }])
-    expect(receipt.toolResults).toEqual([{ id: 2, tool: 'echo', text: `MCP_ECHO:${value}`, isError: false }])
-    expect(replies.find(reply => reply.id === 2)?.result?.content).toEqual([{ type: 'text', text: `MCP_ECHO:${value}` }])
+    expect(receipt.initializeCapabilities).toEqual({
+      roots: { listChanged: false },
+    })
+    expect(receipt.toolCatalogs).toMatchObject([
+      {
+        id: 1,
+        tools: [
+          {
+            name: 'echo',
+            inputSchema: {
+              type: 'object',
+              required: ['value'],
+              properties: {
+                value: { type: 'string' },
+              },
+            },
+          },
+        ],
+      },
+    ])
+    expect(receipt.toolResults).toEqual([
+      {
+        id: 2,
+        tool: 'echo',
+        text: `MCP_ECHO:${value}`,
+        isError: false,
+      },
+    ])
+    expect(replies.find(reply => reply.id === 2)?.result?.content).toEqual([
+      { type: 'text', text: `MCP_ECHO:${value}` },
+    ])
     expect(receipt.elicitationRequests).toEqual([])
     expect(receipt.elicitationReplies).toEqual([])
   })
 
-  it.each([null, {}, { value: 0 }, { value: false }])('refuses invalid echo arguments %j without creating a success result', (args) => {
+  it.each([
+    null,
+    {},
+    { value: 0 },
+    { value: false },
+  ])('refuses invalid echo arguments %j without creating a success result', (args) => {
     const { receipt, replies } = executeEcho(args)
     expect(replies.find(reply => reply.id === 2)?.error?.code).toBe(-32602)
     expect(receipt.toolResults).toEqual([])
@@ -57,12 +117,21 @@ describe('configuredMcpScript', () => {
     mkdirSync(SCRATCH_ROOT, { recursive: true })
     const directory = mkdtempSync(join(SCRATCH_ROOT, 'configured-mcp-script-'))
     const path = join(directory, 'mcp.json')
-    writeFileSync(path, typeof value === 'string' ? value : JSON.stringify(value))
+    writeFileSync(path, typeof value === 'string'
+      ? value
+      : JSON.stringify(value))
     return path
   }
 
   it.each(['servers', 'mcpServers'] as const)('reads the first argument of the server under %s', (serversKey) => {
-    const path = writeConfiguration({ [serversKey]: { echo_probe: { command: 'node', args: ['/private/echo.mjs', '--flag'] } } })
+    const path = writeConfiguration({
+      [serversKey]: {
+        echo_probe: {
+          command: 'node',
+          args: ['/private/echo.mjs', '--flag'],
+        },
+      },
+    })
     try {
       expect(configuredMcpScript(path, serversKey, 'echo_probe')).toBe('/private/echo.mjs')
     }
@@ -72,11 +141,54 @@ describe('configuredMcpScript', () => {
   })
 
   it.each([
-    { label: 'another servers key', value: { mcpServers: { echo_probe: { args: ['/private/echo.mjs'] } } } },
-    { label: 'another server', value: { servers: { other: { args: ['/private/echo.mjs'] } } } },
-    { label: 'no arguments', value: { servers: { echo_probe: { command: 'node' } } } },
-    { label: 'an empty script', value: { servers: { echo_probe: { args: [''] } } } },
-    { label: 'a script that is not a string', value: { servers: { echo_probe: { args: [42] } } } },
+    {
+      label: 'another servers key',
+      value: {
+        mcpServers: {
+          echo_probe: {
+            args: ['/private/echo.mjs'],
+          },
+        },
+      },
+    },
+    {
+      label: 'another server',
+      value: {
+        servers: {
+          other: {
+            args: ['/private/echo.mjs'],
+          },
+        },
+      },
+    },
+    {
+      label: 'no arguments',
+      value: {
+        servers: {
+          echo_probe: { command: 'node' },
+        },
+      },
+    },
+    {
+      label: 'an empty script',
+      value: {
+        servers: {
+          echo_probe: {
+            args: [''],
+          },
+        },
+      },
+    },
+    {
+      label: 'a script that is not a string',
+      value: {
+        servers: {
+          echo_probe: {
+            args: [42],
+          },
+        },
+      },
+    },
   ])('refuses a configuration with $label', ({ value }) => {
     const path = writeConfiguration(value)
     try {

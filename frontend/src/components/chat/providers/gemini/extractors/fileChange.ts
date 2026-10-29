@@ -11,5 +11,7 @@ export function geminiCommittedFileChange(record: Record<string, unknown>): File
   const change = fileEditDiffFromOldNew(path, display.originalContent, display.newContent)
   if (typeof display.isNewFile === 'boolean')
     change.operation = display.isNewFile ? 'add' : 'edit'
-  return { changes: [change] }
+  return {
+    changes: [change],
+  }
 }

@@ -57,12 +57,16 @@ export function claudeRemoteTriggerFromToolResult(
 function buildSource(status: number, json: string): RemoteTriggerResult {
   let parsed: unknown = null
   try {
-    parsed = json ? JSON.parse(json) : null
+    parsed = json
+      ? JSON.parse(json)
+      : null
   }
   catch {}
   const trigger = isObject(parsed) && isObject(parsed.trigger)
     ? parsed.trigger
-    : (isObject(parsed) ? parsed : null)
+    : (isObject(parsed)
+        ? parsed
+        : null)
   return { status, json, parsed, trigger }
 }
 
@@ -97,7 +101,9 @@ export function claudeTriggerRequest(input: Record<string, unknown>): ToolReques
     ...shared,
     action: claudeTriggerAction(pickString(input, 'action')),
     // The label rides only when one of the two halves carried it.
-    ...(name !== undefined ? { name } : {}),
+    ...(name !== undefined
+      ? { name }
+      : {}),
   }
 }
 
@@ -114,7 +120,9 @@ export function claudeTriggerSpec(request: ToolRequestByKind['trigger'], args: C
     return {
       kind: 'trigger',
       request,
-      ...(request.action === 'other' ? { title: args.toolName } : {}),
+      ...(request.action === 'other'
+        ? { title: args.toolName }
+        : {}),
     }
   }
   const source = claudeRemoteTriggerFromToolResult(result.toolUseResult, result.resultContent)
@@ -132,13 +140,19 @@ export function claudeTriggerSpec(request: ToolRequestByKind['trigger'], args: C
   const ok = source.status >= 200 && source.status < 300
   const triggerName = pickString(source.trigger ?? undefined, 'name')
   const triggerId = pickString(source.trigger ?? undefined, 'id')
-  const tail = triggerName && triggerId ? `${triggerName} (${triggerId})` : (triggerName || triggerId)
+  const tail = triggerName && triggerId
+    ? `${triggerName} (${triggerId})`
+    : (triggerName || triggerId)
   return {
     kind: 'trigger',
     request,
-    title: tail ? `HTTP ${source.status} · ${tail}` : `HTTP ${source.status}`,
+    title: tail
+      ? `HTTP ${source.status} · ${tail}`
+      : `HTTP ${source.status}`,
     // An endpoint that answered outside 2xx failed the call although it answered.
-    ...(ok ? {} : { statusOverride: 'failed' }),
+    ...(ok
+      ? {}
+      : { statusOverride: 'failed' }),
     result: proseResult(prettifyJson(source.parsed ?? source.json), 'plain'),
   }
 }

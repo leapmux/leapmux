@@ -6,8 +6,11 @@ export function kiroCatalogEnvironment(environment: unknown): Record<string, str
     throw new Error('The native Kiro catalog requires an isolated profile environment.')
   const entries = Object.entries(environment).map(([key, value]): [string, string] => {
     if (typeof value !== 'string')
-      throw new Error('The native Kiro catalog environment contains a non-string value.')
+      throw new TypeError('The native Kiro catalog environment contains a non-string value.')
     return [key, value]
   })
-  return Object.fromEntries([...entries, ['KIRO_FEATURE_TOOL_LOAD_ENABLED', 'false']])
+  return Object.fromEntries([
+    ...entries,
+    ['KIRO_FEATURE_TOOL_LOAD_ENABLED', 'false'],
+  ])
 }

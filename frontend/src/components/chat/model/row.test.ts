@@ -3,7 +3,9 @@ import { toolCallFixture } from '~/test-support/toolCallFixture'
 import { rowDrawsResult, rowHasRequestRow, rowHasResultRow, toolRowPosition } from './derivations'
 import { toolCallRow } from './row'
 
-const call = toolCallFixture('execute', { request: { command: 'ls -1' } })
+const call = toolCallFixture('execute', {
+  request: { command: 'ls -1' },
+})
 
 describe('toolCallRow', () => {
   // A row is never its own sibling. Six providers each restated this rule to fill the
@@ -36,7 +38,9 @@ describe('toolCallRow', () => {
   // through the derivations. This pins that an absent flag reads as no.
   it('reads an absent flag as no', () => {
     const request = toolCallRow(call, 'request', { request: true, result: false })
-    expect(request.role === 'request' ? request.hasRequestRow : true).toBeUndefined()
+    expect(request.role === 'request'
+      ? request.hasRequestRow
+      : true).toBeUndefined()
     expect(rowHasRequestRow(request)).toBe(false)
   })
 

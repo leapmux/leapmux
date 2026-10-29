@@ -8,7 +8,12 @@ import { openCodeTailWindowMarkers, readOpenCodeNativeOutput } from './outputFil
 import { nativeContext, OPENCODE_AGENT } from './scenarios'
 
 opencodeTest('keeps the native output path and exact inline preview after reload', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }, testInfo) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+  })
   await openProviderAgent(leapmuxServer, context.workspaceId, OPENCODE_AGENT, { directoryPrefix: 'native-output-path-opencode-' })
   await openWorkspace(page, context.workspaceId)
   const output = computedNativeToolOutput({ lineCount: 8000, padding: 30 })

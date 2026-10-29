@@ -50,12 +50,26 @@ export const webSearchRenderer: ToolKindRenderer<'web_search'> = {
   request(call, view) {
     return (
       <Show when={call.result === undefined}>
-        <WebSearchResultsBody source={{ links: [], summary: '' }} request={call.request} {...(view.context !== undefined ? { context: view.context } : {})} />
+        <WebSearchResultsBody
+          source={{ links: [], summary: '' }}
+          request={call.request}
+          {...(view.context !== undefined
+            ? { context: view.context }
+            : {})}
+        />
       </Show>
     )
   },
   result(call, view) {
-    return <WebSearchResultsBody source={call.result} request={call.request} {...(view.context !== undefined ? { context: view.context } : {})} />
+    return (
+      <WebSearchResultsBody
+        source={call.result}
+        request={call.request}
+        {...(view.context !== undefined
+          ? { context: view.context }
+          : {})}
+      />
+    )
   },
   requestMeta(call) {
     // One search often runs several queries; the paired request row holds the

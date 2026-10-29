@@ -6,18 +6,25 @@ import {
   deferredStylesheetAttrs,
   isClientEntryModulepreload,
   partitionBootDocumentAssets,
-  resolveClientEntryHref,
+  takeBootDocumentAssets,
 } from '~/lib/bootDocumentAssets'
 
 function link(rel: string, href: string, extra: Record<string, unknown> = {}): BootDocumentAsset {
-  return { tag: 'link', attrs: { rel, href, ...extra } }
+  return {
+    tag: 'link',
+    attrs: { rel, href, ...extra },
+  }
 }
 
 describe('isClientEntryModulepreload', () => {
-  it('matches the vinxi client entry basename', () => {
-    expect(isClientEntryModulepreload('/_build/assets/client-CX-js57o.js')).toBe(true)
+  it('matches the SolidStart client entry chunk', () => {
+    expect(isClientEntryModulepreload('/_build/assets/entry-client-CXyYpMh4.js')).toBe(true)
     expect(isClientEntryModulepreload('/_build/assets/AuthContext-DrhLy7wf.js')).toBe(false)
-    expect(isClientEntryModulepreload('/_build/assets/client-CfHXoPZM.css')).toBe(false)
+    expect(isClientEntryModulepreload('/_build/assets/entry-client-fkxBCGLW.css')).toBe(false)
+  })
+
+  it('matches a hash that holds the dash and underscore of the hash alphabet', () => {
+    expect(isClientEntryModulepreload('/_build/assets/entry-client-CUf_sYX-.js')).toBe(true)
   })
 
   it('rejects an empty href', () => {
@@ -25,45 +32,73 @@ describe('isClientEntryModulepreload', () => {
   })
 
   it('accepts a query string on the client entry basename', () => {
-    expect(isClientEntryModulepreload('/_build/assets/client-CX-js57o.js?v=1')).toBe(true)
+    expect(isClientEntryModulepreload('/_build/assets/entry-client-CXyYpMh4.js?v=1')).toBe(true)
   })
 
-  it('prefers an exact match against the manifest entry path', () => {
-    const entry = '/_build/assets/client-abc.js'
-    expect(isClientEntryModulepreload(entry, entry)).toBe(true)
-    expect(isClientEntryModulepreload('/_build/assets/other-abc.js', entry)).toBe(false)
+  it('accepts a relative href', () => {
+    expect(isClientEntryModulepreload('./_build/assets/entry-client-CXyYpMh4.js')).toBe(true)
   })
 
-  it('matches when both hrefs share the same basename', () => {
-    expect(isClientEntryModulepreload(
-      './assets/client-abc.js',
-      '/_build/assets/client-abc.js',
-    )).toBe(true)
+  it('rejects a chunk whose basename only contains the entry name', () => {
+    expect(isClientEntryModulepreload('/_build/assets/myentry-client-CXyYpMh4.js')).toBe(false)
   })
 
-  it('rejects a preload whose basename only shares a suffix with the entry', () => {
-    expect(isClientEntryModulepreload(
-      '/_build/assets/fooclient-abc.js',
-      'client-abc.js',
-    )).toBe(false)
+  it('rejects a deep chunk below a directory that carries the entry name', () => {
+    expect(isClientEntryModulepreload('/entry-client-x/AuthContext-DrhLy7wf.js')).toBe(false)
+  })
+
+  it('rejects the unbuilt entry module that the dev server serves', () => {
+    expect(isClientEntryModulepreload('/src/entry-client.tsx')).toBe(false)
+  })
+
+  it('rejects the vinxi client chunk name', () => {
+    expect(isClientEntryModulepreload('/_build/assets/client-CX-js57o.js')).toBe(false)
   })
 })
 
-describe('resolveClientEntryHref', () => {
-  it('returns undefined when the vinxi client manifest is absent', () => {
-    // Vitest has no MANIFEST; StartServer is what supplies it at prerender.
-    expect(resolveClientEntryHref()).toBeUndefined()
+describe('takeBootDocumentAssets', () => {
+  it('returns the list and leaves the event with none', () => {
+    const assets = [
+      link('stylesheet', '/_build/assets/app.css'),
+    ]
+    const event = { assets }
+
+    expect(takeBootDocumentAssets(event)).toBe(assets)
+    expect(event.assets).toEqual([])
+    expect(assets).toHaveLength(1)
+  })
+
+  it('returns an empty list for an event that carries no assets', () => {
+    const event = { assets: [] as BootDocumentAsset[] }
+
+    expect(takeBootDocumentAssets(event)).toEqual([])
+    expect(event.assets).toEqual([])
+  })
+
+  it('returns nothing the second time, so StartServer receives no assets', () => {
+    const event = {
+      assets: [
+        link('modulepreload', '/_build/assets/entry-client-abc12345.js'),
+      ],
+    }
+
+    takeBootDocumentAssets(event)
+    expect(takeBootDocumentAssets(event)).toEqual([])
   })
 })
 
 describe('partitionBootDocumentAssets', () => {
   const assets: BootDocumentAsset[] = [
-    link('stylesheet', '/_build/assets/client.css', { fetchPriority: 'high' }),
+    link('stylesheet', '/_build/assets/entry-client.css', { fetchPriority: 'high' }),
     link('stylesheet', '/_build/assets/shared.css', { fetchPriority: 'high' }),
     link('modulepreload', '/_build/assets/AuthContext.js'),
-    link('modulepreload', '/_build/assets/client-abc123.js'),
+    link('modulepreload', '/_build/assets/entry-client-abc12345.js'),
     link('modulepreload', '/_build/assets/captcha.js'),
-    { tag: 'style', attrs: { id: 'hmr' }, children: '.x{}' },
+    {
+      tag: 'style',
+      attrs: { id: 'hmr' },
+      children: '.x{}',
+    },
   ]
 
   it('returns empty lists for an empty asset array', () => {
@@ -77,7 +112,7 @@ describe('partitionBootDocumentAssets', () => {
     const { immediate, deferredStylesheets } = partitionBootDocumentAssets(assets)
 
     expect(deferredStylesheets.map(a => a.attrs?.href)).toEqual([
-      '/_build/assets/client.css',
+      '/_build/assets/entry-client.css',
       '/_build/assets/shared.css',
     ])
     expect(immediate.some(a => a.tag === 'style')).toBe(true)
@@ -96,14 +131,11 @@ describe('partitionBootDocumentAssets', () => {
   })
 
   it('keeps only the client entry modulepreload', () => {
-    const { immediate } = partitionBootDocumentAssets(
-      assets,
-      '/_build/assets/client-abc123.js',
-    )
+    const { immediate } = partitionBootDocumentAssets(assets)
     const preloads = immediate.filter(a => a.attrs?.rel === 'modulepreload')
 
     expect(preloads).toHaveLength(1)
-    expect(preloads[0]?.attrs?.href).toBe('/_build/assets/client-abc123.js')
+    expect(preloads[0]?.attrs?.href).toBe('/_build/assets/entry-client-abc12345.js')
   })
 
   it('drops every modulepreload when none is the client entry', () => {
@@ -111,19 +143,25 @@ describe('partitionBootDocumentAssets', () => {
       link('modulepreload', '/_build/assets/AuthContext.js'),
       link('modulepreload', '/_build/assets/captcha.js'),
     ]
-    const { immediate } = partitionBootDocumentAssets(onlyDeep, '/_build/assets/client-missing.js')
+    const { immediate } = partitionBootDocumentAssets(onlyDeep)
     expect(immediate).toEqual([])
   })
 
   it('drops a modulepreload whose href is missing', () => {
-    const broken: BootDocumentAsset = { tag: 'link', attrs: { rel: 'modulepreload' } }
+    const broken: BootDocumentAsset = {
+      tag: 'link',
+      attrs: { rel: 'modulepreload' },
+    }
     const { immediate } = partitionBootDocumentAssets([broken])
     expect(immediate).toEqual([])
   })
 
   it('keeps script tags in the immediate set (DEV Vite client)', () => {
     const withScript: BootDocumentAsset[] = [
-      { tag: 'script', attrs: { src: '/@vite/client', key: 'vite-client' } },
+      {
+        tag: 'script',
+        attrs: { src: '/@vite/client', key: 'vite-client' },
+      },
       link('stylesheet', '/_build/assets/app.css'),
       link('modulepreload', '/_build/assets/AuthContext.js'),
     ]

@@ -17,7 +17,12 @@ const frame = {
   toolCallId: callId,
   status: 'completed',
   kind: 'execute',
-  rawInput: { command: 'node native-output.js', count: 0, enabled: false, text: '' },
+  rawInput: {
+    command: 'node native-output.js',
+    count: 0,
+    enabled: false,
+    text: '',
+  },
   rawOutput: { output: 'NATIVE_EXCERPT_ONLY', exitCode: 0, message: `Full output: ${path}` },
 }
 
@@ -46,10 +51,23 @@ describe('readKiroToolSupplement', () => {
     const output = computedNativeToolOutput({ lineCount: 3000, padding: 30 })
     const full = `Output:\n${output.text}\n\nExit Code: 0`
     const receipt = provider(full)
-    const original = { ...frame, _meta: { kiro: { outputTransformation: { kind: 'offloaded', absFilePath: path, totalChars: full.length } } } }
-    const envelope = { provider: receipt, metadata: { elapsed_ms: 0 } }
+    const original = {
+      ...frame,
+      _meta: {
+        kiro: {
+          outputTransformation: { kind: 'offloaded', absFilePath: path, totalChars: full.length },
+        },
+      },
+    }
+    const envelope = {
+      provider: receipt,
+      metadata: { elapsed_ms: 0 },
+    }
     const row = message(envelope, original)
-    const before = { content: row.content.slice(), supplementalContent: row.supplementalContent.slice() }
+    const before = {
+      content: row.content.slice(),
+      supplementalContent: row.supplementalContent.slice(),
+    }
     const read = readKiroToolSupplement(row)
     expect(read).toEqual(receipt)
     const retained = pickObject(read, 'rawOutput')
@@ -65,13 +83,27 @@ describe('readKiroToolSupplement', () => {
   })
 
   it('ignores outer metadata and keeps an exact failed receipt', () => {
-    const receipt = { ...provider('Native failure'), status: 'failed' }
+    const receipt = {
+      ...provider('Native failure'),
+      status: 'failed',
+    }
     const original = { ...frame, status: 'failed' }
-    expect(readKiroToolSupplement(message({ provider: receipt, metadata: provider('METADATA_ONLY_OUTPUT') }, original))).toEqual(receipt)
+    expect(readKiroToolSupplement(message({
+      provider: receipt,
+      metadata: provider('METADATA_ONLY_OUTPUT'),
+    }, original))).toEqual(receipt)
   })
 
   it('keeps empty output and future native fields', () => {
-    const receipt = { ...provider(''), future: { zero: 0, negative: -1, enabled: false, text: '' } }
+    const receipt = {
+      ...provider(''),
+      future: {
+        zero: 0,
+        negative: -1,
+        enabled: false,
+        text: '',
+      },
+    }
     expect(readKiroToolSupplement(message({ provider: receipt }))).toEqual(receipt)
   })
 
@@ -82,7 +114,19 @@ describe('readKiroToolSupplement', () => {
     expect(readKiroToolSupplement(message({ ...receipt, provider: null }))).toBeNull()
   })
 
-  it.each([null, false, 0, '', [], {}, { provider: null }, { provider: false }, { provider: 0 }, { provider: '' }, { provider: [] }].map(envelope => [envelope]))('rejects an absent or malformed provider envelope: %j', (envelope) => {
+  it.each([
+    null,
+    false,
+    0,
+    '',
+    [],
+    {},
+    { provider: null },
+    { provider: false },
+    { provider: 0 },
+    { provider: '' },
+    { provider: [] },
+  ].map(envelope => [envelope]))('rejects an absent or malformed provider envelope: %j', (envelope) => {
     expect(readKiroToolSupplement(message(envelope))).toBeNull()
   })
 
@@ -91,37 +135,69 @@ describe('readKiroToolSupplement', () => {
     { status: 'pending' },
     { sessionUpdate: 'tool_call' },
   ])('rejects a receipt with another frame identity: %j', (changes) => {
-    expect(readKiroToolSupplement(message({ provider: { ...provider(), ...changes } }))).toBeNull()
+    expect(readKiroToolSupplement(message({
+      provider: {
+        ...provider(),
+        ...changes,
+      },
+    }))).toBeNull()
   })
 
   it.each(['toolCallId', 'status', 'sessionUpdate'])('rejects an identity property absent on one side: %s', (key) => {
     const original: Record<string, unknown> = { ...frame }
     delete original[key]
-    expect(readKiroToolSupplement(message({ provider: provider() }, original))).toBeNull()
+    expect(readKiroToolSupplement(message({
+      provider: provider(),
+    }, original))).toBeNull()
     const receipt = provider()
     delete receipt[key]
     expect(readKiroToolSupplement(message({ provider: receipt }))).toBeNull()
   })
 
   it.each([null, false, 0, '', []].map(original => [original]))('rejects a malformed original frame: %j', (original) => {
-    expect(readKiroToolSupplement(message({ provider: provider() }, original))).toBeNull()
+    expect(readKiroToolSupplement(message({
+      provider: provider(),
+    }, original))).toBeNull()
   })
 
   it('rejects invalid original and supplemental bytes without changing them', () => {
-    for (const bytes of [encoder.encode('{broken'), new Uint8Array([0xFF, 0xFE])]) {
-      const original = makeMessage({ ...message({ provider: provider() }), content: bytes })
+    for (const bytes of [
+      encoder.encode('{broken'),
+      new Uint8Array([0xFF, 0xFE]),
+    ]) {
+      const original = makeMessage({
+        ...message({
+          provider: provider(),
+        }),
+        content: bytes,
+      })
       expect(readKiroToolSupplement(original)).toBeNull()
       expect(original.content).toEqual(bytes)
-      const supplemental = makeMessage({ ...message({ provider: provider() }), supplementalContent: bytes })
+      const supplemental = makeMessage({
+        ...message({
+          provider: provider(),
+        }),
+        supplementalContent: bytes,
+      })
       expect(readKiroToolSupplement(supplemental)).toBeNull()
       expect(supplemental.supplementalContent).toEqual(bytes)
     }
   })
 
   it('rejects unsupported compression without changing retained bytes', () => {
-    const original = makeMessage({ ...message({ provider: provider() }), contentCompression: ContentCompression.UNSPECIFIED })
+    const original = makeMessage({
+      ...message({
+        provider: provider(),
+      }),
+      contentCompression: ContentCompression.UNSPECIFIED,
+    })
     expect(readKiroToolSupplement(original)).toBeNull()
-    const supplemental = makeMessage({ ...message({ provider: provider() }), supplementalContentCompression: ContentCompression.UNSPECIFIED })
+    const supplemental = makeMessage({
+      ...message({
+        provider: provider(),
+      }),
+      supplementalContentCompression: ContentCompression.UNSPECIFIED,
+    })
     expect(readKiroToolSupplement(supplemental)).toBeNull()
   })
 })

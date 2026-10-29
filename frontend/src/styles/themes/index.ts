@@ -78,7 +78,9 @@ export function isThemeId(id: string): boolean {
  * app with no palette at all.
  */
 export function themeById(id: string | undefined | null): ThemeDefinition {
-  return (id === undefined || id === null ? undefined : BY_ID.get(id)) ?? defaultTheme
+  return (id === undefined || id === null
+    ? undefined
+    : BY_ID.get(id)) ?? defaultTheme
 }
 
 /**
@@ -115,7 +117,9 @@ const VARIANT_BY_ID = new Map(ALL_VARIANTS.map(v => [v.id, v]))
 
 /** The variant `id` names, or `undefined`. Total; never throws. */
 export function variantById(id: string | undefined | null): ThemeVariant | undefined {
-  return id === undefined || id === null ? undefined : VARIANT_BY_ID.get(id)
+  return id === undefined || id === null
+    ? undefined
+    : VARIANT_BY_ID.get(id)
 }
 
 /**
@@ -147,7 +151,9 @@ export function resolveVariant(
   wanted: string | undefined,
   polarity: ResolvedThemeMode,
 ): ThemeVariant {
-  const named = wanted === undefined ? undefined : VARIANT_BY_ID.get(wanted)
+  const named = wanted === undefined
+    ? undefined
+    : VARIANT_BY_ID.get(wanted)
   if (named && named.polarity === polarity && theme.variants.includes(named))
     return named
   // A default that DANGLES, or that names a real variant of the wrong polarity,

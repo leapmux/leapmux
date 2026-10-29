@@ -6,12 +6,26 @@ import { openCodeShellOutcome } from './nativeShellOutcome'
 
 const encoder = new TextEncoder()
 function snapshot(exit: unknown = 7, status = 'completed', output = 'ACTUAL_STDERR\n'): NativeMessageSnapshot {
-  return { agentId: 'parent', agentSessionId: 'native-session', messages: [makeMessage({
-    id: 'result',
+  return {
+    agentId: 'parent',
     agentSessionId: 'native-session',
-    spanId: 'shell-1',
-    content: rawContent({ sessionUpdate: 'tool_call_update', toolCallId: 'shell-1', status, rawOutput: { output, metadata: { exit } } }),
-  })] }
+    messages: [
+      makeMessage({
+        id: 'result',
+        agentSessionId: 'native-session',
+        spanId: 'shell-1',
+        content: rawContent({
+          sessionUpdate: 'tool_call_update',
+          toolCallId: 'shell-1',
+          status,
+          rawOutput: {
+            output,
+            metadata: { exit },
+          },
+        }),
+      }),
+    ],
+  }
 }
 
 describe('openCodeShellOutcome', () => {
@@ -22,15 +36,30 @@ describe('openCodeShellOutcome', () => {
 
   it('requires an exact call and a nonempty Worker agent/session identity', () => {
     expect(() => openCodeShellOutcome(snapshot(), '', 'ACTUAL_STDERR\n')).toThrow('exact agent, session, and call ID')
-    expect(() => openCodeShellOutcome({ ...snapshot(), agentId: '' }, 'shell-1', 'ACTUAL_STDERR\n')).toThrow('exact agent, session, and call ID')
-    expect(() => openCodeShellOutcome({ ...snapshot(), agentSessionId: '' }, 'shell-1', 'ACTUAL_STDERR\n')).toThrow('exact agent, session, and call ID')
+    expect(() => openCodeShellOutcome({
+      ...snapshot(),
+      agentId: '',
+    }, 'shell-1', 'ACTUAL_STDERR\n')).toThrow('exact agent, session, and call ID')
+    expect(() => openCodeShellOutcome({
+      ...snapshot(),
+      agentSessionId: '',
+    }, 'shell-1', 'ACTUAL_STDERR\n')).toThrow('exact agent, session, and call ID')
   })
 
   it('retains an explicit native failed outcome', () => {
     expect(openCodeShellOutcome(snapshot(7, 'failed'), 'shell-1', 'ACTUAL_STDERR\n').failed).toBe(true)
   })
 
-  it.each([undefined, null, '7', false, 0.5, Number.MAX_SAFE_INTEGER + 1, {}, []])('refuses an absent or malformed numeric native outcome: %j', (exit) => {
+  it.each([
+    undefined,
+    null,
+    '7',
+    false,
+    0.5,
+    Number.MAX_SAFE_INTEGER + 1,
+    {},
+    [],
+  ])('refuses an absent or malformed numeric native outcome: %j', (exit) => {
     const source = snapshot(exit)
     if (exit === undefined)
       source.messages[0]!.content = encoder.encode('{"sessionUpdate":"tool_call_update","toolCallId":"shell-1","status":"completed","rawOutput":{"output":"ACTUAL_STDERR\\n","metadata":{}}}')

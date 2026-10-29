@@ -39,13 +39,20 @@ export function cursorExtension(supplemental: Record<string, unknown> | undefine
  * whole list, and the worker applies the same flag there.
  */
 export function cursorTodoItems(extension: CursorExtension | null, input: Record<string, unknown>): TodoItem[] {
-  const fromFrame = extension?.method === CURSOR_METHOD.UpdateTodos ? extension.params[CURSOR_EXTENSION_FRAME.Todos] : undefined
+  const fromFrame = extension?.method === CURSOR_METHOD.UpdateTodos
+    ? extension.params[CURSOR_EXTENSION_FRAME.Todos]
+    : undefined
   if (Array.isArray(fromFrame))
     return rawTodosToItems(fromFrame)
   const raw = input.todos
   if (!Array.isArray(raw))
     return []
-  return rawTodosToItems(raw.map(entry => isObject(entry) ? { ...entry, status: cursorTodoStatusWord(entry.status) } : entry))
+  return rawTodosToItems(raw.map(entry => isObject(entry)
+    ? {
+        ...entry,
+        status: cursorTodoStatusWord(entry.status),
+      }
+    : entry))
 }
 
 /**
@@ -78,8 +85,19 @@ export function cursorGeneratedImages(extension: CursorExtension | null): ImageR
     return []
   const description = pickString(extension.params, 'description')
   const produced = pickString(extension.params, 'filePath')
-  const references = Array.isArray(extension.params.referenceImagePaths) ? extension.params.referenceImagePaths : []
-  const sources: ImageResultSource[] = produced ? [{ filePath: produced, ...(description ? { description } : {}) }] : []
+  const references = Array.isArray(extension.params.referenceImagePaths)
+    ? extension.params.referenceImagePaths
+    : []
+  const sources: ImageResultSource[] = produced
+    ? [
+        {
+          filePath: produced,
+          ...(description
+            ? { description }
+            : {}),
+        },
+      ]
+    : []
   for (const reference of references) {
     if (typeof reference === 'string' && reference)
       sources.push({ filePath: reference, description: 'Reference image' })
@@ -98,7 +116,12 @@ export function cursorTaskDetails(extension: CursorExtension | null): Record<str
   if (extension?.method !== CURSOR_METHOD.Task)
     return {}
   const details: Record<string, unknown> = {}
-  for (const key of ['subagentType', 'model', 'agentId', 'durationMs'] as const) {
+  for (const key of [
+    'subagentType',
+    'model',
+    'agentId',
+    'durationMs',
+  ] as const) {
     const value = extension.params[key]
     if (value !== undefined && value !== null && value !== '')
       details[key] = value

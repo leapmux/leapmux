@@ -63,7 +63,9 @@ describe('useChatScroll viewport restore', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -111,7 +113,9 @@ describe('useChatScroll viewport restore', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -171,7 +175,9 @@ describe('useChatScroll viewport restore', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -241,7 +247,9 @@ describe('useChatScroll viewport restore', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -305,7 +313,9 @@ describe('useChatScroll viewport restore', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -363,7 +373,9 @@ describe('useChatScroll viewport restore', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -422,7 +434,10 @@ describe('useChatScroll viewport restore', () => {
           // CONTROL: a window change re-runs the buffer filler. The older side is still
           // suppressed, so it does NOT load older despite a near-top deficit. (We never
           // call onScroll, so the scroll-path clear can't be the thing under test.)
-          setMessages(m => [...m, { id: 'a', seq: 1n } as AgentChatMessage])
+          setMessages(m => [
+            ...m,
+            { id: 'a', seq: 1n } as AgentChatMessage,
+          ])
           await Promise.resolve()
           await Promise.resolve()
           expect(olderLoads).toBe(0)
@@ -438,7 +453,10 @@ describe('useChatScroll viewport restore', () => {
 
           // TEST: the next window change runs the filler with the suppression cleared, so
           // older history finally loads. Before the fix it stayed wedged off forever.
-          setMessages(m => [...m, { id: 'b', seq: 2n } as AgentChatMessage])
+          setMessages(m => [
+            ...m,
+            { id: 'b', seq: 2n } as AgentChatMessage,
+          ])
           await Promise.resolve()
           await Promise.resolve()
           expect(olderLoads).toBeGreaterThan(0)
@@ -447,7 +465,9 @@ describe('useChatScroll viewport restore', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -513,7 +533,9 @@ describe('useChatScroll viewport restore', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -557,7 +579,9 @@ describe('useChatScroll viewport restore', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -617,7 +641,9 @@ describe('useChatScroll viewport restore', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -702,7 +728,9 @@ describe('useChatScroll viewport restore', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -745,7 +773,9 @@ describe('useChatScroll unmount save + visible-mount restore', () => {
         }
         catch (e) {
           disposeA()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
           return
         }
 
@@ -778,7 +808,9 @@ describe('useChatScroll unmount save + visible-mount restore', () => {
           }
           catch (e) {
             disposeB()
-            reject(e instanceof Error ? e : new Error(String(e)))
+            reject(e instanceof Error
+              ? e
+              : new Error(String(e)))
           }
         })
       })
@@ -809,7 +841,9 @@ describe('useChatScroll unmount save + visible-mount restore', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -877,7 +911,9 @@ describe('useChatScroll unmount save + visible-mount restore', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -916,7 +952,9 @@ describe('useChatScroll unmount save + visible-mount restore', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -955,7 +993,9 @@ describe('useChatScroll unmount save + visible-mount restore', () => {
         }
         catch (e) {
           dispose()
-          reject(e instanceof Error ? e : new Error(String(e)))
+          reject(e instanceof Error
+            ? e
+            : new Error(String(e)))
         }
       })
     }))
@@ -983,7 +1023,9 @@ describe('useChatScroll unmount save + visible-mount restore', () => {
       // toggle happens OUTSIDE the root body -- createRoot batches writes made
       // inside it, deferring the re-run past these assertions.
       const dispose = createRoot((d) => {
-        insert(host, () => (show() ? Inner() : null))
+        insert(host, () => (show()
+          ? Inner()
+          : null))
         return d
       })
       expect(host.textContent).toContain('content')

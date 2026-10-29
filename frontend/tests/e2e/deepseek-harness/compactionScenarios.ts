@@ -13,10 +13,17 @@ export async function exerciseDeepseekHarnessCompaction(context: ManagedNativeSc
   const marker = uniqueMarker()
   const old = `DEEPSEEKOLD${marker}`
   for (let index = 0; index < 6; index++) {
-    await sendNativeAnswer(context, index === 0 ? `Keep ${old} in the older task.` : `Prepare native compaction turn ${index}.`, `The native preparation turn ${index} completed.`)
+    await sendNativeAnswer(context, index === 0
+      ? `Keep ${old} in the older task.`
+      : `Prepare native compaction turn ${index}.`, `The native preparation turn ${index} completed.`)
   }
   const summary = `DEEPSEEKSUMMARY${marker}`
-  const start = await context.modelScript.queue({ text: summary, ...(hold.summaryGate !== undefined ? { gate: hold.summaryGate } : {}) })
+  const start = await context.modelScript.queue({
+    text: summary,
+    ...(hold.summaryGate !== undefined
+      ? { gate: hold.summaryGate }
+      : {}),
+  })
   await requestNativeCompaction(context, hold)
   await context.modelScript.waitForSteps(start + 1)
   await waitForAgentIdle(context.page)

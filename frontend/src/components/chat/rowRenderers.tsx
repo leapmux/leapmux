@@ -51,7 +51,14 @@ function AssistantSegments(props: { segments: readonly AssistantTextSegment[], c
         if (segment.kind === 'text') {
           if (segment.text === '')
             return undefined
-          return <MarkdownText text={segment.text} {...(props.context !== undefined ? { context: props.context } : {})} />
+          return (
+            <MarkdownText
+              text={segment.text}
+              {...(props.context !== undefined
+                ? { context: props.context }
+                : {})}
+            />
+          )
         }
         return <SteerNoteMarker steerId={segment.steerId} note={segment.note} />
       }}
@@ -68,8 +75,12 @@ export function renderRowContent(
       return (
         <ToolMessage
           row={row}
-          {...(context !== undefined ? { context } : {})}
-          {...(context?.toolProgress !== undefined ? { progress: context.toolProgress } : {})}
+          {...(context !== undefined
+            ? { context }
+            : {})}
+          {...(context?.toolProgress !== undefined
+            ? { progress: context.toolProgress }
+            : {})}
         />
       )
     case 'notification':
@@ -77,17 +88,63 @@ export function renderRowContent(
     case 'divider':
       return <ResultDivider model={row.divider} />
     case 'assistant-text':
-      if (row.segments !== undefined)
-        return <AssistantSegments segments={row.segments} {...(context !== undefined ? { context } : {})} />
-      return <MarkdownText text={row.text} {...(context !== undefined ? { context } : {})} />
+      if (row.segments !== undefined) {
+        return (
+          <AssistantSegments
+            segments={row.segments}
+            {...(context !== undefined
+              ? { context }
+              : {})}
+          />
+        )
+      }
+      return (
+        <MarkdownText
+          text={row.text}
+          {...(context !== undefined
+            ? { context }
+            : {})}
+        />
+      )
     case 'assistant-thinking':
-      return <ThinkingMessage text={row.text} {...(context !== undefined ? { context } : {})} />
+      return (
+        <ThinkingMessage
+          text={row.text}
+          {...(context !== undefined
+            ? { context }
+            : {})}
+        />
+      )
     case 'assistant-plan':
-      return <MarkdownPlanLayout toolName="Plan" title="Proposed Plan" planText={row.text} {...(context !== undefined ? { context } : {})} />
+      return (
+        <MarkdownPlanLayout
+          toolName="Plan"
+          title="Proposed Plan"
+          planText={row.text}
+          {...(context !== undefined
+            ? { context }
+            : {})}
+        />
+      )
     case 'user':
-      return <UserContentMessage text={row.text} attachments={row.attachments} {...(context !== undefined ? { context } : {})} />
+      return (
+        <UserContentMessage
+          text={row.text}
+          attachments={row.attachments}
+          {...(context !== undefined
+            ? { context }
+            : {})}
+        />
+      )
     case 'plan-execution':
-      return <PlanExecutionMessage text={row.text} {...(context !== undefined ? { context } : {})} />
+      return (
+        <PlanExecutionMessage
+          text={row.text}
+          {...(context !== undefined
+            ? { context }
+            : {})}
+        />
+      )
     case 'control-response':
       return renderControlResponseRow(row.display, context)
     case 'hidden':
@@ -122,13 +179,19 @@ export function AgentPromptView(props: { prompt: AgentPrompt, context?: Expandab
       title={title()}
       expanded={expanded()}
       onToggleExpand={() => setExpanded(v => !v)}
-      {...(props.context !== undefined ? { context: props.context } : {})}
+      {...(props.context !== undefined
+        ? { context: props.context }
+        : {})}
     >
       <CollapsibleContent
-        kind={props.prompt.promptFormat === 'pre' ? 'pre' : 'markdown-tool-result'}
+        kind={props.prompt.promptFormat === 'pre'
+          ? 'pre'
+          : 'markdown-tool-result'}
         text={text()}
         isCollapsed={isCollapsed()}
-        {...(props.context !== undefined ? { context: props.context } : {})}
+        {...(props.context !== undefined
+          ? { context: props.context }
+          : {})}
       />
     </ToolUseLayout>
   )
@@ -154,14 +217,23 @@ function withCompletionHeader(context: RowRenderContext | undefined): RowRenderC
       continue
     if (descriptor.get !== undefined || descriptor.set !== undefined) {
       Object.defineProperty(overlay, key, {
-        ...(descriptor.get !== undefined ? { get: descriptor.get } : {}),
-        ...(descriptor.set !== undefined ? { set: descriptor.set } : {}),
+        ...(descriptor.get !== undefined
+          ? { get: descriptor.get }
+          : {}),
+        ...(descriptor.set !== undefined
+          ? { set: descriptor.set }
+          : {}),
         enumerable: true,
         configurable: true,
       })
     }
     else {
-      Object.defineProperty(overlay, key, { value: descriptor.value, writable: true, enumerable: true, configurable: true })
+      Object.defineProperty(overlay, key, {
+        value: descriptor.value,
+        writable: true,
+        enumerable: true,
+        configurable: true,
+      })
     }
   }
   return overlay
@@ -187,11 +259,15 @@ export function renderExtractedRow(
   context: RowRenderContext | undefined,
   messageMetadata?: unknown,
 ): JSX.Element {
-  const row = extraction.kind === 'row' ? extraction.row : null
+  const row = extraction.kind === 'row'
+    ? extraction.row
+    : null
   // The one row kind the chrome below asks about. Held as its own narrowed binding so
   // the two questions -- does this row take a completion header, and does the outcome
   // note replace its body -- read the role off the same object.
-  const toolRow = row?.kind === 'tool' ? row : null
+  const toolRow = row?.kind === 'tool'
+    ? row
+    : null
   const completion = extraction.completion
   // The outcome note is LeapMux's own statement about a tool row, so it is drawn here
   // rather than by any provider.
@@ -230,7 +306,15 @@ export function renderExtractedRow(
   if (!bodySuppressed) {
     drawn = extraction.kind === 'row'
       ? renderRowContent(extraction.row, rowContext)
-      : <UnrecognizedMessage payload={extraction.payload} renderFailed={extraction.kind === 'failed'} {...(context !== undefined ? { context } : {})} />
+      : (
+          <UnrecognizedMessage
+            payload={extraction.payload}
+            renderFailed={extraction.kind === 'failed'}
+            {...(context !== undefined
+              ? { context }
+              : {})}
+          />
+        )
   }
   const withNote = note === null
     ? drawn
@@ -242,7 +326,13 @@ export function renderExtractedRow(
       )
   if (toolCompletion) {
     return (
-      <ToolStatusHeader icon={CircleAlert} title={toolOutcomeLabel(completion === 'interrupted' ? 'interrupted' : 'failed')} dataToolMessage>
+      <ToolStatusHeader
+        icon={CircleAlert}
+        title={toolOutcomeLabel(completion === 'interrupted'
+          ? 'interrupted'
+          : 'failed')}
+        dataToolMessage
+      >
         {withNote}
       </ToolStatusHeader>
     )
@@ -250,7 +340,9 @@ export function renderExtractedRow(
   // The marker describes incomplete text.
   // A failed tool result states its own failure. A divider states the outcome of the turn.
   // Neither row needs a text marker.
-  const marker = (rowStatesOwnFailure || row?.kind === 'divider') ? null : completionMarker(completion)
+  const marker = (rowStatesOwnFailure || row?.kind === 'divider')
+    ? null
+    : completionMarker(completion)
   return marker
     ? (
         <>

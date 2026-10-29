@@ -5,7 +5,10 @@ import { MESSAGE_UI_KEY } from './messageUiKeys'
 
 describe('capInsertionOrder', () => {
   it('returns the map unchanged while within the cap', () => {
-    const map = new Map<string, number>([['a', 1], ['b', 2]])
+    const map = new Map<string, number>([
+      ['a', 1],
+      ['b', 2],
+    ])
     expect(capInsertionOrder(map).size).toBe(2)
     expect(map.has('a')).toBe(true)
   })
@@ -87,7 +90,9 @@ describe('createMessageUiState', () => {
       // the insertion-order-oldest -- exactly the entry a bare cap would evict once
       // a long session toggles past MAX_UI_STATE_ENTRIES distinct rows.
       const mounted = new Set<string>(['visible'])
-      const ui = createMessageUiState({ protectedIds: () => mounted })
+      const ui = createMessageUiState({
+        protectedIds: () => mounted,
+      })
       ui.setMessageUiBool('visible', MESSAGE_UI_KEY.TOOL_RESULT_EXPANDED, true)
       // Flood the cap with > MAX_UI_STATE_ENTRIES distinct off-screen toggles.
       for (let i = 0; i < 1100; i++)

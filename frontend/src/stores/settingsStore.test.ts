@@ -5,11 +5,24 @@ import { describe, expect, it, vi } from 'vitest'
 import { createSettingsStore } from './settingsStore'
 
 function value(key: string, effectiveJson: string): SettingValue {
-  return { key, valueJson: effectiveJson, effectiveJson, customized: true, secretSet: {} } as unknown as SettingValue
+  return {
+    key,
+    valueJson: effectiveJson,
+    effectiveJson,
+    customized: true,
+    secretSet: {},
+  } as unknown as SettingValue
 }
 
 function descriptor(key: string): SettingDescriptor {
-  return { key, category: 'general', title: key, summary: '', order: 10, fields: [] } as unknown as SettingDescriptor
+  return {
+    key,
+    category: 'general',
+    title: key,
+    summary: '',
+    order: 10,
+    fields: [],
+  } as unknown as SettingDescriptor
 }
 
 /** A store with controllable ports, built inside a reactive root. */
@@ -41,8 +54,12 @@ describe('createSettingsStore load', () => {
   it('applies descriptors and values, keyed by setting key', async () => {
     await withStore({
       list: async () => ({
-        descriptors: [descriptor('smtp')],
-        values: [value('smtp', '{"port":587}')],
+        descriptors: [
+          descriptor('smtp'),
+        ],
+        values: [
+          value('smtp', '{"port":587}'),
+        ],
       }),
     }, async (store) => {
       await store.load()
@@ -75,13 +92,27 @@ describe('createSettingsStore load', () => {
         call++
         if (call === 1)
           return new Promise((r) => { releaseFirst = r })
-        return Promise.resolve({ descriptors: [descriptor('new')], values: [value('new', '2')] })
+        return Promise.resolve({
+          descriptors: [
+            descriptor('new'),
+          ],
+          values: [
+            value('new', '2'),
+          ],
+        })
       },
     }, async (store) => {
       const first = store.load()
       const second = store.load()
       await second
-      releaseFirst({ descriptors: [descriptor('stale')], values: [value('stale', '1')] })
+      releaseFirst({
+        descriptors: [
+          descriptor('stale'),
+        ],
+        values: [
+          value('stale', '1'),
+        ],
+      })
       await first
 
       expect(store.values().has('new')).toBe(true)
@@ -92,9 +123,18 @@ describe('createSettingsStore load', () => {
   // A session that lost access must not keep serving the previous one's
   // settings.
   it('clears state instead of asking while the guard denies access', async () => {
-    const list = vi.fn(async () => ({ descriptors: [descriptor('smtp')], values: [] }))
+    const list = vi.fn(async () => ({
+      descriptors: [
+        descriptor('smtp'),
+      ],
+      values: [],
+    }))
     let allowed = true
-    await withStore({ list, enabled: () => allowed, guardMessage: 'admin only' }, async (store) => {
+    await withStore({
+      list,
+      enabled: () => allowed,
+      guardMessage: 'admin only',
+    }, async (store) => {
       await store.load()
       expect(store.state.descriptors).toHaveLength(1)
 
@@ -111,8 +151,14 @@ describe('createSettingsStore mutations', () => {
   it('merges a reply without disturbing the other keys', async () => {
     await withStore({
       list: async () => ({
-        descriptors: [descriptor('a'), descriptor('b')],
-        values: [value('a', '1'), value('b', '2')],
+        descriptors: [
+          descriptor('a'),
+          descriptor('b'),
+        ],
+        values: [
+          value('a', '1'),
+          value('b', '2'),
+        ],
       }),
       update: async () => value('a', '9'),
     }, async (store) => {
@@ -253,7 +299,10 @@ describe('createSettingsStore mutations', () => {
     await withStore({
       update: async (key, partial) => value(key, partial),
     }, async (store) => {
-      await Promise.all([store.update('a', '1'), store.update('b', '2')])
+      await Promise.all([
+        store.update('a', '1'),
+        store.update('b', '2'),
+      ])
       expect(store.values().get('a')?.effectiveJson).toBe('1')
       expect(store.values().get('b')?.effectiveJson).toBe('2')
     })
@@ -315,7 +364,10 @@ describe('createSettingsStore mutations', () => {
   })
 
   it('refuses every mutation while the guard denies access', async () => {
-    await withStore({ enabled: () => false, guardMessage: 'admin only' }, async (store) => {
+    await withStore({
+      enabled: () => false,
+      guardMessage: 'admin only',
+    }, async (store) => {
       await expect(store.update('a', '1')).rejects.toThrow('admin only')
       await expect(store.reset('a')).rejects.toThrow('admin only')
       await expect(store.updateSecret('a', '{}')).rejects.toThrow('admin only')

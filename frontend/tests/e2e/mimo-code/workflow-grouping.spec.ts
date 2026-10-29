@@ -65,7 +65,10 @@ function registryRow(page: Page, kind: 'subagent' | 'workflow', title: string): 
 mimoTest.describe('MiMo Code workflow', () => {
   mimoTest('a workflow run shows its subagents in the registry, each in a transcript of its own', async ({ native }) => {
     const { page, modelScript } = native
-    const helpers = HELPERS.map(helper => ({ ...helper, prompt: modelScript.prompt(helperTask(helper.word)) }))
+    const helpers = HELPERS.map(helper => ({
+      ...helper,
+      prompt: modelScript.prompt(helperTask(helper.word)),
+    }))
 
     // The two children run in parallel, so their requests have no fixed order. Match each child through a model rule.
     // `mimoChildTurn` anchors the rule at the start of its task. The parent notification also quotes each completed answer.
@@ -79,7 +82,11 @@ mimoTest.describe('MiMo Code workflow', () => {
     // then answers once itself. MiMo delivers each subagent's notification into
     // that same turn, so no second parent turn starts.
     const start = await modelScript.queue(
-      { toolCalls: [mimoWorkflowToolCall('workflow-run', workflowScript(helpers))] },
+      {
+        toolCalls: [
+          mimoWorkflowToolCall('workflow-run', workflowScript(helpers)),
+        ],
+      },
       { text: 'WORKFLOW_DONE: both helpers answered.' },
     )
     const parentTabId = await selectedAgentTabId(page)
@@ -103,8 +110,14 @@ mimoTest.describe('MiMo Code workflow', () => {
     // completed, and all in the group whose heading holds the run's name.
     await expandBackgroundTasksSection(page)
     const workflowRow = registryRow(page, 'workflow', WORKFLOW_NAME)
-    const helperRows = helpers.map(helper => ({ ...helper, row: registryRow(page, 'subagent', helper.label) }))
-    const rows = [workflowRow, ...helperRows.map(({ row }) => row)]
+    const helperRows = helpers.map(helper => ({
+      ...helper,
+      row: registryRow(page, 'subagent', helper.label),
+    }))
+    const rows = [
+      workflowRow,
+      ...helperRows.map(({ row }) => row),
+    ]
     for (const row of rows) {
       await expectRowBecomesFinal(page, row)
       await expect(row).toHaveAttribute('data-status', 'succeeded')
@@ -118,7 +131,9 @@ mimoTest.describe('MiMo Code workflow', () => {
       await openChildTabFromRow(page, row)
       // The transcript opens on the subagent's task, as MiMo received it from the
       // script, without the return-format instruction that MiMo appends to it.
-      const task = userBubbles(page).filter({ hasText: helperTask(word) })
+      const task = userBubbles(page).filter({
+        hasText: helperTask(word),
+      })
       await expect(task).toBeVisible()
       await expect(task).not.toContainText('Return format')
       // The subagent's own answer is a text row of its own transcript, and the

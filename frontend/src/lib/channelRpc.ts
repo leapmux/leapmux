@@ -166,7 +166,12 @@ export class ChannelRpcMux {
       }, effectiveTimeoutMs)
       /* eslint-enable ts/no-use-before-define */
 
-      log.debug('sending inner RPC request', { channel_id: ch.channelId, id: requestId, method, payload_len: payload.length })
+      log.debug('sending inner RPC request', {
+        channel_id: ch.channelId,
+        id: requestId,
+        method,
+        payload_len: payload.length,
+      })
 
       ch.pendingRequests.set(requestId, {
         resolve: (resp) => {
@@ -219,7 +224,12 @@ export class ChannelRpcMux {
     let endCb: (() => void) | null = null
     let errorCb: ((err: Error) => void) | null = null
 
-    log.debug('sending inner RPC request', { channel_id: ch.channelId, id: requestId, method, payload_len: payload.length })
+    log.debug('sending inner RPC request', {
+      channel_id: ch.channelId,
+      id: requestId,
+      method,
+      payload_len: payload.length,
+    })
 
     const plaintext = buildRequestPlaintext(method, payload)
     const attachAndSend = (): ChannelError | null => {
@@ -257,7 +267,9 @@ export class ChannelRpcMux {
       this.deps.onSendFailure(ch, err)
       // Non-ChannelError throws are session/runtime failures (encrypt, etc.),
       // not client validation — report as transport so callers reconnect.
-      return err instanceof ChannelError ? err : new ChannelError('transport', formatErrorMessage(err))
+      return err instanceof ChannelError
+        ? err
+        : new ChannelError('transport', formatErrorMessage(err))
     }
   }
 
@@ -286,7 +298,9 @@ export class ChannelRpcMux {
     }
     catch (err) {
       this.deps.onSendFailure(ch, err)
-      return err instanceof ChannelError ? err : new ChannelError('transport', formatErrorMessage(err))
+      return err instanceof ChannelError
+        ? err
+        : new ChannelError('transport', formatErrorMessage(err))
     }
   }
 

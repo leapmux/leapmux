@@ -13,8 +13,30 @@ beforeAll(() => {
 describe('move renderer', () => {
   checkKindModule({
     kind: 'move',
-    request: { changes: [{ filePath: '/p/b.ts', oldStr: '', newStr: '', structuredPatch: null, previousPath: '/p/a.ts', operation: 'move' as const }] },
+    request: {
+      changes: [
+        {
+          filePath: '/p/b.ts',
+          oldStr: '',
+          newStr: '',
+          structuredPatch: null,
+          previousPath: '/p/a.ts',
+          operation: 'move' as const,
+        },
+      ],
+    },
     titlePart: 'a.ts',
-    result: { changes: [{ filePath: '/p/b.ts', oldStr: '', newStr: '', structuredPatch: null, previousPath: '/p/a.ts', operation: 'move' as const }] },
+    result: {
+      changes: [
+        {
+          filePath: '/p/b.ts',
+          oldStr: '',
+          newStr: '',
+          structuredPatch: null,
+          previousPath: '/p/a.ts',
+          operation: 'move' as const,
+        },
+      ],
+    },
   })
 })

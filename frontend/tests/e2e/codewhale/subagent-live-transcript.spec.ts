@@ -31,7 +31,9 @@ codewhaleTest.describe('Codewhale subagent registry', () => {
       childWhen: { user: 'Read the assigned file in the live child' },
       childTask: 'Read the assigned file in the live child.',
       parentTask: 'Delegate the live child file read.',
-      toolProof: { read: { workingDir } },
+      toolProof: {
+        read: { workingDir },
+      },
       holdParentAnswer: true,
       background: true,
       // A resumable native interruption keeps the child tab open as Paused.

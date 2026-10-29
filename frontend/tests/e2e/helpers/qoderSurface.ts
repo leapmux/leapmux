@@ -69,7 +69,11 @@ async function handleQoderConfiguration(request: IncomingMessage, response: Serv
     body = await readJSONBody(request)
   }
   catch (error) {
-    writeMockJSON(response, 400, { error: error instanceof Error ? error.message : 'The Qoder config request is invalid.' })
+    writeMockJSON(response, 400, {
+      error: error instanceof Error
+        ? error.message
+        : 'The Qoder config request is invalid.',
+    })
     return true
   }
   if (!isObject(body) || !Array.isArray(body.namespaces) || body.namespaces.length !== 1 || body.namespaces[0] !== CONFIG_NAMESPACE
@@ -87,7 +91,17 @@ async function handleQoderConfiguration(request: IncomingMessage, response: Serv
   }
   // Keep the native hardcoded policy. The fixture enables no extra feature.
   writeMockJSON(response, 200, {
-    configs: { [CONFIG_NAMESPACE]: { prompt_policy: { value: { sectionGates: { 'behavior.act_dont_rederive': 'disable' } }, ruleId: -1, scope: 'default' } } },
+    configs: {
+      [CONFIG_NAMESPACE]: {
+        prompt_policy: {
+          value: {
+            sectionGates: { 'behavior.act_dont_rederive': 'disable' },
+          },
+          ruleId: -1,
+          scope: 'default',
+        },
+      },
+    },
     etag: CONFIG_ETAG,
   }, { etag })
   return true
@@ -95,10 +109,26 @@ async function handleQoderConfiguration(request: IncomingMessage, response: Serv
 
 /** Keep both endpoint-election cache formats beside the native discovery responses. */
 export function qoderEndpointCacheRecords(origin: string, updatedAt: number): { v1: Record<string, unknown>, v2: Record<string, unknown> } {
-  const purposes = ['center', 'inference', 'securityInference', 'openapi']
-  const endpointSets = Object.fromEntries(purposes.map(purpose => [purpose, { candidates: [origin], selected: origin }]))
+  const purposes = [
+    'center',
+    'inference',
+    'securityInference',
+    'openapi',
+  ]
+  const endpointSets = Object.fromEntries(purposes.map(purpose => [
+    purpose,
+    {
+      candidates: [origin],
+      selected: origin,
+    },
+  ]))
   return {
-    v2: { version: 2, entries: { prod: { endpointSets, updatedAt } } },
+    v2: {
+      version: 2,
+      entries: {
+        prod: { endpointSets, updatedAt },
+      },
+    },
     v1: {
       version: 1,
       entries: {
@@ -125,8 +155,15 @@ export function handleQoderHttp(request: IncomingMessage, response: ServerRespon
   if (url.pathname === '/algo/api/v3/service/region/endpoints' || url.pathname === '/algo/api/v5/service/region/endpoints') {
     const origin = options.origin()
     const legacySync = request.headers['cosy-machineid'] !== undefined
-    const node = url.pathname.includes('/v5/') && !legacySync ? { url: origin } : origin
-    const body = { centerNodes: [node], inferNodes: [node], security: [node], openapiNodes: [node] }
+    const node = url.pathname.includes('/v5/') && !legacySync
+      ? { url: origin }
+      : origin
+    const body = {
+      centerNodes: [node],
+      inferNodes: [node],
+      security: [node],
+      openapiNodes: [node],
+    }
     console.error('[qoder-auth] The mock returned the region endpoints:', JSON.stringify(body))
     writeMockJSON(response, 200, body)
     return true
@@ -142,11 +179,22 @@ export function handleQoderHttp(request: IncomingMessage, response: ServerRespon
     return true
   }
   if (request.method === 'GET' && url.pathname === '/api/v1/userinfo') {
-    writeMockJSON(response, 200, { id: 'leapmux-e2e', uid: 'leapmux-e2e', username: 'leapmux-e2e', name: 'LeapMux E2E', email: 'e2e@leapmux.test' })
+    writeMockJSON(response, 200, {
+      id: 'leapmux-e2e',
+      uid: 'leapmux-e2e',
+      username: 'leapmux-e2e',
+      name: 'LeapMux E2E',
+      email: 'e2e@leapmux.test',
+    })
     return true
   }
   if (url.pathname === '/api/v3/user/status') {
-    writeMockJSON(response, 200, { code: 0, success: true, data: {}, featureSwitches: { allow_byok: 2 } })
+    writeMockJSON(response, 200, {
+      code: 0,
+      success: true,
+      data: {},
+      featureSwitches: { allow_byok: 2 },
+    })
     return true
   }
   if (url.pathname === '/algo/api/v2/model/list' || url.pathname === '/api/v2/user/plan' || url.pathname === '/ide-text/latest') {

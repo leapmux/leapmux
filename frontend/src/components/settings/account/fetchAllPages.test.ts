@@ -15,7 +15,10 @@ describe('fetchAllPages reads every page of a keyset listing', () => {
           ? page(['a', 'b'], 'c1')
           : page(['c'], '')
       },
-      { maxPages: 10, keyOf: x => x },
+      {
+        maxPages: 10,
+        keyOf: x => x,
+      },
     )
     expect(cursors).toEqual(['', 'c1'])
     expect(rows).toEqual(['a', 'b', 'c'])
@@ -28,7 +31,10 @@ describe('fetchAllPages reads every page of a keyset listing', () => {
         calls++
         return page(['a'], 'stuck')
       },
-      { maxPages: 10, keyOf: x => x },
+      {
+        maxPages: 10,
+        keyOf: x => x,
+      },
     )
     expect(calls).toBe(2)
     expect(rows).toEqual(['a'])
@@ -41,7 +47,10 @@ describe('fetchAllPages reads every page of a keyset listing', () => {
         calls++
         return page([`row-${calls}`], `c${calls}`)
       },
-      { maxPages: 3, keyOf: x => x },
+      {
+        maxPages: 3,
+        keyOf: x => x,
+      },
     )
     expect(calls).toBe(3)
     expect(rows).toEqual(['row-1', 'row-2', 'row-3'])
@@ -49,8 +58,13 @@ describe('fetchAllPages reads every page of a keyset listing', () => {
 
   it('drops a row the server repeats across a keyset boundary', async () => {
     const rows = await fetchAllPages(
-      async cursor => (cursor === '' ? page(['a', 'b'], 'c1') : page(['b', 'c'], '')),
-      { maxPages: 5, keyOf: x => x },
+      async cursor => (cursor === ''
+        ? page(['a', 'b'], 'c1')
+        : page(['b', 'c'], '')),
+      {
+        maxPages: 5,
+        keyOf: x => x,
+      },
     )
     expect(rows).toEqual(['a', 'b', 'c'])
   })

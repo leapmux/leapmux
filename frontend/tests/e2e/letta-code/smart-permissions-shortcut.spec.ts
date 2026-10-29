@@ -3,5 +3,8 @@ import { expectMissingPermissionShortcut } from '../helpers/unsupportedConfigura
 import { lettaTest } from '../letta-fixtures'
 
 lettaTest('exposes no smart permission shortcut after actual native tool execution', async ({ native }) => {
-  await expectMissingPermissionShortcut(native, { preset: 'smart', relatedProof: () => exerciseShellToolExecution(native, { includeFailure: false }) })
+  await expectMissingPermissionShortcut(native, {
+    preset: 'smart',
+    relatedProof: () => exerciseShellToolExecution(native, { includeFailure: false }),
+  })
 })

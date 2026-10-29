@@ -54,7 +54,9 @@ export function forwardDelta(prevDigit: number, nextDigit: number): number {
 // no digit-to-digit mapping), so those transitions crossfade instead.
 export function shapeFamily(formatted: string): string {
   const last = formatted[formatted.length - 1]
-  return last === 'k' || last === 'M' ? last : ''
+  return last === 'k' || last === 'M'
+    ? last
+    : ''
 }
 
 // A single digit position. An in-flow hidden sizer gives the column the real
@@ -97,7 +99,9 @@ const DigitColumn: Component<{ digit: number, enter: boolean, paused: boolean }>
     stripEl.style.transition = 'none'
     stripEl.style.transform = `translateY(calc(${offsetCells} * var(--cell)))`
     stripEl.getBoundingClientRect()
-    stripEl.style.transition = props.paused || prefersReducedMotion() ? 'none' : ROLL_TRANSITION
+    stripEl.style.transition = props.paused || prefersReducedMotion()
+      ? 'none'
+      : ROLL_TRANSITION
   }
 
   // Apply pos to the strip. animate=false commits instantly (initial placement,
@@ -132,7 +136,9 @@ const DigitColumn: Component<{ digit: number, enter: boolean, paused: boolean }>
       return
     pos -= cycles * 10
     const live = liveOffsetCells()
-    placeInstant(live === null ? -pos : live + cycles * 10)
+    placeInstant(live === null
+      ? -pos
+      : live + cycles * 10)
   }
 
   // A roll transition ended (`settled`) or was interrupted by a newer one
@@ -151,7 +157,9 @@ const DigitColumn: Component<{ digit: number, enter: boolean, paused: boolean }>
     if (!settled)
       return
     const live = liveOffsetCells()
-    const atRest = live === null ? pending === 0 : Math.abs(live + pos) < 0.01
+    const atRest = live === null
+      ? pending === 0
+      : Math.abs(live + pos) < 0.01
     if (!atRest)
       return
     pending = 0
@@ -267,7 +275,10 @@ function useFadingSnapshots<T>(
       // reading `snapshots.length` inside this tracked effect would subscribe it
       // to the store, so a later removal (which shrinks the list) would re-run
       // the effect for no reason. The functional form depends only on `value()`.
-      setSnapshots(rows => [...rows, { id, value: snapshot }])
+      setSnapshots(rows => [
+        ...rows,
+        { id, value: snapshot },
+      ])
       const timer = setTimeout(() => {
         timers.delete(timer)
         setSnapshots(rows => rows.filter(row => row.id !== id))
@@ -326,9 +337,13 @@ export const AnimatedCount: Component<{
 
   return (
     <span
-      class={`${styles.root}${props.rootClass ? ` ${props.rootClass}` : ''}`}
+      class={`${styles.root}${props.rootClass
+        ? ` ${props.rootClass}`
+        : ''}`}
       data-animated-count
-      data-paused={props.paused === true ? 'true' : undefined}
+      data-paused={props.paused === true
+        ? 'true'
+        : undefined}
     >
       {/* The real value for assistive tech, and a stable hook for a test.
           The visual odometer beside it is aria-hidden: its DOM is a pile of

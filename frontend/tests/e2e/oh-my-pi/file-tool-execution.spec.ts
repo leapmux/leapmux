@@ -30,8 +30,16 @@ ohMyPiTest.describe('Oh My Pi tool execution', () => {
     // read's own result can put it on the page.
     await runNativeToolSteps(native, {
       steps: [
-        { toolCalls: [bashToolCall(native.provider, 'seed-notes', `seq 3 | sed "s/^/omp-read-/" > ${quotePosixShellArgument(notes)}`)] },
-        { toolCalls: [readToolCall(native.provider, 'read-notes', notes)] },
+        {
+          toolCalls: [
+            bashToolCall(native.provider, 'seed-notes', `seq 3 | sed "s/^/omp-read-/" > ${quotePosixShellArgument(notes)}`),
+          ],
+        },
+        {
+          toolCalls: [
+            readToolCall(native.provider, 'read-notes', notes),
+          ],
+        },
       ],
       prompt: 'Create the notes and read them back.',
       answer: 'I read the notes.',
@@ -51,13 +59,19 @@ ohMyPiTest.describe('Oh My Pi tool execution', () => {
     if (!agent.workingDir)
       throw new Error('The active native agent has no working directory.')
     // The sequence seeds the file before the edit, so the edit states both sides.
-    await exerciseFileEditSequence(native, { workingDir: createNativeToolDirectory(agent.workingDir), fileName: 'parity.ts' })
+    await exerciseFileEditSequence(native, {
+      workingDir: createNativeToolDirectory(agent.workingDir),
+      fileName: 'parity.ts',
+    })
   })
 
   ohMyPiTest('writes the file that a write call states', async ({ native }) => {
     const agent = await currentNativeAgent(native)
     if (!agent.workingDir)
       throw new Error('The active native agent has no working directory.')
-    await exerciseNativeFileWrite(native, { directory: createNativeToolDirectory(agent.workingDir), content: 'omp was here\n' })
+    await exerciseNativeFileWrite(native, {
+      directory: createNativeToolDirectory(agent.workingDir),
+      content: 'omp was here\n',
+    })
   })
 })

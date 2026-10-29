@@ -16,7 +16,12 @@ describe('createLoadingSignal', () => {
       const signal = createLoadingSignal()
       const snapshots: { pending: boolean, axes: string[] }[] = []
       createComputed(() => {
-        snapshots.push({ pending: signal.isPending('A'), axes: [...signal.pendingAxes('A')] })
+        snapshots.push({
+          pending: signal.isPending('A'),
+          axes: [
+            ...signal.pendingAxes('A'),
+          ],
+        })
       })
 
       signal.start('A', ['model'])
@@ -26,9 +31,18 @@ describe('createLoadingSignal', () => {
 
       expect(snapshots).toEqual([
         { pending: false, axes: [] },
-        { pending: true, axes: ['model'] },
-        { pending: true, axes: ['model', 'effort'] },
-        { pending: true, axes: ['effort'] },
+        {
+          pending: true,
+          axes: ['model'],
+        },
+        {
+          pending: true,
+          axes: ['model', 'effort'],
+        },
+        {
+          pending: true,
+          axes: ['effort'],
+        },
         { pending: false, axes: [] },
       ])
       dispose()
@@ -59,10 +73,14 @@ describe('createLoadingSignal', () => {
       signal.stop('A', ['model'])
       vi.advanceTimersByTime(1000)
       expect(signal.isPending('A')).toBe(true)
-      expect([...signal.pendingAxes('A')]).toEqual(['effort'])
+      expect([
+        ...signal.pendingAxes('A'),
+      ]).toEqual(['effort'])
       vi.advanceTimersByTime(4000)
       expect(signal.isPending('A')).toBe(false)
-      expect([...signal.pendingAxes('A')]).toEqual([])
+      expect([
+        ...signal.pendingAxes('A'),
+      ]).toEqual([])
       expect(vi.getTimerCount()).toBe(0)
       dispose()
     })
@@ -85,7 +103,9 @@ describe('createLoadingSignal', () => {
       signal.start('', ['model'])
       signal.stop('', ['effort'])
       expect(signal.isPending('')).toBe(false)
-      expect([...signal.pendingAxes('')]).toEqual([])
+      expect([
+        ...signal.pendingAxes(''),
+      ]).toEqual([])
       vi.advanceTimersByTime(1000)
       expect(vi.getTimerCount()).toBe(0)
       dispose()
@@ -393,11 +413,15 @@ describe('createLoadingSignal', () => {
     it('reports exactly the axes a change is in flight for, empty when none', () => {
       createRoot((dispose) => {
         const s = createLoadingSignal()
-        expect([...s.pendingAxes('A')]).toEqual([])
+        expect([
+          ...s.pendingAxes('A'),
+        ]).toEqual([])
         s.start('A', ['model', 'effort'])
         expect(new Set(s.pendingAxes('A'))).toEqual(new Set(['model', 'effort']))
         s.stop('A', ['model', 'effort'])
-        expect([...s.pendingAxes('A')]).toEqual([])
+        expect([
+          ...s.pendingAxes('A'),
+        ]).toEqual([])
         dispose()
       })
     })
@@ -437,7 +461,9 @@ describe('createLoadingSignal', () => {
         expect(new Set(s.pendingAxes('A'))).toEqual(new Set(['effort']))
 
         s.stop('A', ['effort'])
-        expect([...s.pendingAxes('A')]).toEqual([])
+        expect([
+          ...s.pendingAxes('A'),
+        ]).toEqual([])
         dispose()
       })
     })
@@ -449,7 +475,9 @@ describe('createLoadingSignal', () => {
         expect(s.pendingAxes('A').has('model')).toBe(true)
         // No stop() arrives; the hung-RPC safety net must drop the axes as well as the count.
         vi.advanceTimersByTime(5000)
-        expect([...s.pendingAxes('A')]).toEqual([])
+        expect([
+          ...s.pendingAxes('A'),
+        ]).toEqual([])
         dispose()
       })
     })

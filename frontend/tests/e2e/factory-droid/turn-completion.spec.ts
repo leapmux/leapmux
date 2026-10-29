@@ -4,7 +4,9 @@ import { sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 droidTest('reports a permanent native model failure before and after reload', async ({ native }) => {
   const { page, modelScript } = native
-  await modelScript.queue({ error: { status: 401, code: 'invalid_api_key', message: 'The scripted model credential was rejected.' } })
+  await modelScript.queue({
+    error: { status: 401, code: 'invalid_api_key', message: 'The scripted model credential was rejected.' },
+  })
   await sendMessage(page, modelScript.prompt('Reply to the scripted authentication failure.'))
   await modelScript.waitForSteps()
   await waitForAgentIdle(page)

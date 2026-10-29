@@ -20,9 +20,18 @@ export function claudeSkillSpec(request: SkillRequest, result: ClaudeToolRow | u
   const failure = claudeToolFailureResult(result)
   if (failure)
     return { kind: 'skill', request, result: failure }
-  if (!result.resultContent)
-    return { kind: 'skill', request, result: unparsedResult(result.resultContent) }
-  return { kind: 'skill', request, result: proseResult(result.resultContent) }
+  if (!result.resultContent) {
+    return {
+      kind: 'skill',
+      request,
+      result: unparsedResult(result.resultContent),
+    }
+  }
+  return {
+    kind: 'skill',
+    request,
+    result: proseResult(result.resultContent),
+  }
 }
 
 /** The wait pair: how long the call waited, and the words it answered with. */
@@ -32,9 +41,18 @@ export function claudeWaitSpec(request: WaitRequest, result: ClaudeToolRow | und
   const failure = claudeToolFailureResult(result)
   if (failure)
     return { kind: 'wait', request, result: failure }
-  if (!result.resultContent)
-    return { kind: 'wait', request, result: unparsedResult(result.resultContent) }
-  return { kind: 'wait', request, result: proseResult(result.resultContent) }
+  if (!result.resultContent) {
+    return {
+      kind: 'wait',
+      request,
+      result: unparsedResult(result.resultContent),
+    }
+  }
+  return {
+    kind: 'wait',
+    request,
+    result: proseResult(result.resultContent),
+  }
 }
 
 /**
@@ -47,7 +65,16 @@ export function claudeReportSpec(request: ReportRequest, result: ClaudeToolRow |
   const failure = claudeToolFailureResult(result)
   if (failure)
     return { kind: 'report', request, result: failure }
-  if (!result.resultContent)
-    return { kind: 'report', request, result: unparsedResult(result.resultContent) }
-  return { kind: 'report', request, result: proseResult(result.resultContent) }
+  if (!result.resultContent) {
+    return {
+      kind: 'report',
+      request,
+      result: unparsedResult(result.resultContent),
+    }
+  }
+  return {
+    kind: 'report',
+    request,
+    result: proseResult(result.resultContent),
+  }
 }

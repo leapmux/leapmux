@@ -6,7 +6,12 @@ import { configureLettaMcp, lettaConversationPath, parseLettaConversation, resto
 
 let directory: string
 const identity = { agentId: 'agent-native', conversationId: 'conversation-native', baseUrl: 'local:/private/backend' }
-const server = { name: 'echo_probe', transport: 'stdio' as const, command: resolve('node'), args: ['private script.mjs', ''] }
+const server = {
+  name: 'echo_probe',
+  transport: 'stdio' as const,
+  command: resolve('node'),
+  args: ['private script.mjs', ''],
+}
 
 beforeEach(() => {
   const scratch = resolve(process.cwd(), '../.tmp')
@@ -24,7 +29,13 @@ describe('lettaConversationPath', () => {
     expect(parseLettaConversation({ id: conversationId, agent_id: 'actual-agent' }, conversationId, backend))
       .toEqual({ conversationId, agentId: 'actual-agent', baseUrl: `local:${backend}` })
   })
-  it.each(['', ' ', 'default', '\nconversation-native', 'conversation-native '])('rejects an invalid conversation identity: %j', (id) => {
+  it.each([
+    '',
+    ' ',
+    'default',
+    '\nconversation-native',
+    'conversation-native ',
+  ])('rejects an invalid conversation identity: %j', (id) => {
     expect(() => lettaConversationPath(directory, id)).toThrow('conversation ID')
   })
   it('rejects a relative backend directory', () => {
@@ -38,12 +49,23 @@ describe('parseLettaConversation', () => {
     [null, 'The stored native Letta conversation ID does not match the requested session.'],
     [[], 'The stored native Letta conversation ID does not match the requested session.'],
     ['', 'The stored native Letta conversation ID does not match the requested session.'],
-    [{ id: 'other', agent_id: 'agent-native' }, 'The stored native Letta conversation ID does not match the requested session.'],
-    [{ id: 'conversation-native' }, 'The stored native Letta conversation must identify its agent.'],
+    [
+      { id: 'other', agent_id: 'agent-native' },
+      'The stored native Letta conversation ID does not match the requested session.',
+    ],
+    [
+      { id: 'conversation-native' },
+      'The stored native Letta conversation must identify its agent.',
+    ],
   ])('rejects an invalid native conversation record: %j', (value, error) => {
     expect(() => parseLettaConversation(value, 'conversation-native', directory)).toThrow(error)
   })
-  it.each(['', ' ', '\nagent-native', 'agent-native '])('rejects an empty or altered native agent ID: %j', (agent_id) => {
+  it.each([
+    '',
+    ' ',
+    '\nagent-native',
+    'agent-native ',
+  ])('rejects an empty or altered native agent ID: %j', (agent_id) => {
     expect(() => parseLettaConversation({ id: 'conversation-native', agent_id }, 'conversation-native', directory)).toThrow('identify its agent')
   })
 })
@@ -53,56 +75,123 @@ describe('setLettaMcpSettings', () => {
     const value = {
       profile: { effort: false },
       agents: [
-        { agentId: identity.agentId, baseUrl: 'local:/other/backend', mcpServers: ['other-backend'] },
-        { agentId: 'other-agent', baseUrl: identity.baseUrl, mcpServers: ['other-agent'] },
-        { agentId: identity.agentId, baseUrl: identity.baseUrl, model: '', mcpServers: [] },
+        {
+          agentId: identity.agentId,
+          baseUrl: 'local:/other/backend',
+          mcpServers: ['other-backend'],
+        },
+        {
+          agentId: 'other-agent',
+          baseUrl: identity.baseUrl,
+          mcpServers: ['other-agent'],
+        },
+        {
+          agentId: identity.agentId,
+          baseUrl: identity.baseUrl,
+          model: '',
+          mcpServers: [],
+        },
       ],
     }
     const changed = setLettaMcpSettings(value, identity, [server])
-    expect(changed.settings).toEqual({ ...value, agents: [value.agents[0], value.agents[1], { ...value.agents[2], mcpServers: [server] }] })
+    expect(changed.settings).toEqual({
+      ...value,
+      agents: [
+        value.agents[0],
+        value.agents[1],
+        {
+          ...value.agents[2],
+          mcpServers: [server],
+        },
+      ],
+    })
     expect(value.agents[2]?.mcpServers).toEqual([])
     expect(changed.previous).toEqual({ kind: 'field-present', value: [] })
     expect(restoreLettaMcpSettings(changed.settings, identity, changed.previous)).toEqual(value)
   })
-  it.each([{}, { agents: [] }])('creates an absent exact entry and removes only that entry on restoration: %j', (value) => {
+  it.each([
+    {},
+    { agents: [] },
+  ])('creates an absent exact entry and removes only that entry on restoration: %j', (value) => {
     const changed = setLettaMcpSettings(value, identity, [])
     expect(changed.previous).toEqual({ kind: 'entry-absent' })
-    expect(changed.settings.agents).toEqual([{ agentId: identity.agentId, baseUrl: identity.baseUrl, mcpServers: [] }])
+    expect(changed.settings.agents).toEqual([
+      { agentId: identity.agentId, baseUrl: identity.baseUrl, mcpServers: [] },
+    ])
     expect(restoreLettaMcpSettings(changed.settings, identity, changed.previous).agents).toEqual([])
   })
   it('restores an absent field and preserves newer unrelated native settings', () => {
-    const value = { agents: [{ agentId: identity.agentId, baseUrl: identity.baseUrl, model: 'original' }] }
+    const value = {
+      agents: [
+        { agentId: identity.agentId, baseUrl: identity.baseUrl, model: 'original' },
+      ],
+    }
     const changed = setLettaMcpSettings(value, identity, [server])
-    const newer = { profile: { fast: false }, agents: [{ ...changed.settings.agents[0], model: 'newer', extra: 0 }] }
+    const newer = {
+      profile: { fast: false },
+      agents: [
+        { ...changed.settings.agents[0], model: 'newer', extra: 0 },
+      ],
+    }
     expect(restoreLettaMcpSettings(newer, identity, changed.previous))
-      .toEqual({ profile: { fast: false }, agents: [{ agentId: identity.agentId, baseUrl: identity.baseUrl, model: 'newer', extra: 0 }] })
+      .toEqual({
+        profile: { fast: false },
+        agents: [
+          {
+            agentId: identity.agentId,
+            baseUrl: identity.baseUrl,
+            model: 'newer',
+            extra: 0,
+          },
+        ],
+      })
   })
   it('retains an added entry when the runtime adds another setting', () => {
     const changed = setLettaMcpSettings({}, identity, [server])
-    const newer = { agents: [{ ...changed.settings.agents[0], nativeField: false }] }
+    const newer = {
+      agents: [
+        { ...changed.settings.agents[0], nativeField: false },
+      ],
+    }
     expect(restoreLettaMcpSettings(newer, identity, changed.previous).agents)
-      .toEqual([{ agentId: identity.agentId, baseUrl: identity.baseUrl, nativeField: false }])
+      .toEqual([
+        { agentId: identity.agentId, baseUrl: identity.baseUrl, nativeField: false },
+      ])
   })
   it('rejects duplicate exact scope entries before it writes', () => {
     const entry = { agentId: identity.agentId, baseUrl: identity.baseUrl }
-    expect(() => setLettaMcpSettings({ agents: [entry, entry] }, identity, [server])).toThrow('duplicate')
+    expect(() => setLettaMcpSettings({
+      agents: [entry, entry],
+    }, identity, [server])).toThrow('duplicate')
   })
   it.each([
     [null, 'The native Letta settings must be an object.'],
     [[], 'The native Letta settings must be an object.'],
     ['', 'The native Letta settings must be an object.'],
-    [{ agents: null }, 'The native Letta agents settings must be an array of objects.'],
-    [{ agents: [null] }, 'The native Letta agents settings must be an array of objects.'],
+    [
+      { agents: null },
+      'The native Letta agents settings must be an array of objects.',
+    ],
+    [
+      {
+        agents: [null],
+      },
+      'The native Letta agents settings must be an array of objects.',
+    ],
   ])('rejects malformed settings: %j', (value, error) => {
     expect(() => setLettaMcpSettings(value, identity, [server])).toThrow(error)
   })
   it('rejects duplicate servers and a relative executable', () => {
     expect(() => setLettaMcpSettings({}, identity, [server, server])).toThrow('unique name')
-    expect(() => setLettaMcpSettings({}, identity, [{ ...server, command: 'node' }])).toThrow('absolute stdio command')
+    expect(() => setLettaMcpSettings({}, identity, [
+      { ...server, command: 'node' },
+    ])).toThrow('absolute stdio command')
   })
 
   it.each(['null', '{}', '{"name":"echo_probe","transport":"stdio","command":0}'])('rejects malformed server fields before it changes settings: %j', (bytes) => {
-    expect(() => setLettaMcpSettings({}, identity, [JSON.parse(bytes)])).toThrow('absolute stdio command')
+    expect(() => setLettaMcpSettings({}, identity, [
+      JSON.parse(bytes),
+    ])).toThrow('absolute stdio command')
   })
 })
 
@@ -116,7 +205,17 @@ describe('configureLettaMcp', () => {
     writeFileSync(path, JSON.stringify({ id: identity.conversationId, agent_id: identity.agentId }))
     const settings = join(home, '.letta', 'settings.json')
     writeFileSync(settings, JSON.stringify({ nativeExtra: false }))
-    return { options: { runDirectory: directory, home, backendDirectory, conversationId: identity.conversationId, servers: [server] }, settings, path }
+    return {
+      options: {
+        runDirectory: directory,
+        home,
+        backendDirectory,
+        conversationId: identity.conversationId,
+        servers: [server],
+      },
+      settings,
+      path,
+    }
   }
   it('writes and restores the exact private file while retaining later changes', () => {
     const { options, settings } = configuration()
@@ -129,7 +228,10 @@ describe('configureLettaMcp', () => {
     changed.restore()
     expect(JSON.parse(readFileSync(settings, 'utf8'))).toEqual({ nativeExtra: false, agents: [], laterSetting: 0 })
   })
-  it.each([['{', SyntaxError], ['null', 'The stored native Letta conversation ID does not match the requested session.']] as const)('rejects malformed stored conversation bytes without changing settings: %j', (bytes, error) => {
+  it.each([
+    ['{', SyntaxError],
+    ['null', 'The stored native Letta conversation ID does not match the requested session.'],
+  ] as const)('rejects malformed stored conversation bytes without changing settings: %j', (bytes, error) => {
     const { options, settings, path } = configuration()
     const before = readFileSync(settings, 'utf8')
     writeFileSync(path, bytes)

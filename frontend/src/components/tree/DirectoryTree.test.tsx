@@ -48,12 +48,14 @@ function oneListing(
   opts: { truncated?: boolean, totalEntries?: number } = {},
 ) {
   return {
-    listings: [{
-      path: '',
-      entries,
-      truncated: opts.truncated ?? false,
-      totalEntries: opts.totalEntries ?? 0,
-    }],
+    listings: [
+      {
+        path: '',
+        entries,
+        truncated: opts.truncated ?? false,
+        totalEntries: opts.totalEntries ?? 0,
+      },
+    ],
   }
 }
 
@@ -70,7 +72,9 @@ async function settle(turns = 10): Promise<void> {
 }
 
 function rowFor(name: string): Element | undefined {
-  return [...document.querySelectorAll('[data-testid="tree-row"]')]
+  return [
+    ...document.querySelectorAll('[data-testid="tree-row"]'),
+  ]
     .find(el => el.querySelector('[data-testid="tree-row-name"]')?.textContent === name)
 }
 
@@ -80,14 +84,18 @@ function rowFor(name: string): Element | undefined {
  * while closed, so the row's text also carries its menu items.
  */
 function renderedNames(): string[] {
-  return [...document.querySelectorAll('[data-testid="tree-row"]')]
+  return [
+    ...document.querySelectorAll('[data-testid="tree-row"]'),
+  ]
     .map(el => el.querySelector('[data-testid="tree-row-name"]')?.textContent ?? '')
 }
 
 beforeEach(() => {
   listDirectory.mockReset()
   statFile.mockReset()
-  statFile.mockResolvedValue({ info: { modTime: '2026-01-01T00:00:00Z' } })
+  statFile.mockResolvedValue({
+    info: { modTime: '2026-01-01T00:00:00Z' },
+  })
   sessionStorageClearForTests()
 })
 
@@ -104,7 +112,10 @@ describe('DirectoryTree', () => {
    */
   it('keeps an unchanged row mounted when a refresh adds a sibling', async () => {
     const root = '/repo-reconcile'
-    listDirectory.mockResolvedValue(oneListing([entry(root, 'a.txt'), entry(root, 'b.txt')]))
+    listDirectory.mockResolvedValue(oneListing([
+      entry(root, 'a.txt'),
+      entry(root, 'b.txt'),
+    ]))
 
     let handle!: DirectoryTreeHandle
     render(() => (
@@ -121,7 +132,11 @@ describe('DirectoryTree', () => {
     await waitFor(() => expect(rowFor('a.txt')).toBeTruthy())
     const before = rowFor('a.txt')!
 
-    listDirectory.mockResolvedValue(oneListing([entry(root, 'a.txt'), entry(root, 'b.txt'), entry(root, 'c.txt')]))
+    listDirectory.mockResolvedValue(oneListing([
+      entry(root, 'a.txt'),
+      entry(root, 'b.txt'),
+      entry(root, 'c.txt'),
+    ]))
     handle.refresh()
     await waitFor(() => expect(rowFor('c.txt')).toBeTruthy())
 
@@ -131,7 +146,10 @@ describe('DirectoryTree', () => {
 
   it('marks the selected row with data-active, the one marker the coarse-pointer kebab reveal keys on', async () => {
     const root = '/repo-active'
-    listDirectory.mockResolvedValue(oneListing([entry(root, 'a.txt'), entry(root, 'b.txt')]))
+    listDirectory.mockResolvedValue(oneListing([
+      entry(root, 'a.txt'),
+      entry(root, 'b.txt'),
+    ]))
 
     render(() => (
       <DirectoryTree
@@ -195,31 +213,61 @@ describe('DirectoryTree sorting', () => {
   it('defaults to directories first, then name ascending', async () => {
     renderSorted({ key: 'name', direction: 'asc' })
     await waitFor(() => expect(renderedNames()).toHaveLength(5))
-    expect(renderedNames()).toEqual(['alpha', 'zeta', 'apple.ts', 'banana.md', 'cherry.js'])
+    expect(renderedNames()).toEqual([
+      'alpha',
+      'zeta',
+      'apple.ts',
+      'banana.md',
+      'cherry.js',
+    ])
   })
 
   it('sorts files by size while directories keep path order', async () => {
     renderSorted({ key: 'size', direction: 'asc' })
     await waitFor(() => expect(renderedNames()).toHaveLength(5))
-    expect(renderedNames()).toEqual(['alpha', 'zeta', 'banana.md', 'cherry.js', 'apple.ts'])
+    expect(renderedNames()).toEqual([
+      'alpha',
+      'zeta',
+      'banana.md',
+      'cherry.js',
+      'apple.ts',
+    ])
   })
 
   it('reverses only the files when a size sort is descending', async () => {
     renderSorted({ key: 'size', direction: 'desc' })
     await waitFor(() => expect(renderedNames()).toHaveLength(5))
-    expect(renderedNames()).toEqual(['alpha', 'zeta', 'apple.ts', 'cherry.js', 'banana.md'])
+    expect(renderedNames()).toEqual([
+      'alpha',
+      'zeta',
+      'apple.ts',
+      'cherry.js',
+      'banana.md',
+    ])
   })
 
   it('sorts files by modification time, newest first', async () => {
     renderSorted({ key: 'modified', direction: 'desc' })
     await waitFor(() => expect(renderedNames()).toHaveLength(5))
-    expect(renderedNames()).toEqual(['alpha', 'zeta', 'banana.md', 'cherry.js', 'apple.ts'])
+    expect(renderedNames()).toEqual([
+      'alpha',
+      'zeta',
+      'banana.md',
+      'cherry.js',
+      'apple.ts',
+    ])
   })
 
   it('groups files by extension under a type sort', async () => {
     renderSorted({ key: 'type', direction: 'asc' })
     await waitFor(() => expect(renderedNames()).toHaveLength(5))
-    expect(renderedNames()).toEqual(['alpha', 'zeta', 'cherry.js', 'banana.md', 'apple.ts'])
+    expect(renderedNames()).toEqual([
+      'alpha',
+      'zeta',
+      'cherry.js',
+      'banana.md',
+      'apple.ts',
+    ])
   })
 
   /**
@@ -235,7 +283,13 @@ describe('DirectoryTree sorting', () => {
     setSortOrder({ key: 'name', direction: 'desc' })
 
     await waitFor(() => expect(renderedNames()[0]).toBe('zeta'))
-    expect(renderedNames()).toEqual(['zeta', 'alpha', 'cherry.js', 'banana.md', 'apple.ts'])
+    expect(renderedNames()).toEqual([
+      'zeta',
+      'alpha',
+      'cherry.js',
+      'banana.md',
+      'apple.ts',
+    ])
     expect(listDirectory.mock.calls.length).toBe(callsAfterLoad)
     // Reordering moves the existing rows; it must not dispose and rebuild them,
     // which would tear an open three-dot menu out of the DOM.
@@ -253,7 +307,14 @@ describe('DirectoryTree sorting', () => {
     sessionStorageSet(`${PREFIX_DIRECTORY_TREE}w1:${root}:files`, ({
       expandedPaths: { [root]: true },
       childrenCache: {
-        [root]: [{ path: `${root}/stale.txt`, displayName: 'stale.txt', isDir: false, hidden: false }],
+        [root]: [
+          {
+            path: `${root}/stale.txt`,
+            displayName: 'stale.txt',
+            isDir: false,
+            hidden: false,
+          },
+        ],
       },
       truncatedDirs: {},
     }))
@@ -274,7 +335,16 @@ describe('DirectoryTree sorting', () => {
       v: DIRECTORY_TREE_STATE_VERSION + 1,
       expandedPaths: { [root]: true },
       childrenCache: {
-        [root]: [{ path: `${root}/future.txt`, displayName: 'future.txt', isDir: false, hidden: false, size: 1, modTime: '2026-01-01T00:00:00Z' }],
+        [root]: [
+          {
+            path: `${root}/future.txt`,
+            displayName: 'future.txt',
+            isDir: false,
+            hidden: false,
+            size: 1,
+            modTime: '2026-01-01T00:00:00Z',
+          },
+        ],
       },
       truncatedDirs: {},
     }))
@@ -290,7 +360,16 @@ describe('DirectoryTree sorting', () => {
       v: DIRECTORY_TREE_STATE_VERSION,
       expandedPaths: { [root]: true },
       childrenCache: {
-        [root]: [{ path: `${root}/kept.txt`, displayName: 'kept.txt', isDir: false, hidden: false, size: 5, modTime: '2026-01-01T00:00:00Z' }],
+        [root]: [
+          {
+            path: `${root}/kept.txt`,
+            displayName: 'kept.txt',
+            isDir: false,
+            hidden: false,
+            size: 5,
+            modTime: '2026-01-01T00:00:00Z',
+          },
+        ],
       },
       truncatedDirs: {},
     }))
@@ -310,7 +389,16 @@ describe('DirectoryTree sorting', () => {
       v: DIRECTORY_TREE_STATE_VERSION,
       expandedPaths: { [root]: true },
       childrenCache: {
-        [root]: [{ path: `${root}/kept.txt`, displayName: 'kept.txt', isDir: false, hidden: false, size: 5, modTime: '2026-01-01T00:00:00Z' }],
+        [root]: [
+          {
+            path: `${root}/kept.txt`,
+            displayName: 'kept.txt',
+            isDir: false,
+            hidden: false,
+            size: 5,
+            modTime: '2026-01-01T00:00:00Z',
+          },
+        ],
         [`${root}/bad`]: 'not an array',
       },
       truncatedDirs: {},
@@ -386,8 +474,12 @@ describe('DirectoryTree root row info', () => {
   }
 
   it('stats the root once and shows its modified time', async () => {
-    listDirectory.mockResolvedValue(oneListing([entry(root, 'a.txt')]))
-    statFile.mockResolvedValue({ info: { modTime: '2026-04-01T09:00:00Z' } })
+    listDirectory.mockResolvedValue(oneListing([
+      entry(root, 'a.txt'),
+    ]))
+    statFile.mockResolvedValue({
+      info: { modTime: '2026-04-01T09:00:00Z' },
+    })
 
     render(() => (
       <DirectoryTree workerId="w1" gitStatusStore={gitStatusStore} showFiles rootPath={root} selectedPath="" onSelect={() => {}} />
@@ -406,8 +498,12 @@ describe('DirectoryTree root row info', () => {
   })
 
   it('waits for enabled before stat-ing, then stats once it flips', async () => {
-    listDirectory.mockResolvedValue(oneListing([entry(root, 'a.txt')]))
-    statFile.mockResolvedValue({ info: { modTime: '2026-04-01T09:00:00Z' } })
+    listDirectory.mockResolvedValue(oneListing([
+      entry(root, 'a.txt'),
+    ]))
+    statFile.mockResolvedValue({
+      info: { modTime: '2026-04-01T09:00:00Z' },
+    })
     const [enabled, setEnabled] = createSignal(false)
 
     render(() => (
@@ -426,8 +522,12 @@ describe('DirectoryTree root row info', () => {
    * to a change of worker or root.
    */
   it('keeps the root modified time on screen across a refresh', async () => {
-    listDirectory.mockResolvedValue(oneListing([entry(root, 'a.txt')]))
-    statFile.mockResolvedValueOnce({ info: { modTime: '2026-04-01T09:00:00Z' } })
+    listDirectory.mockResolvedValue(oneListing([
+      entry(root, 'a.txt'),
+    ]))
+    statFile.mockResolvedValueOnce({
+      info: { modTime: '2026-04-01T09:00:00Z' },
+    })
 
     let handle!: DirectoryTreeHandle
     render(() => (
@@ -453,7 +553,9 @@ describe('DirectoryTree root row info', () => {
   })
 
   it('omits the block when the root cannot be stat-ed', async () => {
-    listDirectory.mockResolvedValue(oneListing([entry(root, 'a.txt')]))
+    listDirectory.mockResolvedValue(oneListing([
+      entry(root, 'a.txt'),
+    ]))
     statFile.mockRejectedValue(new Error('permission denied'))
 
     render(() => (
@@ -495,8 +597,12 @@ describe('DirectoryTree filtering', () => {
         rootPath={root}
         selectedPath=""
         onSelect={() => {}}
-        {...(props.showHiddenFiles !== undefined ? { showHiddenFiles: props.showHiddenFiles } : {})}
-        {...(props.isVisible !== undefined ? { isVisible: props.isVisible } : {})}
+        {...(props.showHiddenFiles !== undefined
+          ? { showHiddenFiles: props.showHiddenFiles }
+          : {})}
+        {...(props.isVisible !== undefined
+          ? { isVisible: props.isVisible }
+          : {})}
       />
     ))
   }
@@ -516,7 +622,9 @@ describe('DirectoryTree filtering', () => {
   })
 
   it('renders only the paths isVisible accepts', async () => {
-    renderFiltered({ isVisible: path => path.endsWith('other.ts') })
+    renderFiltered({
+      isVisible: path => path.endsWith('other.ts'),
+    })
     await waitFor(() => expect(rowFor('other.ts')).toBeTruthy())
     const names = renderedNames()
     expect(names).not.toContain('visible.ts')
@@ -543,7 +651,9 @@ describe('DirectoryTree filtering', () => {
   })
 
   it('renders nothing when isVisible rejects every entry', async () => {
-    renderFiltered({ isVisible: () => false })
+    renderFiltered({
+      isVisible: () => false,
+    })
     await waitFor(() => expect(listDirectory).toHaveBeenCalled())
     expect(renderedNames()).not.toContain('visible.ts')
   })
@@ -564,7 +674,9 @@ function mockChain(dirs: Record<string, ReturnType<typeof entry>[]>, separator =
       chain.push(cur)
       const rest = req.path.slice(req.fromRoot.length).split(/[\\/]+/).filter(Boolean)
       for (const part of rest) {
-        cur = cur.endsWith(separator) ? `${cur}${part}` : `${cur}${separator}${part}`
+        cur = cur.endsWith(separator)
+          ? `${cur}${part}`
+          : `${cur}${separator}${part}`
         chain.push(cur)
       }
     }
@@ -575,7 +687,16 @@ function mockChain(dirs: Record<string, ReturnType<typeof entry>[]>, separator =
       listings: chain
         .flatMap((path) => {
           const entries = dirs[path]
-          return entries !== undefined ? [{ path, entries, truncated: false, totalEntries: entries.length }] : []
+          return entries !== undefined
+            ? [
+                {
+                  path,
+                  entries,
+                  truncated: false,
+                  totalEntries: entries.length,
+                },
+              ]
+            : []
         }),
     }
   })
@@ -584,7 +705,9 @@ function mockChain(dirs: Record<string, ReturnType<typeof entry>[]>, separator =
 function dirEntry(parent: string, name: string, separator = '/') {
   return {
     name,
-    path: parent.endsWith(separator) ? `${parent}${name}` : `${parent}${separator}${name}`,
+    path: parent.endsWith(separator)
+      ? `${parent}${name}`
+      : `${parent}${separator}${name}`,
     isDir: true,
     hidden: false,
     size: 0n,
@@ -609,9 +732,16 @@ describe('DirectoryTree reveal', () => {
 
   it('expands toward revealPath when nothing is selected', async () => {
     mockChain({
-      '/': [dirEntry('/', 'home'), dirEntry('/', 'opt')],
-      '/home': [dirEntry('/home', 'alice')],
-      '/home/alice': [dirEntry('/home/alice', 'proj')],
+      '/': [
+        dirEntry('/', 'home'),
+        dirEntry('/', 'opt'),
+      ],
+      '/home': [
+        dirEntry('/home', 'alice'),
+      ],
+      '/home/alice': [
+        dirEntry('/home/alice', 'proj'),
+      ],
     })
 
     renderTree({ rootPath: root, revealPath: '/home/alice' })
@@ -626,8 +756,12 @@ describe('DirectoryTree reveal', () => {
   // dialog's Create button with a directory the user never chose.
   it('does not mark the revealed node selected', async () => {
     mockChain({
-      '/': [dirEntry('/', 'home')],
-      '/home': [dirEntry('/home', 'alice')],
+      '/': [
+        dirEntry('/', 'home'),
+      ],
+      '/home': [
+        dirEntry('/home', 'alice'),
+      ],
       '/home/alice': [],
     })
 
@@ -640,9 +774,15 @@ describe('DirectoryTree reveal', () => {
 
   it('ignores revealPath once a path is selected', async () => {
     mockChain({
-      '/': [dirEntry('/', 'home')],
-      '/home': [dirEntry('/home', 'alice')],
-      '/home/alice': [dirEntry('/home/alice', 'proj')],
+      '/': [
+        dirEntry('/', 'home'),
+      ],
+      '/home': [
+        dirEntry('/home', 'alice'),
+      ],
+      '/home/alice': [
+        dirEntry('/home/alice', 'proj'),
+      ],
     })
 
     renderTree({ rootPath: root, selectedPath: '/home', revealPath: '/home/alice' })
@@ -656,7 +796,11 @@ describe('DirectoryTree reveal', () => {
   })
 
   it('ignores an empty revealPath', async () => {
-    mockChain({ '/': [dirEntry('/', 'home')] })
+    mockChain({
+      '/': [
+        dirEntry('/', 'home'),
+      ],
+    })
 
     renderTree({ rootPath: root, revealPath: '' })
 
@@ -670,9 +814,15 @@ describe('DirectoryTree reveal', () => {
 describe('DirectoryTree chain loading', () => {
   it('fetches the whole root-to-reveal chain in one request', async () => {
     mockChain({
-      '/': [dirEntry('/', 'home')],
-      '/home': [dirEntry('/home', 'alice')],
-      '/home/alice': [dirEntry('/home/alice', 'proj')],
+      '/': [
+        dirEntry('/', 'home'),
+      ],
+      '/home': [
+        dirEntry('/home', 'alice'),
+      ],
+      '/home/alice': [
+        dirEntry('/home/alice', 'proj'),
+      ],
       '/home/alice/proj': [],
     })
 
@@ -685,8 +835,12 @@ describe('DirectoryTree chain loading', () => {
 
   it('does not re-request when every chain directory is cached', async () => {
     mockChain({
-      '/': [dirEntry('/', 'home')],
-      '/home': [dirEntry('/home', 'alice')],
+      '/': [
+        dirEntry('/', 'home'),
+      ],
+      '/home': [
+        dirEntry('/home', 'alice'),
+      ],
       '/home/alice': [],
     })
 
@@ -704,10 +858,17 @@ describe('DirectoryTree chain loading', () => {
 
   it('re-reveals in one round trip when the target moves to another branch', async () => {
     mockChain({
-      '/': [dirEntry('/', 'home'), dirEntry('/', 'opt')],
-      '/home': [dirEntry('/home', 'alice')],
+      '/': [
+        dirEntry('/', 'home'),
+        dirEntry('/', 'opt'),
+      ],
+      '/home': [
+        dirEntry('/home', 'alice'),
+      ],
       '/home/alice': [],
-      '/opt': [dirEntry('/opt', 'tools')],
+      '/opt': [
+        dirEntry('/opt', 'tools'),
+      ],
       '/opt/tools': [],
     })
 
@@ -734,15 +895,28 @@ describe('DirectoryTree chain loading', () => {
   // per-node cascade still walks the user there one level at a time.
   it('keeps the tree on screen when a chain request fails', async () => {
     const dirs: Record<string, ReturnType<typeof entry>[]> = {
-      '/': [dirEntry('/', 'home')],
-      '/home': [dirEntry('/home', 'alice')],
+      '/': [
+        dirEntry('/', 'home'),
+      ],
+      '/home': [
+        dirEntry('/home', 'alice'),
+      ],
       '/home/alice': [],
     }
     listDirectory.mockImplementation(async (_w: string, req: { path: string, fromRoot?: string }) => {
       if (req.fromRoot)
         throw new Error('chain boom')
       const entries = dirs[req.path] ?? []
-      return { listings: [{ path: req.path, entries, truncated: false, totalEntries: entries.length }] }
+      return {
+        listings: [
+          {
+            path: req.path,
+            entries,
+            truncated: false,
+            totalEntries: entries.length,
+          },
+        ],
+      }
     })
 
     const [selected, setSelected] = createSignal('')
@@ -765,8 +939,12 @@ describe('DirectoryTree chain loading', () => {
 
   it('does not blank the tree to Loading when the selection changes', async () => {
     mockChain({
-      '/': [dirEntry('/', 'home')],
-      '/home': [dirEntry('/home', 'alice')],
+      '/': [
+        dirEntry('/', 'home'),
+      ],
+      '/home': [
+        dirEntry('/home', 'alice'),
+      ],
       '/home/alice': [],
     })
 
@@ -799,12 +977,16 @@ describe('DirectoryTree chain loading', () => {
    */
   it('re-keys the first listing when the worker canonicalizes the root', async () => {
     listDirectory.mockResolvedValue({
-      listings: [{
-        path: '/private/tmp/ws',
-        entries: [dirEntry('/private/tmp/ws', 'src')],
-        truncated: false,
-        totalEntries: 1,
-      }],
+      listings: [
+        {
+          path: '/private/tmp/ws',
+          entries: [
+            dirEntry('/private/tmp/ws', 'src'),
+          ],
+          truncated: false,
+          totalEntries: 1,
+        },
+      ],
     })
 
     renderTree({ rootPath: '/tmp/ws' })
@@ -830,8 +1012,20 @@ describe('DirectoryTree chain loading', () => {
   it('does not re-fetch in a loop when the worker answers under paths the chain never listed', async () => {
     listDirectory.mockResolvedValue({
       listings: [
-        { path: '/private/tmp/ws', entries: [dirEntry('/private/tmp/ws', 'src')], truncated: false, totalEntries: 1 },
-        { path: '/private/tmp/ws/src', entries: [], truncated: false, totalEntries: 0 },
+        {
+          path: '/private/tmp/ws',
+          entries: [
+            dirEntry('/private/tmp/ws', 'src'),
+          ],
+          truncated: false,
+          totalEntries: 1,
+        },
+        {
+          path: '/private/tmp/ws/src',
+          entries: [],
+          truncated: false,
+          totalEntries: 0,
+        },
       ],
     })
 
@@ -854,7 +1048,11 @@ describe('DirectoryTree chain loading', () => {
    * sit blank for the rest of the session.
    */
   it('re-fetches after a cache reset the chain key cannot see', async () => {
-    mockChain({ '/': [dirEntry('/', 'home')] })
+    mockChain({
+      '/': [
+        dirEntry('/', 'home'),
+      ],
+    })
 
     const [showFiles, setShowFiles] = createSignal(false)
     render(() => (
@@ -878,10 +1076,19 @@ describe('DirectoryTree chain loading', () => {
 
   it('drops a file target from the chain', async () => {
     mockChain({
-      '/': [dirEntry('/', 'home')],
+      '/': [
+        dirEntry('/', 'home'),
+      ],
       '/home': [
         dirEntry('/home', 'alice'),
-        { name: 'notes.txt', path: '/home/notes.txt', isDir: false, hidden: false, size: 4n, modTime: '2026-01-01T00:00:00Z' },
+        {
+          name: 'notes.txt',
+          path: '/home/notes.txt',
+          isDir: false,
+          hidden: false,
+          size: 4n,
+          modTime: '2026-01-01T00:00:00Z',
+        },
       ],
     })
 
@@ -923,16 +1130,31 @@ describe('DirectoryTree request de-duplication', () => {
     listDirectory.mockImplementation(async (_w: string, req: { path: string, fromRoot?: string }) => {
       asked.push(req.path)
       const dirs: Record<string, ReturnType<typeof entry>[]> = {
-        '/': [dirEntry('/', 'home')],
-        '/home': [dirEntry('/home', 'alice')],
+        '/': [
+          dirEntry('/', 'home'),
+        ],
+        '/home': [
+          dirEntry('/home', 'alice'),
+        ],
         '/home/alice': [],
       }
-      const chain = req.fromRoot ? ['/', '/home', '/home/alice'] : [req.path]
+      const chain = req.fromRoot
+        ? ['/', '/home', '/home/alice']
+        : [req.path]
       return {
         listings: chain
           .flatMap((path) => {
             const entries = dirs[path]
-            return entries !== undefined ? [{ path, entries, truncated: false, totalEntries: entries.length }] : []
+            return entries !== undefined
+              ? [
+                  {
+                    path,
+                    entries,
+                    truncated: false,
+                    totalEntries: entries.length,
+                  },
+                ]
+              : []
           }),
       }
     })
@@ -966,18 +1188,35 @@ describe('DirectoryTree request de-duplication', () => {
    */
   it('lets the cascade fetch a tail the worker truncated away', async () => {
     const dirs: Record<string, ReturnType<typeof entry>[]> = {
-      '/': [dirEntry('/', 'home')],
-      '/home': [dirEntry('/home', 'alice')],
-      '/home/alice': [dirEntry('/home/alice', 'proj')],
+      '/': [
+        dirEntry('/', 'home'),
+      ],
+      '/home': [
+        dirEntry('/home', 'alice'),
+      ],
+      '/home/alice': [
+        dirEntry('/home/alice', 'proj'),
+      ],
     }
     listDirectory.mockImplementation(async (_w: string, req: { path: string, fromRoot?: string }) => {
       // The chain answer stops two levels short of the target.
-      const chain = req.fromRoot ? ['/', '/home'] : [req.path]
+      const chain = req.fromRoot
+        ? ['/', '/home']
+        : [req.path]
       return {
         listings: chain
           .flatMap((path) => {
             const entries = dirs[path]
-            return entries !== undefined ? [{ path, entries, truncated: false, totalEntries: entries.length }] : []
+            return entries !== undefined
+              ? [
+                  {
+                    path,
+                    entries,
+                    truncated: false,
+                    totalEntries: entries.length,
+                  },
+                ]
+              : []
           }),
       }
     })
@@ -1000,7 +1239,11 @@ describe('DirectoryTree request de-duplication', () => {
 
 describe('DirectoryTree at a filesystem root', () => {
   it('labels a posix root row with the root itself', async () => {
-    mockChain({ '/': [dirEntry('/', 'home')] })
+    mockChain({
+      '/': [
+        dirEntry('/', 'home'),
+      ],
+    })
 
     renderTree({ rootPath: '/', flavor: 'posix' })
 
@@ -1012,7 +1255,11 @@ describe('DirectoryTree at a filesystem root', () => {
   // `basename('C:\\', 'win32')` is 'C:' -- the drive WITHOUT the separator
   // that makes it a root, and not what the drive selector beside it reads.
   it('labels a windows drive root with the trailing separator', async () => {
-    mockChain({ 'C:\\': [dirEntry('C:\\', 'Users', '\\')] }, '\\')
+    mockChain({
+      'C:\\': [
+        dirEntry('C:\\', 'Users', '\\'),
+      ],
+    }, '\\')
 
     renderTree({ rootPath: 'C:\\', flavor: 'win32' })
 
@@ -1023,9 +1270,15 @@ describe('DirectoryTree at a filesystem root', () => {
 
   it('expands toward a windows revealPath', async () => {
     mockChain({
-      'C:\\': [dirEntry('C:\\', 'Users', '\\')],
-      'C:\\Users': [dirEntry('C:\\Users', 'alice', '\\')],
-      'C:\\Users\\alice': [dirEntry('C:\\Users\\alice', 'proj', '\\')],
+      'C:\\': [
+        dirEntry('C:\\', 'Users', '\\'),
+      ],
+      'C:\\Users': [
+        dirEntry('C:\\Users', 'alice', '\\'),
+      ],
+      'C:\\Users\\alice': [
+        dirEntry('C:\\Users\\alice', 'proj', '\\'),
+      ],
     }, '\\')
 
     renderTree({ rootPath: 'C:\\', flavor: 'win32', revealPath: 'C:\\Users\\alice' })
@@ -1036,7 +1289,11 @@ describe('DirectoryTree at a filesystem root', () => {
   })
 
   it('keys sessionStorage on the worker as well as the root path', async () => {
-    mockChain({ 'C:\\': [dirEntry('C:\\', 'Users', '\\')] }, '\\')
+    mockChain({
+      'C:\\': [
+        dirEntry('C:\\', 'Users', '\\'),
+      ],
+    }, '\\')
 
     renderTree({ rootPath: 'C:\\', flavor: 'win32' })
 
@@ -1050,12 +1307,20 @@ describe('DirectoryTree at a filesystem root', () => {
    * first one's listing and then skips its own fetch.
    */
   it('does not serve one worker cached listing to another', async () => {
-    mockChain({ '/': [dirEntry('/', 'from-w1')] })
+    mockChain({
+      '/': [
+        dirEntry('/', 'from-w1'),
+      ],
+    })
     const { unmount } = renderTree({ rootPath: '/' })
     await waitFor(() => expect(rowFor('from-w1')).toBeTruthy())
     unmount()
 
-    mockChain({ '/': [dirEntry('/', 'from-w2')] })
+    mockChain({
+      '/': [
+        dirEntry('/', 'from-w2'),
+      ],
+    })
     render(() => (
       <DirectoryTree
         workerId="w2"
@@ -1089,19 +1354,51 @@ describe('DirectoryTree canonicalized chain', () => {
         // listing lands on a key the tree holds.
         return {
           listings: [
-            { path: '/', entries: [dirEntry('/', 'tmp')], truncated: false, totalEntries: 1 },
-            { path: '/private', entries: [dirEntry('/private', 'tmp')], truncated: false, totalEntries: 1 },
-            { path: '/private/tmp', entries: [dirEntry('/private/tmp', 'ws')], truncated: false, totalEntries: 1 },
+            {
+              path: '/',
+              entries: [
+                dirEntry('/', 'tmp'),
+              ],
+              truncated: false,
+              totalEntries: 1,
+            },
+            {
+              path: '/private',
+              entries: [
+                dirEntry('/private', 'tmp'),
+              ],
+              truncated: false,
+              totalEntries: 1,
+            },
+            {
+              path: '/private/tmp',
+              entries: [
+                dirEntry('/private/tmp', 'ws'),
+              ],
+              truncated: false,
+              totalEntries: 1,
+            },
           ],
         }
       }
       // The per-node cascade asks for the path it holds, and gets it.
       const perPath: Record<string, ReturnType<typeof dirEntry>[]> = {
-        '/tmp': [dirEntry('/tmp', 'ws')],
-        '/tmp/ws': [dirEntry('/tmp/ws', 'src')],
+        '/tmp': [
+          dirEntry('/tmp', 'ws'),
+        ],
+        '/tmp/ws': [
+          dirEntry('/tmp/ws', 'src'),
+        ],
       }
       return {
-        listings: [{ path: req.path, entries: perPath[req.path] ?? [], truncated: false, totalEntries: 0 }],
+        listings: [
+          {
+            path: req.path,
+            entries: perPath[req.path] ?? [],
+            truncated: false,
+            totalEntries: 0,
+          },
+        ],
       }
     })
 
@@ -1126,14 +1423,37 @@ describe('DirectoryTree refresh', () => {
   it('drops a refresh response that lands after the tree switched worker', async () => {
     let releaseW1: ((v: unknown) => void) | undefined
     listDirectory.mockImplementation(async (workerId: string) => {
-      if (workerId === 'w2')
-        return { listings: [{ path: '/', entries: [dirEntry('/', 'from-w2')], truncated: false, totalEntries: 1 }] }
+      if (workerId === 'w2') {
+        return {
+          listings: [
+            {
+              path: '/',
+              entries: [
+                dirEntry('/', 'from-w2'),
+              ],
+              truncated: false,
+              totalEntries: 1,
+            },
+          ],
+        }
+      }
       if (releaseW1) {
         await new Promise((resolve) => {
           releaseW1 = resolve
         })
       }
-      return { listings: [{ path: '/', entries: [dirEntry('/', 'from-w1')], truncated: false, totalEntries: 1 }] }
+      return {
+        listings: [
+          {
+            path: '/',
+            entries: [
+              dirEntry('/', 'from-w1'),
+            ],
+            truncated: false,
+            totalEntries: 1,
+          },
+        ],
+      }
     })
 
     const [workerId, setWorkerId] = createSignal('w1')
@@ -1181,8 +1501,20 @@ describe('DirectoryTree unreadable directories', () => {
    */
   it('shows why a directory would not open', async () => {
     listDirectory.mockImplementation(async (_workerId: string, req: { path: string }) => {
-      if (req.path === '/')
-        return { listings: [{ path: '/', entries: [dirEntry('/', 'blocked')], truncated: false, totalEntries: 1 }] }
+      if (req.path === '/') {
+        return {
+          listings: [
+            {
+              path: '/',
+              entries: [
+                dirEntry('/', 'blocked'),
+              ],
+              truncated: false,
+              totalEntries: 1,
+            },
+          ],
+        }
+      }
       throw new Error('permission denied')
     })
 
@@ -1200,7 +1532,16 @@ describe('DirectoryTree unreadable directories', () => {
     listDirectory.mockImplementation(async (_workerId: string, req: { path: string, fromRoot?: string }) => {
       if (req.fromRoot) {
         return {
-          listings: [{ path: '/', entries: [dirEntry('/', 'blocked')], truncated: false, totalEntries: 1 }],
+          listings: [
+            {
+              path: '/',
+              entries: [
+                dirEntry('/', 'blocked'),
+              ],
+              truncated: false,
+              totalEntries: 1,
+            },
+          ],
           unreadable: { path: '/blocked', reason: 'permission denied' },
         }
       }
@@ -1221,11 +1562,34 @@ describe('DirectoryTree unreadable directories', () => {
   it('clears the reason on refresh, and the next click retries', async () => {
     let fail = true
     listDirectory.mockImplementation(async (_workerId: string, req: { path: string }) => {
-      if (req.path === '/')
-        return { listings: [{ path: '/', entries: [dirEntry('/', 'blocked')], truncated: false, totalEntries: 1 }] }
+      if (req.path === '/') {
+        return {
+          listings: [
+            {
+              path: '/',
+              entries: [
+                dirEntry('/', 'blocked'),
+              ],
+              truncated: false,
+              totalEntries: 1,
+            },
+          ],
+        }
+      }
       if (fail)
         throw new Error('permission denied')
-      return { listings: [{ path: '/blocked', entries: [dirEntry('/blocked', 'inner')], truncated: false, totalEntries: 1 }] }
+      return {
+        listings: [
+          {
+            path: '/blocked',
+            entries: [
+              dirEntry('/blocked', 'inner'),
+            ],
+            truncated: false,
+            totalEntries: 1,
+          },
+        ],
+      }
     })
 
     let handle: DirectoryTreeHandle | undefined
@@ -1252,13 +1616,36 @@ describe('DirectoryTree unreadable directories', () => {
   it('clears the reason when the directory lists on a later click', async () => {
     let fail = true
     listDirectory.mockImplementation(async (_workerId: string, req: { path: string }) => {
-      if (req.path === '/')
-        return { listings: [{ path: '/', entries: [dirEntry('/', 'blocked')], truncated: false, totalEntries: 1 }] }
+      if (req.path === '/') {
+        return {
+          listings: [
+            {
+              path: '/',
+              entries: [
+                dirEntry('/', 'blocked'),
+              ],
+              truncated: false,
+              totalEntries: 1,
+            },
+          ],
+        }
+      }
       if (fail) {
         fail = false
         throw new Error('permission denied')
       }
-      return { listings: [{ path: '/blocked', entries: [dirEntry('/blocked', 'inner')], truncated: false, totalEntries: 1 }] }
+      return {
+        listings: [
+          {
+            path: '/blocked',
+            entries: [
+              dirEntry('/blocked', 'inner'),
+            ],
+            truncated: false,
+            totalEntries: 1,
+          },
+        ],
+      }
     })
 
     renderTree({ rootPath: '/' })
@@ -1284,8 +1671,20 @@ describe('DirectoryTree failure handling', () => {
    */
   it('does not expand or re-request a directory whose listing failed', async () => {
     listDirectory.mockImplementation(async (_workerId: string, req: { path: string }) => {
-      if (req.path === '/')
-        return { listings: [{ path: '/', entries: [dirEntry('/', 'blocked')], truncated: false, totalEntries: 1 }] }
+      if (req.path === '/') {
+        return {
+          listings: [
+            {
+              path: '/',
+              entries: [
+                dirEntry('/', 'blocked'),
+              ],
+              truncated: false,
+              totalEntries: 1,
+            },
+          ],
+        }
+      }
       throw new Error('permission denied')
     })
 
@@ -1309,8 +1708,20 @@ describe('DirectoryTree failure handling', () => {
   // dialog.
   it('re-requests a failed directory after a refresh', async () => {
     listDirectory.mockImplementation(async (_workerId: string, req: { path: string }) => {
-      if (req.path === '/')
-        return { listings: [{ path: '/', entries: [dirEntry('/', 'blocked')], truncated: false, totalEntries: 1 }] }
+      if (req.path === '/') {
+        return {
+          listings: [
+            {
+              path: '/',
+              entries: [
+                dirEntry('/', 'blocked'),
+              ],
+              truncated: false,
+              totalEntries: 1,
+            },
+          ],
+        }
+      }
       throw new Error('permission denied')
     })
 
@@ -1339,9 +1750,15 @@ describe('DirectoryTree win32 separators', () => {
    */
   it('reveals a target typed with forward slashes on a win32 tree', async () => {
     mockChain({
-      'C:\\': [dirEntry('C:\\', 'Users', '\\')],
-      'C:\\Users': [dirEntry('C:\\Users', 'alice', '\\')],
-      'C:\\Users\\alice': [dirEntry('C:\\Users\\alice', 'proj', '\\')],
+      'C:\\': [
+        dirEntry('C:\\', 'Users', '\\'),
+      ],
+      'C:\\Users': [
+        dirEntry('C:\\Users', 'alice', '\\'),
+      ],
+      'C:\\Users\\alice': [
+        dirEntry('C:\\Users\\alice', 'proj', '\\'),
+      ],
     }, '\\')
 
     renderTree({ rootPath: 'C:\\', flavor: 'win32', revealPath: 'C:/Users/alice' })
@@ -1359,9 +1776,15 @@ describe('DirectoryTree win32 separators', () => {
   // never seen.
   it('matches a target whose case differs from the worker listing', async () => {
     mockChain({
-      'C:\\': [dirEntry('C:\\', 'Users', '\\')],
-      'C:\\Users': [dirEntry('C:\\Users', 'Alice', '\\')],
-      'C:\\Users\\Alice': [dirEntry('C:\\Users\\Alice', 'proj', '\\')],
+      'C:\\': [
+        dirEntry('C:\\', 'Users', '\\'),
+      ],
+      'C:\\Users': [
+        dirEntry('C:\\Users', 'Alice', '\\'),
+      ],
+      'C:\\Users\\Alice': [
+        dirEntry('C:\\Users\\Alice', 'proj', '\\'),
+      ],
     }, '\\')
 
     renderTree({ rootPath: 'C:\\', flavor: 'win32', revealPath: 'c:\\users\\alice' })
@@ -1391,14 +1814,33 @@ describe('DirectoryTree expandPath', () => {
       if (req.fromRoot) {
         return {
           listings: [
-            { path: root, entries: [dirEntry(root, 'home')], truncated: false, totalEntries: 1 },
-            { path: `${root}/home`, entries: [dirEntry(`${root}/home`, 'alice')], truncated: false, totalEntries: 1 },
+            {
+              path: root,
+              entries: [
+                dirEntry(root, 'home'),
+              ],
+              truncated: false,
+              totalEntries: 1,
+            },
+            {
+              path: `${root}/home`,
+              entries: [
+                dirEntry(`${root}/home`, 'alice'),
+              ],
+              truncated: false,
+              totalEntries: 1,
+            },
           ],
         }
       }
-      if (req.path === `${root}/home`)
-        return oneListing([dirEntry(`${root}/home`, 'alice')])
-      return oneListing([dirEntry(root, 'home')])
+      if (req.path === `${root}/home`) {
+        return oneListing([
+          dirEntry(`${root}/home`, 'alice'),
+        ])
+      }
+      return oneListing([
+        dirEntry(root, 'home'),
+      ])
     })
   }
 
@@ -1431,9 +1873,14 @@ describe('DirectoryTree expandPath', () => {
    */
   it('survives a root change made in the same tick', async () => {
     listDirectory.mockImplementation(async (_workerId: string, req: { path: string }) => {
-      if (req.path === 'C:\\')
-        return oneListing([dirEntry('C:\\', 'Users', '\\')])
-      return oneListing([dirEntry('D:\\', 'work', '\\')])
+      if (req.path === 'C:\\') {
+        return oneListing([
+          dirEntry('C:\\', 'Users', '\\'),
+        ])
+      }
+      return oneListing([
+        dirEntry('D:\\', 'work', '\\'),
+      ])
     })
     const [treeRoot, setTreeRoot] = createSignal('D:\\')
     let handle!: DirectoryTreeHandle
@@ -1493,11 +1940,17 @@ describe('DirectoryTree keyboard navigation', () => {
    */
   function mockTree() {
     listDirectory.mockImplementation(async (_workerId: string, req: { path: string }) => {
-      if (req.path === `${root}/alpha`)
-        return oneListing([entry(`${root}/alpha`, 'inner.txt')])
+      if (req.path === `${root}/alpha`) {
+        return oneListing([
+          entry(`${root}/alpha`, 'inner.txt'),
+        ])
+      }
       if (req.path === `${root}/beta`)
         return oneListing([])
-      return oneListing([dirEntry(root, 'alpha'), dirEntry(root, 'beta')])
+      return oneListing([
+        dirEntry(root, 'alpha'),
+        dirEntry(root, 'beta'),
+      ])
     })
   }
 

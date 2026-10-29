@@ -39,7 +39,14 @@ describe('anyErrorAssertions', () => {
   })
 })`,
     })
-    expect(findings).toEqual([{ path: '/frontend/parse.test.ts', line: 3, matcher: 'toThrow()', site: 'parse > rejects an empty input' }])
+    expect(findings).toEqual([
+      {
+        path: '/frontend/parse.test.ts',
+        line: 3,
+        matcher: 'toThrow()',
+        site: 'parse > rejects an empty input',
+      },
+    ])
   })
 
   it('finds each throw matcher whose argument any error matches, on a function and on a rejection', () => {
@@ -179,14 +186,24 @@ expect(run).toThrow()`,
 })
 
 describe('frontend any-error assertions', () => {
-  const files = collectFiles(frontendRoot, { matches: name => SCRIPT_SOURCE.test(name) })
-    .map(path => ({ path, source: readFileSync(path, 'utf-8') }))
+  const files = collectFiles(frontendRoot, {
+    matches: name => SCRIPT_SOURCE.test(name),
+  })
+    .map(path => ({
+      path,
+      source: readFileSync(path, 'utf-8'),
+    }))
   const findings = anyErrorAssertions(files)
   const key = (finding: { path: string, site: string }) => siteKey(posixRelative(frontendRoot, finding.path), finding.site)
 
   it('scans each tree that holds a test', () => {
     const scanned = files.map(file => posixRelative(frontendRoot, file.path))
-    for (const tree of ['src/', 'tests/e2e/', 'scripts/', 'eslint/'])
+    for (const tree of [
+      'src/',
+      'tests/e2e/',
+      'scripts/',
+      'eslint/',
+    ])
       expect(scanned.filter(path => path.startsWith(tree)).length, tree).toBeGreaterThan(0)
     expect(scanned).toContain('playwright.config.test.ts')
     expect(files.length).toBeGreaterThan(1000)
@@ -207,6 +224,8 @@ describe('frontend any-error assertions', () => {
 
   it('keeps no accepted assertion that the tree no longer holds', () => {
     const found = new Set(findings.map(key))
-    expect([...ACCEPTED.keys()].filter(entry => !found.has(entry))).toEqual([])
+    expect([
+      ...ACCEPTED.keys(),
+    ].filter(entry => !found.has(entry))).toEqual([])
   })
 })

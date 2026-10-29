@@ -11,7 +11,9 @@ const SUFFIX = 'LeapMux'
 
 /** Set the document title to "${part} - LeapMux", falling back to bare "LeapMux" if part is empty. */
 export function setPageTitle(part: string): void {
-  document.title = part ? `${part} - ${SUFFIX}` : SUFFIX
+  document.title = part
+    ? `${part} - ${SUFFIX}`
+    : SUFFIX
 }
 
 /**
@@ -19,7 +21,9 @@ export function setPageTitle(part: string): void {
  * has no title set (e.g. while loading or for a freshly-created tab).
  */
 export function setWorkspaceTitle(workspaceTitle: string | undefined | null): void {
-  setPageTitle(workspaceTitle && workspaceTitle.length > 0 ? workspaceTitle : 'Untitled')
+  setPageTitle(workspaceTitle && workspaceTitle.length > 0
+    ? workspaceTitle
+    : 'Untitled')
 }
 
 /** Title shown when the user is on the home route without an active workspace. */

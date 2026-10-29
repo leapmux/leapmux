@@ -25,10 +25,18 @@ kimiTest.describe('runs Kimi Code subagents and background tasks', () => {
     await expectNoRegistryRows(page, leapmuxServer)
     const control = createToolOutputControl((await currentNativeAgent(native)).workingDir)
     const rule = 'the notification turn after the background command'
-    await modelScript.rule({ name: rule, when: { user: '<notification' }, respond: { text: 'The background command finished.' } })
+    await modelScript.rule({
+      name: rule,
+      when: { user: '<notification' },
+      respond: { text: 'The background command finished.' },
+    })
     try {
       await modelScript.queue(
-        { toolCalls: [backgroundBashToolCall(AgentProvider.KIMI_CODE, 'bg-shell', control.command)] },
+        {
+          toolCalls: [
+            backgroundBashToolCall(AgentProvider.KIMI_CODE, 'bg-shell', control.command),
+          ],
+        },
         { text: 'I started the command in the background.' },
       )
       await sendMessage(page, modelScript.prompt('Run the command in the background.'))
@@ -46,7 +54,9 @@ kimiTest.describe('runs Kimi Code subagents and background tasks', () => {
       // Kimi Code does not inline a finished task's output in the notification.
       // It links the saved output file, so the marker proof reads that file.
       const body = notification.body as { messages?: readonly { content?: unknown }[] } | undefined
-      const notificationText = (body?.messages ?? []).map(message => typeof message.content === 'string' ? message.content : '').join('\n')
+      const notificationText = (body?.messages ?? []).map(message => typeof message.content === 'string'
+        ? message.content
+        : '').join('\n')
       const outputFile = /<output-file path="(?<path>[^"<]+)" bytes="(?<bytes>\d+)">/.exec(notificationText)
       if (!outputFile?.groups?.path || !outputFile.groups.bytes)
         throw new Error('The native completion notification carries no output-file pointer.')
@@ -57,7 +67,10 @@ kimiTest.describe('runs Kimi Code subagents and background tasks', () => {
       expect(output).toContain(control.secondMarker)
     }
     finally {
-      await finishCleanup([control.releaseFirstOutput(), control.releaseFinalOutput()])
+      await finishCleanup([
+        control.releaseFirstOutput(),
+        control.releaseFinalOutput(),
+      ])
     }
   })
 })

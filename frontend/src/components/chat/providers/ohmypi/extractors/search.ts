@@ -20,7 +20,9 @@ const GREP_LINE = /^([* ])(\d+)[:|](.*)$/
 function underDirectory(directory: string, name: string): string {
   if (name === '' || name === '.')
     return directory
-  return directory ? `${directory}/${name}` : name
+  return directory
+    ? `${directory}/${name}`
+    : name
 }
 
 /**
@@ -49,7 +51,9 @@ function grepMatches(text: string, scopeFile: string): SearchMatch[] {
     if (header?.[1] !== undefined && header[2] !== undefined) {
       const level = header[1].length
       const name = header[2].trimEnd()
-      const parent = level > 1 ? directories[level - 2] ?? '' : ''
+      const parent = level > 1
+        ? directories[level - 2] ?? ''
+        : ''
       // A header closes every directory at its own level and below.
       directories.length = Math.min(directories.length, level - 1)
       if (name.endsWith('/')) {
@@ -69,7 +73,11 @@ function grepMatches(text: string, scopeFile: string): SearchMatch[] {
     const line = GREP_LINE.exec(row)
     if (!filePath || line?.[1] !== '*' || line[2] === undefined)
       continue
-    matches.push({ filePath, lineNumber: Number(line[2]), text: line[3] ?? '' })
+    matches.push({
+      filePath,
+      lineNumber: Number(line[2]),
+      text: line[3] ?? '',
+    })
   }
   return matches
 }
@@ -84,7 +92,9 @@ export function ohMyPiGrepResult(text: string, details: Record<string, unknown>)
   const filenames = stringArray(details.files)
   // A search of one file prints its matches with no header in the plain modes, and
   // `details.files` then states that one file.
-  const lines = grepMatches(text, filenames.length === 1 ? filenames[0] ?? '' : '')
+  const lines = grepMatches(text, filenames.length === 1
+    ? filenames[0] ?? ''
+    : '')
   const matchCount = pickNumber(details, 'matchCount', undefined)
   const numFiles = pickNumber(details, 'fileCount', filenames.length)
   return {
@@ -93,7 +103,9 @@ export function ohMyPiGrepResult(text: string, details: Record<string, unknown>)
     lines,
     numFiles,
     numLines: lines.length,
-    ...(matchCount !== undefined ? { matchCount } : {}),
+    ...(matchCount !== undefined
+      ? { matchCount }
+      : {}),
     truncated: details.truncated === true,
     fallbackContent: text,
     empty: matchCount === 0 || (matchCount === undefined && numFiles === 0 && lines.length === 0),
@@ -122,7 +134,9 @@ export function ohMyPiGlobResult(text: string, details: Record<string, unknown>)
  * summary counts them.
  */
 export function ohMyPiTextSearchResult(text: string, details: Record<string, unknown>): SearchResult {
-  const filenames = isObject(details) ? stringArray(details.files) : []
+  const filenames = isObject(details)
+    ? stringArray(details.files)
+    : []
   return {
     filenames,
     content: text,

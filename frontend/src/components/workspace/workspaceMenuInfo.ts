@@ -21,7 +21,10 @@ export function workspaceInfoRows(info: WorkspaceMenuInfo): MenuInfoRow[] {
   const rows: MenuInfoRow[] = [
     { label: 'Workspace:', value: info.title },
     { label: 'Section:', value: info.sectionName },
-    { label: 'Tabs:', value: String(info.tabCount) },
+    {
+      label: 'Tabs:',
+      value: String(info.tabCount),
+    },
   ]
   if (info.repos.length === 1) {
     const only = info.repos[0]

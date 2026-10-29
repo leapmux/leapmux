@@ -61,7 +61,7 @@ ARG TARGETARCH
 # Build the backend binary via task (single source of truth).
 # Build tools run natively because Bun's allocator fails under x64 QEMU on ARM.
 # Only the final Go compilation uses the requested target platform.
-# NITRO_PRESET=node-server avoids bun preset auto-detection which hangs in buildkit.
+# frontend/vite.config.ts sets Nitro's preset, so Nitro detects no preset of its own.
 #
 # Local builds retain these cache mounts. CI supplies the Go module mount through
 # buildkit-cache-dance. The GitHub Actions exporter does not save cache mounts.
@@ -73,7 +73,7 @@ ARG TARGETARCH
 RUN --mount=type=cache,target=/go/pkg/mod \
     --mount=type=cache,target=/root/.cache/go-build \
     --mount=type=cache,target=/root/.bun/install/cache \
-    NITRO_PRESET=node-server VERSION=${VERSION} COMMIT_HASH=${COMMIT_HASH} COMMIT_TIME=${COMMIT_TIME} \
+    VERSION=${VERSION} COMMIT_HASH=${COMMIT_HASH} COMMIT_TIME=${COMMIT_TIME} \
     task build-backend-docker GOOS=${TARGETOS} GOARCH=${TARGETARCH}
 
 # ------------------------------------------------------------------

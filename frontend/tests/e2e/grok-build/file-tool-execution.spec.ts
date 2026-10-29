@@ -16,25 +16,42 @@ grokTest.describe('Grok Build tool execution', () => {
   // requests. The approval mode is LeapMux's own option, because Grok never
   // reports it.
   grokTest('runs an edit with its diff, a read and a to-do list', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, GROK_AGENT, { optionValues: { approvalMode: 'always-approve' } })
+    const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, GROK_AGENT, {
+      optionValues: { approvalMode: 'always-approve' },
+    })
     const note = join(createNativeToolDirectory(workingDir), 'note.txt')
     writeFileSync(note, 'grok-before\n')
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     // The approval mode is LeapMux's own option, which the status bar does not
     // draw, so the menu states it.
     await expectSettingsOptionChosen(page, 'approvalMode-always-approve')
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
 
     const start = await runNativeToolSteps(context, {
       steps: [
-        { toolCalls: [editToolCall(context.provider, 'grok-edit', { path: note, before: 'grok-before', after: 'grok-after' })] },
-        { toolCalls: [readToolCall(context.provider, 'grok-read', note)] },
         {
-          toolCalls: [updateTodosToolCall(context.provider, 'grok-todos', [
-            { step: 'Run the shell command', status: 'completed' },
-            { step: 'Edit the note', status: 'completed' },
-            { step: 'Report the result', status: 'in_progress' },
-          ])],
+          toolCalls: [
+            editToolCall(context.provider, 'grok-edit', { path: note, before: 'grok-before', after: 'grok-after' }),
+          ],
+        },
+        {
+          toolCalls: [
+            readToolCall(context.provider, 'grok-read', note),
+          ],
+        },
+        {
+          toolCalls: [
+            updateTodosToolCall(context.provider, 'grok-todos', [
+              { step: 'Run the shell command', status: 'completed' },
+              { step: 'Edit the note', status: 'completed' },
+              { step: 'Report the result', status: 'in_progress' },
+            ]),
+          ],
         },
       ],
       prompt: 'Run the three scripted tools, then report.',

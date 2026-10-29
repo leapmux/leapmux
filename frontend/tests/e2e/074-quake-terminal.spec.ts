@@ -22,7 +22,10 @@ interface QuakeServer extends ServerInfo, WorkspaceFixture {}
 
 const test = base.extend<{ quakeServer: QuakeServer }>({
   quakeServer: async ({ leapmuxServer }, use, testInfo) => {
-    await withTestWorkspace(leapmuxServer, `Quake-${testInfo.title}`, workspace => use({ ...leapmuxServer, ...workspace }))
+    await withTestWorkspace(leapmuxServer, `Quake-${testInfo.title}`, workspace => use({
+      ...leapmuxServer,
+      ...workspace,
+    }))
   },
 })
 
@@ -68,7 +71,9 @@ async function backgroundPixel(locator: Locator): Promise<number[]> {
       throw new Error('the browser did not supply a 2D canvas context')
     context.fillStyle = getComputedStyle(el).backgroundColor
     context.fillRect(0, 0, 1, 1)
-    return [...context.getImageData(0, 0, 1, 1).data]
+    return [
+      ...context.getImageData(0, 0, 1, 1).data,
+    ]
   })
 }
 
@@ -125,7 +130,12 @@ async function centreBox(page: Page) {
     if (!parent)
       throw new Error('the quake clip has no positioned ancestor to anchor to')
     const rect = parent.getBoundingClientRect()
-    return { x: rect.x, y: rect.y, width: rect.width, height: rect.height }
+    return {
+      x: rect.x,
+      y: rect.y,
+      width: rect.width,
+      height: rect.height,
+    }
   })
 }
 
@@ -342,7 +352,11 @@ test.describe('Quake-mode terminal', () => {
    * Measure the panel itself.
    * The clip spans the full centre area for every orientation so it can display the panel's shadow.
    */
-  for (const [orientation, axis] of [['bottom', 'y'], ['left', 'x'], ['right', 'x']] as const) {
+  for (const [orientation, axis] of [
+    ['bottom', 'y'],
+    ['left', 'x'],
+    ['right', 'x'],
+  ] as const) {
     test(`slides in from the ${orientation} edge`, async ({ page, quakeServer }) => {
       const { workspaceId } = await openAgentTab(page, quakeServer)
       await withQuakePref(page, quakeServer, 'quakeOrientation', orientation, workspaceId)
@@ -407,10 +421,14 @@ test.describe('Quake-mode terminal', () => {
         if (rawParts === undefined)
           return 1
         const parts = rawParts.split(/[,/]/).map(part => part.trim()).filter(Boolean)
-        return parts.length === 4 ? Number(parts[3]) : 1
+        return parts.length === 4
+          ? Number(parts[3])
+          : 1
       }
       const srgb = bg.match(/\/\s*([\d.]+)\s*\)$/)
-      return srgb ? Number(srgb[1]) : 1
+      return srgb
+        ? Number(srgb[1])
+        : 1
     })
     expect(alpha).toBeCloseTo(0.5, 2)
   })
@@ -662,15 +680,39 @@ test.describe('Quake-mode terminal', () => {
       await waitForActiveTabContext(page)
       await waitForActiveTabContext(second)
 
-      await runCLI(cli, ['terminal', 'quake', 'open', '--worker-id', quakeServer.workerId, '--working-dir', workingDir])
+      await runCLI(cli, [
+        'terminal',
+        'quake',
+        'open',
+        '--worker-id',
+        quakeServer.workerId,
+        '--working-dir',
+        workingDir,
+      ])
       await expect(panel(page)).toBeInViewport()
       await expect(second.locator(PANEL)).toBeInViewport()
 
-      await runCLI(cli, ['terminal', 'quake', 'close', '--worker-id', quakeServer.workerId, '--working-dir', workingDir])
+      await runCLI(cli, [
+        'terminal',
+        'quake',
+        'close',
+        '--worker-id',
+        quakeServer.workerId,
+        '--working-dir',
+        workingDir,
+      ])
       await expect(panel(page)).not.toBeInViewport()
       await expect(second.locator(PANEL)).not.toBeInViewport()
 
-      await runCLI(cli, ['terminal', 'quake', 'toggle', '--worker-id', quakeServer.workerId, '--working-dir', workingDir])
+      await runCLI(cli, [
+        'terminal',
+        'quake',
+        'toggle',
+        '--worker-id',
+        quakeServer.workerId,
+        '--working-dir',
+        workingDir,
+      ])
       await expect(panel(page)).toBeInViewport()
       await expect(second.locator(PANEL)).toBeInViewport()
     })

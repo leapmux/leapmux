@@ -38,14 +38,24 @@ describe('resolveActiveWorkspace', () => {
       expect(resolve({
         activeWorkspaceId: null,
         savedWorkspaceId: 'w2',
-        workspaceState: stateOf({ workspaces: [ws('w1'), ws('w2')] }),
+        workspaceState: stateOf({
+          workspaces: [
+            ws('w1'),
+            ws('w2'),
+          ],
+        }),
       })).toEqual({ kind: 'adopt', workspaceId: 'w2' })
     })
 
     it('adopts the first workspace when there is no saved id', () => {
       expect(resolve({
         activeWorkspaceId: null,
-        workspaceState: stateOf({ workspaces: [ws('w1'), ws('w2')] }),
+        workspaceState: stateOf({
+          workspaces: [
+            ws('w1'),
+            ws('w2'),
+          ],
+        }),
       })).toEqual({ kind: 'adopt', workspaceId: 'w1' })
     })
 
@@ -56,7 +66,12 @@ describe('resolveActiveWorkspace', () => {
       expect(resolve({
         activeWorkspaceId: null,
         savedWorkspaceId: 'w-gone',
-        workspaceState: stateOf({ workspaces: [ws('w1'), ws('w2')] }),
+        workspaceState: stateOf({
+          workspaces: [
+            ws('w1'),
+            ws('w2'),
+          ],
+        }),
       })).toEqual({ kind: 'adopt', workspaceId: 'w1' })
     })
 
@@ -74,7 +89,11 @@ describe('resolveActiveWorkspace', () => {
     it('keeps the active workspace while it is still in the list', () => {
       expect(resolve({
         activeWorkspaceId: 'w1',
-        workspaceState: stateOf({ workspaces: [ws('w1')] }),
+        workspaceState: stateOf({
+          workspaces: [
+            ws('w1'),
+          ],
+        }),
       })).toEqual({ kind: 'keep' })
     })
 
@@ -85,7 +104,12 @@ describe('resolveActiveWorkspace', () => {
       expect(resolve({
         activeWorkspaceId: 'w-deleted',
         savedWorkspaceId: 'w-deleted',
-        workspaceState: stateOf({ workspaces: [ws('w1'), ws('w2')] }),
+        workspaceState: stateOf({
+          workspaces: [
+            ws('w1'),
+            ws('w2'),
+          ],
+        }),
       })).toEqual({ kind: 'adopt', workspaceId: 'w1' })
     })
 
@@ -108,7 +132,12 @@ describe('resolveActiveWorkspace', () => {
     it('keeps while the list is still loading', () => {
       expect(resolve({
         activeWorkspaceId: 'w-missing',
-        workspaceState: stateOf({ workspaces: [ws('w1')], loading: true }),
+        workspaceState: stateOf({
+          workspaces: [
+            ws('w1'),
+          ],
+          loading: true,
+        }),
       })).toEqual({ kind: 'keep' })
     })
 
@@ -116,7 +145,11 @@ describe('resolveActiveWorkspace', () => {
       expect(resolve({
         activeWorkspaceId: 'w-missing',
         userId: '',
-        workspaceState: stateOf({ workspaces: [ws('w1')] }),
+        workspaceState: stateOf({
+          workspaces: [
+            ws('w1'),
+          ],
+        }),
       })).toEqual({ kind: 'keep' })
     })
 
@@ -146,7 +179,12 @@ describe('resolveActiveWorkspace', () => {
     it('keeps when the load failed even though the stale list lacks the active workspace', () => {
       expect(resolve({
         activeWorkspaceId: 'w-missing',
-        workspaceState: stateOf({ workspaces: [ws('w1')], error: 'hub unavailable' }),
+        workspaceState: stateOf({
+          workspaces: [
+            ws('w1'),
+          ],
+          error: 'hub unavailable',
+        }),
       })).toEqual({ kind: 'keep' })
     })
   })

@@ -40,7 +40,9 @@ export class NativeInputQueueIdleCollector {
   }
 
   get idleSnapshot(): AgentInputQueueSnapshot | undefined {
-    return this.subscribed && this.latestSnapshot?.activeTurn === false ? this.latestSnapshot : undefined
+    return this.subscribed && this.latestSnapshot?.activeTurn === false
+      ? this.latestSnapshot
+      : undefined
   }
 
   accept(payload: Uint8Array): void {

@@ -51,7 +51,12 @@ export function installVisibleCountRecorder(scope: VisibleCountScope, key: strin
       record.max = Math.max(record.max, items)
     }
   }
-  new MutationObserver(count).observe(document, { subtree: true, childList: true, attributes: true, characterData: true })
+  new MutationObserver(count).observe(document, {
+    subtree: true,
+    childList: true,
+    attributes: true,
+    characterData: true,
+  })
   count()
 }
 
@@ -79,9 +84,11 @@ export async function maxVisibleCountDuring(page: Page, scope: VisibleCountScope
       await navigate()
       return await page.evaluate((name) => {
         const record: unknown = Reflect.get(window, name)
-        const max: unknown = typeof record === 'object' && record !== null ? Reflect.get(record, 'max') : undefined
+        const max: unknown = typeof record === 'object' && record !== null
+          ? Reflect.get(record, 'max')
+          : undefined
         if (typeof max !== 'number')
-          throw new Error('The page holds no visible count: the navigation did not start a new document after the recorder was added.')
+          throw new TypeError('The page holds no visible count: the navigation did not start a new document after the recorder was added.')
         return max
       }, key)
     }

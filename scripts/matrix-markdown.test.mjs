@@ -44,6 +44,13 @@ describe('walkMarkdown', () => {
   it('visits a parent before its children', () => {
     const types = []
     walkMarkdown(parseMarkdown('A *b* c.'), node => types.push(node.type))
-    expect(types).toEqual(['root', 'paragraph', 'text', 'emphasis', 'text', 'text'])
+    expect(types).toEqual([
+      'root',
+      'paragraph',
+      'text',
+      'emphasis',
+      'text',
+      'text',
+    ])
   })
 })

@@ -33,7 +33,9 @@ export function claudeTodoItemsFromResult(
   result: Record<string, unknown> | undefined,
   input: Record<string, unknown> | undefined,
 ): TodoItem[] | null {
-  return claudeTodoItems(Array.isArray(result?.newTodos) ? { todos: result.newTodos } : input)
+  return claudeTodoItems(Array.isArray(result?.newTodos)
+    ? { todos: result.newTodos }
+    : input)
 }
 
 /**
@@ -57,7 +59,9 @@ export function claudeTodoRequest(
 ): ToolRequestByKind['todo'] {
   const item = claudeTaskItem(toolName, input, result?.toolUseResult ?? context.pairedResult, context.todoSnapshot)
   if (toolName === CLAUDE_TOOL_NAMES.TASK_UPDATE && !item && context.todoSnapshotDiagnostic) {
-    const taskId = typeof input.taskId === 'string' ? input.taskId : ''
+    const taskId = typeof input.taskId === 'string'
+      ? input.taskId
+      : ''
     const warningKey = `${taskId}:${context.todoSnapshotDiagnostic}`
     if (!reportedSnapshotDiagnostics.has(warningKey)) {
       reportedSnapshotDiagnostics.add(warningKey)
@@ -71,7 +75,9 @@ export function claudeTodoRequest(
   const { description, ...rest } = item
   return {
     items: [rest],
-    ...(description !== undefined ? { note: description } : {}),
+    ...(description !== undefined
+      ? { note: description }
+      : {}),
   }
 }
 
@@ -87,7 +93,11 @@ export function claudeTodoSpec(request: ToolRequestByKind['todo'], args: ClaudeT
   if (failure)
     return { kind: 'todo', request, result: failure }
   const saved = claudeTodoItemsFromResult(result.toolUseResult, args.input) ?? []
-  return { kind: 'todo', request, result: { items: saved } }
+  return {
+    kind: 'todo',
+    request,
+    result: { items: saved },
+  }
 }
 
 /**
@@ -125,8 +135,14 @@ export function claudeTaskTodoSpec(request: ToolRequestByKind['todo'], result: C
   if (request.items.length === 0 || (!result && !context.pairedResult))
     return { kind: 'todo', request, title }
   const failure = claudeToolFailureResult(result)
-  if (failure)
-    return { kind: 'todo', request, title, result: failure }
+  if (failure) {
+    return {
+      kind: 'todo',
+      request,
+      title,
+      result: failure,
+    }
+  }
   // The paired result may draw no row of its own, so THIS row carries its item.
   // Without a result the call still read the task back, which is what `completed`
   // states here.
@@ -134,10 +150,14 @@ export function claudeTaskTodoSpec(request: ToolRequestByKind['todo'], result: C
     kind: 'todo',
     request,
     title,
-    ...(result ? {} : { statusOverride: 'completed' }),
+    ...(result
+      ? {}
+      : { statusOverride: 'completed' }),
     result: {
       items: request.items,
-      ...(request.note !== undefined ? { note: request.note } : {}),
+      ...(request.note !== undefined
+        ? { note: request.note }
+        : {}),
     },
   }
 }

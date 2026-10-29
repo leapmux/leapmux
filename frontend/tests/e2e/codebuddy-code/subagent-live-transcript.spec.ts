@@ -29,9 +29,18 @@ codebuddyTest.describe('CodeBuddy Code subagent registry', () => {
         childResponse: {
           reasoning: 'The child reviews the native stream and reports each observed segment before its final answer.',
           text: 'CHILD_LIVE_DONE',
-          stream: { chunkChars: 24, delayMs: 0, gates: [{ afterChunk: 1, name: firstGate }, { afterChunk: 2, name: secondGate }] },
+          stream: {
+            chunkChars: 24,
+            delayMs: 0,
+            gates: [
+              { afterChunk: 1, name: firstGate },
+              { afterChunk: 2, name: secondGate },
+            ],
+          },
         },
-        toolProof: { read: { workingDir: authenticatedCodebuddyWorkspace.workingDir } },
+        toolProof: {
+          read: { workingDir: authenticatedCodebuddyWorkspace.workingDir },
+        },
         beforeRelease: expectParentSession,
         afterRelease: async () => {
           const childId = await selectedAgentTabId(native.page)

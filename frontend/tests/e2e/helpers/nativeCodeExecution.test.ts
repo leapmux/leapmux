@@ -13,7 +13,9 @@ describe('nativeJavaScriptTextCases', () => {
     const cases = nativeJavaScriptTextCases('NATIVEVALUE')
     validateNativeScriptCases(cases)
     const output: unknown[] = []
-    runInNewContext(cases[0]!.source, { text: (value: unknown) => output.push(value) })
+    runInNewContext(cases[0]!.source, {
+      text: (value: unknown) => output.push(value),
+    })
     expect(output).toEqual(['NATIVEVALUE42'])
     expect(() => runInNewContext(cases[1]!.source)).toThrow('NATIVEVALUE77')
     expect(cases.map(item => item.failed)).toEqual([false, true])
@@ -24,7 +26,10 @@ describe('nativeJavaScriptTextCases', () => {
   })
 })
 
-const opened = vi.hoisted(() => ({ events: [] as string[], open: vi.fn() }))
+const opened = vi.hoisted(() => ({
+  events: [] as string[],
+  open: vi.fn(),
+}))
 const execution = vi.hoisted(() => ({
   rows: new Map<string, { text: string, status: string }>(),
   answers: [] as string[],
@@ -48,7 +53,9 @@ vi.mock('@playwright/test', async (importOriginal) => {
   const check = (value: unknown, message?: string) => {
     if (codeRow(value)) {
       return {
-        toHaveCount: async (count: number) => actual.expect(execution.rows.has(value.callId) ? 1 : 0, 'the computed native result row exists').toBe(count),
+        toHaveCount: async (count: number) => actual.expect(execution.rows.has(value.callId)
+          ? 1
+          : 0, 'the computed native result row exists').toBe(count),
         toHaveAttribute: async (attribute: string, expected: string) => {
           actual.expect(attribute).toBe('data-tool-status')
           actual.expect(execution.rows.get(value.callId)?.status).toBe(expected)
@@ -56,11 +63,17 @@ vi.mock('@playwright/test', async (importOriginal) => {
         toContainText: async (expected: string) => actual.expect(execution.rows.get(value.callId)?.text).toContain(expected),
       }
     }
-    if (codeAnswer(value))
-      return { toBeVisible: async () => actual.expect(execution.answers).toContain(value.text) }
+    if (codeAnswer(value)) {
+      return {
+        toBeVisible: async () => actual.expect(execution.answers).toContain(value.text),
+      }
+    }
     return actual.expect(value, message)
   }
-  return { ...actual, expect: Object.assign(check, actual.expect) }
+  return {
+    ...actual,
+    expect: Object.assign(check, actual.expect),
+  }
 })
 
 vi.mock('./api', () => ({ openAgentViaAPI: opened.open }))
@@ -75,7 +88,11 @@ vi.mock('./ui', async importOriginal => ({
   ...await importOriginal<typeof import('./ui')>(),
   openWorkspace: async (_page: unknown, workspaceId: string) => { opened.events.push(`workspace ${workspaceId}`) },
   toolCallRow: (_page: unknown, callId: string): CodeRowProbe => ({ codeRowProbe: true, callId }),
-  assistantBubbles: () => ({ filter: ({ hasText }: { hasText: string }) => ({ first: (): CodeAnswerProbe => ({ codeAnswerProbe: true, text: hasText }) }) }),
+  assistantBubbles: () => ({
+    filter: ({ hasText }: { hasText: string }) => ({
+      first: (): CodeAnswerProbe => ({ codeAnswerProbe: true, text: hasText }),
+    }),
+  }),
 }))
 vi.mock('./nativeScenario', async importOriginal => ({
   ...await importOriginal<typeof import('./nativeScenario')>(),
@@ -84,7 +101,11 @@ vi.mock('./nativeScenario', async importOriginal => ({
 vi.mock('./nativeConversation', () => ({
   sendNativeAnswer: async (_context: unknown, prompt: string) => {
     opened.events.push(`answer ${prompt}`)
-    return { protocol: 'openai-chat-completions', path: '/v1/chat/completions', body: { catalog: true } }
+    return {
+      protocol: 'openai-chat-completions',
+      path: '/v1/chat/completions',
+      body: { catalog: true },
+    }
   },
 }))
 
@@ -110,8 +131,30 @@ vi.mock('./nativeToolExecution', async importOriginal => ({
     execution.rawCalls.push(call.id)
     execution.rows.set(`part-${call.id}`, { text, status })
     execution.answers.push(turn.answer)
-    const resultRequest = { protocol: 'openai-chat-completions', path: '/model', body: { messages: [{ role: 'tool', tool_call_id: call.id, content: text }] } }
-    return { start: 0, toolRequest: { protocol: 'openai-chat-completions', path: '/model', body: { tools: [{ function: { name: 'exec' } }] } }, resultRequest }
+    const resultRequest = {
+      protocol: 'openai-chat-completions',
+      path: '/model',
+      body: {
+        messages: [
+          { role: 'tool', tool_call_id: call.id, content: text },
+        ],
+      },
+    }
+    return {
+      start: 0,
+      toolRequest: {
+        protocol: 'openai-chat-completions',
+        path: '/model',
+        body: {
+          tools: [
+            {
+              function: { name: 'exec' },
+            },
+          ],
+        },
+      },
+      resultRequest,
+    }
   },
 }))
 
@@ -129,17 +172,39 @@ beforeEach(() => {
 })
 
 describe('nativeCodeExecutionSchema', () => {
-  const schema = { type: 'object', properties: { source: { type: 'string' }, options: { type: 'object' } } }
+  const schema = {
+    type: 'object',
+    properties: {
+      source: { type: 'string' },
+      options: { type: 'object' },
+    },
+  }
   const tool = { name: 'native_runner', parameters: schema }
-  const request = (tools: unknown) => ({ protocol: 'openai-chat-completions' as const, path: '/v1/chat/completions', body: { tools } })
+  const request = (tools: unknown) => ({
+    protocol: 'openai-chat-completions' as const,
+    path: '/v1/chat/completions',
+    body: { tools },
+  })
 
   it('reads exact direct and nested native schemas without changing them', () => {
-    expect(nativeCodeExecutionSchema(request([{ function: tool }]), 'native_runner', { source: 'string', options: 'object' })).toBe(schema)
-    expect(nativeCodeExecutionSchema(request([{ name: tool.name, input_schema: schema }]), 'native_runner', { source: 'string' })).toBe(schema)
+    expect(nativeCodeExecutionSchema(request([
+      { function: tool },
+    ]), 'native_runner', { source: 'string', options: 'object' })).toBe(schema)
+    expect(nativeCodeExecutionSchema(request([
+      { name: tool.name, input_schema: schema },
+    ]), 'native_runner', { source: 'string' })).toBe(schema)
   })
 
   it('reads the exact Google parametersJsonSchema from function declarations', () => {
-    const body = { tools: [{ functionDeclarations: [{ name: tool.name, parametersJsonSchema: schema }] }] }
+    const body = {
+      tools: [
+        {
+          functionDeclarations: [
+            { name: tool.name, parametersJsonSchema: schema },
+          ],
+        },
+      ],
+    }
     expect(nativeCodeExecutionSchema({ protocol: 'google-generative-language', path: '/google', body }, tool.name, { source: 'string' })).toBe(schema)
   })
 
@@ -148,39 +213,100 @@ describe('nativeCodeExecutionSchema', () => {
   })
 
   it.each([
-    { tools: [{ function: { name: 'other', parameters: schema } }], count: 0 },
-    { tools: [{ function: tool }, { function: tool }], count: 2 },
+    {
+      tools: [
+        {
+          function: { name: 'other', parameters: schema },
+        },
+      ],
+      count: 0,
+    },
+    {
+      tools: [
+        { function: tool },
+        { function: tool },
+      ],
+      count: 2,
+    },
   ])('rejects $count descriptors for the tool', ({ tools, count }) => {
     expect(() => nativeCodeExecutionSchema(request(tools), 'native_runner', { source: 'string' })).toThrow(`The native catalog contains ${count} descriptors for native_runner.`)
   })
 
   it('rejects a catalog entry that is not an object', () => {
-    expect(() => nativeCodeExecutionSchema(request(['native_runner', { function: tool }]), 'native_runner', { source: 'string' })).toThrow('The native model tool catalog contains an invalid entry.')
+    expect(() => nativeCodeExecutionSchema(request([
+      'native_runner',
+      { function: tool },
+    ]), 'native_runner', { source: 'string' })).toThrow('The native model tool catalog contains an invalid entry.')
   })
 
-  it.each([null, {}, { type: 'array', properties: {} }])('rejects an absent or incomplete object schema: %j', (parameters) => {
-    expect(() => nativeCodeExecutionSchema(request([{ function: { name: tool.name, parameters } }]), 'native_runner', { source: 'string' })).toThrow('The native executor has no complete object argument schema.')
+  it.each([
+    null,
+    {},
+    { type: 'array', properties: {} },
+  ])('rejects an absent or incomplete object schema: %j', (parameters) => {
+    expect(() => nativeCodeExecutionSchema(request([
+      {
+        function: { name: tool.name, parameters },
+      },
+    ]), 'native_runner', { source: 'string' })).toThrow('The native executor has no complete object argument schema.')
   })
 
-  it.each([{ type: 'object', properties: {} }, { type: 'object', properties: { source: { type: 'number' } } }])('rejects a changed source field: %j', (parameters) => {
-    expect(() => nativeCodeExecutionSchema(request([{ function: { name: tool.name, parameters } }]), 'native_runner', { source: 'string' })).toThrow('The native executor argument source has no string schema.')
+  it.each([
+    { type: 'object', properties: {} },
+    {
+      type: 'object',
+      properties: {
+        source: { type: 'number' },
+      },
+    },
+  ])('rejects a changed source field: %j', (parameters) => {
+    expect(() => nativeCodeExecutionSchema(request([
+      {
+        function: { name: tool.name, parameters },
+      },
+    ]), 'native_runner', { source: 'string' })).toThrow('The native executor argument source has no string schema.')
   })
 
   it('rejects a proof without a tool or argument fields', () => {
-    expect(() => nativeCodeExecutionSchema(request([{ function: tool }]), '', { source: 'string' })).toThrow('tool and its argument fields')
-    expect(() => nativeCodeExecutionSchema(request([{ function: tool }]), tool.name, {})).toThrow('tool and its argument fields')
+    expect(() => nativeCodeExecutionSchema(request([
+      { function: tool },
+    ]), '', { source: 'string' })).toThrow('tool and its argument fields')
+    expect(() => nativeCodeExecutionSchema(request([
+      { function: tool },
+    ]), tool.name, {})).toThrow('tool and its argument fields')
   })
 })
 
 describe('validateNativeScriptCases', () => {
-  const output = { label: 'output', source: 'text(40 + 2)', expected: '42', failed: false }
-  const failure = { label: 'failure', source: 'throw new Error(String(70 + 7))', expected: '77', failed: true }
+  const output = {
+    label: 'output',
+    source: 'text(40 + 2)',
+    expected: '42',
+    failed: false,
+  }
+  const failure = {
+    label: 'failure',
+    source: 'throw new Error(String(70 + 7))',
+    expected: '77',
+    failed: true,
+  }
 
   it('accepts actual computed output and a computed failure', () => {
     expect(() => validateNativeScriptCases([output, failure])).not.toThrow()
   })
 
-  it.each([{ cases: [] }, { cases: [output] }, { cases: [output, output] }, { cases: [failure, failure] }])('requires both native outcomes: %j', ({ cases }) => {
+  it.each([
+    { cases: [] },
+    {
+      cases: [output],
+    },
+    {
+      cases: [output, output],
+    },
+    {
+      cases: [failure, failure],
+    },
+  ])('requires both native outcomes: %j', ({ cases }) => {
     expect(() => validateNativeScriptCases(cases)).toThrow('output and failure cases')
   })
 
@@ -196,17 +322,41 @@ describe('validateNativeScriptCases', () => {
 
 describe('expectNativeCodeExecutionAbsent', () => {
   it('checks an actual nonempty native catalog', () => {
-    expect(() => expectNativeCodeExecutionAbsent({ protocol: 'openai-chat-completions', path: '/v1/chat/completions', body: { tools: [{ function: { name: 'native_read' } }] } }, ['exec', 'codemode'])).not.toThrow()
+    expect(() => expectNativeCodeExecutionAbsent({
+      protocol: 'openai-chat-completions',
+      path: '/v1/chat/completions',
+      body: {
+        tools: [
+          {
+            function: { name: 'native_read' },
+          },
+        ],
+      },
+    }, ['exec', 'codemode'])).not.toThrow()
   })
 
   it('rejects a native executor that the catalog actually offers', () => {
     // Playwright's `expect` fails with the result of the matcher: `not.toContain` failed, because the catalog holds the name.
-    expect(() => expectNativeCodeExecutionAbsent({ protocol: 'anthropic-messages', path: '/v1/messages', body: { tools: [{ name: 'exec' }] } }, ['exec']))
-      .toThrow(expect.objectContaining({ matcherResult: expect.objectContaining({ name: 'toContain', pass: true }) }))
+    expect(() => expectNativeCodeExecutionAbsent({
+      protocol: 'anthropic-messages',
+      path: '/v1/messages',
+      body: {
+        tools: [
+          { name: 'exec' },
+        ],
+      },
+    }, ['exec']))
+      .toThrow(expect.objectContaining({
+        matcherResult: expect.objectContaining({ name: 'toContain', pass: true }),
+      }))
   })
 
   it('rejects an empty catalog and absent executor definitions', () => {
-    expect(() => expectNativeCodeExecutionAbsent({ protocol: 'openai-chat-completions', path: '/v1/chat/completions', body: { tools: [] } }, ['exec'])).toThrow('nonempty tool catalog')
+    expect(() => expectNativeCodeExecutionAbsent({
+      protocol: 'openai-chat-completions',
+      path: '/v1/chat/completions',
+      body: { tools: [] },
+    }, ['exec'])).toThrow('nonempty tool catalog')
     expect(() => expectNativeCodeExecutionAbsent({ protocol: 'openai-chat-completions', path: '/v1/chat/completions', body: {} }, [])).toThrow('audited executor names')
   })
 })
@@ -240,17 +390,32 @@ describe('exerciseNativeCodeExecution', () => {
       expect(execution.rows.has(rowId)).toBe(true)
     })
     const browserProof = vi.fn(async (rowId: string, expected: string, failed: boolean) => {
-      expect(execution.rows.get(rowId)).toEqual({ text: expected, status: failed ? 'failed' : 'completed' })
+      expect(execution.rows.get(rowId)).toEqual({
+        text: expected,
+        status: failed ? 'failed' : 'completed',
+      })
     })
     const scenario = {
       ...contextOf({ provider: AgentProvider.MIMO_CODE, prefix: 'mimo-e2e' }),
-      page: { reload: async () => { execution.reloads++ } } as unknown as Page,
+      page: {
+        reload: async () => { execution.reloads++ },
+      } as unknown as Page,
       resolveToolRowId,
     }
     await exerciseNativeCodeExecution(scenario, {
       scripts: () => [
-        { label: 'output', source: 'return String(40 + 2)', expected: '42', failed: false },
-        { label: 'failure', source: 'throw new Error(String(70 + 7))', expected: '77', failed: true },
+        {
+          label: 'output',
+          source: 'return String(40 + 2)',
+          expected: '42',
+          failed: false,
+        },
+        {
+          label: 'failure',
+          source: 'throw new Error(String(70 + 7))',
+          expected: '77',
+          failed: true,
+        },
       ],
       nativeProof,
       prepareResultView,
@@ -258,8 +423,18 @@ describe('exerciseNativeCodeExecution', () => {
     })
     expect(execution.rawCalls).toEqual(['native-code-0', 'native-code-1'])
     expect(nativeProof.mock.calls.map(call => call[1])).toEqual(['native-code-0', 'native-code-1'])
-    expect(prepareResultView.mock.calls.map(call => call[0])).toEqual(['part-native-code-0', 'part-native-code-0', 'part-native-code-1', 'part-native-code-1'])
-    expect(browserProof.mock.calls.map(call => call[0])).toEqual(['part-native-code-0', 'part-native-code-0', 'part-native-code-1', 'part-native-code-1'])
+    expect(prepareResultView.mock.calls.map(call => call[0])).toEqual([
+      'part-native-code-0',
+      'part-native-code-0',
+      'part-native-code-1',
+      'part-native-code-1',
+    ])
+    expect(browserProof.mock.calls.map(call => call[0])).toEqual([
+      'part-native-code-0',
+      'part-native-code-0',
+      'part-native-code-1',
+      'part-native-code-1',
+    ])
     expect(execution.reloads).toBe(2)
   })
 
@@ -271,8 +446,18 @@ describe('exerciseNativeCodeExecution', () => {
     }
     await expect(exerciseNativeCodeExecution(scenario, {
       scripts: () => [
-        { label: 'output', source: 'return String(40 + 2)', expected: '42', failed: false },
-        { label: 'failure', source: 'throw new Error(String(70 + 7))', expected: '77', failed: true },
+        {
+          label: 'output',
+          source: 'return String(40 + 2)',
+          expected: '42',
+          failed: false,
+        },
+        {
+          label: 'failure',
+          source: 'throw new Error(String(70 + 7))',
+          expected: '77',
+          failed: true,
+        },
       ],
       browserProof: async () => { throw failure },
     })).rejects.toBe(failure)
@@ -286,12 +471,24 @@ describe('openNativeCatalogTurn', () => {
     const request = await openNativeCatalogTurn(context)
     expect(request.body).toEqual({ catalog: true })
     expect(opened.open).toHaveBeenCalledWith(expect.objectContaining({ hubUrl: 'http://hub', adminToken: 'token', workerId: 'worker-1' }), 'workspace-1', '/run/native-code-limit-directory', agentOpenOptions(AgentProvider.CURSOR))
-    expect(opened.events).toEqual(['directory native-code-limit-', 'open /run/native-code-limit-directory', 'workspace workspace-1', 'answer Reply once while the native tool catalog remains available.'])
+    expect(opened.events).toEqual([
+      'directory native-code-limit-',
+      'open /run/native-code-limit-directory',
+      'workspace workspace-1',
+      'answer Reply once while the native tool catalog remains available.',
+    ])
   })
 
   it('takes the directory prefix and the open settings of the caller', async () => {
-    await openNativeCatalogTurn(context, { directoryPrefix: 'native-workflow-code-', overrides: { optionValues: { permissionMode: 'manual' } } })
-    expect(opened.open).toHaveBeenCalledWith(expect.objectContaining({ hubUrl: 'http://hub', adminToken: 'token', workerId: 'worker-1' }), 'workspace-1', '/run/native-workflow-code-directory', agentOpenOptions(AgentProvider.CURSOR, { optionValues: { permissionMode: 'manual' } }))
+    await openNativeCatalogTurn(context, {
+      directoryPrefix: 'native-workflow-code-',
+      overrides: {
+        optionValues: { permissionMode: 'manual' },
+      },
+    })
+    expect(opened.open).toHaveBeenCalledWith(expect.objectContaining({ hubUrl: 'http://hub', adminToken: 'token', workerId: 'worker-1' }), 'workspace-1', '/run/native-workflow-code-directory', agentOpenOptions(AgentProvider.CURSOR, {
+      optionValues: { permissionMode: 'manual' },
+    }))
   })
 
   it('creates the directory by the working directory rule of the provider', async () => {

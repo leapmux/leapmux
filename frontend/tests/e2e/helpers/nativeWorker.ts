@@ -201,7 +201,10 @@ export async function withNativeWorker<Server extends NativeWorkerServer>(
       const registered = await spawnRegisteredWorker(server, {
         name: options.workerName,
         dataDir,
-        env: { ...server.agentEnv, ...options.env },
+        env: {
+          ...server.agentEnv,
+          ...options.env,
+        },
         output,
         onSpawn: (proc) => {
           worker.proc = proc
@@ -212,7 +215,12 @@ export async function withNativeWorker<Server extends NativeWorkerServer>(
       const exit = watchProcessExit(registered.proc, 'The private Worker')
       try {
         await Promise.race([
-          use({ server: { ...server, workerId: registered.workerId, agentEnv }, workerId: registered.workerId, dataDir, output }),
+          use({
+            server: { ...server, workerId: registered.workerId, agentEnv },
+            workerId: registered.workerId,
+            dataDir,
+            output,
+          }),
           exit.failure,
         ])
       }
@@ -230,7 +238,9 @@ export async function withNativeWorker<Server extends NativeWorkerServer>(
           await stopProcess(proc)
           requirePhysicalExit(proc)
         })(),
-        id ? deregisterWorkerViaAPI(server.hubUrl, server.adminToken, id) : Promise.resolve(),
+        id
+          ? deregisterWorkerViaAPI(server.hubUrl, server.adminToken, id)
+          : Promise.resolve(),
       ])
     })
   }
@@ -252,7 +262,10 @@ function privateAgentEnvironment(server: NativeWorkerServer, options: NativeWork
   if (!options.workerName.trim() || !options.dataDirPrefix.trim())
     throw new Error('The private Worker requires a name and a data directory prefix.')
   const agentEnv: Record<string, string> = {}
-  for (const [key, value] of Object.entries({ ...server.agentEnv, ...options.env })) {
+  for (const [key, value] of Object.entries({
+    ...server.agentEnv,
+    ...options.env,
+  })) {
     if (typeof value === 'string')
       agentEnv[key] = value
   }

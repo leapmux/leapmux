@@ -90,7 +90,9 @@ function workerString(value: unknown, absent: '' | null): string | null {
     return absent
   if (value === null)
     return ''
-  return typeof value === 'string' ? value : null
+  return typeof value === 'string'
+    ? value
+    : null
 }
 
 /**
@@ -164,6 +166,9 @@ function joinCodexExecSupplement(original: Record<string, unknown>, supplemental
   }
   const joined = { ...item, [CODEX_SUPPLEMENT.ContinuationOutputs]: supplement.continuationOutputs }
   return params
-    ? { ...original, [JSON_RPC_PARAMS]: { ...params, [CODEX_RAW_FIELD.Item]: joined } }
+    ? {
+        ...original,
+        [JSON_RPC_PARAMS]: { ...params, [CODEX_RAW_FIELD.Item]: joined },
+      }
     : { ...original, [CODEX_RAW_FIELD.Item]: joined }
 }

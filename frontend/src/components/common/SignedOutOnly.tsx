@@ -171,7 +171,9 @@ export const SignedOutOnly: ParentComponent<{
                 for later — it is still unused.
               </p>
               <button type="button" onClick={signOut} disabled={signingOut()} data-testid="signed-out-only-sign-out">
-                {signingOut() ? 'Signing out...' : 'Sign out and continue'}
+                {signingOut()
+                  ? 'Signing out...'
+                  : 'Sign out and continue'}
               </button>
             </div>
           </div>

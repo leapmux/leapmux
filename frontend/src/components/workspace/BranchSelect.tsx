@@ -58,7 +58,9 @@ export const BranchSelect: Component<BranchSelectProps> = (props) => {
   const options = createMemo(() => [
     ...props.local.map(b => ({
       value: b.name,
-      label: props.showCurrent && b.name === props.currentBranch ? `${b.name} (current)` : b.name,
+      label: props.showCurrent && b.name === props.currentBranch
+        ? `${b.name} (current)`
+        : b.name,
       group: 'Local',
     })),
     ...props.remote.map(b => ({ value: b.name, label: b.name, group: 'Remote' })),
@@ -69,10 +71,14 @@ export const BranchSelect: Component<BranchSelectProps> = (props) => {
       ariaLabel="Branch"
       value={props.value}
       onChange={props.onChange}
-      {...(props.loading ? { loadingLabel: 'Loading branches...' } : {})}
+      {...(props.loading
+        ? { loadingLabel: 'Loading branches...' }
+        : {})}
       emptyLabel="No branches found"
       placeholder="Select a branch..."
-      {...(props.disabled !== undefined ? { disabled: props.disabled } : {})}
+      {...(props.disabled !== undefined
+        ? { disabled: props.disabled }
+        : {})}
       options={options()}
       // A repository's branch list is unbounded, and a native select gave
       // type-ahead over it for free. This is what buys that back.

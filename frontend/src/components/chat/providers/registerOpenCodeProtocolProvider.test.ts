@@ -11,7 +11,12 @@ describe('registerOpenCodeProtocolProvider', () => {
   it('forwards the provider path reader without parsing or wrapping it', () => {
     registration.mockClear()
     const outputFilePaths = vi.fn(() => ['/native/reported.log'])
-    const options = { provider: AgentProvider.OPENCODE, defaultPrimaryAgent: 'build', refusals: OPENCODE_REFUSED_TOOL_ERRORS, outputFilePaths }
+    const options = {
+      provider: AgentProvider.OPENCODE,
+      defaultPrimaryAgent: 'build',
+      refusals: OPENCODE_REFUSED_TOOL_ERRORS,
+      outputFilePaths,
+    }
 
     registerOpenCodeProtocolProvider(options)
 

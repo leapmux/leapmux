@@ -16,7 +16,9 @@ import { useTileMove } from './useTileMove'
  * (the proto convention), so omit the key rather than pass it through.
  */
 function tabPositionView(tab: Tab): { position?: string } {
-  return tab.position === undefined ? {} : { position: tab.position }
+  return tab.position === undefined
+    ? {}
+    : { position: tab.position }
 }
 
 interface UseTileDragDropOpts {
@@ -28,7 +30,12 @@ interface UseTileDragDropOpts {
 
 export function useTileDragDrop(opts: UseTileDragDropOpts) {
   const { view, selection, layoutStore, floatingWindowStore } = opts
-  const tileMove = useTileMove({ view, selection, layoutStore, floatingWindowStore })
+  const tileMove = useTileMove({
+    view,
+    selection,
+    layoutStore,
+    floatingWindowStore,
+  })
 
   const handleIntraTileReorder = (_tileId: string, fromKey: string, toKey: string) => {
     emitReorderTabs(view.forTile(view.get(fromKey)?.tileId ?? ''), fromKey, toKey)
@@ -70,7 +77,9 @@ export function useTileDragDrop(opts: UseTileDragDropOpts) {
     const nearIdx = nearTabKey
       ? targetTabs.findIndex(t => tabKey(t) === nearTabKey)
       : -1
-    const insertIdx = nearIdx >= 0 ? nearIdx : targetTabs.length
+    const insertIdx = nearIdx >= 0
+      ? nearIdx
+      : targetTabs.length
     // `draggedTab`, not `draggedTabKey`: the tab is already resolved above
     // (with an early return), so re-parsing the key here only re-derived the
     // same `type`/`id` behind an `if (parsed)` guard that could never be false.

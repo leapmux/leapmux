@@ -70,7 +70,9 @@ export function computeSeparator(current: string, mode: 'block' | 'inline'): str
     return ''
   if (mode === 'block')
     return '\n\n'
-  return current.endsWith('\n') ? '' : ' '
+  return current.endsWith('\n')
+    ? ''
+    : ' '
 }
 
 export function registerEditorRef(agentId: string, ref: EditorRef): void {
@@ -113,7 +115,9 @@ export function registerEditorRef(agentId: string, ref: EditorRef): void {
       let combined = live.get()
       for (const { text, mode } of pending) {
         const sep = computeSeparator(combined, mode)
-        combined = combined ? `${combined}${sep}${text}` : text
+        combined = combined
+          ? `${combined}${sep}${text}`
+          : text
       }
       live.set(combined)
       // Verify the text was actually inserted (ref.set may silently fail).
@@ -178,7 +182,9 @@ export function insertIntoAgentEditor(
     return 'refused'
   const current = ref.get()
   const sep = computeSeparator(current, mode)
-  ref.set(current ? `${current}${sep}${text}` : text)
+  ref.set(current
+    ? `${current}${sep}${text}`
+    : text)
   ref.focus()
   return 'inserted'
 }
@@ -201,7 +207,13 @@ export function queueInsertForAgent(
   onDropped?: () => void,
 ): void {
   const existing = pendingInserts.get(agentId) ?? []
-  existing.push({ text, mode, ...(onDropped !== undefined ? { onDropped } : {}) })
+  existing.push({
+    text,
+    mode,
+    ...(onDropped !== undefined
+      ? { onDropped }
+      : {}),
+  })
   pendingInserts.set(agentId, existing)
 }
 

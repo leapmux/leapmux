@@ -39,8 +39,12 @@ export function openMcpLettaAgent(
   agentSessionId?: string,
 ): Promise<string> {
   return openAgentViaAPI(server, workspaceId, workingDir, {
-    ...agentOpenOptions(AgentProvider.LETTA, { optionValues: { [OPTION_ID_PERMISSION_MODE]: LETTA_MODE.Unrestricted } }),
-    ...(agentSessionId !== undefined ? { agentSessionId } : {}),
+    ...agentOpenOptions(AgentProvider.LETTA, {
+      optionValues: { [OPTION_ID_PERMISSION_MODE]: LETTA_MODE.Unrestricted },
+    }),
+    ...(agentSessionId !== undefined
+      ? { agentSessionId }
+      : {}),
   })
 }
 
@@ -58,7 +62,10 @@ export async function prepareMcpLetta(runDirectory: string, mockModelUrl: string
   const backendDirectory = environment.env.LETTA_LOCAL_BACKEND_DIR
   if (!backendDirectory)
     throw new Error('The private Letta MCP fixture requires a local backend directory.')
-  return { agentEnv: environment.env, setup: { home: environment.homeDir, backendDirectory, nodeExecutable } }
+  return {
+    agentEnv: environment.env,
+    setup: { home: environment.homeDir, backendDirectory, nodeExecutable },
+  }
 }
 
 /** Keep native MCP settings and the native backend inside one private Worker environment. */
@@ -74,7 +81,13 @@ export const mcpLettaTest = lettaTest.extend<{ privateMcpLettaWorkspace: Private
       expect(agent.agentProvider).toBe(AgentProvider.LETTA)
       expect(agent.agentSessionId).not.toBe('')
       expect(nativeOptionValue(agent, OPTION_ID_PERMISSION_MODE)).toBe(LETTA_MODE.Unrestricted)
-      await use({ workspaceId, server, runDirectory, workingDir, ...setup })
+      await use({
+        workspaceId,
+        server,
+        runDirectory,
+        workingDir,
+        ...setup,
+      })
     })
   },
 })
@@ -101,7 +114,12 @@ export async function withRegisteredLettaMcp(
   probes: readonly McpProbeServer[],
   use: (identity: { agentId: string, conversationId: string }) => Promise<void>,
 ): Promise<void> {
-  const servers = probes.map((probe): LettaMcpServer => ({ name: probe.name, transport: 'stdio', command: workspace.nodeExecutable, args: [...probe.args] }))
+  const servers = probes.map((probe): LettaMcpServer => ({
+    name: probe.name,
+    transport: 'stdio',
+    command: workspace.nodeExecutable,
+    args: [...probe.args],
+  }))
   const before = await currentNativeAgent(context)
   expect(before.agentProvider).toBe(AgentProvider.LETTA)
   expect(before.agentSessionId).not.toBe('')

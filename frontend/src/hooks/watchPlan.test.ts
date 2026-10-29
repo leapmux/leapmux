@@ -86,7 +86,9 @@ function file(overrides: TabOverrides<Extract<Tab, { type: TabType.FILE }>> = {}
 }
 
 describe('tabWatchMode', () => {
-  const activeKey = (tileId: string) => (tileId === 'tile-1' ? '1:a1' : null)
+  const activeKey = (tileId: string) => (tileId === 'tile-1'
+    ? '1:a1'
+    : null)
 
   it('returns FULL for active workspace + tile-active tab', () => {
     expect(tabWatchMode(agent(), 'ws-1', activeKey)).toBe(WatchMode.FULL)
@@ -103,7 +105,9 @@ describe('tabWatchMode', () => {
 
 describe('isTabOnScreen', () => {
   // activeKey matches the production `${tab.type}:${tab.id}` shape (TabType.AGENT = 1).
-  const activeKey = (tileId: string) => (tileId === 'tile-1' ? '1:a1' : null)
+  const activeKey = (tileId: string) => (tileId === 'tile-1'
+    ? '1:a1'
+    : null)
 
   it('is true for active workspace + tile-active tab', () => {
     expect(isTabOnScreen(agent(), 'ws-1', activeKey)).toBe(true)
@@ -134,7 +138,9 @@ describe('buildWatchPlans', () => {
       rootAgentId: 'root-1',
     })
     const root = agent({ id: 'root-1', workspaceId: 'ws-root' })
-    const tabs = placement === 'absent' ? [child] : [child, root]
+    const tabs = placement === 'absent'
+      ? [child]
+      : [child, root]
     const identity = vi.fn(() => 'root-1')
     const plan = buildWatchPlans(tabs, 'ws-1', () => `${TabType.AGENT}:child-1`, {
       getAgentTab: id => tabs.find((tab): tab is AgentTab => tab.type === TabType.AGENT && tab.id === id),
@@ -144,7 +150,9 @@ describe('buildWatchPlans', () => {
       { id: 'child-1', mode: WatchMode.FULL },
       { id: 'root-1', mode: WatchMode.NOTIFY },
     ])
-    expect(plan?.agentReplayIdentities).toEqual(new Map([['child-1', 'root-1']]))
+    expect(plan?.agentReplayIdentities).toEqual(new Map([
+      ['child-1', 'root-1'],
+    ]))
     expect(identity).toHaveBeenCalledExactlyOnceWith('child-1')
   })
 
@@ -153,7 +161,9 @@ describe('buildWatchPlans', () => {
       agent({ id: 'child-1', tileId: 'child-tile', parentAgentId: 'root-1' }),
       agent({ id: 'root-1', tileId: 'root-tile' }),
     ]
-    const plan = buildWatchPlans(tabs, 'ws-1', tileId => `${TabType.AGENT}:${tileId === 'child-tile' ? 'child-1' : 'root-1'}`, {
+    const plan = buildWatchPlans(tabs, 'ws-1', tileId => `${TabType.AGENT}:${tileId === 'child-tile'
+      ? 'child-1'
+      : 'root-1'}`, {
       getAgentTab: id => tabs.find((tab): tab is AgentTab => tab.type === TabType.AGENT && tab.id === id),
       agentReplayIdentity: () => 'root-1',
     }).get('w1')
@@ -185,21 +195,31 @@ describe('buildWatchPlans', () => {
 
   // A quake shell has no tab placement. Supply it separately so its panel receives output while the shell runs.
   describe('detached terminals', () => {
-    const detached = (mode: WatchMode) => [{ terminalId: 'q1', workerId: 'w1', mode }]
+    const detached = (mode: WatchMode) => [
+      { terminalId: 'q1', workerId: 'w1', mode },
+    ]
 
     it('folds a detached terminal into its worker plan', () => {
-      const plans = buildWatchPlans([], 'ws-1', () => null, { detachedTerminals: detached(WatchMode.FULL) })
+      const plans = buildWatchPlans([], 'ws-1', () => null, {
+        detachedTerminals: detached(WatchMode.FULL),
+      })
       expect(plans.get('w1')?.terminals.map(t => t.terminalId)).toEqual(['q1'])
       expect(plans.get('w1')?.terminals[0]?.mode).toBe(WatchMode.FULL)
     })
 
     it('carries the mode the caller decided', () => {
-      const plans = buildWatchPlans([], 'ws-1', () => null, { detachedTerminals: detached(WatchMode.NOTIFY) })
+      const plans = buildWatchPlans([], 'ws-1', () => null, {
+        detachedTerminals: detached(WatchMode.NOTIFY),
+      })
       expect(plans.get('w1')?.terminals[0]?.mode).toBe(WatchMode.NOTIFY)
     })
 
     it('shares a worker plan with the placed tabs', () => {
-      const plans = buildWatchPlans([terminal()], 'ws-1', () => '1:t1', { detachedTerminals: detached(WatchMode.FULL) })
+      const plans = buildWatchPlans([
+        terminal(),
+      ], 'ws-1', () => '1:t1', {
+        detachedTerminals: detached(WatchMode.FULL),
+      })
       expect(plans.get('w1')?.terminals.map(t => t.terminalId).toSorted()).toEqual(['q1', 't1'])
       expect(plans.size).toBe(1)
     })
@@ -245,7 +265,9 @@ describe('buildWatchPlans', () => {
 
     // The cursor handlers share one type. Separate option fields prevent an accidental positional exchange.
     it('routes each named cursor input to its own field', () => {
-      const plans = buildWatchPlans([agent({ id: 'a1' })], 'ws-1', () => '1:a1', {
+      const plans = buildWatchPlans([
+        agent({ id: 'a1' }),
+      ], 'ws-1', () => '1:a1', {
         agentResumeSeq: () => 7n,
         agentWindowTailSeq: () => 9n,
       })
@@ -256,8 +278,12 @@ describe('buildWatchPlans', () => {
 
     // Opening or closing the panel changes its mode. Send that change so a reopened panel receives output.
     it('re-keys the plan on a mode flip and stays stable across reordering', () => {
-      const full = buildWatchPlans([], 'ws-1', () => null, { detachedTerminals: detached(WatchMode.FULL) })
-      const notify = buildWatchPlans([], 'ws-1', () => null, { detachedTerminals: detached(WatchMode.NOTIFY) })
+      const full = buildWatchPlans([], 'ws-1', () => null, {
+        detachedTerminals: detached(WatchMode.FULL),
+      })
+      const notify = buildWatchPlans([], 'ws-1', () => null, {
+        detachedTerminals: detached(WatchMode.NOTIFY),
+      })
       expect(watchPlanKey(full.get('w1')!)).not.toBe(watchPlanKey(notify.get('w1')!))
 
       const two = [
@@ -265,7 +291,9 @@ describe('buildWatchPlans', () => {
         { terminalId: 'q2', workerId: 'w1', mode: WatchMode.FULL },
       ]
       const a = buildWatchPlans([], 'ws-1', () => null, { detachedTerminals: two })
-      const b = buildWatchPlans([], 'ws-1', () => null, { detachedTerminals: two.toReversed() })
+      const b = buildWatchPlans([], 'ws-1', () => null, {
+        detachedTerminals: two.toReversed(),
+      })
       expect(watchPlanKey(a.get('w1')!)).toBe(watchPlanKey(b.get('w1')!))
     })
   })
@@ -283,7 +311,9 @@ describe('buildWatchPlans', () => {
   })
 
   it('includes terminal tabs in watch plans', () => {
-    const tabs = [terminal()]
+    const tabs = [
+      terminal(),
+    ]
     const activeKey = () => '1:t1'
     const plans = buildWatchPlans(tabs, 'ws-1', activeKey)
     expect(plans.get('w1')?.terminals.map(t => t.terminalId)).toEqual(['t1'])
@@ -315,7 +345,12 @@ describe('buildWatchPlans', () => {
     const root = agent({ id: 'root-1', tileId: 'root-tile' })
     const child = agent({ id: 'child-1', tileId: 'child-tile', parentAgentId: 'root-1' })
     const shell = terminal({ id: 'terminal-1', tileId: 'terminal-tile' })
-    const tabs = [...(order === 'child-first' ? [child, root] : [root, child]), shell]
+    const tabs = [
+      ...(order === 'child-first'
+        ? [child, root]
+        : [root, child]),
+      shell,
+    ]
     const active = new Map([
       ['root-tile', `${TabType.AGENT}:root-1`],
       ['child-tile', `${TabType.AGENT}:child-1`],
@@ -323,40 +358,56 @@ describe('buildWatchPlans', () => {
     ])
     const plan = buildWatchPlans(tabs, 'ws-1', tileId => active.get(tileId) ?? null, {
       getAgentTab: id => tabs.find((tab): tab is AgentTab => tab.type === TabType.AGENT && tab.id === id),
-      agentResumeSeq: id => id === 'root-1' ? 9007199254740993n : 0n,
-      agentWindowTailSeq: id => id === 'root-1' ? 9007199254740991n : 0n,
+      agentResumeSeq: id => id === 'root-1'
+        ? 9007199254740993n
+        : 0n,
+      agentWindowTailSeq: id => id === 'root-1'
+        ? 9007199254740991n
+        : 0n,
       terminalAfterOffset: () => 17n,
     }).get('w1')
     expect(plan?.agents).toHaveLength(2)
-    expect(plan?.agents.filter(entry => entry.agentId === 'root-1')).toEqual([{
-      agentId: 'root-1',
-      mode: WatchMode.FULL,
-      replay: WatchReplayMode.AFTER_CURSOR_OR_NONE,
-      cursorSeq: 9007199254740993n,
-      windowTailSeq: 9007199254740991n,
-    }])
+    expect(plan?.agents.filter(entry => entry.agentId === 'root-1')).toEqual([
+      {
+        agentId: 'root-1',
+        mode: WatchMode.FULL,
+        replay: WatchReplayMode.AFTER_CURSOR_OR_NONE,
+        cursorSeq: 9007199254740993n,
+        windowTailSeq: 9007199254740991n,
+      },
+    ])
     expect(plan?.agents.filter(entry => entry.agentId === 'child-1')).toHaveLength(1)
-    expect(plan?.terminals).toEqual([{ terminalId: 'terminal-1', mode: WatchMode.FULL, afterOffset: 17n }])
+    expect(plan?.terminals).toEqual([
+      { terminalId: 'terminal-1', mode: WatchMode.FULL, afterOffset: 17n },
+    ])
     expect(plan?.terminalResync.size).toBe(0)
   })
 
   it.each(['child-first', 'root-first'] as const)('retains the actual hidden root cursor in %s order', (order) => {
     const root = agent({ id: 'root-1', tileId: 'root-tile' })
     const child = agent({ id: 'child-1', tileId: 'child-tile', parentAgentId: 'root-1' })
-    const tabs = order === 'child-first' ? [child, root] : [root, child]
-    const plan = buildWatchPlans(tabs, 'ws-1', tileId => tileId === 'child-tile' ? `${TabType.AGENT}:child-1` : null, {
+    const tabs = order === 'child-first'
+      ? [child, root]
+      : [root, child]
+    const plan = buildWatchPlans(tabs, 'ws-1', tileId => tileId === 'child-tile'
+      ? `${TabType.AGENT}:child-1`
+      : null, {
       getAgentTab: id => tabs.find((tab): tab is AgentTab => tab.type === TabType.AGENT && tab.id === id),
-      agentResumeSeq: id => id === 'root-1' ? 42n : 0n,
+      agentResumeSeq: id => id === 'root-1'
+        ? 42n
+        : 0n,
       agentWindowTailSeq: () => 0n,
     }).get('w1')
     expect(plan?.agents).toHaveLength(2)
-    expect(plan?.agents.filter(entry => entry.agentId === 'root-1')).toEqual([{
-      agentId: 'root-1',
-      mode: WatchMode.NOTIFY,
-      replay: WatchReplayMode.AFTER_CURSOR_OR_NONE,
-      cursorSeq: 42n,
-      windowTailSeq: 0n,
-    }])
+    expect(plan?.agents.filter(entry => entry.agentId === 'root-1')).toEqual([
+      {
+        agentId: 'root-1',
+        mode: WatchMode.NOTIFY,
+        replay: WatchReplayMode.AFTER_CURSOR_OR_NONE,
+        cursorSeq: 42n,
+        windowTailSeq: 0n,
+      },
+    ])
   })
 
   it('adds a NOTIFY root entry when the root tab is NOT placed (child-only)', () => {
@@ -407,45 +458,95 @@ describe('buildWatchPlans', () => {
 describe('watchPlanKey', () => {
   it('renews FULL context without reacting to equal identities, cursors, or NOTIFY context', () => {
     const plan = {
-      agents: [agentWatchEntry('child', 1n, 1n, WatchMode.FULL), agentWatchEntry('root', 0n, 0n, WatchMode.NOTIFY)],
+      agents: [
+        agentWatchEntry('child', 1n, 1n, WatchMode.FULL),
+        agentWatchEntry('root', 0n, 0n, WatchMode.NOTIFY),
+      ],
       terminals: [],
       terminalResync: new Set<string>(),
-      agentReplayIdentities: new Map([['child', 'root-a'], ['root', 'ignored-a']]),
+      agentReplayIdentities: new Map([
+        ['child', 'root-a'],
+        ['root', 'ignored-a'],
+      ]),
     }
     const equal = {
       ...plan,
-      agents: [agentWatchEntry('root', 0n, 0n, WatchMode.NOTIFY), agentWatchEntry('child', 99n, 98n, WatchMode.FULL)],
-      agentReplayIdentities: new Map([['root', 'ignored-b'], ['child', 'root-a']]),
+      agents: [
+        agentWatchEntry('root', 0n, 0n, WatchMode.NOTIFY),
+        agentWatchEntry('child', 99n, 98n, WatchMode.FULL),
+      ],
+      agentReplayIdentities: new Map([
+        ['root', 'ignored-b'],
+        ['child', 'root-a'],
+      ]),
     }
     expect(watchPlanKey(equal)).toBe(watchPlanKey(plan))
-    expect(watchPlanKey({ ...plan, agentReplayIdentities: new Map([['child', 'root-b']]) })).not.toBe(watchPlanKey(plan))
+    expect(watchPlanKey({
+      ...plan,
+      agentReplayIdentities: new Map([
+        ['child', 'root-b'],
+      ]),
+    })).not.toBe(watchPlanKey(plan))
   })
 
   it('distinguishes unresolved, absent, and punctuation-bearing FULL identities', () => {
     const plan = {
-      agents: [agentWatchEntry('child', 0n, 0n, WatchMode.FULL)],
+      agents: [
+        agentWatchEntry('child', 0n, 0n, WatchMode.FULL),
+      ],
       terminals: [],
       terminalResync: new Set<string>(),
     }
     expect(watchPlanKey(plan)).toBe(`a:child:${WatchMode.FULL}|t:`)
-    const keys = [watchPlanKey(plan), ...['', 'root', 'root:"other",agent:1', 'root\\other'].map(identity =>
-      watchPlanKey({ ...plan, agentReplayIdentities: new Map([['child', identity]]) }))]
+    const keys = [
+      watchPlanKey(plan),
+      ...[
+        '',
+        'root',
+        'root:"other",agent:1',
+        'root\\other',
+      ].map(identity =>
+        watchPlanKey({
+          ...plan,
+          agentReplayIdentities: new Map([
+            ['child', identity],
+          ]),
+        })),
+    ]
     expect(new Set(keys).size).toBe(5)
   })
 
   it('is stable when only cursors change and moves when a mode changes', () => {
     const a = {
-      agents: [{ agentId: 'a1', mode: WatchMode.FULL, cursorSeq: BigInt(1) } as never],
+      agents: [
+        {
+          agentId: 'a1',
+          mode: WatchMode.FULL,
+          cursorSeq: BigInt(1),
+        } as never,
+      ],
       terminals: [] as never[],
       terminalResync: new Set<string>(),
     }
     const b = {
-      agents: [{ agentId: 'a1', mode: WatchMode.FULL, cursorSeq: BigInt(99) } as never],
+      agents: [
+        {
+          agentId: 'a1',
+          mode: WatchMode.FULL,
+          cursorSeq: BigInt(99),
+        } as never,
+      ],
       terminals: [] as never[],
       terminalResync: new Set<string>(),
     }
     const c = {
-      agents: [{ agentId: 'a1', mode: WatchMode.NOTIFY, cursorSeq: BigInt(99) } as never],
+      agents: [
+        {
+          agentId: 'a1',
+          mode: WatchMode.NOTIFY,
+          cursorSeq: BigInt(99),
+        } as never,
+      ],
       terminals: [] as never[],
       terminalResync: new Set<string>(),
     }
@@ -456,12 +557,24 @@ describe('watchPlanKey', () => {
   it('moves when a terminal is flagged for resync, so the cold plan goes out', () => {
     const clean = {
       agents: [] as never[],
-      terminals: [{ terminalId: 't1', afterOffset: BigInt(400), mode: WatchMode.FULL } as never],
+      terminals: [
+        {
+          terminalId: 't1',
+          afterOffset: BigInt(400),
+          mode: WatchMode.FULL,
+        } as never,
+      ],
       terminalResync: new Set<string>(),
     }
     const flagged = {
       agents: [] as never[],
-      terminals: [{ terminalId: 't1', afterOffset: BigInt(0), mode: WatchMode.FULL } as never],
+      terminals: [
+        {
+          terminalId: 't1',
+          afterOffset: BigInt(0),
+          mode: WatchMode.FULL,
+        } as never,
+      ],
       terminalResync: new Set(['t1']),
     }
     // Without resync in the key, both plans would share t1:FULL and the stream would omit the zero-offset request.

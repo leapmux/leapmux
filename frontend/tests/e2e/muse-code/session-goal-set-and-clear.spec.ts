@@ -47,7 +47,11 @@ museTest('sets a native goal through the panel and clears it after reload', asyn
 museTest('reads a completed native goal as done', async ({ native }) => {
   const { page, modelScript } = native
   const start = await modelScript.queue(
-    { toolCalls: [completeGoalToolCall(native.provider, 'muse-goal-complete')] },
+    {
+      toolCalls: [
+        completeGoalToolCall(native.provider, 'muse-goal-complete'),
+      ],
+    },
     { text: 'The native goal is complete.' },
   )
   const objective = scriptedObjective(modelScript, 'Complete the native goal with the scripted tool.')

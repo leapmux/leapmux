@@ -37,7 +37,16 @@ export function museQuestions(payload: Record<string, unknown>): ControlQuestion
       labels.add(label)
       const description = pickString(option, 'description')
       const preview = pickString(pickObject(option, 'preview'), 'content')
-      options.push({ label, value: label, ...(description ? { description } : {}), ...(preview ? { preview } : {}) })
+      options.push({
+        label,
+        value: label,
+        ...(description
+          ? { description }
+          : {}),
+        ...(preview
+          ? { preview }
+          : {}),
+      })
     }
     // Only a multiple-selection form can carry the counts into the model: a
     // single choice has exactly one answer and no counts to state. A count the
@@ -66,8 +75,12 @@ export function museQuestions(payload: Record<string, unknown>): ControlQuestion
       question: text,
       options,
       multiSelect: multiple,
-      ...(minimum !== undefined ? { minimumSelections: minimum } : {}),
-      ...(maximum !== undefined ? { maximumSelections: maximum } : {}),
+      ...(minimum !== undefined
+        ? { minimumSelections: minimum }
+        : {}),
+      ...(maximum !== undefined
+        ? { maximumSelections: maximum }
+        : {}),
     })
   }
   return questions
@@ -96,13 +109,20 @@ export function museAnswers(questions: ControlQuestion[], state: ControlAnswerSt
 export const museAskUserQuestion: ProviderAskUserQuestion = {
   isRequest: payload => (payload.method === MUSE_METHOD.UserInputRequest || payload.method === MUSE_METHOD.UserInputRequested) && museQuestions(payload).length > 0,
   extractQuestions: museQuestions,
-  sendAnswer: (request, sender, questions, state) => sendJsonRpcResult(sender, request.requestId, { answers: museAnswers(questions, state) }),
+  sendAnswer: (request, sender, questions, state) => sendJsonRpcResult(sender, request.requestId, {
+    answers: museAnswers(questions, state),
+  }),
   sendReject: (request, sender, reason) => sendJsonRpcResult(sender, request.requestId, { cancelled: true, reason }),
 }
 
 const APPROVAL_METHODS: ReadonlySet<string> = new Set([MUSE_METHOD.ApprovalRequest, MUSE_METHOD.ApprovalRequested, MUSE_METHOD.ApprovalUpdated])
 const ALLOW_DECISIONS: ReadonlySet<string> = new Set([MUSE_APPROVAL_DECISION.Approved, MUSE_APPROVAL_DECISION.ApprovedForSession, MUSE_APPROVAL_DECISION.ApprovedPolicyAmendment])
-const REJECT_DECISIONS: ReadonlySet<string> = new Set([MUSE_APPROVAL_DECISION.Denied, MUSE_APPROVAL_DECISION.DeniedPolicyAmendment, MUSE_APPROVAL_DECISION.TimedOut, MUSE_APPROVAL_DECISION.Abort])
+const REJECT_DECISIONS: ReadonlySet<string> = new Set([
+  MUSE_APPROVAL_DECISION.Denied,
+  MUSE_APPROVAL_DECISION.DeniedPolicyAmendment,
+  MUSE_APPROVAL_DECISION.TimedOut,
+  MUSE_APPROVAL_DECISION.Abort,
+])
 const CHOICE_SCOPES: ReadonlySet<string> = new Set(Object.values(MUSE_CHOICE_SCOPE))
 
 interface MuseApprovalChoice {
@@ -133,7 +153,14 @@ function museApprovalChoices(value: unknown): MuseApprovalChoice[] | null {
       return null
     const known = (ALLOW_DECISIONS.has(decision) || REJECT_DECISIONS.has(decision))
       && CHOICE_SCOPES.has(choice.scope)
-    choices.push({ choiceId: optionId, label: name, decision, scope: choice.scope, acceptsFeedback: choice.acceptsFeedback === true, known })
+    choices.push({
+      choiceId: optionId,
+      label: name,
+      decision,
+      scope: choice.scope,
+      acceptsFeedback: choice.acceptsFeedback === true,
+      known,
+    })
   }
   return choices
 }
@@ -160,11 +187,27 @@ export const museControl: ProviderControlCapability = {
         scope = 'workspace'
       const persistent = scope !== undefined
       const allow = ALLOW_DECISIONS.has(choice.decision)
-      const kind = allow ? persistent ? KIND_ALLOW_ALWAYS : ACP_PERMISSION_KIND.AllowOnce : persistent ? KIND_REJECT_ALWAYS : KIND_REJECT_ONCE
-      return { optionId: choice.choiceId, name: choice.label, kind, ...(scope ? { scope } : {}) }
+      const kind = allow
+        ? persistent ? KIND_ALLOW_ALWAYS : ACP_PERMISSION_KIND.AllowOnce
+        : persistent ? KIND_REJECT_ALWAYS : KIND_REJECT_ONCE
+      return {
+        optionId: choice.choiceId,
+        name: choice.label,
+        kind,
+        ...(scope
+          ? { scope }
+          : {}),
+      }
     })
     const subject = pickObject(params, 'subject')
-    return { kind: 'permission', permission: { title: pickString(params, 'toolName') || pickString(subject, 'toolName'), command: pickString(subject, 'command'), options } satisfies PermissionPrompt }
+    return {
+      kind: 'permission',
+      permission: {
+        title: pickString(params, 'toolName') || pickString(subject, 'toolName'),
+        command: pickString(subject, 'command'),
+        options,
+      } satisfies PermissionPrompt,
+    }
   },
   buildControlResponse: (payload, feedback, requestId) => {
     const choices = museApprovalChoices(museParams(payload)?.availableChoices)
@@ -175,6 +218,11 @@ export const museControl: ProviderControlCapability = {
       && (feedback === '' || choice.acceptsFeedback))
     if (!choice)
       throw new Error('Muse supplies no denial choice that accepts this feedback.')
-    return buildJsonRpcResult(requestId, { choiceId: choice.choiceId, ...(feedback ? { feedback } : {}) })
+    return buildJsonRpcResult(requestId, {
+      choiceId: choice.choiceId,
+      ...(feedback
+        ? { feedback }
+        : {}),
+    })
   },
 }

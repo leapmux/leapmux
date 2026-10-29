@@ -38,5 +38,7 @@ export function isCopilotPlanTurn(request: MockModelRequestRecord): boolean {
  * Return undefined when the session never changed its mode.
  */
 export function latestCopilotModeNotice(request: MockModelRequestRecord): string | undefined {
-  return [...nativeModelInstructionText(request).matchAll(MODE_NOTICE)].at(-1)?.[1]?.trim()
+  return [
+    ...nativeModelInstructionText(request).matchAll(MODE_NOTICE),
+  ].at(-1)?.[1]?.trim()
 }

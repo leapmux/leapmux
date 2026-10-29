@@ -32,22 +32,33 @@ export function piExtractRow(input: RowExtractionInput): ChatRow | null {
       // A `plan_mode_complete` row states its answer in the TOOL result, not in a
       // message content block, so it is read before the block scan below.
       const plan = piPlanStatement(payload)
-      if (plan)
-        return plan.kind === 'text' ? { kind: 'assistant-text', text: plan.text } : { kind: 'assistant-plan', text: plan.text }
+      if (plan) {
+        return plan.kind === 'text'
+          ? { kind: 'assistant-text', text: plan.text }
+          : { kind: 'assistant-plan', text: plan.text }
+      }
       // A message with no text block is a row with nothing to show, not one this
       // provider failed to read.
-      const text = isObject(payload) ? piContentText(payload) : ''
-      return text ? { kind: 'assistant-text', text } : { kind: 'hidden' }
+      const text = isObject(payload)
+        ? piContentText(payload)
+        : ''
+      return text
+        ? { kind: 'assistant-text', text }
+        : { kind: 'hidden' }
     }
     case 'assistant_plan': {
       // The same reader the classifier used, so the two layers state one answer.
       const plan = piPlanStatement(payload)
-      return plan?.kind === 'plan' ? { kind: 'assistant-plan', text: plan.text } : null
+      return plan?.kind === 'plan'
+        ? { kind: 'assistant-plan', text: plan.text }
+        : null
     }
     case 'tool_use':
       return piToolSpanRow(payload, parsed, span)
     case 'tool_result':
-      return isObject(payload) ? piResultRow(payload, parsed, span) : null
+      return isObject(payload)
+        ? piResultRow(payload, parsed, span)
+        : null
     case 'user_content':
       return leapmuxUserRow(payload)
     case 'plan_execution':
@@ -58,7 +69,9 @@ export function piExtractRow(input: RowExtractionInput): ChatRow | null {
 }
 /** The span id a side carries, or null when the side states none. */
 function piSideCallId(side: ParsedMessageContent | undefined): string | null {
-  const id = side ? piExtractTool(side.parentObject)?.toolCallId : ''
+  const id = side
+    ? piExtractTool(side.parentObject)?.toolCallId
+    : ''
   return id || null
 }
 
@@ -90,8 +103,12 @@ function piToolSpanRow(
   // the arguments, the end event the payload. A sibling from another call is no
   // side of this one at all -- one turn can run several calls at once.
   const mine = (side: ParsedMessageContent | undefined) => !!side && piSideIsMine(own.toolCallId, side)
-  const request = mine(span.request) ? span.request : undefined
-  const result = mine(span.result) ? span.result : undefined
+  const request = mine(span.request)
+    ? span.request
+    : undefined
+  const result = mine(span.result)
+    ? span.result
+    : undefined
   const row = piToolRow(payload, request, result, parsed.completion)
   if (!row)
     return null
@@ -121,7 +138,14 @@ function piResultRow(
       return null
     const call = createToolCall(
       { id: '', name: PI_TOOL.Agent, lifecycle: SYNTHETIC_TOOL_LIFECYCLE },
-      { kind: 'agent', title: first.description || 'Subagent', request: { description: first.description || 'Subagent', prompt: '' }, result: { agents: [first, ...rest] } },
+      {
+        kind: 'agent',
+        title: first.description || 'Subagent',
+        request: { description: first.description || 'Subagent', prompt: '' },
+        result: {
+          agents: [first, ...rest],
+        },
+      },
     )
     return toolCallRow(call, 'result', { request: false, result: false })
   }

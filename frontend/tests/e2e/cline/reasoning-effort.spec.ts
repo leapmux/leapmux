@@ -14,7 +14,12 @@ import { nativeContext } from './scenarios'
  */
 clineTest.describe('Cline settings', () => {
   clineTest('applies reasoning effort to the native model request', async ({ askingClineWorkspace, page, modelScript, leapmuxServer }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingClineWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: askingClineWorkspace.workspaceId,
+    })
     await exerciseNativeOption(context, {
       groupId: 'effort',
       value: 'high',
@@ -35,7 +40,12 @@ clineTest.describe('Cline settings', () => {
 clineTest.describe('Cline model switch', () => {
   // Both catalog models offer high. Cline merges each field of a connection update alone, so a model switch keeps the effort.
   clineTest('keeps the chosen effort after a model switch and a reload', async ({ askingClineWorkspace, page, modelScript, leapmuxServer }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingClineWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: askingClineWorkspace.workspaceId,
+    })
     await exerciseModelSwitchKeepsOption(context, {
       prepare: async () => {
         await waitForSettingsHydrated(page)
@@ -54,7 +64,12 @@ clineTest.describe('Cline model switch', () => {
   // Auto with the switch to it and with the switch back (`resetEffortToAutoIfUnsupported`, Cline manages its effort).
   // Auto sends no reasoning setting (`clineAutoEffort`), so the next request states no effort.
   clineTest('hides the effort for a model without levels and settles Auto after the round trip', async ({ askingClineWorkspace, page, modelScript, leapmuxServer }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingClineWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: askingClineWorkspace.workspaceId,
+    })
     await exerciseEffortModelRoundTrip(context, {
       effortGroupId: 'effort',
       model: 'deepseek-v4-pro',

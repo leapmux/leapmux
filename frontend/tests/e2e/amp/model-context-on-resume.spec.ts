@@ -13,7 +13,10 @@ import { nativeModelConversationTurns } from '../helpers/nativeScenario'
 import { ARITHMETIC_ANSWER_TEXT, ARITHMETIC_PROMPT, expectAssistantAnswer, loginViaToken, menuOptionLabel, openWorkspace, sendMessage, waitForAgentIdle } from '../helpers/ui'
 
 async function seedThread(mockModelUrl: string, thread: AmpSeededThread): Promise<void> {
-  const response = await fetch(`${mockModelUrl}${AMP_E2E_THREADS_PATH}`, { method: 'POST', body: JSON.stringify(thread) })
+  const response = await fetch(`${mockModelUrl}${AMP_E2E_THREADS_PATH}`, {
+    method: 'POST',
+    body: JSON.stringify(thread),
+  })
   expect(response.status).toBe(201)
 }
 
@@ -41,10 +44,31 @@ ampTest('offers the workspace\'s Amp threads and resumes the one picked', async 
   const seeded = `T-${crypto.randomUUID()}`
   const texts = nativeResumeTexts()
   const priorAnswer = texts.originalAnswer
-  await seedThread(mockModelUrl, { id: seeded, title: 'Seeded Amp thread', tree: subjectTree, messages: savedMessages(priorAnswer, texts.originalPrompt) })
-  await seedThread(mockModelUrl, { id: `T-${crypto.randomUUID()}`, title: 'Archived Amp thread', tree: subjectTree, messages: savedMessages('Archived'), archived: true })
-  await seedThread(mockModelUrl, { id: `T-${crypto.randomUUID()}`, title: 'Empty Amp thread', tree: subjectTree, messages: [] })
-  await seedThread(mockModelUrl, { id: `T-${crypto.randomUUID()}`, title: 'Other workspace thread', tree: pathToFileURL(realpathSync(otherDir)).href, messages: savedMessages('Other workspace') })
+  await seedThread(mockModelUrl, {
+    id: seeded,
+    title: 'Seeded Amp thread',
+    tree: subjectTree,
+    messages: savedMessages(priorAnswer, texts.originalPrompt),
+  })
+  await seedThread(mockModelUrl, {
+    id: `T-${crypto.randomUUID()}`,
+    title: 'Archived Amp thread',
+    tree: subjectTree,
+    messages: savedMessages('Archived'),
+    archived: true,
+  })
+  await seedThread(mockModelUrl, {
+    id: `T-${crypto.randomUUID()}`,
+    title: 'Empty Amp thread',
+    tree: subjectTree,
+    messages: [],
+  })
+  await seedThread(mockModelUrl, {
+    id: `T-${crypto.randomUUID()}`,
+    title: 'Other workspace thread',
+    tree: pathToFileURL(realpathSync(otherDir)).href,
+    messages: savedMessages('Other workspace'),
+  })
 
   // An agent keeps a tab in the workspace, so the New Agent dialog stays reachable.
   const workspaceId = await createWorkspaceViaAPI(hubUrl, adminToken, `Amp Picker ${crypto.randomUUID()}`)

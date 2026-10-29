@@ -45,10 +45,20 @@ export interface TouchPointer {
  */
 export async function touchDown(page: Page, x: number, y: number): Promise<TouchPointer> {
   const cdp = await page.context().newCDPSession(page)
-  await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] })
+  await cdp.send('Input.dispatchTouchEvent', {
+    type: 'touchStart',
+    touchPoints: [
+      { x, y },
+    ],
+  })
   return {
     async moveTo(nextX, nextY) {
-      await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: nextX, y: nextY }] })
+      await cdp.send('Input.dispatchTouchEvent', {
+        type: 'touchMove',
+        touchPoints: [
+          { x: nextX, y: nextY },
+        ],
+      })
     },
     async end() {
       // touchEnd carries NO touch points: the one that lifted is the one that is gone.
@@ -78,7 +88,12 @@ export async function touchTap(page: Page, point: TouchPoint, opts: { taps?: num
   // otherwise leave Blink believing a finger is still down.
   try {
     for (let tap = 0; tap < taps; tap++) {
-      await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: point.x, y: point.y }] })
+      await cdp.send('Input.dispatchTouchEvent', {
+        type: 'touchStart',
+        touchPoints: [
+          { x: point.x, y: point.y },
+        ],
+      })
       await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] })
     }
   }
@@ -164,7 +179,7 @@ export async function recordClicks(page: Pick<Page, 'evaluate'>): Promise<Record
     selections: () => page.evaluate((name) => {
       const record: unknown = Reflect.get(window, name)
       if (!Array.isArray(record))
-        throw new Error('The click record of this page is gone: a navigation replaced the page after recordClicks.')
+        throw new TypeError('The click record of this page is gone: a navigation replaced the page after recordClicks.')
       return record.map(String)
     }, key),
   }

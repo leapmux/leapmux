@@ -68,8 +68,12 @@ describe('DiffView rendering preserves whitespace', () => {
       if (spans.length < 3)
         continue
 
-      const prefixIdx = view === 'unified' ? 2 : 1
-      const contentIdx = view === 'unified' ? 3 : 2
+      const prefixIdx = view === 'unified'
+        ? 2
+        : 1
+      const contentIdx = view === 'unified'
+        ? 3
+        : 2
       const prefix = spans[prefixIdx]?.textContent
       const content = spans[contentIdx]?.textContent ?? ''
 
@@ -83,13 +87,15 @@ describe('DiffView rendering preserves whitespace', () => {
   }
 
   it('unified view: preserves indentation when indent decreases', () => {
-    const hunks = [{
-      oldStart: 1,
-      oldLines: 1,
-      newStart: 1,
-      newLines: 1,
-      lines: ['-        return value;', '+    return newValue;'],
-    }]
+    const hunks = [
+      {
+        oldStart: 1,
+        oldLines: 1,
+        newStart: 1,
+        newLines: 1,
+        lines: ['-        return value;', '+    return newValue;'],
+      },
+    ]
 
     const { container } = render(() => (
       <DiffView hunks={hunks} view="unified" />
@@ -101,13 +107,15 @@ describe('DiffView rendering preserves whitespace', () => {
   })
 
   it('unified view: preserves indentation when indent increases', () => {
-    const hunks = [{
-      oldStart: 1,
-      oldLines: 1,
-      newStart: 1,
-      newLines: 1,
-      lines: ['-    const x = 1;', '+        const y = 2;'],
-    }]
+    const hunks = [
+      {
+        oldStart: 1,
+        oldLines: 1,
+        newStart: 1,
+        newLines: 1,
+        lines: ['-    const x = 1;', '+        const y = 2;'],
+      },
+    ]
 
     const { container } = render(() => (
       <DiffView hunks={hunks} view="unified" />
@@ -119,13 +127,15 @@ describe('DiffView rendering preserves whitespace', () => {
   })
 
   it('unified view: preserves indentation when old is indented and new is not', () => {
-    const hunks = [{
-      oldStart: 1,
-      oldLines: 1,
-      newStart: 1,
-      newLines: 1,
-      lines: ['-    return value', '+return newValue'],
-    }]
+    const hunks = [
+      {
+        oldStart: 1,
+        oldLines: 1,
+        newStart: 1,
+        newLines: 1,
+        lines: ['-    return value', '+return newValue'],
+      },
+    ]
 
     const { container } = render(() => (
       <DiffView hunks={hunks} view="unified" />
@@ -137,13 +147,15 @@ describe('DiffView rendering preserves whitespace', () => {
   })
 
   it('split view: preserves indentation when indent decreases', () => {
-    const hunks = [{
-      oldStart: 1,
-      oldLines: 1,
-      newStart: 1,
-      newLines: 1,
-      lines: ['-        return value;', '+    return newValue;'],
-    }]
+    const hunks = [
+      {
+        oldStart: 1,
+        oldLines: 1,
+        newStart: 1,
+        newLines: 1,
+        lines: ['-        return value;', '+    return newValue;'],
+      },
+    ]
 
     const { container } = render(() => (
       <DiffView hunks={hunks} view="split" />
@@ -167,13 +179,15 @@ describe('DiffView rendering preserves whitespace', () => {
         <DiffView
           filePath="example.ts"
           originalFile={originalFile}
-          hunks={[{
-            oldStart: 10,
-            oldLines: 1,
-            newStart: 10,
-            newLines: 1,
-            lines: [' line 10'],
-          }]}
+          hunks={[
+            {
+              oldStart: 10,
+              oldLines: 1,
+              newStart: 10,
+              newLines: 1,
+              lines: [' line 10'],
+            },
+          ]}
           view="unified"
         />
       ))
@@ -200,19 +214,27 @@ describe('DiffView rendering preserves whitespace', () => {
       newLines: 1,
       lines: [' line 10'],
     }
-    const oldLines = Array.from({ length: 10 }, (_, i) => i === 9 ? 'line 10' : `old line ${i + 1}`)
-    const newLines = Array.from({ length: 10 }, (_, i) => i === 9 ? 'line 10' : `new line ${i + 1}`)
+    const oldLines = Array.from({ length: 10 }, (_, i) => i === 9
+      ? 'line 10'
+      : `old line ${i + 1}`)
+    const newLines = Array.from({ length: 10 }, (_, i) => i === 9
+      ? 'line 10'
+      : `new line ${i + 1}`)
     const oldGapCode = oldLines.slice(0, 9).join('\n')
     const newGapCode = newLines.slice(0, 9).join('\n')
     setCachedTokens(
       'typescript',
       oldGapCode,
-      oldLines.slice(0, 9).map(line => [{ content: `old-token:${line}`, htmlStyle: {} }]),
+      oldLines.slice(0, 9).map(line => [
+        { content: `old-token:${line}`, htmlStyle: {} },
+      ]),
     )
     setCachedTokens(
       'typescript',
       newGapCode,
-      newLines.slice(0, 9).map(line => [{ content: `new-token:${line}`, htmlStyle: {} }]),
+      newLines.slice(0, 9).map(line => [
+        { content: `new-token:${line}`, htmlStyle: {} },
+      ]),
     )
     const [originalFile, setOriginalFile] = createSignal(oldLines.join('\n'))
 
@@ -247,14 +269,25 @@ describe('DiffView rendering preserves whitespace', () => {
     // only expand-all (top-only) was covered before.
     const gapLines = Array.from({ length: 25 }, (_, i) => `line ${i + 1}`)
     // Hunk at line 26 -> lines 1..25 form one leading gap (25 hidden, > GAP_EXPAND_STEP).
-    const hunk = { oldStart: 26, oldLines: 1, newStart: 26, newLines: 1, lines: [' line 26'] }
+    const hunk = {
+      oldStart: 26,
+      oldLines: 1,
+      newStart: 26,
+      newLines: 1,
+      lines: [' line 26'],
+    }
     const originalFile = [...gapLines, 'line 26'].join('\n')
 
     // "Expand down" reveals the top 10 (lines 1..10); "Expand up" reveals the bottom 10
     // (lines 16..25). The hook then tokenizes exactly this joined slice -- seed the cache
     // so it resolves synchronously (no Worker in jsdom).
-    const revealed = [...gapLines.slice(0, 10), ...gapLines.slice(15, 25)]
-    setCachedTokens('typescript', revealed.join('\n'), revealed.map(line => [{ content: `tok:${line}`, htmlStyle: {} }]))
+    const revealed = [
+      ...gapLines.slice(0, 10),
+      ...gapLines.slice(15, 25),
+    ]
+    setCachedTokens('typescript', revealed.join('\n'), revealed.map(line => [
+      { content: `tok:${line}`, htmlStyle: {} },
+    ]))
 
     render(() => <DiffView filePath="example.ts" originalFile={originalFile} hunks={[hunk]} view="unified" />)
 
@@ -277,20 +310,30 @@ describe('DiffView old/new-side syntax highlighting (useAsyncCodeTokens migratio
   // Pre-seed the shared token cache for both sides so the migrated useDiffTokens hook
   // takes its synchronous cache-hit path (no Worker needed), proving both sides flow
   // through the shared hook into buildUnifiedLines.
-  const hunks: StructuredPatchHunk[] = [{
-    oldStart: 1,
-    oldLines: 1,
-    newStart: 1,
-    newLines: 2,
-    lines: [' ctx', '+added'],
-  }]
+  const hunks: StructuredPatchHunk[] = [
+    {
+      oldStart: 1,
+      oldLines: 1,
+      newStart: 1,
+      newLines: 2,
+      lines: [' ctx', '+added'],
+    },
+  ]
 
   function seedSides(): void {
     // extractSidesFromHunks: oldCode = 'ctx'; newCode = 'ctx\nadded'.
-    setCachedTokens('typescript', 'ctx', [[{ content: 'CTXTOK' }]])
+    setCachedTokens('typescript', 'ctx', [
+      [
+        { content: 'CTXTOK' },
+      ],
+    ])
     setCachedTokens('typescript', 'ctx\nadded', [
-      [{ content: 'CTXTOK2' }],
-      [{ content: 'ADDEDTOK' }],
+      [
+        { content: 'CTXTOK2' },
+      ],
+      [
+        { content: 'ADDEDTOK' },
+      ],
     ])
   }
 
@@ -315,7 +358,9 @@ describe('DiffView old/new-side syntax highlighting (useAsyncCodeTokens migratio
     seedSides()
     // DiffView takes the markdown capability alone, so the paused flag fixture
     // states it directly -- no orchestration-bag cast needed.
-    const context: MarkdownRenderContext = { syntaxHighlightingPaused: () => true }
+    const context: MarkdownRenderContext = {
+      syntaxHighlightingPaused: () => true,
+    }
     render(() => <DiffView filePath="example.ts" hunks={hunks} view="unified" context={context} />)
 
     // Present synchronously on the first render (the seed), not after a deferred effect.
@@ -350,14 +395,24 @@ describe('DiffView ansi (.log) highlighting', () => {
       <DiffView
         filePath="out.log"
         view="unified"
-        hunks={[{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: [` ${ESC}[32mgreen${ESC}[0m tail`] }]}
+        hunks={[
+          {
+            oldStart: 1,
+            oldLines: 1,
+            newStart: 1,
+            newLines: 1,
+            lines: [` ${ESC}[32mgreen${ESC}[0m tail`],
+          },
+        ]}
       />
     ))
 
     // The escape sequences are consumed into per-token colors -- the visible text is clean.
     // Target the marked token span (its diffContent parent has the same textContent but no
     // marker), so this asserts a real Shiki token, not the wrapper.
-    const greenSpan = [...container.querySelectorAll('span[data-shiki-token]')].find(s => s.textContent === 'green')
+    const greenSpan = [
+      ...container.querySelectorAll('span[data-shiki-token]'),
+    ].find(s => s.textContent === 'green')
     expect(greenSpan).toBeTruthy()
     // The token's shared style class defines the dual-theme variables (shikiStyleClass).
     expect(greenSpan!.className).toMatch(/^sk-/)
@@ -380,7 +435,15 @@ describe('DiffView ansi (.log) highlighting', () => {
         filePath="out.log"
         view="unified"
         originalFile={originalFile}
-        hunks={[{ oldStart: 3, oldLines: 1, newStart: 3, newLines: 1, lines: [' line 3'] }]}
+        hunks={[
+          {
+            oldStart: 3,
+            oldLines: 1,
+            newStart: 3,
+            newLines: 1,
+            lines: [' line 3'],
+          },
+        ]}
       />
     ))
 
@@ -388,7 +451,9 @@ describe('DiffView ansi (.log) highlighting', () => {
 
     // Revealed gap lines render colored (escapes stripped into token colors). Target the
     // marked token span rather than its unmarked diffContent parent.
-    const redSpan = [...document.querySelectorAll('span[data-shiki-token]')].find(s => s.textContent === 'red-one')
+    const redSpan = [
+      ...document.querySelectorAll('span[data-shiki-token]'),
+    ].find(s => s.textContent === 'red-one')
     expect(redSpan).toBeTruthy()
     expect(redSpan!.className).toMatch(/^sk-/)
   })
@@ -404,7 +469,15 @@ describe('DiffView shared gap scaffold (unified + split)', () => {
     render(() => (
       <DiffView
         originalFile={originalFile}
-        hunks={[{ oldStart: 10, oldLines: 1, newStart: 10, newLines: 1, lines: [' line 10'] }]}
+        hunks={[
+          {
+            oldStart: 10,
+            oldLines: 1,
+            newStart: 10,
+            newLines: 1,
+            lines: [' line 10'],
+          },
+        ]}
         view="split"
       />
     ))
@@ -426,7 +499,15 @@ describe('DiffView shared gap scaffold (unified + split)', () => {
     render(() => (
       <DiffView
         originalFile={originalFile}
-        hunks={[{ oldStart: 2, oldLines: 1, newStart: 2, newLines: 1, lines: [' line 2'] }]}
+        hunks={[
+          {
+            oldStart: 2,
+            oldLines: 1,
+            newStart: 2,
+            newLines: 1,
+            lines: [' line 2'],
+          },
+        ]}
         view="unified"
       />
     ))
@@ -444,7 +525,15 @@ describe('DiffView shared gap scaffold (unified + split)', () => {
     render(() => (
       <DiffView
         originalFile={originalFile}
-        hunks={[{ oldStart: 2, oldLines: 1, newStart: 2, newLines: 1, lines: [' line 2'] }]}
+        hunks={[
+          {
+            oldStart: 2,
+            oldLines: 1,
+            newStart: 2,
+            newLines: 1,
+            lines: [' line 2'],
+          },
+        ]}
         view="split"
       />
     ))
@@ -631,7 +720,13 @@ describe('computeGapMap', () => {
 
   it('computes leading gap before first hunk', () => {
     const hunks: StructuredPatchHunk[] = [
-      { oldStart: 4, oldLines: 2, newStart: 4, newLines: 2, lines: [' line 4', '-line 5', '+line 5 modified'] },
+      {
+        oldStart: 4,
+        oldLines: 2,
+        newStart: 4,
+        newLines: 2,
+        lines: [' line 4', '-line 5', '+line 5 modified'],
+      },
     ]
     const { gaps, trailing } = computeGapMap(hunks, originalFileLines)
     expect(gaps.size).toBe(1)
@@ -641,13 +736,31 @@ describe('computeGapMap', () => {
     // Trailing gap: lines 6..10
     expect(trailing).not.toBeNull()
     expect(trailing!.startLineNumber).toBe(6)
-    expect(trailing!.lines).toEqual(['line 6', 'line 7', 'line 8', 'line 9', 'line 10'])
+    expect(trailing!.lines).toEqual([
+      'line 6',
+      'line 7',
+      'line 8',
+      'line 9',
+      'line 10',
+    ])
   })
 
   it('computes inter-hunk gap', () => {
     const hunks: StructuredPatchHunk[] = [
-      { oldStart: 1, oldLines: 2, newStart: 1, newLines: 2, lines: ['-line 1', '+line 1 mod', ' line 2'] },
-      { oldStart: 7, oldLines: 2, newStart: 7, newLines: 2, lines: [' line 7', '-line 8', '+line 8 mod'] },
+      {
+        oldStart: 1,
+        oldLines: 2,
+        newStart: 1,
+        newLines: 2,
+        lines: ['-line 1', '+line 1 mod', ' line 2'],
+      },
+      {
+        oldStart: 7,
+        oldLines: 2,
+        newStart: 7,
+        newLines: 2,
+        lines: [' line 7', '-line 8', '+line 8 mod'],
+      },
     ]
     const { gaps, trailing } = computeGapMap(hunks, originalFileLines)
     // No leading gap (hunk starts at line 1)
@@ -664,7 +777,13 @@ describe('computeGapMap', () => {
 
   it('returns no trailing gap when last hunk reaches end of file', () => {
     const hunks: StructuredPatchHunk[] = [
-      { oldStart: 9, oldLines: 2, newStart: 9, newLines: 2, lines: [' line 9', '-line 10', '+line 10 mod'] },
+      {
+        oldStart: 9,
+        oldLines: 2,
+        newStart: 9,
+        newLines: 2,
+        lines: [' line 9', '-line 10', '+line 10 mod'],
+      },
     ]
     const { trailing } = computeGapMap(hunks, originalFileLines)
     expect(trailing).toBeNull()
@@ -678,7 +797,13 @@ describe('computeGapMap', () => {
 
   it('handles single hunk spanning entire file', () => {
     const hunks: StructuredPatchHunk[] = [
-      { oldStart: 1, oldLines: 10, newStart: 1, newLines: 10, lines: originalFileLines.map(l => ` ${l}`) },
+      {
+        oldStart: 1,
+        oldLines: 10,
+        newStart: 1,
+        newLines: 10,
+        lines: originalFileLines.map(l => ` ${l}`),
+      },
     ]
     const { gaps, trailing } = computeGapMap(hunks, originalFileLines)
     expect(gaps.size).toBe(0)
@@ -689,8 +814,20 @@ describe('computeGapMap', () => {
 describe('computeSyntheticGapMap', () => {
   it('computes only inter-hunk gaps without original file content', () => {
     const hunks: StructuredPatchHunk[] = [
-      { oldStart: 4, oldLines: 2, newStart: 4, newLines: 2, lines: [' line 4', '-line 5', '+line 5 mod'] },
-      { oldStart: 9, oldLines: 1, newStart: 9, newLines: 1, lines: ['-line 9', '+line 9 mod'] },
+      {
+        oldStart: 4,
+        oldLines: 2,
+        newStart: 4,
+        newLines: 2,
+        lines: [' line 4', '-line 5', '+line 5 mod'],
+      },
+      {
+        oldStart: 9,
+        oldLines: 1,
+        newStart: 9,
+        newLines: 1,
+        lines: ['-line 9', '+line 9 mod'],
+      },
     ]
 
     const gaps = computeSyntheticGapMap(hunks)
@@ -701,7 +838,13 @@ describe('computeSyntheticGapMap', () => {
 
   it('does not infer outer gaps without original file length', () => {
     const hunks: StructuredPatchHunk[] = [
-      { oldStart: 2, oldLines: 1, newStart: 2, newLines: 1, lines: ['-line 2', '+line 2 mod'] },
+      {
+        oldStart: 2,
+        oldLines: 1,
+        newStart: 2,
+        newLines: 1,
+        lines: ['-line 2', '+line 2 mod'],
+      },
     ]
 
     const gaps = computeSyntheticGapMap(hunks)
@@ -722,9 +865,18 @@ describe('groupByHunk', () => {
     ]
     const groups = groupByHunk(entries)
     expect(groups).toHaveLength(3)
-    expect(groups[0]).toEqual([{ hunkIndex: 0, value: 'a' }, { hunkIndex: 0, value: 'b' }])
-    expect(groups[1]).toEqual([{ hunkIndex: 1, value: 'c' }, { hunkIndex: 1, value: 'd' }, { hunkIndex: 1, value: 'e' }])
-    expect(groups[2]).toEqual([{ hunkIndex: 2, value: 'f' }])
+    expect(groups[0]).toEqual([
+      { hunkIndex: 0, value: 'a' },
+      { hunkIndex: 0, value: 'b' },
+    ])
+    expect(groups[1]).toEqual([
+      { hunkIndex: 1, value: 'c' },
+      { hunkIndex: 1, value: 'd' },
+      { hunkIndex: 1, value: 'e' },
+    ])
+    expect(groups[2]).toEqual([
+      { hunkIndex: 2, value: 'f' },
+    ])
   })
 
   it('returns empty array for empty input', () => {
@@ -748,8 +900,20 @@ const COLLAPSE_RE = /collapse/i
 
 describe('DiffView gap rendering without original file', () => {
   const hunks: StructuredPatchHunk[] = [
-    { oldStart: 4, oldLines: 2, newStart: 4, newLines: 2, lines: [' line 4', '-line 5', '+line 5 mod'] },
-    { oldStart: 9, oldLines: 1, newStart: 9, newLines: 1, lines: ['-line 9', '+line 9 mod'] },
+    {
+      oldStart: 4,
+      oldLines: 2,
+      newStart: 4,
+      newLines: 2,
+      lines: [' line 4', '-line 5', '+line 5 mod'],
+    },
+    {
+      oldStart: 9,
+      oldLines: 1,
+      newStart: 9,
+      newLines: 1,
+      lines: ['-line 9', '+line 9 mod'],
+    },
   ]
 
   it('renders non-clickable hidden-line gaps in unified view', () => {
@@ -805,13 +969,15 @@ describe('dual-side tokenization dedup', () => {
     })
     try {
       // Unique content so earlier tests' token-cache seeds can't satisfy this key.
-      const hunks: StructuredPatchHunk[] = [{
-        oldStart: 1,
-        oldLines: 2,
-        newStart: 1,
-        newLines: 2,
-        lines: [' const dedupSideA = 1', ' const dedupSideB = 2'],
-      }]
+      const hunks: StructuredPatchHunk[] = [
+        {
+          oldStart: 1,
+          oldLines: 2,
+          newStart: 1,
+          newLines: 2,
+          lines: [' const dedupSideA = 1', ' const dedupSideB = 2'],
+        },
+      ]
       const { container } = render(() => <DiffView filePath="dedup-sides.ts" hunks={hunks} view="split" />)
 
       // Two hook instances (old side + new side), ONE spawned worker, ONE dispatch.
@@ -835,8 +1001,12 @@ describe('dual-side tokenization dedup', () => {
           tokens: {
             styles: [],
             lines: [
-              [[-1, 'const dedupSideA = 1']],
-              [[-1, 'const dedupSideB = 2']],
+              [
+                [-1, 'const dedupSideA = 1'],
+              ],
+              [
+                [-1, 'const dedupSideB = 2'],
+              ],
             ],
           },
         },
@@ -844,7 +1014,9 @@ describe('dual-side tokenization dedup', () => {
       await waitFor(() => {
         // The diff renderer marks token spans with data-shiki-token; the
         // diffContent wrapper shares the textContent, so target the marker.
-        const tokenSpans = [...container.querySelectorAll('span[data-shiki-token]')]
+        const tokenSpans = [
+          ...container.querySelectorAll('span[data-shiki-token]'),
+        ]
           .filter(s => s.textContent === 'const dedupSideA = 1')
         expect(tokenSpans).toHaveLength(2) // left column + right column
       })
@@ -862,30 +1034,46 @@ describe('diff token span classes (shared style class + word-diff composition)',
   it('composes the token style class with the word-diff highlight on changed fragments only', () => {
     // One whole-line token per side carrying a shared style class, so the
     // word-diff splitter must carry that class onto every fragment it cuts.
-    setCachedTokens('typescript', 'const wdValue = 1', [[{ content: 'const wdValue = 1', className: 'sk-wd-old' }]])
-    setCachedTokens('typescript', 'const wdNewValue = 1', [[{ content: 'const wdNewValue = 1', className: 'sk-wd-new' }]])
-    const hunks: StructuredPatchHunk[] = [{
-      oldStart: 1,
-      oldLines: 1,
-      newStart: 1,
-      newLines: 1,
-      lines: ['-const wdValue = 1', '+const wdNewValue = 1'],
-    }]
+    setCachedTokens('typescript', 'const wdValue = 1', [
+      [
+        { content: 'const wdValue = 1', className: 'sk-wd-old' },
+      ],
+    ])
+    setCachedTokens('typescript', 'const wdNewValue = 1', [
+      [
+        { content: 'const wdNewValue = 1', className: 'sk-wd-new' },
+      ],
+    ])
+    const hunks: StructuredPatchHunk[] = [
+      {
+        oldStart: 1,
+        oldLines: 1,
+        newStart: 1,
+        newLines: 1,
+        lines: ['-const wdValue = 1', '+const wdNewValue = 1'],
+      },
+    ]
     const { container } = render(() => <DiffView filePath="wd.ts" hunks={hunks} view="unified" />)
 
     // The changed word carries BOTH the token's shared style class and the
     // word-diff highlight...
-    const removed = [...container.querySelectorAll('span[data-shiki-token]')].find(s => s.textContent === 'wdValue')!
+    const removed = [
+      ...container.querySelectorAll('span[data-shiki-token]'),
+    ].find(s => s.textContent === 'wdValue')!
     expect(removed).toBeTruthy()
     expect(removed.classList.contains('sk-wd-old')).toBe(true)
     expect(removed.classList.contains(diffRemovedInline)).toBe(true)
-    const added = [...container.querySelectorAll('span[data-shiki-token]')].find(s => s.textContent === 'wdNewValue')!
+    const added = [
+      ...container.querySelectorAll('span[data-shiki-token]'),
+    ].find(s => s.textContent === 'wdNewValue')!
     expect(added).toBeTruthy()
     expect(added.classList.contains('sk-wd-new')).toBe(true)
     expect(added.classList.contains(diffAddedInline)).toBe(true)
 
     // ...while the unchanged fragments of the same tokens keep only the style class.
-    const unchanged = [...container.querySelectorAll('span[data-shiki-token]')].filter(s => s.textContent === 'const ')
+    const unchanged = [
+      ...container.querySelectorAll('span[data-shiki-token]'),
+    ].filter(s => s.textContent === 'const ')
     expect(unchanged.length).toBeGreaterThan(0)
     for (const fragment of unchanged) {
       expect(fragment.classList.contains('sk-wd-old') || fragment.classList.contains('sk-wd-new')).toBe(true)
@@ -896,15 +1084,25 @@ describe('diff token span classes (shared style class + word-diff composition)',
 
   it('never stamps an empty class attribute on unstyled token or plain fallback spans', () => {
     // Unstyled tokens (no className) exercise the fragment path...
-    setCachedTokens('typescript', 'plain wd old line', [[{ content: 'plain wd old line' }]])
-    setCachedTokens('typescript', 'plain wd new line', [[{ content: 'plain wd new line' }]])
-    const hunks: StructuredPatchHunk[] = [{
-      oldStart: 1,
-      oldLines: 1,
-      newStart: 1,
-      newLines: 1,
-      lines: ['-plain wd old line', '+plain wd new line'],
-    }]
+    setCachedTokens('typescript', 'plain wd old line', [
+      [
+        { content: 'plain wd old line' },
+      ],
+    ])
+    setCachedTokens('typescript', 'plain wd new line', [
+      [
+        { content: 'plain wd new line' },
+      ],
+    ])
+    const hunks: StructuredPatchHunk[] = [
+      {
+        oldStart: 1,
+        oldLines: 1,
+        newStart: 1,
+        newLines: 1,
+        lines: ['-plain wd old line', '+plain wd new line'],
+      },
+    ]
     const withTokens = render(() => <DiffView filePath="empty-class.ts" hunks={hunks} view="unified" />)
     expect(withTokens.container.querySelector('[class=""]')).toBeNull()
 

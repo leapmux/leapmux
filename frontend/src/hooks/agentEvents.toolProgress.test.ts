@@ -21,7 +21,13 @@ const RETRY_WIRE = {
   error_status: 529,
   error_category: 'overloaded',
 }
-const RETRY = { attempt: 2, maxRetries: 5, retryDelayMs: 4000, errorStatus: 529, errorCategory: 'overloaded' }
+const RETRY = {
+  attempt: 2,
+  maxRetries: 5,
+  retryDelayMs: 4000,
+  errorStatus: 529,
+  errorCategory: 'overloaded',
+}
 
 /** The provider session every span below belongs to, unless a case states another. */
 const SESSION = 'sess-1'
@@ -49,8 +55,16 @@ function sessionInfoMessage(info: unknown) {
 
 describe('wireRunningToolToUpdate', () => {
   it('translates a heartbeat payload', () => {
-    expect(wireRunningToolToUpdate({ span_id: 'toolu_A', agent_session_id: SESSION, tool_name: 'Bash', elapsed_seconds: 30 }))
-      .toEqual({ ...span('toolu_A'), elapsedSeconds: 30 })
+    expect(wireRunningToolToUpdate({
+      span_id: 'toolu_A',
+      agent_session_id: SESSION,
+      tool_name: 'Bash',
+      elapsed_seconds: 30,
+    }))
+      .toEqual({
+        ...span('toolu_A'),
+        elapsedSeconds: 30,
+      })
   })
 
   // The store keys an entry by the session and the span together, so the
@@ -63,10 +77,23 @@ describe('wireRunningToolToUpdate', () => {
   // A command can produce no output while it runs.
   // Its empty output tail remains a real value, so check the key's presence.
   it('reads the output tail and its truncation flag', () => {
-    expect(wireRunningToolToUpdate({ span_id: 'toolu_A', agent_session_id: SESSION, output_tail: 'building...\n', output_truncated: true }))
-      .toEqual({ ...span('toolu_A'), outputTail: 'building...\n', outputTruncated: true })
+    expect(wireRunningToolToUpdate({
+      span_id: 'toolu_A',
+      agent_session_id: SESSION,
+      output_tail: 'building...\n',
+      output_truncated: true,
+    }))
+      .toEqual({
+        ...span('toolu_A'),
+        outputTail: 'building...\n',
+        outputTruncated: true,
+      })
     expect(wireRunningToolToUpdate({ span_id: 'toolu_A', agent_session_id: SESSION, output_tail: '' }))
-      .toEqual({ ...span('toolu_A'), outputTail: '', outputTruncated: false })
+      .toEqual({
+        ...span('toolu_A'),
+        outputTail: '',
+        outputTruncated: false,
+      })
   })
 
   // A heartbeat supplies no output tail. Retain the tail from the last output frame because the
@@ -74,7 +101,10 @@ describe('wireRunningToolToUpdate', () => {
 
   it('leaves the tail off an update that states none', () => {
     expect(wireRunningToolToUpdate({ span_id: 'toolu_A', agent_session_id: SESSION, elapsed_seconds: 30 }))
-      .toEqual({ ...span('toolu_A'), elapsedSeconds: 30 })
+      .toEqual({
+        ...span('toolu_A'),
+        elapsedSeconds: 30,
+      })
   })
 
   // An absent session becomes an empty string, as it does in messageSpanKey.
@@ -93,7 +123,10 @@ describe('wireRunningToolToUpdate', () => {
       tool_name: 'Agent',
       subagent_type: 'Explore',
       retry: RETRY_WIRE,
-    })).toEqual({ ...span('toolu_A'), retry: RETRY })
+    })).toEqual({
+      ...span('toolu_A'),
+      retry: RETRY,
+    })
   })
 
   // The tool row supplies the tool name and subagent type. The progress badge uses neither
@@ -107,16 +140,32 @@ describe('wireRunningToolToUpdate', () => {
       subagent_type: 'Explore',
       elapsed_seconds: 30,
     })
-    expect(update).toEqual({ ...span('toolu_A'), elapsedSeconds: 30 })
+    expect(update).toEqual({
+      ...span('toolu_A'),
+      elapsedSeconds: 30,
+    })
   })
 
   it('carries an explicit null retry through as null -- the resolved signal', () => {
-    const update = wireRunningToolToUpdate({ span_id: 'toolu_A', agent_session_id: SESSION, tool_name: 'Agent', retry: null })
-    expect(update).toEqual({ ...span('toolu_A'), retry: null })
+    const update = wireRunningToolToUpdate({
+      span_id: 'toolu_A',
+      agent_session_id: SESSION,
+      tool_name: 'Agent',
+      retry: null,
+    })
+    expect(update).toEqual({
+      ...span('toolu_A'),
+      retry: null,
+    })
   })
 
   it('leaves `retry` absent when the payload omits it, so a heartbeat cannot clear one', () => {
-    const update = wireRunningToolToUpdate({ span_id: 'toolu_A', agent_session_id: SESSION, tool_name: 'Bash', elapsed_seconds: 30 })
+    const update = wireRunningToolToUpdate({
+      span_id: 'toolu_A',
+      agent_session_id: SESSION,
+      tool_name: 'Bash',
+      elapsed_seconds: 30,
+    })
     expect(update && 'retry' in update).toBe(false)
   })
 
@@ -133,20 +182,44 @@ describe('wireRunningToolToUpdate', () => {
   })
 
   it('leaves `permissionCheck` absent when the payload omits it', () => {
-    const update = wireRunningToolToUpdate({ span_id: 'toolu_A', agent_session_id: SESSION, tool_name: 'Bash', elapsed_seconds: 30 })
+    const update = wireRunningToolToUpdate({
+      span_id: 'toolu_A',
+      agent_session_id: SESSION,
+      tool_name: 'Bash',
+      elapsed_seconds: 30,
+    })
     expect(update && 'permissionCheck' in update).toBe(false)
   })
 
   it('rejects a payload that identifies no span', () => {
-    for (const value of [undefined, null, 'x', 42, {}, { span_id: '' }, { span_id: 7 }])
+    for (const value of [
+      undefined,
+      null,
+      'x',
+      42,
+      {},
+      { span_id: '' },
+      { span_id: 7 },
+    ])
       expect(wireRunningToolToUpdate(value)).toBeUndefined()
   })
 
   it('drops an elapsed time that is not a usable number', () => {
     // Without validation, NaN and Infinity reach formatDuration and produce an invalid label on the card.
     // A negative elapsed time is not a duration.
-    for (const elapsed of [Number.NaN, Number.POSITIVE_INFINITY, -5, '30', null]) {
-      const update = wireRunningToolToUpdate({ span_id: 'toolu_A', agent_session_id: SESSION, tool_name: 'Bash', elapsed_seconds: elapsed })
+    for (const elapsed of [
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      -5,
+      '30',
+      null,
+    ]) {
+      const update = wireRunningToolToUpdate({
+        span_id: 'toolu_A',
+        agent_session_id: SESSION,
+        tool_name: 'Bash',
+        elapsed_seconds: elapsed,
+      })
       expect(update && 'elapsedSeconds' in update).toBe(false)
     }
   })
@@ -155,7 +228,15 @@ describe('wireRunningToolToUpdate', () => {
   // clears it. A partial badge must not display an invented 0/0 count.
 
   it('omits a retry it cannot read, so a live badge survives an unknown shape', () => {
-    for (const retry of [{ attempt: 2 }, { max_retries: 5 }, { attempt: '2', max_retries: 5 }, 'x', 42, [], undefined]) {
+    for (const retry of [
+      { attempt: 2 },
+      { max_retries: 5 },
+      { attempt: '2', max_retries: 5 },
+      'x',
+      42,
+      [],
+      undefined,
+    ]) {
       const update = wireRunningToolToUpdate({ span_id: 'toolu_A', agent_session_id: SESSION, retry })
       expect(update && 'retry' in update).toBe(false)
     }
@@ -169,25 +250,53 @@ describe('wireRunningToolToUpdate', () => {
     // A zero elapsed time is still a supplied value. The translator must preserve it even when a
     // normal heartbeat reports a positive value.
 
-    expect(wireRunningToolToUpdate({ span_id: 'toolu_A', agent_session_id: SESSION, tool_name: 'Bash', elapsed_seconds: 0 }))
-      .toEqual({ ...span('toolu_A'), elapsedSeconds: 0 })
+    expect(wireRunningToolToUpdate({
+      span_id: 'toolu_A',
+      agent_session_id: SESSION,
+      tool_name: 'Bash',
+      elapsed_seconds: 0,
+    }))
+      .toEqual({
+        ...span('toolu_A'),
+        elapsedSeconds: 0,
+      })
   })
 
   it('supplies defaults for the retry fields the agent left out', () => {
-    expect(wireRunningToolToUpdate({ span_id: 'toolu_A', agent_session_id: SESSION, retry: { attempt: 1, max_retries: 3 } })?.retry)
-      .toEqual({ attempt: 1, maxRetries: 3, retryDelayMs: 0, errorStatus: null, errorCategory: '' })
+    expect(wireRunningToolToUpdate({
+      span_id: 'toolu_A',
+      agent_session_id: SESSION,
+      retry: { attempt: 1, max_retries: 3 },
+    })?.retry)
+      .toEqual({
+        attempt: 1,
+        maxRetries: 3,
+        retryDelayMs: 0,
+        errorStatus: null,
+        errorCategory: '',
+      })
   })
 })
 
 describe('handleAgentSessionInfo running_tool', () => {
   function stores() {
-    return { agentSessionStore: createAgentSessionStore(), chatStore: createChatStore() }
+    return {
+      agentSessionStore: createAgentSessionStore(),
+      chatStore: createChatStore(),
+    }
   }
 
   it('applies a running_tool payload to the chat store and consumes the message', () => {
     createRoot((dispose) => {
       const s = stores()
-      const msg = sessionInfoMessage({ running_tool: { span_id: 'toolu_A', agent_session_id: SESSION, tool_name: 'Bash', elapsed_seconds: 30 } })
+      const msg = sessionInfoMessage({
+        running_tool: {
+          span_id: 'toolu_A',
+          agent_session_id: SESSION,
+          tool_name: 'Bash',
+          elapsed_seconds: 30,
+        },
+      })
       expect(handleAgentSessionInfo('a1', parseMessageContent(msg), s)).toBe(true)
       expect(s.chatStore.getToolProgress('a1', span('toolu_A'))).toEqual({ elapsedSeconds: 30 })
       dispose()
@@ -199,17 +308,33 @@ describe('handleAgentSessionInfo running_tool', () => {
   it('never adds the payload to the message window', () => {
     createRoot((dispose) => {
       installTestBridge({ workspaceId: 'tool-progress-messages' })
-      const s = { ...stores(), ...createTestTabStores('tool-progress-messages'), getActiveWorkspaceId: () => 'tool-progress-messages' }
+      const s = {
+        ...stores(),
+        ...createTestTabStores('tool-progress-messages'),
+        getActiveWorkspaceId: () => 'tool-progress-messages',
+      }
       const msg = sessionInfoMessage({
         thinking_tokens: 42,
         output_bytes: 2048,
         output_bytes_minimum: true,
-        running_tool: { span_id: 'toolu_A', agent_session_id: SESSION, tool_name: 'Bash', elapsed_seconds: 30 },
+        running_tool: {
+          span_id: 'toolu_A',
+          agent_session_id: SESSION,
+          tool_name: 'Bash',
+          elapsed_seconds: 30,
+        },
       })
       handleAgentMessage('a1', msg, s, 'live')
       expect(s.chatStore.getMessages('a1')).toHaveLength(0)
       expect(s.chatStore.getMessageVersion('a1')).toBe(0)
-      handleAgentMessage('a1', agentMessage({ type: 'assistant', message: { content: [{ type: 'text', text: 'A real transcript row.' }] } }), s, 'live')
+      handleAgentMessage('a1', agentMessage({
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'text', text: 'A real transcript row.' },
+          ],
+        },
+      }), s, 'live')
       expect(s.chatStore.getMessages('a1')).toHaveLength(1)
       expect(s.chatStore.getMessageVersion('a1')).toBeGreaterThan(0)
       dispose()
@@ -220,11 +345,22 @@ describe('handleAgentSessionInfo running_tool', () => {
     createRoot((dispose) => {
       const s = stores()
       handleAgentSessionInfo('a1', parseMessageContent(sessionInfoMessage({
-        running_tool: { span_id: 'toolu_A', agent_session_id: SESSION, tool_name: 'Agent', elapsed_seconds: 90 },
+        running_tool: {
+          span_id: 'toolu_A',
+          agent_session_id: SESSION,
+          tool_name: 'Agent',
+          elapsed_seconds: 90,
+        },
       })), s)
       // The retry family reports elapsed_time_seconds 0, which the worker omits.
       handleAgentSessionInfo('a1', parseMessageContent(sessionInfoMessage({
-        running_tool: { span_id: 'toolu_A', agent_session_id: SESSION, tool_name: 'Agent', subagent_type: 'Explore', retry: RETRY_WIRE },
+        running_tool: {
+          span_id: 'toolu_A',
+          agent_session_id: SESSION,
+          tool_name: 'Agent',
+          subagent_type: 'Explore',
+          retry: RETRY_WIRE,
+        },
       })), s)
       expect(s.chatStore.getToolProgress('a1', span('toolu_A'))).toEqual({
         elapsedSeconds: 90,
@@ -238,10 +374,21 @@ describe('handleAgentSessionInfo running_tool', () => {
     createRoot((dispose) => {
       const s = stores()
       handleAgentSessionInfo('a1', parseMessageContent(sessionInfoMessage({
-        running_tool: { span_id: 'toolu_A', agent_session_id: SESSION, tool_name: 'Agent', elapsed_seconds: 90, retry: RETRY_WIRE },
+        running_tool: {
+          span_id: 'toolu_A',
+          agent_session_id: SESSION,
+          tool_name: 'Agent',
+          elapsed_seconds: 90,
+          retry: RETRY_WIRE,
+        },
       })), s)
       handleAgentSessionInfo('a1', parseMessageContent(sessionInfoMessage({
-        running_tool: { span_id: 'toolu_A', agent_session_id: SESSION, tool_name: 'Agent', retry: null },
+        running_tool: {
+          span_id: 'toolu_A',
+          agent_session_id: SESSION,
+          tool_name: 'Agent',
+          retry: null,
+        },
       })), s)
       expect(s.chatStore.getToolProgress('a1', span('toolu_A'))?.retry).toBeUndefined()
       expect(s.chatStore.getToolProgress('a1', span('toolu_A'))?.elapsedSeconds).toBe(90)
@@ -291,8 +438,17 @@ describe('handleAgentSessionInfo running_tool', () => {
   it('consumes a running_tool the translation rejects and preserves the progress badge', () => {
     createRoot((dispose) => {
       const s = stores()
-      s.chatStore.applyToolProgress('a1', { ...span('toolu_A'), elapsedSeconds: 30 })
-      for (const value of [null, 'x', 42, {}, { agent_session_id: SESSION, tool_name: 'Bash', elapsed_seconds: 30 }])
+      s.chatStore.applyToolProgress('a1', {
+        ...span('toolu_A'),
+        elapsedSeconds: 30,
+      })
+      for (const value of [
+        null,
+        'x',
+        42,
+        {},
+        { agent_session_id: SESSION, tool_name: 'Bash', elapsed_seconds: 30 },
+      ])
         expect(handleAgentSessionInfo('a1', parseMessageContent(sessionInfoMessage({ running_tool: value })), s)).toBe(true)
       expect(s.chatStore.getToolProgress('a1', span('toolu_A'))).toEqual({ elapsedSeconds: 30 })
       dispose()
@@ -304,7 +460,12 @@ describe('handleAgentSessionInfo running_tool', () => {
       const s = stores()
       handleAgentSessionInfo('a1', parseMessageContent(sessionInfoMessage({
         total_cost_usd: 1.5,
-        running_tool: { span_id: 'toolu_A', agent_session_id: SESSION, tool_name: 'Bash', elapsed_seconds: 30 },
+        running_tool: {
+          span_id: 'toolu_A',
+          agent_session_id: SESSION,
+          tool_name: 'Bash',
+          elapsed_seconds: 30,
+        },
       })), s)
       expect(s.agentSessionStore.getInfo('a1').totalCostUsd).toBe(1.5)
       expect(s.chatStore.getToolProgress('a1', span('toolu_A'))?.elapsedSeconds).toBe(30)
@@ -327,8 +488,15 @@ describe('tool progress is cleared at every turn and agent boundary', () => {
     const chatStore = createChatStore()
     // toolu_A also holds a permission check, so every boundary test proves that
     // a live check cannot survive a turn or agent boundary.
-    chatStore.applyToolProgress('a1', { ...span('toolu_A'), elapsedSeconds: 30, permissionCheck: true })
-    chatStore.applyToolProgress('a1', { ...span('toolu_B'), elapsedSeconds: 60 })
+    chatStore.applyToolProgress('a1', {
+      ...span('toolu_A'),
+      elapsedSeconds: 30,
+      permissionCheck: true,
+    })
+    chatStore.applyToolProgress('a1', {
+      ...span('toolu_B'),
+      elapsedSeconds: 60,
+    })
     const agentSessionStore = createAgentSessionStore()
     // The thinking counter and tool badges both describe the live turn.
     // Seed both so each boundary test checks that the handler clears them together.
@@ -350,7 +518,10 @@ describe('tool progress is cleared at every turn and agent boundary', () => {
   }
 
   function running(chatStore: ReturnType<typeof createChatStore>) {
-    return [chatStore.getToolProgress('a1', span('toolu_A')), chatStore.getToolProgress('a1', span('toolu_B'))]
+    return [
+      chatStore.getToolProgress('a1', span('toolu_A')),
+      chatStore.getToolProgress('a1', span('toolu_B')),
+    ]
       .filter(Boolean)
   }
 
@@ -432,7 +603,10 @@ describe('tool progress is cleared at every turn and agent boundary', () => {
   it('a boundary on ONE agent leaves another agent\'s spans alone', () => {
     createRoot((dispose) => {
       const s = boundaryStores()
-      s.chatStore.applyToolProgress('a2', { ...span('toolu_A'), elapsedSeconds: 30 })
+      s.chatStore.applyToolProgress('a2', {
+        ...span('toolu_A'),
+        elapsedSeconds: 30,
+      })
       const msg = agentMessage({ type: 'result', subtype: 'success' })
       handleResultDivider('a1', msg, parseMessageContent(msg), s, 'live')
       expect(running(s.chatStore)).toHaveLength(0)
@@ -447,7 +621,11 @@ describe('dropFinishedToolProgress', () => {
     const chatStore = createChatStore()
     // A live permission check rides the entry, so every drop test proves that a
     // finished call cannot leave one behind.
-    chatStore.applyToolProgress('a1', { ...span('toolu_A'), elapsedSeconds: 30, permissionCheck: true })
+    chatStore.applyToolProgress('a1', {
+      ...span('toolu_A'),
+      elapsedSeconds: 30,
+      permissionCheck: true,
+    })
     return chatStore
   }
 
@@ -456,7 +634,14 @@ describe('dropFinishedToolProgress', () => {
       const chatStore = seeded()
       // A Claude tool_result arrives as a `user` envelope carrying the block.
       const msg = agentMessage(
-        { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_A', content: 'ok' }] } },
+        {
+          type: 'user',
+          message: {
+            content: [
+              { type: 'tool_result', tool_use_id: 'toolu_A', content: 'ok' },
+            ],
+          },
+        },
         { spanId: 'toolu_A' },
       )
       dropFinishedToolProgress('a1', msg, parseMessageContent(msg), chatStore)
@@ -472,7 +657,17 @@ describe('dropFinishedToolProgress', () => {
     createRoot((dispose) => {
       const chatStore = seeded()
       const msg = agentMessage(
-        { id: 'native-result', role: 'result', seq: 3, content: { sessionUpdate: 'tool_call_update', toolCallId: 'toolu_A', status: 'completed', content: [] } },
+        {
+          id: 'native-result',
+          role: 'result',
+          seq: 3,
+          content: {
+            sessionUpdate: 'tool_call_update',
+            toolCallId: 'toolu_A',
+            status: 'completed',
+            content: [],
+          },
+        },
         { spanId: 'toolu_A', agentProvider: AgentProvider.OPENCODE },
       )
       const parsed = parseMessageContent(msg)
@@ -489,7 +684,14 @@ describe('dropFinishedToolProgress', () => {
   it('drops nothing for a result row of another provider session', () => {
     createRoot((dispose) => {
       const chatStore = seeded()
-      const content = { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_A', content: 'ok' }] } }
+      const content = {
+        type: 'user',
+        message: {
+          content: [
+            { type: 'tool_result', tool_use_id: 'toolu_A', content: 'ok' },
+          ],
+        },
+      }
       const stranger = agentMessage(content, { spanId: 'toolu_A', agentSessionId: 'other-session' })
       dropFinishedToolProgress('a1', stranger, parseMessageContent(stranger), chatStore)
       expect(chatStore.getToolProgress('a1', span('toolu_A'))?.elapsedSeconds).toBe(30)
@@ -505,7 +707,19 @@ describe('dropFinishedToolProgress', () => {
     createRoot((dispose) => {
       const chatStore = seeded()
       const msg = agentMessage(
-        { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'toolu_A', name: 'Bash', input: {} }] } },
+        {
+          type: 'assistant',
+          message: {
+            content: [
+              {
+                type: 'tool_use',
+                id: 'toolu_A',
+                name: 'Bash',
+                input: {},
+              },
+            ],
+          },
+        },
         { spanId: 'toolu_A' },
       )
       dropFinishedToolProgress('a1', msg, parseMessageContent(msg), chatStore)
@@ -517,7 +731,14 @@ describe('dropFinishedToolProgress', () => {
   it('leaves the span alone for a row that carries no span at all', () => {
     createRoot((dispose) => {
       const chatStore = seeded()
-      const msg = agentMessage({ type: 'assistant', message: { content: [{ type: 'text', text: 'hi' }] } })
+      const msg = agentMessage({
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'text', text: 'hi' },
+          ],
+        },
+      })
       dropFinishedToolProgress('a1', msg, parseMessageContent(msg), chatStore)
       expect(chatStore.getToolProgress('a1', span('toolu_A'))?.elapsedSeconds).toBe(30)
       dispose()
@@ -527,9 +748,19 @@ describe('dropFinishedToolProgress', () => {
   it('drops only the span whose result landed', () => {
     createRoot((dispose) => {
       const chatStore = seeded()
-      chatStore.applyToolProgress('a1', { ...span('toolu_B'), elapsedSeconds: 60 })
+      chatStore.applyToolProgress('a1', {
+        ...span('toolu_B'),
+        elapsedSeconds: 60,
+      })
       const msg = agentMessage(
-        { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_A', content: 'ok' }] } },
+        {
+          type: 'user',
+          message: {
+            content: [
+              { type: 'tool_result', tool_use_id: 'toolu_A', content: 'ok' },
+            ],
+          },
+        },
         { spanId: 'toolu_A' },
       )
       dropFinishedToolProgress('a1', msg, parseMessageContent(msg), chatStore)

@@ -4,14 +4,28 @@ import { COLLAPSED_RESULT_ROWS } from './collapse'
 import { searchResultCollapsible, searchResultCopyable, searchResultText } from './searchResult'
 
 function search(overrides: Partial<SearchResult> = {}): SearchResult {
-  return { filenames: [], content: '', numFiles: 0, numLines: 0, truncated: false, fallbackContent: '', empty: false, ...overrides }
+  return {
+    filenames: [],
+    content: '',
+    numFiles: 0,
+    numLines: 0,
+    truncated: false,
+    fallbackContent: '',
+    empty: false,
+    ...overrides,
+  }
 }
 
 const longText = Array.from({ length: COLLAPSED_RESULT_ROWS + 4 }, (_, row) => `line ${row}`).join('\n')
 
 describe('searchResultText', () => {
   it('draws the structured matches when the tool recovered any', () => {
-    const source = search({ lines: [{ filePath: '/repo/a.ts', lineNumber: 7, text: 'hit' }], content: 'ignored' })
+    const source = search({
+      lines: [
+        { filePath: '/repo/a.ts', lineNumber: 7, text: 'hit' },
+      ],
+      content: 'ignored',
+    })
     expect(searchResultText(source)).toBe('/repo/a.ts:7:hit')
   })
 
@@ -47,7 +61,9 @@ describe('searchResultCollapsible', () => {
   it('counts the structured rows when the tool recovered any', () => {
     const lines = Array.from({ length: COLLAPSED_RESULT_ROWS + 1 }, (_, row) => ({ filePath: `/f${row}.ts`, text: 'hit' }))
     expect(searchResultCollapsible(search({ lines }))).toBe(true)
-    expect(searchResultCollapsible(search({ lines: lines.slice(0, COLLAPSED_RESULT_ROWS) }))).toBe(false)
+    expect(searchResultCollapsible(search({
+      lines: lines.slice(0, COLLAPSED_RESULT_ROWS),
+    }))).toBe(false)
   })
 
   it('collapses a long file list whatever the matches say', () => {
@@ -68,13 +84,21 @@ describe('searchResultCollapsible', () => {
  */
 describe('searchResultCopyable', () => {
   it('answers the file list when there is no match text', () => {
-    const source = search({ filenames: ['/repo/a.ts', '/repo/b.ts'], numFiles: 2 })
+    const source = search({
+      filenames: ['/repo/a.ts', '/repo/b.ts'],
+      numFiles: 2,
+    })
     expect(searchResultText(source)).toBe('')
     expect(searchResultCopyable(source)).toBe('/repo/a.ts\n/repo/b.ts')
   })
 
   it('prefers the match text when the search returned one', () => {
-    const source = search({ filenames: ['/repo/a.ts'], lines: [{ filePath: '/repo/a.ts', lineNumber: 3, text: 'hit' }] })
+    const source = search({
+      filenames: ['/repo/a.ts'],
+      lines: [
+        { filePath: '/repo/a.ts', lineNumber: 3, text: 'hit' },
+      ],
+    })
     expect(searchResultCopyable(source)).toBe('/repo/a.ts:3:hit')
   })
 

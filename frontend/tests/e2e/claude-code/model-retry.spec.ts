@@ -5,7 +5,9 @@ import { assistantBubbles, messageContents, sendMessage, waitForAgentIdle } from
 claudeTest('folds a retried request into one resolved retry row', async ({ native }) => {
   const { page, modelScript } = native
   const start = await modelScript.queue(
-    { error: { status: 529, message: 'overloaded' } },
+    {
+      error: { status: 529, message: 'overloaded' },
+    },
     { text: 'RETRIED_OK' },
   )
   await sendMessage(page, modelScript.prompt('Reply after the request succeeds.'))

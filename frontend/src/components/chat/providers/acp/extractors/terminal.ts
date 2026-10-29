@@ -46,7 +46,11 @@ export function acpTerminalResults(tool: Record<string, unknown>, supplemental: 
       // Exactly one, because the worker derives them from one process state, and a
       // terminal still running states neither. One chained spread, so the exit the
       // type carries stays exclusive instead of two independent optional keys.
-      ...(result.exitCode !== undefined ? { exitCode: result.exitCode } : result.signal !== undefined ? { signal: result.signal } : {}),
+      ...(result.exitCode !== undefined
+        ? { exitCode: result.exitCode }
+        : result.signal !== undefined
+          ? { signal: result.signal }
+          : {}),
     })
   }
   return { entries, unresolved }

@@ -116,7 +116,11 @@ export function useAgentSettled(opts: UseAgentSettledOpts): (agentId: string, nu
       // multi-context tests where the audio stack is either suppressed
       // or unobservable (jsdom-like envs).
       window.dispatchEvent(new CustomEvent('leapmux:turn-end-played', {
-        detail: { agentId, ownClientId: opts.ownClientId(), effectiveClientId: opts.effectiveClientId() },
+        detail: {
+          agentId,
+          ownClientId: opts.ownClientId(),
+          effectiveClientId: opts.effectiveClientId(),
+        },
       }))
     }
   }

@@ -52,7 +52,9 @@ export const ElevateForm: Component<{
    * for a passkey that the account does hold, because `passkeyAvailable` is
    * the same two facts.
    */
-  const passkeyOnlyBlocker = () => (passkeyCount() > 0 ? passkeyBlocker() : null)
+  const passkeyOnlyBlocker = () => (passkeyCount() > 0
+    ? passkeyBlocker()
+    : null)
   const providers = (): LinkedOAuthProvider[] => auth.user()?.oauthProviders ?? []
   /**
    * The providers that the HUB accepts a step-up from.
@@ -75,7 +77,9 @@ export const ElevateForm: Component<{
    */
   const accountMayUseAProvider = () => auth.user()?.mayElevateThroughAProvider === true
   const elevatingProviders = (): LinkedOAuthProvider[] =>
-    accountMayUseAProvider() ? providers().filter(p => p.enabled) : []
+    accountMayUseAProvider()
+      ? providers().filter(p => p.enabled)
+      : []
   const hasElevatingProvider = () => elevatingProviders().length > 0
   const canElevate = () => passwordSet() || passkeyAvailable() || hasElevatingProvider()
 
@@ -177,7 +181,9 @@ export const ElevateForm: Component<{
           </label>
           <div class={actionsFooter}>
             <button type="submit" disabled={busy() || !password()} data-testid="elevate-password-submit">
-              {busy() ? 'Verifying…' : 'Verify'}
+              {busy()
+                ? 'Verifying…'
+                : 'Verify'}
             </button>
           </div>
         </form>

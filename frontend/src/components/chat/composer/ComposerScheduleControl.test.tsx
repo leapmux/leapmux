@@ -10,7 +10,15 @@ import { localFieldValueOf } from './scheduleSend'
 const NOW = new Date(2030, 0, 1, 12, 0, 0)
 
 beforeEach(() => {
-  vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] })
+  vi.useFakeTimers({
+    toFake: [
+      'setTimeout',
+      'clearTimeout',
+      'setInterval',
+      'clearInterval',
+      'Date',
+    ],
+  })
   vi.setSystemTime(NOW)
 })
 
@@ -23,7 +31,9 @@ function renderControl(overrides: { value?: string, existingStored?: string } = 
   const result = render(() => (
     <ComposerScheduleControl
       value={overrides.value ?? ''}
-      {...(overrides.existingStored !== undefined ? { existingStored: overrides.existingStored } : {})}
+      {...(overrides.existingStored !== undefined
+        ? { existingStored: overrides.existingStored }
+        : {})}
       onApply={onApply}
     />
   ))
@@ -63,7 +73,9 @@ describe('ComposerScheduleControl', () => {
     open()
     expect(fieldInput().value).toBe('')
     expect(fieldInput()).toHaveAccessibleDescription('Uses your local timezone.')
-    fireEvent.input(fieldInput(), { target: { value: '2030-06-01T12:00:00.500' } })
+    fireEvent.input(fieldInput(), {
+      target: { value: '2030-06-01T12:00:00.500' },
+    })
     fireEvent.click(screen.getByTestId('schedule-send-apply'))
     expect(onApply).toHaveBeenCalledWith('2030-06-01T12:00:00.500')
   })
@@ -71,7 +83,9 @@ describe('ComposerScheduleControl', () => {
   it('applies the whole-minute form that the browser writes when the seconds are zero', () => {
     const { onApply } = renderControl()
     open()
-    fireEvent.input(fieldInput(), { target: { value: '2030-01-01T18:45' } })
+    fireEvent.input(fieldInput(), {
+      target: { value: '2030-01-01T18:45' },
+    })
     expect(screen.queryByTestId('schedule-send-error')).toBeNull()
     fireEvent.click(screen.getByTestId('schedule-send-apply'))
     expect(onApply).toHaveBeenCalledWith('2030-01-01T18:45')
@@ -80,7 +94,9 @@ describe('ComposerScheduleControl', () => {
   it('starts each opening from the draft, so a cancelled value does not come back', () => {
     const { onApply } = renderControl()
     open()
-    fireEvent.input(fieldInput(), { target: { value: '2031-02-03T04:05' } })
+    fireEvent.input(fieldInput(), {
+      target: { value: '2031-02-03T04:05' },
+    })
     fireEvent.click(screen.getByTestId('schedule-send-cancel'))
     open()
     expect(fieldInput().value).toBe('')
@@ -100,7 +116,9 @@ describe('ComposerScheduleControl', () => {
     const { onApply } = renderControl({ value: '2030-01-01T18:45' })
     open()
     vi.spyOn(fieldInput().validity, 'badInput', 'get').mockReturnValue(true)
-    fireEvent.input(fieldInput(), { target: { value: '' } })
+    fireEvent.input(fieldInput(), {
+      target: { value: '' },
+    })
     expect(screen.getByTestId('schedule-send-apply')).toBeDisabled()
     expect(screen.getByTestId('schedule-send-clear')).not.toBeDisabled()
     fireEvent.click(screen.getByTestId('schedule-send-clear'))
@@ -116,7 +134,10 @@ describe('ComposerScheduleControl', () => {
 
   it('keeps an unchanged past stored deadline valid on a queue edit', () => {
     const past = new Date(NOW.getTime() - 60_000)
-    const { onApply } = renderControl({ value: localFieldValueOf(past), existingStored: past.toISOString() })
+    const { onApply } = renderControl({
+      value: localFieldValueOf(past),
+      existingStored: past.toISOString(),
+    })
     open()
     expect(screen.queryByTestId('schedule-send-error')).toBeNull()
     expect(fieldInput()).not.toHaveAttribute('aria-invalid')
@@ -126,9 +147,16 @@ describe('ComposerScheduleControl', () => {
 
   it('refuses a newly chosen past time on a queue edit', () => {
     const past = new Date(NOW.getTime() - 60_000)
-    renderControl({ value: localFieldValueOf(past), existingStored: past.toISOString() })
+    renderControl({
+      value: localFieldValueOf(past),
+      existingStored: past.toISOString(),
+    })
     open()
-    fireEvent.input(fieldInput(), { target: { value: later(-120_000) } })
+    fireEvent.input(fieldInput(), {
+      target: {
+        value: later(-120_000),
+      },
+    })
     expect(screen.getByTestId('schedule-send-error')).toHaveTextContent('Pick a time in the future.')
     expect(screen.getByTestId('schedule-send-apply')).toBeDisabled()
   })
@@ -136,14 +164,20 @@ describe('ComposerScheduleControl', () => {
   it('exposes a past time through role=alert and disables Schedule', () => {
     renderControl()
     open()
-    fireEvent.input(fieldInput(), { target: { value: '2020-01-01T00:00' } })
+    fireEvent.input(fieldInput(), {
+      target: { value: '2020-01-01T00:00' },
+    })
     const error = screen.getByTestId('schedule-send-error')
     expect(error).toHaveAttribute('role', 'alert')
     expect(error).toHaveTextContent('Pick a time in the future.')
     expect(screen.getByTestId('schedule-send-apply')).toBeDisabled()
     expect(fieldInput()).toHaveAttribute('aria-invalid', 'true')
     expect(fieldInput()).toHaveAccessibleDescription('Uses your local timezone. Pick a time in the future.')
-    fireEvent.input(fieldInput(), { target: { value: later(60_000) } })
+    fireEvent.input(fieldInput(), {
+      target: {
+        value: later(60_000),
+      },
+    })
     expect(screen.queryByTestId('schedule-send-error')).toBeNull()
     expect(fieldInput()).toHaveAccessibleDescription('Uses your local timezone.')
   })
@@ -158,7 +192,11 @@ describe('ComposerScheduleControl', () => {
   it('refuses a chosen time once it passes while the popover stays open', () => {
     renderControl()
     open()
-    fireEvent.input(fieldInput(), { target: { value: later(30_000) } })
+    fireEvent.input(fieldInput(), {
+      target: {
+        value: later(30_000),
+      },
+    })
     expect(screen.getByTestId('schedule-send-apply')).not.toBeDisabled()
     vi.advanceTimersByTime(40_000)
     expect(screen.getByTestId('schedule-send-error')).toHaveTextContent('Pick a time in the future.')
@@ -168,7 +206,11 @@ describe('ComposerScheduleControl', () => {
   it('reads the clock again on apply, so a time that passed within one tick is refused with its message', () => {
     const { onApply } = renderControl()
     open()
-    fireEvent.input(fieldInput(), { target: { value: later(500) } })
+    fireEvent.input(fieldInput(), {
+      target: {
+        value: later(500),
+      },
+    })
     // The wall clock passes the chosen time before the first tick runs.
     vi.setSystemTime(NOW.getTime() + 600)
     expect(600).toBeLessThan(SCHEDULE_CLOCK_TICK_MS)
@@ -181,13 +223,17 @@ describe('ComposerScheduleControl', () => {
     const { onApply } = renderControl({ value: '2030-01-01T18:45' })
     open()
     const validity = vi.spyOn(fieldInput().validity, 'badInput', 'get').mockReturnValue(true)
-    fireEvent.input(fieldInput(), { target: { value: '' } })
+    fireEvent.input(fieldInput(), {
+      target: { value: '' },
+    })
     expect(screen.getByTestId('schedule-send-apply')).toBeDisabled()
     fireEvent.keyDown(fieldInput(), { key: 'Enter' })
     expect(onApply).not.toHaveBeenCalled()
     expect(screen.getByTestId('schedule-send-error')).toHaveTextContent('Enter a real local date and time.')
     validity.mockReturnValue(false)
-    fireEvent.input(fieldInput(), { target: { value: '2030-01-02T18:45' } })
+    fireEvent.input(fieldInput(), {
+      target: { value: '2030-01-02T18:45' },
+    })
     expect(screen.getByTestId('schedule-send-apply')).not.toBeDisabled()
     fireEvent.keyDown(fieldInput(), { key: 'Enter' })
     expect(onApply).toHaveBeenCalledWith('2030-01-02T18:45')

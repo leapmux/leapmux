@@ -8,7 +8,13 @@ import { declinedToolCallSpec } from './declinedToolCall'
 const FAILED_ENVELOPE: ToolCallEnvelope = {
   id: 'refused-call',
   name: 'bash',
-  lifecycle: { frameStatus: 'failed', providerOutcome: null, retainedOutcome: null, rowFinal: true, resultFrameLanded: true },
+  lifecycle: {
+    frameStatus: 'failed',
+    providerOutcome: null,
+    retainedOutcome: null,
+    rowFinal: true,
+    resultFrameLanded: true,
+  },
 }
 
 const PICTURE = { mimeType: 'image/png', data: 'aGk=' }
@@ -18,7 +24,12 @@ describe('declinedToolCallSpec', () => {
     const spec: ToolCallSpec = {
       kind: 'execute',
       request: { command: 'rm -f doomed.txt' },
-      result: { commands: [{ output: 'The user rejected this tool call.' }], unresolvedTerminals: [] },
+      result: {
+        commands: [
+          { output: 'The user rejected this tool call.' },
+        ],
+        unresolvedTerminals: [],
+      },
     }
     expect(declinedToolCallSpec(spec, 'The user rejected this tool call.')).toStrictEqual({
       kind: 'execute',
@@ -36,7 +47,9 @@ describe('declinedToolCallSpec', () => {
       kind: 'read',
       request: { path: '/p/a.png' },
       images: [PICTURE],
-      extraContent: [{ type: 'text', text: 'stale block' }],
+      extraContent: [
+        { type: 'text', text: 'stale block' },
+      ],
       truncated: true,
     }
     const declined = declinedToolCallSpec(spec, 'Refused.')
@@ -52,7 +65,9 @@ describe('declinedToolCallSpec', () => {
       name: 'exit_plan_mode',
       label: 'Plan',
       title: 'Exit plan mode',
-      metadata: [{ label: 'Mode', value: 'build' }],
+      metadata: [
+        { label: 'Mode', value: 'build' },
+      ],
       request: { mode: 'build', declinedTitle: 'Plan sent back' },
       result: proseResult('Switched to build mode.'),
     }
@@ -61,14 +76,19 @@ describe('declinedToolCallSpec', () => {
       name: 'exit_plan_mode',
       label: 'Plan',
       title: 'Exit plan mode',
-      metadata: [{ label: 'Mode', value: 'build' }],
+      metadata: [
+        { label: 'Mode', value: 'build' },
+      ],
       request: { mode: 'build', declinedTitle: 'Plan sent back' },
       result: failedResult('Plan not approved.'),
     })
   })
 
   it('states a refusal that carried no words as an empty failure', () => {
-    expect(declinedToolCallSpec({ kind: 'fetch', request: { url: 'https://example.com' } }, '').result).toStrictEqual(failedResult(''))
+    expect(declinedToolCallSpec({
+      kind: 'fetch',
+      request: { url: 'https://example.com' },
+    }, '').result).toStrictEqual(failedResult(''))
   })
 
   // The builder is the one judge of a valid call. A refused call whose frame carried
@@ -78,7 +98,9 @@ describe('declinedToolCallSpec', () => {
       kind: 'read',
       request: { path: '/p/a.png' },
       images: [PICTURE],
-      extraContent: [{ type: 'text', text: 'stale block' }],
+      extraContent: [
+        { type: 'text', text: 'stale block' },
+      ],
       result: { lines: null, fallbackContent: 'stale' },
     }
     const call = createToolCall(FAILED_ENVELOPE, declinedToolCallSpec(spec, 'Refused.'))
@@ -93,8 +115,14 @@ describe('declinedToolCallSpec', () => {
   // call never ran, whatever happened to the turn around it.
   it('outranks the outcome the turn retained', () => {
     const call = createToolCall(
-      { ...FAILED_ENVELOPE, lifecycle: { ...FAILED_ENVELOPE.lifecycle, retainedOutcome: 'interrupted' } },
-      declinedToolCallSpec({ kind: 'execute', request: { command: 'ls' } }, 'Refused.'),
+      {
+        ...FAILED_ENVELOPE,
+        lifecycle: { ...FAILED_ENVELOPE.lifecycle, retainedOutcome: 'interrupted' },
+      },
+      declinedToolCallSpec({
+        kind: 'execute',
+        request: { command: 'ls' },
+      }, 'Refused.'),
     )
     expect(call.status).toBe('declined')
   })

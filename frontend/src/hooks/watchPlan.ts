@@ -41,7 +41,9 @@ export function tabWatchMode(
   activeWorkspaceId: string | null,
   activeKeyForTile: (tileId: string) => string | null,
 ): WatchMode {
-  return isTabOnScreen(tab, activeWorkspaceId, activeKeyForTile) ? WatchMode.FULL : WatchMode.NOTIFY
+  return isTabOnScreen(tab, activeWorkspaceId, activeKeyForTile)
+    ? WatchMode.FULL
+    : WatchMode.NOTIFY
 }
 
 /**
@@ -76,8 +78,19 @@ export function agentWatchEntry(
   mode: WatchMode,
 ): WatchAgentEntry {
   const base = resumeSeq > 0n
-    ? { agentId, replay: WatchReplayMode.AFTER_CURSOR_OR_NONE, cursorSeq: resumeSeq, windowTailSeq, mode }
-    : { agentId, replay: WatchReplayMode.LATEST, cursorSeq: BigInt(0), mode }
+    ? {
+        agentId,
+        replay: WatchReplayMode.AFTER_CURSOR_OR_NONE,
+        cursorSeq: resumeSeq,
+        windowTailSeq,
+        mode,
+      }
+    : {
+        agentId,
+        replay: WatchReplayMode.LATEST,
+        cursorSeq: BigInt(0),
+        mode,
+      }
   return base as WatchAgentEntry
 }
 
@@ -146,7 +159,11 @@ export function buildWatchPlans(
     const workerId = tab.workerId
     let plan = plans.get(workerId)
     if (!plan) {
-      plan = { agents: [], terminals: [], terminalResync: new Set() }
+      plan = {
+        agents: [],
+        terminals: [],
+        terminalResync: new Set(),
+      }
       plans.set(workerId, plan)
     }
     if (tab.type === TabType.AGENT) {
@@ -183,7 +200,11 @@ export function buildWatchPlans(
       continue
     let plan = plans.get(detached.workerId)
     if (!plan) {
-      plan = { agents: [], terminals: [], terminalResync: new Set() }
+      plan = {
+        agents: [],
+        terminals: [],
+        terminalResync: new Set(),
+      }
       plans.set(detached.workerId, plan)
     }
     // The independent detached list can include a terminal that the tab list already supplied.
@@ -195,7 +216,10 @@ export function buildWatchPlans(
     for (const plan of plans.values()) {
       plan.agentReplayIdentities = new Map(plan.agents
         .filter(entry => entry.mode === WatchMode.FULL)
-        .map(entry => [entry.agentId, agentReplayIdentity(entry.agentId)]))
+        .map(entry => [
+          entry.agentId,
+          agentReplayIdentity(entry.agentId),
+        ]))
     }
   }
   return plans
@@ -207,12 +231,16 @@ export function buildWatchPlans(
    */
   function pushTerminal(plan: WatchPlan, terminalId: string, mode: WatchMode): void {
     const resync = terminalNeedsResync(terminalId)
-    const after = resync ? 0 : terminalAfterOffset(terminalId)
+    const after = resync
+      ? 0
+      : terminalAfterOffset(terminalId)
     if (resync)
       plan.terminalResync.add(terminalId)
     plan.terminals.push({
       terminalId,
-      afterOffset: typeof after === 'bigint' ? after : BigInt(after),
+      afterOffset: typeof after === 'bigint'
+        ? after
+        : BigInt(after),
       mode,
     } as WatchTerminalEntry)
   }
@@ -231,13 +259,19 @@ export function buildWatchPlans(
 export function watchPlanKey(plan: WatchPlan): string {
   const agents = plan.agents
     .map((entry) => {
-      const identity = entry.mode === WatchMode.FULL ? plan.agentReplayIdentities?.get(entry.agentId) : undefined
-      return `${entry.agentId}:${entry.mode}${identity === undefined ? '' : `:${JSON.stringify(identity)}`}`
+      const identity = entry.mode === WatchMode.FULL
+        ? plan.agentReplayIdentities?.get(entry.agentId)
+        : undefined
+      return `${entry.agentId}:${entry.mode}${identity === undefined
+        ? ''
+        : `:${JSON.stringify(identity)}`}`
     })
     .toSorted()
     .join(',')
   const terminals = plan.terminals
-    .map(t => `${t.terminalId}:${t.mode}${plan.terminalResync.has(t.terminalId) ? ':r' : ''}`)
+    .map(t => `${t.terminalId}:${t.mode}${plan.terminalResync.has(t.terminalId)
+      ? ':r'
+      : ''}`)
     .toSorted()
     .join(',')
   return `a:${agents}|t:${terminals}`

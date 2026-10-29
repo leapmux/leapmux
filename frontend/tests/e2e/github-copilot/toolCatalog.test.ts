@@ -13,25 +13,50 @@ import { CopilotCatalogFrames, copilotCatalogNames, queryCopilotBuiltinCatalog }
 
 function packet(value: unknown) {
   const body = Buffer.from(JSON.stringify(value))
-  return Buffer.concat([Buffer.from(`Content-Length: ${body.byteLength}\r\n\r\n`), body])
+  return Buffer.concat([
+    Buffer.from(`Content-Length: ${body.byteLength}\r\n\r\n`),
+    body,
+  ])
 }
 
 describe('CopilotCatalogFrames', () => {
   it('retains UTF-8 bytes across every split position', () => {
-    const value = { id: 1, result: { tools: [{ name: 'native_출력' }] } }
+    const value = {
+      id: 1,
+      result: {
+        tools: [
+          { name: 'native_출력' },
+        ],
+      },
+    }
     const bytes = packet(value)
     for (let index = 0; index <= bytes.length; index++) {
       const frames = new CopilotCatalogFrames()
-      expect([...frames.push(bytes.subarray(0, index)), ...frames.push(bytes.subarray(index))]).toEqual([value])
+      expect([
+        ...frames.push(bytes.subarray(0, index)),
+        ...frames.push(bytes.subarray(index)),
+      ]).toEqual([value])
     }
   })
 
   it('decodes multiple replies and keeps a trailing partial packet', () => {
-    const first = packet({ id: 1, result: { tools: [{ name: 'read' }] } })
+    const first = packet({
+      id: 1,
+      result: {
+        tools: [
+          { name: 'read' },
+        ],
+      },
+    })
     const second = packet({ id: 2, result: {} })
     const frames = new CopilotCatalogFrames()
-    expect(frames.push(Buffer.concat([first, second.subarray(0, 5)]))).toHaveLength(1)
-    expect(frames.push(second.subarray(5))).toEqual([{ id: 2, result: {} }])
+    expect(frames.push(Buffer.concat([
+      first,
+      second.subarray(0, 5),
+    ]))).toHaveLength(1)
+    expect(frames.push(second.subarray(5))).toEqual([
+      { id: 2, result: {} },
+    ])
   })
 
   it.each(['Content-Length: 0\r\n\r\n', 'Content-Length: 16777217\r\n\r\n', 'Content-Length: nope\r\n\r\n'])('refuses an invalid native frame header: %s', (header) => {
@@ -39,8 +64,19 @@ describe('CopilotCatalogFrames', () => {
   })
 
   it('refuses duplicate Content-Length headers before accepting a reply', () => {
-    const body = Buffer.from(JSON.stringify({ jsonrpc: '2.0', id: 1, result: { tools: [{ name: 'read' }] } }))
-    expect(() => new CopilotCatalogFrames().push(Buffer.concat([Buffer.from(`Content-Length: ${body.byteLength}\r\nContent-Length: ${body.byteLength}\r\n\r\n`), body]))).toThrow('header')
+    const body = Buffer.from(JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      result: {
+        tools: [
+          { name: 'read' },
+        ],
+      },
+    }))
+    expect(() => new CopilotCatalogFrames().push(Buffer.concat([
+      Buffer.from(`Content-Length: ${body.byteLength}\r\nContent-Length: ${body.byteLength}\r\n\r\n`),
+      body,
+    ]))).toThrow('header')
   })
 
   it('rejects an oversized incomplete header before accumulating a body', () => {
@@ -48,8 +84,15 @@ describe('CopilotCatalogFrames', () => {
   })
 
   it('rejects invalid UTF-8 rather than replacing bytes in a native tool name', () => {
-    const body = Buffer.concat([Buffer.from('{"result":{"tools":[{"name":"'), Buffer.from([0xC3, 0x28]), Buffer.from('"}]}}')])
-    expect(() => new CopilotCatalogFrames().push(Buffer.concat([Buffer.from(`Content-Length: ${body.byteLength}\r\n\r\n`), body]))).toThrow('not valid for encoding utf-8')
+    const body = Buffer.concat([
+      Buffer.from('{"result":{"tools":[{"name":"'),
+      Buffer.from([0xC3, 0x28]),
+      Buffer.from('"}]}}'),
+    ])
+    expect(() => new CopilotCatalogFrames().push(Buffer.concat([
+      Buffer.from(`Content-Length: ${body.byteLength}\r\n\r\n`),
+      body,
+    ]))).toThrow('not valid for encoding utf-8')
   })
 
   it('requires complete bytes when a stream ends and accepts an empty completed buffer', () => {
@@ -63,15 +106,36 @@ describe('CopilotCatalogFrames', () => {
 
 describe('copilotCatalogNames', () => {
   it('keeps every complete builtin name', () => {
-    expect(copilotCatalogNames({ tools: [{ name: 'read' }, { name: 'bash', deferLoading: true }] })).toEqual(['read', 'bash'])
+    expect(copilotCatalogNames({
+      tools: [
+        { name: 'read' },
+        { name: 'bash', deferLoading: true },
+      ],
+    })).toEqual(['read', 'bash'])
   })
 
   it.each([
     [null, 'The complete native Copilot catalog contains no tools.'],
     [{}, 'The complete native Copilot catalog contains no tools.'],
-    [{ tools: [] }, 'The complete native Copilot catalog contains no tools.'],
-    [{ tools: [{}] }, 'The complete native Copilot catalog contains an invalid tool.'],
-    [{ tools: [{ name: 'read' }, { name: 'read' }] }, 'The complete native Copilot catalog repeats a tool.'],
+    [
+      { tools: [] },
+      'The complete native Copilot catalog contains no tools.',
+    ],
+    [
+      {
+        tools: [{}],
+      },
+      'The complete native Copilot catalog contains an invalid tool.',
+    ],
+    [
+      {
+        tools: [
+          { name: 'read' },
+          { name: 'read' },
+        ],
+      },
+      'The complete native Copilot catalog repeats a tool.',
+    ],
   ])('refuses an incomplete or ambiguous native inventory: %j', (value, error) => {
     expect(() => copilotCatalogNames(value)).toThrow(error)
   })
@@ -114,10 +178,16 @@ process.stdin.on('data', chunk => {
     args: [script],
     cwd: directory,
     env: { PATH: process.env.PATH, COPILOT_CATALOG_PRIVATE_VALUE: 'private-zero-0-false-한글' },
-    ...options.model !== undefined ? { model: options.model } : {},
+    ...options.model !== undefined
+      ? { model: options.model }
+      : {},
   }
   const start = (selected: CopilotCatalogLaunch) => {
-    const child = spawn(selected.executable, [...selected.args], { cwd: selected.cwd, env: selected.env, stdio: ['pipe', 'pipe', 'pipe'] })
+    const child = spawn(selected.executable, [...selected.args], {
+      cwd: selected.cwd,
+      env: selected.env,
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
     children.push(child)
     return child
   }
@@ -142,7 +212,12 @@ setImmediate(() => { process.stdout.write(reply.subarray(7, split)); setImmediat
 `, {}, { model: 'actual-model-한글' })
     await expect(fixture.query).resolves.toEqual(['read', 'native_출력'])
     const receipt = JSON.parse(readFileSync(fixture.receipt, 'utf8'))
-    expect(receipt.request).toEqual({ jsonrpc: '2.0', id: 1, method: 'tools.list', params: { model: 'actual-model-한글' } })
+    expect(receipt.request).toEqual({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools.list',
+      params: { model: 'actual-model-한글' },
+    })
     expect(receipt.workingDir).toBe(directory)
     expect(receipt.privateValue).toBe('private-zero-0-false-한글')
     expect(isAlive(receipt.pid)).toBe(false)
@@ -166,11 +241,64 @@ setImmediate(() => { process.stdout.write(reply.subarray(7, split)); setImmediat
   })
 
   it.each([
-    { label: 'wrong version', reply: { jsonrpc: '1.0', id: 1, result: { tools: [{ name: 'incorrect-success' }] } } },
-    { label: 'method in reply', reply: { jsonrpc: '2.0', id: 1, method: 'tools.list', result: { tools: [{ name: 'incorrect-success' }] } } },
-    { label: 'both result and null error', reply: { jsonrpc: '2.0', id: 1, result: { tools: [{ name: 'incorrect-success' }] }, error: null } },
-    { label: 'an invalid null ID', reply: { jsonrpc: '2.0', id: null, result: { tools: [{ name: 'incorrect-success' }] } } },
-    { label: 'a malformed error', reply: { jsonrpc: '2.0', id: 1, error: { code: -32603, message: 0 } } },
+    {
+      label: 'wrong version',
+      reply: {
+        jsonrpc: '1.0',
+        id: 1,
+        result: {
+          tools: [
+            { name: 'incorrect-success' },
+          ],
+        },
+      },
+    },
+    {
+      label: 'method in reply',
+      reply: {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools.list',
+        result: {
+          tools: [
+            { name: 'incorrect-success' },
+          ],
+        },
+      },
+    },
+    {
+      label: 'both result and null error',
+      reply: {
+        jsonrpc: '2.0',
+        id: 1,
+        result: {
+          tools: [
+            { name: 'incorrect-success' },
+          ],
+        },
+        error: null,
+      },
+    },
+    {
+      label: 'an invalid null ID',
+      reply: {
+        jsonrpc: '2.0',
+        id: null,
+        result: {
+          tools: [
+            { name: 'incorrect-success' },
+          ],
+        },
+      },
+    },
+    {
+      label: 'a malformed error',
+      reply: {
+        jsonrpc: '2.0',
+        id: 1,
+        error: { code: -32603, message: 0 },
+      },
+    },
   ])('refuses a matching native envelope with $label', async ({ reply }) => {
     await expect(queryFixture(`process.stdout.write(packet(${JSON.stringify(reply)}));`).query).rejects.toThrow('envelope')
   })
@@ -277,7 +405,13 @@ setImmediate(() => { process.stdout.write(reply.subarray(7, split)); setImmediat
   it('rejects an absent executable and cancels its deadline', async () => {
     const fixture = nativeFixture(success)
     const cancel = vi.fn()
-    await expect(queryCopilotBuiltinCatalog({ ...fixture.launch, executable: join(directory, 'absent-executable') }, { start: fixture.start, scheduleDeadline: () => cancel })).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(queryCopilotBuiltinCatalog({
+      ...fixture.launch,
+      executable: join(directory, 'absent-executable'),
+    }, {
+      start: fixture.start,
+      scheduleDeadline: () => cancel,
+    })).rejects.toMatchObject({ code: 'ENOENT' })
     expect(cancel).toHaveBeenCalledOnce()
   })
 
@@ -302,7 +436,9 @@ setImmediate(() => { process.stdout.write(reply.subarray(7, split)); setImmediat
 
   it('cancels the deadline after a successful actual native reply', async () => {
     const cancel = vi.fn()
-    await expect(queryFixture(success, { scheduleDeadline: () => cancel }).query).resolves.toEqual(['read', 'native_출력'])
+    await expect(queryFixture(success, {
+      scheduleDeadline: () => cancel,
+    }).query).resolves.toEqual(['read', 'native_출력'])
     expect(cancel).toHaveBeenCalledOnce()
   })
 

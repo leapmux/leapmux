@@ -17,8 +17,15 @@ grokTest.describe('Grok Build images in tool results', () => {
   // Grok Build 1.0.41 returns "Cannot read binary file" for a valid PNG. Its native Read description promises image reads.
   // This case verifies that native Read limitation. The following MCP case verifies an actual image result and its rendering.
   grokTest('a Read of a PNG runs and draws no picture in the tool row', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-    const { workingDir } = await openProviderAgent(leapmuxServer, context.workspaceId, GROK_AGENT, { optionValues: { approvalMode: 'always-approve' } })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
+    const { workingDir } = await openProviderAgent(leapmuxServer, context.workspaceId, GROK_AGENT, {
+      optionValues: { approvalMode: 'always-approve' },
+    })
     await openWorkspace(page, context.workspaceId)
     await expectSettingsOptionChosen(page, 'approvalMode-always-approve')
     await runToolImageTurn(context, {
@@ -30,12 +37,20 @@ grokTest.describe('Grok Build images in tool results', () => {
   })
 
   grokTest('renders the image returned by a local MCP tool', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
     const workingDir = newProviderWorkingDir(GROK_AGENT)
     const imageName = writeToolImage(workingDir, 'grok-mcp')
     const server = writeMcpImageServer(workingDir, imageName)
     writeFileSync(join(workingDir, '.mcp.json'), JSON.stringify(mcpServersConfig(server)))
-    await openProviderAgent(leapmuxServer, context.workspaceId, GROK_AGENT, { workingDir, optionValues: { approvalMode: 'always-approve' } })
+    await openProviderAgent(leapmuxServer, context.workspaceId, GROK_AGENT, {
+      workingDir,
+      optionValues: { approvalMode: 'always-approve' },
+    })
     await openWorkspace(page, context.workspaceId)
 
     await expect(await waitForControlBanner(page)).toContainText('Trust the workspace')
@@ -45,7 +60,9 @@ grokTest.describe('Grok Build images in tool results', () => {
 
     const callID = 'show-grok-image'
     const { resultRequest } = await runNativeToolTurn(context, {
-      toolCalls: [mcpToolCall(context.provider, callID, { server: server.name, tool: 'show', input: {} })],
+      toolCalls: [
+        mcpToolCall(context.provider, callID, { server: server.name, tool: 'show', input: {} }),
+      ],
       prompt: `Call the ${server.name} show tool.`,
       answer: 'The MCP tool returned an image.',
     })

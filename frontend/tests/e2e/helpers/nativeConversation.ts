@@ -24,7 +24,15 @@ export async function sendNativeAnswer(
   { entry = 'type', toolCalls = [] }: NativeAnswerOptions = {},
 ): Promise<MockModelRequestRecord> {
   const step = nativeTextStep(context, answer)
-  const stepIndex = await context.modelScript.queue(toolCalls.length === 0 ? step : { ...step, toolCalls: [...toolCalls, ...(step.toolCalls ?? [])] })
+  const stepIndex = await context.modelScript.queue(toolCalls.length === 0
+    ? step
+    : {
+        ...step,
+        toolCalls: [
+          ...toolCalls,
+          ...(step.toolCalls ?? []),
+        ],
+      })
   await sendMessage(context.page, context.modelScript.prompt(prompt), entry)
   await context.modelScript.waitForSteps(stepIndex + 1)
   await waitForAgentIdle(context.page)
@@ -91,7 +99,9 @@ function drawnToolCallCount(context: Pick<NativeScenarioContext, 'answerToolName
  * chat), with the duration exactly when the provider states one. The totals follow the label.
  */
 function basicChatDividerText(timedDivider: boolean, toolCount: number): RegExp {
-  const duration = timedDivider ? String.raw` \(${DURATION_PATTERN}\)` : ''
+  const duration = timedDivider
+    ? String.raw` \(${DURATION_PATTERN}\)`
+    : ''
   return new RegExp(`^Turn ended${duration}${dividerTotalsPattern(toolCount)}$`)
 }
 

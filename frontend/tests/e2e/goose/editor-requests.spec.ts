@@ -7,13 +7,17 @@ import { expectNoNativeEditorRequest } from '../helpers/unsupportedEditor'
 
 gooseTest('resolves an actual native control without exposing a multiline editor request', async ({ native }) => {
   const { page, modelScript } = native
-  const todo = updateTodosToolCall(native.provider, 'native-editor-limit-todo', [{ step: 'Native editor control proof', status: 'pending' }])
+  const todo = updateTodosToolCall(native.provider, 'native-editor-limit-todo', [
+    { step: 'Native editor control proof', status: 'pending' },
+  ])
   const checklist = todo.arguments?.content
   if (typeof checklist !== 'string')
-    throw new Error('The Goose to-do call carries no checklist.')
+    throw new TypeError('The Goose to-do call carries no checklist.')
   await expectNoNativeEditorRequest(native, {
     relatedProof: async () => {
-      const start = await modelScript.queue({ toolCalls: [todo] }, { text: 'The native approval proof ended.' })
+      const start = await modelScript.queue({
+        toolCalls: [todo],
+      }, { text: 'The native approval proof ended.' })
       await sendMessage(page, modelScript.prompt('Write the scripted native to-do item.'))
       await modelScript.waitForSteps(start + 1)
       const banner = await waitForControlBanner(page)

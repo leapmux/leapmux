@@ -38,8 +38,16 @@ export const MINIMAL_REQUEST: { [K in ToolKind]: ToolRequestByKind[K] } = {
   agent: { description: '', prompt: '' },
   agents: {},
   chart: { spec: '{}' },
-  delete: { changes: [{ filePath: '/p/a.ts', oldStr: '', newStr: '' }] },
-  edit: { changes: [{ filePath: '/p/a.ts', oldStr: '', newStr: '' }] },
+  delete: {
+    changes: [
+      { filePath: '/p/a.ts', oldStr: '', newStr: '' },
+    ],
+  },
+  edit: {
+    changes: [
+      { filePath: '/p/a.ts', oldStr: '', newStr: '' },
+    ],
+  },
   execute: { command: 'true' },
   fetch: { url: 'https://example.com' },
   glob: { pattern: '*', paths: [] },
@@ -49,7 +57,11 @@ export const MINIMAL_REQUEST: { [K in ToolKind]: ToolRequestByKind[K] } = {
   mcp: { args: {}, server: 's', tool: 't' },
   memory: {},
   message: { text: '' },
-  move: { changes: [{ filePath: '/p/a.ts', oldStr: '', newStr: '' }] },
+  move: {
+    changes: [
+      { filePath: '/p/a.ts', oldStr: '', newStr: '' },
+    ],
+  },
   other: { args: {} },
   question: { questions: [] },
   read: { path: '/p/a.ts' },
@@ -63,7 +75,11 @@ export const MINIMAL_REQUEST: { [K in ToolKind]: ToolRequestByKind[K] } = {
   trigger: { action: 'other' },
   wait: {},
   web_search: { query: 'q' },
-  write: { changes: [{ filePath: '/p/a.ts', oldStr: '', newStr: '' }] },
+  write: {
+    changes: [
+      { filePath: '/p/a.ts', oldStr: '', newStr: '' },
+    ],
+  },
 }
 
 /** The smallest result each kind answers with. Total over ToolKind, for the same reason. */
@@ -76,8 +92,24 @@ export const MINIMAL_RESULT: { [K in ToolKind]: ToolResultByKind[K] } = {
   edit: { changes: [] },
   execute: { commands: [], unresolvedTerminals: [] },
   fetch: { result: '' },
-  glob: { filenames: [], content: '', numFiles: 0, numLines: 0, truncated: false, fallbackContent: '', empty: false },
-  grep: { filenames: [], content: '', numFiles: 0, numLines: 0, truncated: false, fallbackContent: '', empty: false },
+  glob: {
+    filenames: [],
+    content: '',
+    numFiles: 0,
+    numLines: 0,
+    truncated: false,
+    fallbackContent: '',
+    empty: false,
+  },
+  grep: {
+    filenames: [],
+    content: '',
+    numFiles: 0,
+    numLines: 0,
+    truncated: false,
+    fallbackContent: '',
+    empty: false,
+  },
   image: {},
   list: { entries: [] },
   mcp: { content: [] },
@@ -88,7 +120,15 @@ export const MINIMAL_RESULT: { [K in ToolKind]: ToolResultByKind[K] } = {
   question: { answers: [] },
   read: { lines: null, fallbackContent: '' },
   report: { text: '', format: 'plain' },
-  search: { filenames: [], content: '', numFiles: 0, numLines: 0, truncated: false, fallbackContent: '', empty: false },
+  search: {
+    filenames: [],
+    content: '',
+    numFiles: 0,
+    numLines: 0,
+    truncated: false,
+    fallbackContent: '',
+    empty: false,
+  },
   skill: { text: '', format: 'plain' },
   switch_mode: { text: '', format: 'plain' },
   task: { outcome: 'completed', output: '' },
@@ -139,7 +179,19 @@ export function toolCallFixture<K extends ToolKind>(kind: K, overrides: ToolCall
   const { id, status, name, images, request, result, ...rest } = overrides
   const rowStatus = status ?? 'completed'
   const built = buildToolCall<K>(
-    { id: id ?? 'call-1', name: name ?? (kind === 'unspecified' ? 'tool' : kind), lifecycle: { frameStatus: rowStatus, providerOutcome: null, retainedOutcome: null, rowFinal: false, resultFrameLanded: false } },
+    {
+      id: id ?? 'call-1',
+      name: name ?? (kind === 'unspecified'
+        ? 'tool'
+        : kind),
+      lifecycle: {
+        frameStatus: rowStatus,
+        providerOutcome: null,
+        retainedOutcome: null,
+        rowFinal: false,
+        resultFrameLanded: false,
+      },
+    },
     {
       kind,
       ...rest,
@@ -148,7 +200,9 @@ export function toolCallFixture<K extends ToolKind>(kind: K, overrides: ToolCall
       // gets the kind's smallest one rather than a call the builder refuses. The
       // helper's contract is a complete call of the kind, and the empty result is
       // what completes it. Every other status admits no result and takes none.
-      result: result ?? (rowStatus === 'completed' ? MINIMAL_RESULT[kind] : undefined),
+      result: result ?? (rowStatus === 'completed'
+        ? MINIMAL_RESULT[kind]
+        : undefined),
       images: images ?? [],
     } as ToolCallSpec<K>,
   )
@@ -197,13 +251,17 @@ export function toolRow(call: ToolCall, role: ToolSpanRowRole = 'result', span: 
 /** The ONE tool call a provider frame becomes, or null when the frame draws no tool row. */
 export function providerToolCall(provider: AgentProvider, payload: Record<string, unknown>, options: ProviderRowOptions = {}): ToolCall | null {
   const row = providerRow(provider, payload, options)
-  return row?.kind === 'tool' ? row.call : null
+  return row?.kind === 'tool'
+    ? row.call
+    : null
 }
 
 /** What the bubble's toolbar offers for one frame, through the one call `MessageBubble` reads. */
 export function providerToolMeta(provider: AgentProvider, payload: Record<string, unknown>, options: ProviderRowOptions = {}): ToolResultMeta | null {
   const row = providerRow(provider, payload, options)
-  return row?.kind === 'tool' ? toolCallMeta(row) : null
+  return row?.kind === 'tool'
+    ? toolCallMeta(row)
+    : null
 }
 
 /** The scroll-rail snippet for one frame, the way the rail itself derives it. */
@@ -245,13 +303,21 @@ export function providerRow(
   const parsed = resolveMessageForRendering({
     ...input(payload, undefined, provider),
     supplementalContent: options.supplementalContent,
-    ...(options.agentSessionId === undefined ? {} : { agentSessionId: options.agentSessionId }),
-    ...(options.completion === undefined ? {} : { completion: options.completion }),
+    ...(options.agentSessionId === undefined
+      ? {}
+      : { agentSessionId: options.agentSessionId }),
+    ...(options.completion === undefined
+      ? {}
+      : { completion: options.completion }),
   }, provider)
   const category = options.category ?? plugin.transcript.classify(parsed)
   const span = options.span ?? {
-    request: options.request === undefined ? undefined : resolveMessageForRendering(options.request, provider),
-    result: options.result === undefined ? undefined : resolveMessageForRendering(options.result, provider),
+    request: options.request === undefined
+      ? undefined
+      : resolveMessageForRendering(options.request, provider),
+    result: options.result === undefined
+      ? undefined
+      : resolveMessageForRendering(options.result, provider),
     role: options.role ?? 'result',
     visibleRows: { request: options.request !== undefined, result: options.result !== undefined || (options.role ?? 'result') === 'result' },
   }

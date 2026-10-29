@@ -9,7 +9,16 @@ cursorTest('toggles native thinking independently of the model and effort', asyn
   await waitForSettingsIdle(native.page)
   await exerciseNativeOptionSequence(native, {
     groupId: 'thinking',
-    steps: [{ value: 'true', via: 'choose' }, { value: 'true', via: 'reload' }, { value: 'false', via: 'choose' }],
-    nativeProof: (request, step) => expectCursorNativeParameters(request, 'mock-sonnet', { context: '200k', effort: 'high', thinking: step.value, fast: 'false' }),
+    steps: [
+      { value: 'true', via: 'choose' },
+      { value: 'true', via: 'reload' },
+      { value: 'false', via: 'choose' },
+    ],
+    nativeProof: (request, step) => expectCursorNativeParameters(request, 'mock-sonnet', {
+      context: '200k',
+      effort: 'high',
+      thinking: step.value,
+      fast: 'false',
+    }),
   })
 })

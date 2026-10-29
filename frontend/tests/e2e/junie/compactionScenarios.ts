@@ -16,8 +16,14 @@ export async function exerciseCompressAcknowledgement(context: NativeScenarioCon
     `${oldMarker} is old work to replace.`,
     'Finish another task before compaction.',
   ].entries()) {
-    const answer = index === 0 ? `Turn ${index} is complete. Keep ${priorAnswerMarker} as task state.` : `Turn ${index} is complete.`
-    lastBaseline = await modelScript.queue({ toolCalls: [junieAnswerToolCall(`junie-before-compress-${index}`, answer)] })
+    const answer = index === 0
+      ? `Turn ${index} is complete. Keep ${priorAnswerMarker} as task state.`
+      : `Turn ${index} is complete.`
+    lastBaseline = await modelScript.queue({
+      toolCalls: [
+        junieAnswerToolCall(`junie-before-compress-${index}`, answer),
+      ],
+    })
     await sendMessage(page, modelScript.prompt(prompt))
     await modelScript.waitForSteps(lastBaseline + 1)
     await waitForAgentIdle(page)
@@ -33,17 +39,27 @@ export async function exerciseCompressAcknowledgement(context: NativeScenarioCon
   expect(afterCommand.requests).toHaveLength(before.requests.length)
   await expect(compactionNoticeRow(page)).toHaveCount(0)
 
-  const next = await modelScript.queue({ toolCalls: [junieAnswerToolCall('junie-after-compress', 'The compressed task ended.')] })
+  const next = await modelScript.queue({
+    toolCalls: [
+      junieAnswerToolCall('junie-after-compress', 'The compressed task ended.'),
+    ],
+  })
   await sendMessage(page, modelScript.prompt('JUNIE_NEXT_TASK_MARKER Continue after compression.'))
   await modelScript.waitForSteps(next + 1)
   await waitForAgentIdle(page)
   const nextBody = JSON.stringify((await modelScript.requestAt(next)).body)
   expect(nextBody).toContain('History processor: During the current session')
-  const previousSolutions = [...nextBody.matchAll(/<previous_issue_solution>[\s\S]*?<\/previous_issue_solution>/g)]
+  const previousSolutions = [
+    ...nextBody.matchAll(/<previous_issue_solution>[\s\S]*?<\/previous_issue_solution>/g),
+  ]
     .map(match => match[0])
   expect(previousSolutions.some(solution => solution.includes(priorAnswerMarker))).toBe(true)
 
-  const later = await modelScript.queue({ toolCalls: [junieAnswerToolCall('junie-later-task', 'The later task ended.')] })
+  const later = await modelScript.queue({
+    toolCalls: [
+      junieAnswerToolCall('junie-later-task', 'The later task ended.'),
+    ],
+  })
   await sendMessage(page, modelScript.prompt('Continue one more task after compression.'))
   await modelScript.waitForSteps(later + 1)
   await waitForAgentIdle(page)

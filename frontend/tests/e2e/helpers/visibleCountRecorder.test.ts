@@ -121,10 +121,17 @@ describe('maxVisibleCountDuring', () => {
       }),
     }
     const page = {
-      context: () => ({ newCDPSession: async () => cdp }),
+      context: () => ({
+        newCDPSession: async () => cdp,
+      }),
       evaluate: async (read: (name: string) => number, name: string) => {
         events.push('read')
-        Object.defineProperty(window, name, { value: 'record' in options ? options.record : { max: 2 }, configurable: true })
+        Object.defineProperty(window, name, {
+          value: 'record' in options
+            ? options.record
+            : { max: 2 },
+          configurable: true,
+        })
         return read(name)
       },
     } as unknown as Page
@@ -140,16 +147,31 @@ describe('maxVisibleCountDuring', () => {
   it('enables the Page domain of its session, adds the recorder, navigates, reads the count, and removes the recorder', async () => {
     const { page, events, navigate } = fakePage()
     expect(await maxVisibleCountDuring(page, SCOPE, navigate)).toBe(2)
-    expect(events).toEqual(['Page.enable', 'Page.addScriptToEvaluateOnNewDocument', 'navigate', 'read', 'Page.removeScriptToEvaluateOnNewDocument', 'detach'])
+    expect(events).toEqual([
+      'Page.enable',
+      'Page.addScriptToEvaluateOnNewDocument',
+      'navigate',
+      'read',
+      'Page.removeScriptToEvaluateOnNewDocument',
+      'detach',
+    ])
   })
 
   it('removes the recorder and detaches when the navigation fails', async () => {
     const failure = new Error('the reload failed')
-    const { page, events, navigate } = fakePage({ navigate: async () => {
-      throw failure
-    } })
+    const { page, events, navigate } = fakePage({
+      navigate: async () => {
+        throw failure
+      },
+    })
     await expect(maxVisibleCountDuring(page, SCOPE, navigate)).rejects.toBe(failure)
-    expect(events).toEqual(['Page.enable', 'Page.addScriptToEvaluateOnNewDocument', 'navigate', 'Page.removeScriptToEvaluateOnNewDocument', 'detach'])
+    expect(events).toEqual([
+      'Page.enable',
+      'Page.addScriptToEvaluateOnNewDocument',
+      'navigate',
+      'Page.removeScriptToEvaluateOnNewDocument',
+      'detach',
+    ])
   })
 
   it.each([undefined, null, {}])('fails when the page holds no count (%j), as when the navigation started no new document', async (record) => {
@@ -157,7 +179,10 @@ describe('maxVisibleCountDuring', () => {
     await expect(maxVisibleCountDuring(page, SCOPE, navigate)).rejects.toThrow('did not start a new document')
   })
 
-  it.each([{ container: '', item: '.leaf' }, { container: '.list', item: ' ' }])('refuses the scope %j before it opens a session', async (scope) => {
+  it.each([
+    { container: '', item: '.leaf' },
+    { container: '.list', item: ' ' },
+  ])('refuses the scope %j before it opens a session', async (scope) => {
     const { page, events, navigate } = fakePage()
     await expect(maxVisibleCountDuring(page, scope, navigate)).rejects.toThrow('needs a container selector and an item selector')
     expect(events).toEqual([])

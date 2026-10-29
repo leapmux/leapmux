@@ -25,10 +25,26 @@ describe('a refused write of gemini cli', () => {
       status: 'pending',
       title: 'Writing to native-denied-file-write.txt',
       kind: 'edit',
-      content: [{ type: 'diff', path: '/w/native-denied-file-write.txt', oldText: 'KEEP_THE_NATIVE_FILE\n', newText: 'PROPOSED_NATIVE_TEXT\n', _meta: { kind: 'modify' } }],
-      locations: [{ path: '/w/native-denied-file-write.txt' }],
+      content: [
+        {
+          type: 'diff',
+          path: '/w/native-denied-file-write.txt',
+          oldText: 'KEEP_THE_NATIVE_FILE\n',
+          newText: 'PROPOSED_NATIVE_TEXT\n',
+          _meta: { kind: 'modify' },
+        },
+      ],
+      locations: [
+        { path: '/w/native-denied-file-write.txt' },
+      ],
     },
-    ending: { sessionUpdate: 'tool_call_update', toolCallId: 'write_file__denied', status: 'failed', kind: 'edit', content: acpTextContent(REFUSAL) },
+    ending: {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'write_file__denied',
+      status: 'failed',
+      kind: 'edit',
+      content: acpTextContent(REFUSAL),
+    },
     spanType: 'edit',
   }
 

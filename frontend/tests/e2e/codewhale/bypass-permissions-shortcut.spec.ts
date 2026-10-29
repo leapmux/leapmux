@@ -11,7 +11,11 @@ codewhaleTest.describe('Codewhale approvals', () => {
   codewhaleTest('applies the bypass pill when the reader allows', async ({ authenticatedCodewhaleWorkspace, page, modelScript }) => {
     void authenticatedCodewhaleWorkspace
     const asked = await modelScript.queue(
-      { toolCalls: [bashToolCall(CODEWHALE, 'bypass-call', 'touch bypass.txt && echo "bypass-$((40 + 2))"')] },
+      {
+        toolCalls: [
+          bashToolCall(CODEWHALE, 'bypass-call', 'touch bypass.txt && echo "bypass-$((40 + 2))"'),
+        ],
+      },
       { text: 'I created bypass.txt.' },
     )
     await sendMessage(page, modelScript.prompt('Create bypass.txt.'))
@@ -33,7 +37,11 @@ codewhaleTest.describe('Codewhale approvals', () => {
 
     // Full Access runs a command that writes without asking.
     const unasked = await modelScript.queue(
-      { toolCalls: [bashToolCall(CODEWHALE, 'unasked-call', 'touch unasked.txt && echo "unasked-$((40 + 2))"')] },
+      {
+        toolCalls: [
+          bashToolCall(CODEWHALE, 'unasked-call', 'touch unasked.txt && echo "unasked-$((40 + 2))"'),
+        ],
+      },
       { text: 'I created unasked.txt.' },
     )
     await sendMessage(page, modelScript.prompt('Create unasked.txt.'))

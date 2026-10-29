@@ -10,7 +10,9 @@ grokTest('shows the native model failure and accepts the next valid prompt', asy
 grokTest('folds a retried mid-stream cut into one retry row', async ({ native }) => {
   const { page, modelScript } = native
   const start = await modelScript.queue(
-    { error: { status: 503, message: 'cut mid-stream', midStream: true } },
+    {
+      error: { status: 503, message: 'cut mid-stream', midStream: true },
+    },
     { text: 'FULL-ANSWER-AFTER-RETRY' },
   )
   await sendMessage(page, modelScript.prompt('Stream the scripted answer.'))

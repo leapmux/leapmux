@@ -207,7 +207,12 @@ describe('inferScrollDirection', () => {
 describe('computeKeepNewest', () => {
   const msg = (id: string, seq: bigint) => ({ id, seq } as AgentChatMessage)
   const anchor = (id: string) => ({ id, offsetWithinRow: 0 })
-  const msgs = [msg('m1', 1n), msg('m2', 2n), msg('m3', 3n), msg('m4', 4n)]
+  const msgs = [
+    msg('m1', 1n),
+    msg('m2', 2n),
+    msg('m3', 3n),
+    msg('m4', 4n),
+  ]
 
   it('keeps 0 when following the tail (no anchor), so the store applies the normal cap', () => {
     expect(computeKeepNewest(msgs, null, -1)).toBe(0)
@@ -226,7 +231,12 @@ describe('computeKeepNewest', () => {
 describe('computeBufferAwareKeepNewest', () => {
   const msg = (id: string, seq: bigint) => ({ id, seq } as AgentChatMessage)
   const anchor = (id: string) => ({ id, offsetWithinRow: 0 })
-  const msgs = [msg('m1', 1n), msg('m2', 2n), msg('m3', 3n), msg('m4', 4n)]
+  const msgs = [
+    msg('m1', 1n),
+    msg('m2', 2n),
+    msg('m3', 3n),
+    msg('m4', 4n),
+  ]
   const mustNotResolve = (): null => {
     throw new Error('anchorAt should not be called')
   }
@@ -282,7 +292,9 @@ describe('createScrollInput', () => {
       captureTopAnchor: 0,
     }
     const input = createScrollInput(
-      makeScrollContext({ getEl: () => el }),
+      makeScrollContext({
+        getEl: () => el,
+      }),
       {
         captureAnchor: () => { calls.captureAnchor++ },
         captureTopAnchor: () => { calls.captureTopAnchor++ },
@@ -351,14 +363,20 @@ describe('createScrollInput', () => {
 
   it('handleKeyDown End forces scroll to the live tail', () => {
     const { input, calls } = setup(fakeEl())
-    input.handleKeyDown({ key: 'End', preventDefault: () => {} } as KeyboardEvent)
+    input.handleKeyDown({
+      key: 'End',
+      preventDefault: () => {},
+    } as KeyboardEvent)
     expect(calls.forceBottom).toBe(1)
     expect(calls.lastScrollDir).toEqual(['newer'])
   })
 
   it('handleKeyDown Home pins to the viewport-top anchor', () => {
     const { input, calls } = setup(fakeEl())
-    input.handleKeyDown({ key: 'Home', preventDefault: () => {} } as KeyboardEvent)
+    input.handleKeyDown({
+      key: 'Home',
+      preventDefault: () => {},
+    } as KeyboardEvent)
     expect(calls.captureTopAnchor).toBe(1)
     expect(calls.captureAnchor).toBe(0)
     expect(calls.lastScrollDir).toEqual(['older'])
@@ -366,7 +384,11 @@ describe('createScrollInput', () => {
 
   it('handleKeyDown ignores modifier-chorded keys', () => {
     const { input, calls } = setup(fakeEl())
-    input.handleKeyDown({ key: 'PageDown', metaKey: true, preventDefault: () => {} } as KeyboardEvent)
+    input.handleKeyDown({
+      key: 'PageDown',
+      metaKey: true,
+      preventDefault: () => {},
+    } as KeyboardEvent)
     expect(calls.lastScrollDir).toEqual([])
     expect(calls.discretePageTarget).toEqual([])
   })

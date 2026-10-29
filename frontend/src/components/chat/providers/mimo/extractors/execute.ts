@@ -14,13 +14,24 @@ import { MIMO_EXEC_STATUS } from '../protocol'
  */
 export function mimoExecuteRequest(tool: string, input: Record<string, unknown>): ExecuteRequest {
   const description = pickString(input, 'description')
-  if (tool === MIMO_TOOL.Exec)
-    return { command: pickString(input, 'code'), language: 'javascript', ...(description ? { description } : {}) }
+  if (tool === MIMO_TOOL.Exec) {
+    return {
+      command: pickString(input, 'code'),
+      language: 'javascript',
+      ...(description
+        ? { description }
+        : {}),
+    }
+  }
   const cwd = pickString(input, 'workdir')
   return {
     command: pickString(input, 'command'),
-    ...(description ? { description } : {}),
-    ...(cwd ? { cwd } : {}),
+    ...(description
+      ? { description }
+      : {}),
+    ...(cwd
+      ? { cwd }
+      : {}),
   }
 }
 
@@ -40,10 +51,17 @@ export function mimoExecuteResult(part: MiMoToolPart): ExecuteResult {
   const truncated = pickBoolean(part.metadata, 'truncated') === true
   const command: CommandResult = {
     output,
-    ...(exit !== undefined && Number.isSafeInteger(exit) ? { exitCode: exit } : {}),
-    ...(truncated ? { truncated } : {}),
+    ...(exit !== undefined && Number.isSafeInteger(exit)
+      ? { exitCode: exit }
+      : {}),
+    ...(truncated
+      ? { truncated }
+      : {}),
   }
-  return { commands: [command], unresolvedTerminals: [] }
+  return {
+    commands: [command],
+    unresolvedTerminals: [],
+  }
 }
 
 /**

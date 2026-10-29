@@ -91,7 +91,9 @@ export function nativeOutputPathsPrecedePreview(matches: (SVGElement | HTMLEleme
   if (!result)
     return null
   const pathBlocks = result.querySelectorAll('[data-testid="tool-output-file-paths"]')
-  const paths = pathBlocks.length === 1 ? pathBlocks[0] : undefined
+  const paths = pathBlocks.length === 1
+    ? pathBlocks[0]
+    : undefined
   if (!paths || markers.length === 0 || markers.some(marker => !marker.trim()))
     return false
   const marked = Array.from(result.querySelectorAll('[data-tool-output-preview]'))
@@ -121,7 +123,9 @@ export async function proveNativeToolOutputFilePaths(options: NativeToolOutputFi
       for (const marker of options.absentMarkers ?? [])
         await expect(result, `the result row does not show ${marker}`).not.toContainText(marker)
       const pathList = result.getByTestId('tool-output-file-paths')
-      await expect(pathList).toHaveCount(options.paths.length === 0 ? 0 : 1)
+      await expect(pathList).toHaveCount(options.paths.length === 0
+        ? 0
+        : 1)
       if (options.paths.length > 0) {
         expect(await pathList.textContent()).toBe(options.paths.map(path => `Output file:${path}`).join(''))
         await expect(pathList.locator('a, button, input, textarea')).toHaveCount(0)
@@ -205,25 +209,44 @@ export function checkNativeOutputReceipt<R extends Pick<NativeOutputReceipt, 'pa
   output: Pick<NativeToolOutput, 'firstMarker' | 'omittedMarker' | 'lastMarker'>,
   markers: NativeOutputReceiptMarkers<R> = {},
 ): CheckedNativeOutputReceipt {
-  const path = receipt.paths.length === 1 ? receipt.paths[0] : undefined
+  const path = receipt.paths.length === 1
+    ? receipt.paths[0]
+    : undefined
   if (path === undefined)
     throw new Error(`The native output receipt requires exactly one declared path, not ${receipt.paths.length}.`)
   const absentMarker = markers.absentMarker ?? output.omittedMarker
   if (!absentMarker.trim())
     throw new Error('The native output receipt proof requires a nonempty absent line.')
-  if (receipt.previewText.includes(absentMarker))
-    throw new Error(`The native output preview holds ${absentMarker === output.omittedMarker ? 'the omitted middle line' : 'the absent line'} of the computed output.`)
-  const rowAbsentMarkers = markers.argumentsHoldOutput === true ? [] : [absentMarker]
+  if (receipt.previewText.includes(absentMarker)) {
+    throw new Error(`The native output preview holds ${absentMarker === output.omittedMarker
+      ? 'the omitted middle line'
+      : 'the absent line'} of the computed output.`)
+  }
+  const rowAbsentMarkers = markers.argumentsHoldOutput === true
+    ? []
+    : [absentMarker]
   if (markers.previewMarkers !== undefined) {
-    const stated = typeof markers.previewMarkers === 'function' ? markers.previewMarkers(receipt) : markers.previewMarkers
+    const stated = typeof markers.previewMarkers === 'function'
+      ? markers.previewMarkers(receipt)
+      : markers.previewMarkers
     if (stated.length === 0)
       throw new Error('The native output receipt proof requires at least one preview marker.')
-    return { path, previewMarkers: [...stated], absentMarker, rowAbsentMarkers }
+    return {
+      path,
+      previewMarkers: [...stated],
+      absentMarker,
+      rowAbsentMarkers,
+    }
   }
   const present = presentPreviewMarkers(receipt.previewText, output)
   if (present.length === 0)
     throw new Error('The native output preview holds neither the first line nor the last line of the computed output.')
-  return { path, previewMarkers: present, absentMarker, rowAbsentMarkers }
+  return {
+    path,
+    previewMarkers: present,
+    absentMarker,
+    rowAbsentMarkers,
+  }
 }
 
 /**
@@ -276,7 +299,14 @@ export async function proveNativeOutputReceipt<R extends NativeOutputReceipt>(
   const receipt = read(capture.snapshot, callId)
   // Attach the receipt before its checks, so a failed check keeps the evidence.
   await testInfo.attach('native-output-path-receipt', {
-    body: JSON.stringify({ agentId: capture.agent.id, sessionId: capture.agent.agentSessionId, callId, paths: receipt.paths, previewText: receipt.previewText, frame: receipt.frame }),
+    body: JSON.stringify({
+      agentId: capture.agent.id,
+      sessionId: capture.agent.agentSessionId,
+      callId,
+      paths: receipt.paths,
+      previewText: receipt.previewText,
+      frame: receipt.frame,
+    }),
     contentType: 'application/json',
   })
   const { path, previewMarkers, rowAbsentMarkers } = checkNativeOutputReceipt(receipt, capture.output, options)

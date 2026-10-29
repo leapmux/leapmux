@@ -5,7 +5,18 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { createReasonixEnvironment } from './reasonixEnvironment'
 
 let homeDir: string
-const options = () => ({ homeDir, baseURL: 'http://127.0.0.1:4567/v1', modelKey: 'unit-key', modelID: 'unit-model', alternateProviderID: 'unit-alt', alternateModelID: 'unit-alt-model', plainProviderID: 'unit-plain', plainModelID: 'unit-plain-model' })
+function options() {
+  return {
+    homeDir,
+    baseURL: 'http://127.0.0.1:4567/v1',
+    modelKey: 'unit-key',
+    modelID: 'unit-model',
+    alternateProviderID: 'unit-alt',
+    alternateModelID: 'unit-alt-model',
+    plainProviderID: 'unit-plain',
+    plainModelID: 'unit-plain-model',
+  }
+}
 
 /** The `[[providers]]` table of `name` in the configuration, up to the next table or the end. */
 function providerTable(config: string, name: string): string {
@@ -25,7 +36,10 @@ afterEach(() => rmSync(homeDir, { recursive: true, force: true }))
 
 describe('createReasonixEnvironment', () => {
   it('uses the requested context window for all native providers', () => {
-    const configured = { ...options(), contextWindow: 50000 }
+    const configured = {
+      ...options(),
+      contextWindow: 50000,
+    }
     const env = createReasonixEnvironment(configured)
     const config = readFileSync(join(env.REASONIX_HOME!, 'config.toml'), 'utf8')
     for (const name of ['deepseek', 'unit-alt', 'unit-plain'])
@@ -39,15 +53,27 @@ describe('createReasonixEnvironment', () => {
       expect(providerTable(config, name)).toContain('context_window = 128000')
   })
 
-  it.each([0, -1, 0.5, Number.MAX_SAFE_INTEGER + 1, Number.NaN, Number.POSITIVE_INFINITY])('rejects invalid context window %s before writing files', (contextWindow) => {
-    const configured = { ...options(), contextWindow }
+  it.each([
+    0,
+    -1,
+    0.5,
+    Number.MAX_SAFE_INTEGER + 1,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+  ])('rejects invalid context window %s before writing files', (contextWindow) => {
+    const configured = {
+      ...options(),
+      contextWindow,
+    }
     expect(() => createReasonixEnvironment(configured)).toThrow('context window')
     expect(existsSync(join(homeDir, '.reasonix'))).toBe(false)
   })
 
   it('writes the default provider and the alternate provider of the given models', () => {
     const env = createReasonixEnvironment(options())
-    expect(env).toEqual({ REASONIX_HOME: join(homeDir, '.reasonix') })
+    expect(env).toEqual({
+      REASONIX_HOME: join(homeDir, '.reasonix'),
+    })
     const config = readFileSync(join(env.REASONIX_HOME!, 'config.toml'), 'utf8')
     expect(config).toContain('default_model = "deepseek/unit-model"')
     expect(config).toContain('name = "deepseek"\nkind = "openai"\nbase_url = "http://127.0.0.1:4567/v1"\nmodel = "unit-model"')

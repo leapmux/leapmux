@@ -350,7 +350,12 @@ export function createCheckpointRecorder(opts: CheckpointRecorderOptions): Check
       else
         upserts.push({ ...ref, bytes })
     }
-    return { headerBytes: serializeHeader(state), upserts, deletes, full: false }
+    return {
+      headerBytes: serializeHeader(state),
+      upserts,
+      deletes,
+      full: false,
+    }
   }
 
   /**
@@ -387,14 +392,18 @@ export function createCheckpointRecorder(opts: CheckpointRecorderOptions): Check
       // checkpoint rewrite exactly as the hub pairs PruneTombstonesAtOrBelow
       // with its state_payload write -- pruning without persisting would be
       // undone by the next cold reload, which replays from the persisted state.
-      const before = base === 'ready' ? snapshotEntityKeys(mgr.state.confirmedState) : null
+      const before = base === 'ready'
+        ? snapshotEntityKeys(mgr.state.confirmedState)
+        : null
       mgr.compactTombstones()
       const state = mgr.state.confirmedState
       if (before) {
         for (const ref of keysRemovedSince(before, state))
           dirty.add(entityKey(ref.kind, ref.entityId))
       }
-      const incremental = base === 'ready' ? incrementalDelta(state, dirty) : null
+      const incremental = base === 'ready'
+        ? incrementalDelta(state, dirty)
+        : null
       if (incremental)
         return incremental
       // Either the lineage was already invalidated, or a dirty key could not

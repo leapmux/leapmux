@@ -25,7 +25,9 @@ vi.mock('./ui', () => ({
   waitForAgentIdle: async () => browser.idle(),
   setInitialBrowserPref: vi.fn(),
   assistantBubbles: () => ({
-    filter: ({ hasText }: { hasText: string }) => ({ first: () => ({ ...browser.bubble, answer: hasText }) }),
+    filter: ({ hasText }: { hasText: string }) => ({
+      first: () => ({ ...browser.bubble, answer: hasText }),
+    }),
   }),
 }))
 
@@ -36,7 +38,9 @@ vi.mock('@playwright/test', async (importOriginal) => {
     expect: (value: unknown) => {
       if (typeof value === 'object' && value !== null && 'answer' in value && typeof value.answer === 'string') {
         const answer = value.answer
-        return { toBeVisible: async () => browser.visible(answer) }
+        return {
+          toBeVisible: async () => browser.visible(answer),
+        }
       }
       return expect(value)
     },
@@ -87,8 +91,12 @@ async function runQuotaScenario(options: QuotaReceiptOptions = {}): Promise<Mock
           delete headers['content-length']
           delete headers['transfer-encoding']
           response.writeHead(options.status ?? upstream.status, headers)
-          response.end(options.wrongAnswer ? text.replace(/NATIVEQUOTAHEADERS[0-9a-f]+/, 'WRONG_ACTUAL_HTTP_ANSWER') : text)
-        })().catch((error: unknown) => response.destroy(error instanceof Error ? error : new Error(String(error))))
+          response.end(options.wrongAnswer
+            ? text.replace(/NATIVEQUOTAHEADERS[0-9a-f]+/, 'WRONG_ACTUAL_HTTP_ANSWER')
+            : text)
+        })().catch((error: unknown) => response.destroy(error instanceof Error
+          ? error
+          : new Error(String(error))))
       })
       return withCleanup(async () => {
         await new Promise<void>((resolve, reject) => {
@@ -103,13 +111,22 @@ async function runQuotaScenario(options: QuotaReceiptOptions = {}): Promise<Mock
           const response = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
             method: 'POST',
             headers: { 'content-type': 'application/json' },
-            body: JSON.stringify({ model: 'mock-model', stream: false, messages: [{ role: 'user', content: prompt }] }),
+            body: JSON.stringify({
+              model: 'mock-model',
+              stream: false,
+              messages: [
+                { role: 'user', content: prompt },
+              ],
+            }),
           })
-          receipts.set(prompt, { status: response.status, headers: Object.fromEntries(response.headers) })
+          receipts.set(prompt, {
+            status: response.status,
+            headers: Object.fromEntries(response.headers),
+          })
           const body = await response.json() as { choices: { message: { content: string } }[] }
           const answer = body.choices[0]?.message.content
           if (typeof answer !== 'string')
-            throw new Error('The actual generic response contains no assistant text.')
+            throw new TypeError('The actual generic response contains no assistant text.')
           answers.push(answer)
         }
         browser.send.mockImplementation(send)
@@ -125,15 +142,24 @@ async function runQuotaScenario(options: QuotaReceiptOptions = {}): Promise<Mock
           const prompt = typeof record.body === 'object' && record.body !== null && 'messages' in record.body && Array.isArray(record.body.messages)
             ? record.body.messages.findLast((message: unknown) => typeof message === 'object' && message !== null && 'role' in message && message.role === 'user')
             : undefined
-          const text = typeof prompt === 'object' && prompt !== null && 'content' in prompt && typeof prompt.content === 'string' ? prompt.content : undefined
-          const receipt = text === undefined ? undefined : receipts.get(text)
-          return receipt ? { ...record, response: receipt } : record
+          const text = typeof prompt === 'object' && prompt !== null && 'content' in prompt && typeof prompt.content === 'string'
+            ? prompt.content
+            : undefined
+          const receipt = text === undefined
+            ? undefined
+            : receipts.get(text)
+          return receipt
+            ? { ...record, response: receipt }
+            : record
         }
         const script: ModelScript = {
           ...lifecycle.script,
           status: async () => {
             const status = await lifecycle.script.status()
-            return { ...status, requests: status.requests.map(withReceipt) }
+            return {
+              ...status,
+              requests: status.requests.map(withReceipt),
+            }
           },
           requestAt: async stepIndex => withReceipt(await lifecycle.script.requestAt(stepIndex)),
         }
@@ -156,7 +182,9 @@ async function runQuotaScenario(options: QuotaReceiptOptions = {}): Promise<Mock
         expect(browser.idle).toHaveBeenCalledTimes(1)
         expect(browser.visible).toHaveBeenCalledTimes(1)
         if (!options.keepAnthropic) {
-          const delivered = [...receipts.values()].at(-1)
+          const delivered = [
+            ...receipts.values(),
+          ].at(-1)
           expect(delivered?.status).toBe(200)
           expect(Object.keys(delivered?.headers ?? {}).some(key => key.startsWith('anthropic-'))).toBe(false)
           expect(delivered?.headers).toHaveProperty('x-leapmux-e2e-ratelimit-utilization', '0.92')

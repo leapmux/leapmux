@@ -119,7 +119,10 @@ describe('RecaptchaV3Field', () => {
 
     // A hidden tab cannot submit; the interval must not mint tokens
     // nobody uses.
-    Object.defineProperty(document, 'hidden', { configurable: true, get: () => true })
+    Object.defineProperty(document, 'hidden', {
+      configurable: true,
+      get: () => true,
+    })
     try {
       vi.advanceTimersByTime(110_000)
       vi.advanceTimersByTime(110_000)
@@ -127,14 +130,20 @@ describe('RecaptchaV3Field', () => {
 
       // Returning to the tab re-arms immediately: the next submit needs a
       // token inside the two-minute window.
-      Object.defineProperty(document, 'hidden', { configurable: true, get: () => false })
+      Object.defineProperty(document, 'hidden', {
+        configurable: true,
+        get: () => false,
+      })
       document.dispatchEvent(new Event('visibilitychange'))
       await vi.waitFor(() => {
         expect(execute).toHaveBeenCalledTimes(2)
       })
     }
     finally {
-      Object.defineProperty(document, 'hidden', { configurable: true, get: () => false })
+      Object.defineProperty(document, 'hidden', {
+        configurable: true,
+        get: () => false,
+      })
     }
   })
 
@@ -166,7 +175,9 @@ describe('RecaptchaV3Field', () => {
     let call = 0
     const execute = vi.fn(() => {
       call++
-      return call === 1 ? new Promise<string>(() => {}) : Promise.resolve('fresh')
+      return call === 1
+        ? new Promise<string>(() => {})
+        : Promise.resolve('fresh')
     })
     installFakeGrecaptcha(execute)
     let handle: CaptchaFieldHandle | undefined

@@ -25,7 +25,13 @@ function entryWithSpanLines(
     color: i + 1,
     type: 'active' as const,
   }))
-  const message = makeMessage({ id: 'm1', seq: 1n, spanId: 'span-1', source, spanLines: JSON.stringify(parsedSpanLines) })
+  const message = makeMessage({
+    id: 'm1',
+    seq: 1n,
+    spanId: 'span-1',
+    source,
+    spanLines: JSON.stringify(parsedSpanLines),
+  })
   return {
     ...prepareMessage(message),
     // Geometry tests select the category independently of their bubble content.
@@ -59,14 +65,20 @@ function renderPremeasureRow(
   const item: VirtualItem = { id: 'm1', hasSpanLines: lineCount > 0, heightKey: 'k1' }
   const { unmount } = render(() => (
     <ChatHiddenPremeasure
-      candidates={[{ entry, item }]}
+      candidates={[
+        { entry, item },
+      ]}
       contentWidthPx={400}
       renderBubble={() => <div data-testid="bubble">bubble</div>}
       onMeasure={vi.fn()}
     />
   ))
   const bubble = screen.getByTestId('bubble')
-  return { row: premeasureRowOf(bubble), column: bubble.parentElement!, unmount }
+  return {
+    row: premeasureRowOf(bubble),
+    column: bubble.parentElement!,
+    unmount,
+  }
 }
 
 describe('chat hidden premeasure rendering', () => {
@@ -85,7 +97,12 @@ describe('chat hidden premeasure rendering', () => {
       const onMeasure = vi.fn(() => true)
       const rendered = render(() => (
         <ChatHiddenPremeasure
-          candidates={[{ entry: entryWithSpanLines(0, 'tool_result'), item: { id: 'empty', hasSpanLines: false } }]}
+          candidates={[
+            {
+              entry: entryWithSpanLines(0, 'tool_result'),
+              item: { id: 'empty', hasSpanLines: false },
+            },
+          ]}
           contentWidthPx={400}
           renderBubble={() => <img alt="pending" />}
           onMeasure={onMeasure}
@@ -95,7 +112,9 @@ describe('chat hidden premeasure rendering', () => {
       const row = rendered.container.firstElementChild!.firstElementChild as HTMLElement
       const image = row.querySelector('img')!
       vi.spyOn(row, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 400, 0))
-      Object.defineProperty(image, 'complete', { get: () => complete })
+      Object.defineProperty(image, 'complete', {
+        get: () => complete,
+      })
       frames.shift()?.(0)
       expect(onMeasure).not.toHaveBeenCalled()
       complete = true
@@ -119,7 +138,12 @@ describe('chat hidden premeasure rendering', () => {
       const onMeasure = vi.fn(() => true)
       const rendered = render(() => (
         <ChatHiddenPremeasure
-          candidates={[{ entry: entryWithSpanLines(0, 'tool_result'), item: { id: 'empty', hasSpanLines: false } }]}
+          candidates={[
+            {
+              entry: entryWithSpanLines(0, 'tool_result'),
+              item: { id: 'empty', hasSpanLines: false },
+            },
+          ]}
           contentWidthPx={400}
           renderBubble={() => null}
           onMeasure={onMeasure}
@@ -153,7 +177,9 @@ describe('chat hidden premeasure rendering', () => {
     try {
       const entry = entryWithSpanLines(0, 'tool_result')
       const item = { id: 'empty', heightKey: 'live', hasSpanLines: false }
-      const [candidates, setCandidates] = createSignal([{ entry, item }])
+      const [candidates, setCandidates] = createSignal([
+        { entry, item },
+      ])
       const onMeasure = vi.fn(() => true)
       const rendered = render(() => (
         <ChatHiddenPremeasure candidates={candidates()} contentWidthPx={400} renderBubble={() => null} onMeasure={onMeasure} />
@@ -161,7 +187,12 @@ describe('chat hidden premeasure rendering', () => {
       unmount = rendered.unmount
       const oldRow = rendered.container.firstElementChild!.firstElementChild as HTMLElement
       vi.spyOn(oldRow, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 400, 100))
-      setCandidates([{ entry, item: { ...item } }])
+      setCandidates([
+        {
+          entry,
+          item: { ...item },
+        },
+      ])
       const currentRow = rendered.container.firstElementChild!.firstElementChild as HTMLElement
       expect(oldRow.isConnected).toBe(false)
       vi.spyOn(currentRow, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 400, 0))
@@ -271,7 +302,9 @@ describe('chat hidden premeasure rendering', () => {
       const item: VirtualItem = { id: 'm1', hasSpanLines: false, heightKey: 'k1' }
       const { container } = render(() => (
         <ChatHiddenPremeasure
-          candidates={[{ entry, item }]}
+          candidates={[
+            { entry, item },
+          ]}
           contentWidthPx={400}
           renderBubble={() => <img alt="deferred" src="data:image/png;base64,iVBORw0KGgo=" />}
           onMeasure={onMeasure}
@@ -322,7 +355,9 @@ describe('chat hidden premeasure rendering', () => {
       const item: VirtualItem = { id: 'm1', hasSpanLines: false, heightKey: 'k1' }
       const { container } = render(() => (
         <ChatHiddenPremeasure
-          candidates={[{ entry, item }]}
+          candidates={[
+            { entry, item },
+          ]}
           contentWidthPx={400}
           renderBubble={() => (
             <img alt="reserved" data-size-reserved="1" src="data:image/png;base64,iVBORw0KGgo=" />
@@ -376,9 +411,15 @@ describe('chat hidden premeasure rendering', () => {
         return true
       })
       const candidates = [
-        { entry: entryWithSpanLines(0), item: { id: 'm1', hasSpanLines: false, heightKey: 'k1' } as VirtualItem },
         {
-          entry: { ...entryWithSpanLines(0), message: { id: 'm2', seq: 2n, spanId: 'span-2' } as AgentChatMessage } as ClassifiedEntry,
+          entry: entryWithSpanLines(0),
+          item: { id: 'm1', hasSpanLines: false, heightKey: 'k1' } as VirtualItem,
+        },
+        {
+          entry: {
+            ...entryWithSpanLines(0),
+            message: { id: 'm2', seq: 2n, spanId: 'span-2' } as AgentChatMessage,
+          } as ClassifiedEntry,
           item: { id: 'm2', hasSpanLines: false, heightKey: 'k2' } as VirtualItem,
         },
       ]
@@ -403,7 +444,10 @@ describe('chat hidden premeasure rendering', () => {
       // heights read against the SAME clean layout.
       expect(frames).toHaveLength(1)
       frames.shift()?.(0)
-      expect(calls).toEqual([['m1', 10], ['m2', 20]])
+      expect(calls).toEqual([
+        ['m1', 10],
+        ['m2', 20],
+      ])
     }
     finally {
       if (originalRaf)
@@ -438,7 +482,9 @@ describe('chat hidden premeasure rendering', () => {
       const item: VirtualItem = { id: 'm1', hasSpanLines: false, heightKey: 'k1' }
       const rendered = render(() => (
         <ChatHiddenPremeasure
-          candidates={[{ entry, item }]}
+          candidates={[
+            { entry, item },
+          ]}
           contentWidthPx={400}
           renderBubble={() => <img alt="deferred" src="data:image/png;base64,iVBORw0KGgo=" />}
           onMeasure={onMeasure}
@@ -447,7 +493,7 @@ describe('chat hidden premeasure rendering', () => {
       unmount = rendered.unmount
       const row = rendered.container.firstElementChild?.firstElementChild
       if (!(row instanceof HTMLElement))
-        throw new Error('The image premeasure row did not mount.')
+        throw new TypeError('The image premeasure row did not mount.')
       vi.spyOn(row, 'getBoundingClientRect').mockImplementation(() => new DOMRect(0, 0, 400, height))
       let imageComplete = false
       const img = rendered.container.querySelector('img')
@@ -512,7 +558,9 @@ describe('chat hidden premeasure rendering', () => {
       const item: VirtualItem = { id: 'm1', hasSpanLines: false, heightKey: 'k1' }
       const rendered = render(() => (
         <ChatHiddenPremeasure
-          candidates={[{ entry, item }]}
+          candidates={[
+            { entry, item },
+          ]}
           contentWidthPx={400}
           renderBubble={() => <div>row</div>}
           onMeasure={onMeasure}
@@ -521,7 +569,7 @@ describe('chat hidden premeasure rendering', () => {
       unmount = rendered.unmount
       const row = rendered.container.firstElementChild?.firstElementChild
       if (!(row instanceof HTMLElement))
-        throw new Error('The resize premeasure row did not mount.')
+        throw new TypeError('The resize premeasure row did not mount.')
       vi.spyOn(row, 'getBoundingClientRect').mockImplementation(() => new DOMRect(0, 0, 400, height))
 
       frames.shift()?.(0)
@@ -584,7 +632,9 @@ describe('chat hidden premeasure rendering', () => {
     try {
       const entry = entryWithSpanLines(0, 'assistant_text')
       const item: VirtualItem = { id: 'm1', hasSpanLines: false, heightKey: 'same-native-key' }
-      const [candidates, setCandidates] = createSignal([{ entry, item }])
+      const [candidates, setCandidates] = createSignal([
+        { entry, item },
+      ])
       const onMeasure = vi.fn(() => true)
       const rendered = render(() => (
         <ChatHiddenPremeasure
@@ -597,41 +647,52 @@ describe('chat hidden premeasure rendering', () => {
       unmount = rendered.unmount
       const oldRow = rendered.container.querySelector('[data-chat-premeasure-root]')?.firstElementChild
       if (!(oldRow instanceof HTMLElement))
-        throw new Error('The first actual premeasure row did not mount.')
+        throw new TypeError('The first actual premeasure row did not mount.')
       vi.spyOn(oldRow, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 752, 11))
       expect(frames.size).toBe(1)
       expect(onMeasure).not.toHaveBeenCalled()
 
-      setCandidates([{ entry, item: { ...item } }])
+      setCandidates([
+        {
+          entry,
+          item: { ...item },
+        },
+      ])
       const currentRow = rendered.container.querySelector('[data-chat-premeasure-root]')?.firstElementChild
       if (!(currentRow instanceof HTMLElement))
-        throw new Error('The replacement actual premeasure row did not mount.')
+        throw new TypeError('The replacement actual premeasure row did not mount.')
       expect(currentRow).not.toBe(oldRow)
       expect(oldRow.isConnected).toBe(false)
       expect(currentRow.isConnected).toBe(true)
       const currentRectangle = vi.spyOn(currentRow, 'getBoundingClientRect').mockReturnValue(new DOMRect(0, 0, 752, 88))
       expect(observe).toHaveBeenCalledWith(currentRow)
       expect(frames.size).toBe(1)
-      const pending = [...frames.values()]
+      const pending = [
+        ...frames.values(),
+      ]
       frames.clear()
       for (const handler of pending)
         handler(0)
 
       expect(onMeasure).toHaveBeenCalledTimes(1)
       expect(onMeasure).toHaveBeenCalledWith('m1', 88, 'same-native-key', expect.any(Number), true)
-      expect(readEvents).toEqual([{
-        phase: 'read',
-        id: 'm1',
-        seq: '1',
-        height: 88,
-        heightKey: 'same-native-key',
-        connected: true,
-        settled: true,
-      }])
+      expect(readEvents).toEqual([
+        {
+          phase: 'read',
+          id: 'm1',
+          seq: '1',
+          height: 88,
+          heightKey: 'same-native-key',
+          connected: true,
+          settled: true,
+        },
+      ])
       currentRectangle.mockReturnValue(new DOMRect(0, 0, 752, 101))
       triggerResizeObserverForSync(currentRow)
       expect(frames.size).toBe(1)
-      const resized = [...frames.values()]
+      const resized = [
+        ...frames.values(),
+      ]
       frames.clear()
       for (const handler of resized)
         handler(16)

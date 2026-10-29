@@ -8,10 +8,14 @@ import { kiloTest } from '../kilo-fixtures'
 kiloTest('keeps the to-do list after a reload', async ({ native }) => {
   const { page, modelScript } = native
   await modelScript.queue(
-    { toolCalls: [updateTodosToolCall(AgentProvider.KILO, 'kilo-todos', [
-      { step: 'Inspect the repository', status: 'completed' },
-      { step: 'Report the finding', status: 'in_progress' },
-    ])] },
+    {
+      toolCalls: [
+        updateTodosToolCall(AgentProvider.KILO, 'kilo-todos', [
+          { step: 'Inspect the repository', status: 'completed' },
+          { step: 'Report the finding', status: 'in_progress' },
+        ]),
+      ],
+    },
     { text: 'The list is ready.' },
   )
   await sendMessage(page, modelScript.prompt('Write a two-step to-do list.'))

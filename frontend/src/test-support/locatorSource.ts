@@ -30,8 +30,12 @@ const TEST_ID = /page\.getByTestId\(\s*(['"`])((?:(?!\1).)*)\1/g
 export function selectorsIn(text: string): string[] {
   // Group 2 always matches, including an empty value. The fallback satisfies the type checker.
   return [
-    ...[...text.matchAll(LOCATOR)].map(match => match[2] ?? ''),
-    ...[...text.matchAll(TEST_ID)].map(match => `[data-testid="${match[2] ?? ''}"]`),
+    ...[
+      ...text.matchAll(LOCATOR),
+    ].map(match => match[2] ?? ''),
+    ...[
+      ...text.matchAll(TEST_ID),
+    ].map(match => `[data-testid="${match[2] ?? ''}"]`),
   ]
 }
 
@@ -44,8 +48,12 @@ export function selectorsIn(text: string): string[] {
  */
 export function exportedFunctionBody(source: string, name: string, moduleName: string): string {
   const asyncStart = source.indexOf(`export async function ${name}(`)
-  const start = asyncStart < 0 ? source.indexOf(`export function ${name}(`) : asyncStart
-  const end = start < 0 ? -1 : source.indexOf('\n}\n', start)
+  const start = asyncStart < 0
+    ? source.indexOf(`export function ${name}(`)
+    : asyncStart
+  const end = start < 0
+    ? -1
+    : source.indexOf('\n}\n', start)
   if (end < 0)
     throw new Error(`${name} is no longer an exported function of ${moduleName}`)
   return source.slice(start, end)

@@ -3,7 +3,15 @@ import { describe, expect, it } from 'vitest'
 import { ResultDivider } from './resultDividerRenderers'
 
 function totalsOf(meta: Parameters<typeof ResultDivider>[0]['model']['meta']): string {
-  const { container } = render(() => <ResultDivider model={{ label: 'Turn ended', ...(meta !== undefined ? { meta } : {}) }} />)
+  const { container } = render(() => (
+    <ResultDivider model={{
+      label: 'Turn ended',
+      ...(meta !== undefined
+        ? { meta }
+        : {}),
+    }}
+    />
+  ))
   return container.querySelector('[data-testid="result-divider-totals"]')?.textContent ?? ''
 }
 
@@ -24,9 +32,18 @@ describe('result divider totals', () => {
   // A turn that used no tool, or cost nothing, says so by saying NOTHING. "0 tools"
   // and "$0.0000" are noise beside a rule that already states the turn ended.
   it.each([
-    ['no tool', { numToolUses: 0 }],
-    ['no cost', { costUsd: 0 }],
-    ['neither', { numToolUses: 0, costUsd: 0 }],
+    [
+      'no tool',
+      { numToolUses: 0 },
+    ],
+    [
+      'no cost',
+      { costUsd: 0 },
+    ],
+    [
+      'neither',
+      { numToolUses: 0, costUsd: 0 },
+    ],
     ['no measurement at all', undefined],
   ])('draws nothing for %s', (_name, meta) => {
     expect(totalsOf(meta)).toBe('')
@@ -40,7 +57,12 @@ describe('result divider totals', () => {
 
   it('keeps the label and the danger colour beside the totals', () => {
     const { container } = render(() => (
-      <ResultDivider model={{ label: 'Turn failed', isError: true, meta: { numToolUses: 2 } }} />
+      <ResultDivider model={{
+        label: 'Turn failed',
+        isError: true,
+        meta: { numToolUses: 2 },
+      }}
+      />
     ))
     const rule = container.querySelector('[data-testid="result-divider"]') as HTMLElement
     expect(rule.textContent).toContain('Turn failed')

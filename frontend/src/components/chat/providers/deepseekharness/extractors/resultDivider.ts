@@ -18,10 +18,24 @@ export function deepseekHarnessResultDivider(parsed: unknown, completion?: Messa
     return null
   const reason = pickObject(data, 'reason')
   const kind = pickString(reason, 'kind')
-  const durationMs = pickNumber(isObject(parsed) ? parsed : undefined, MESSAGE_METADATA_FIELD.DurationMs)
-  if (completion === MessageCompletion.INTERRUPTED || kind === 'interrupted' || kind === 'aborted')
-    return { label: turnEndLabel('interrupted', { durationMs }) }
-  if (kind !== 'completed' && kind !== 'max-tokens')
-    return { label: turnEndLabel('failed', { durationMs, reason: pickString(pickObject(reason, 'error'), 'message') || kind || 'Native turn failed' }), isError: true }
-  return { label: turnEndLabel('ended', { durationMs, qualifiers: [kind === 'max-tokens' && 'token limit'] }) }
+  const durationMs = pickNumber(isObject(parsed)
+    ? parsed
+    : undefined, MESSAGE_METADATA_FIELD.DurationMs)
+  if (completion === MessageCompletion.INTERRUPTED || kind === 'interrupted' || kind === 'aborted') {
+    return {
+      label: turnEndLabel('interrupted', { durationMs }),
+    }
+  }
+  if (kind !== 'completed' && kind !== 'max-tokens') {
+    return {
+      label: turnEndLabel('failed', { durationMs, reason: pickString(pickObject(reason, 'error'), 'message') || kind || 'Native turn failed' }),
+      isError: true,
+    }
+  }
+  return {
+    label: turnEndLabel('ended', {
+      durationMs,
+      qualifiers: [kind === 'max-tokens' && 'token limit'],
+    }),
+  }
 }

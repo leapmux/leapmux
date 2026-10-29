@@ -12,8 +12,11 @@ function consolePage() {
     },
   } as unknown as Page
   const emit = (text: string) => {
-    for (const listener of listeners)
-      listener({ text: () => text } as ConsoleMessage)
+    for (const listener of listeners) {
+      listener({
+        text: () => text,
+      } as ConsoleMessage)
+    }
   }
   return { page, emit }
 }

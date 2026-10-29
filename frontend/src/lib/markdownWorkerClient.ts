@@ -64,5 +64,10 @@ export function renderMarkdownInWorker(
 ): Promise<MarkdownRenderResult | null> {
   if (typeof Worker === 'undefined')
     return Promise.resolve(null)
-  return gate.enqueue(() => client.request(id => ({ type: 'render', id, text, syntax: pair })), isLowPriority)
+  return gate.enqueue(() => client.request(id => ({
+    type: 'render',
+    id,
+    text,
+    syntax: pair,
+  })), isLowPriority)
 }

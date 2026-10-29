@@ -34,7 +34,10 @@ describe('finishDeepseekHarnessChild', () => {
       const script = lifecycle.script
       const gate = 'native-parent-report-response'
       const rule = deepseekHarnessChildReportRule('native-child-session')
-      await script.rule({ ...rule, respond: { ...rule.respond, gate } })
+      await script.rule({
+        ...rule,
+        respond: { ...rule.respond, gate },
+      })
       const reply = fetch(`${server.url}/v1/messages`, {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-api-key': MODEL_KEY },
@@ -43,9 +46,27 @@ describe('finishDeepseekHarnessChild', () => {
           stream: false,
           max_tokens: 32,
           messages: [
-            { role: 'user', content: [{ type: 'text', text: script.prompt('The initial parent task created its native child.') }] },
-            { role: 'assistant', content: [{ type: 'text', text: 'The initial native parent turn completed.' }] },
-            { role: 'user', content: [{ type: 'text', text: `Background subagent native-child-session ${ending}\nThe child result.` }] },
+            {
+              role: 'user',
+              content: [
+                {
+                  type: 'text',
+                  text: script.prompt('The initial parent task created its native child.'),
+                },
+              ],
+            },
+            {
+              role: 'assistant',
+              content: [
+                { type: 'text', text: 'The initial native parent turn completed.' },
+              ],
+            },
+            {
+              role: 'user',
+              content: [
+                { type: 'text', text: `Background subagent native-child-session ${ending}\nThe child result.` },
+              ],
+            },
           ],
         }),
       }).then(async (response) => {
@@ -80,38 +101,109 @@ describe('finishDeepseekHarnessChild', () => {
 
 describe('deepseekHarnessCompletedReport', () => {
   function request(): MockModelRequestRecord {
-    return { protocol: 'anthropic-messages', path: '/v1/messages', response: { status: 200, headers: {} }, body: { dsh_session_log: { session: { id: 'native-parent' }, events: [{ type: 'turn/start', data: { turn: 2 } }] } } }
+    return {
+      protocol: 'anthropic-messages',
+      path: '/v1/messages',
+      response: { status: 200, headers: {} },
+      body: {
+        dsh_session_log: {
+          session: { id: 'native-parent' },
+          events: [
+            {
+              type: 'turn/start',
+              data: { turn: 2 },
+            },
+          ],
+        },
+      },
+    }
   }
   function ending(turn: number, kind = 'completed') {
-    return { type: 'turn/end', data: { turn, reason: { kind } } }
+    return {
+      type: 'turn/end',
+      data: {
+        turn,
+        reason: { kind },
+      },
+    }
   }
 
   it('waits for the exact report response and parent turn instead of an earlier completion', () => {
     const record = request()
     const pending = { ...record }
     delete pending.response
-    expect(deepseekHarnessCompletedReport(pending, 'native-parent', [ending(2)])).toBe(false)
+    expect(deepseekHarnessCompletedReport(pending, 'native-parent', [
+      ending(2),
+    ])).toBe(false)
     expect(deepseekHarnessCompletedReport(record, 'native-parent', [])).toBe(false)
-    expect(deepseekHarnessCompletedReport(record, 'native-parent', [ending(1)])).toBe(false)
-    expect(deepseekHarnessCompletedReport(record, 'native-parent', [ending(1), ending(2)])).toBe(true)
+    expect(deepseekHarnessCompletedReport(record, 'native-parent', [
+      ending(1),
+    ])).toBe(false)
+    expect(deepseekHarnessCompletedReport(record, 'native-parent', [
+      ending(1),
+      ending(2),
+    ])).toBe(true)
   })
 
   it('rejects another Session and model protocol', () => {
-    expect(() => deepseekHarnessCompletedReport(request(), 'another-parent', [ending(2)])).toThrow('stored parent Session')
-    expect(() => deepseekHarnessCompletedReport({ ...request(), protocol: 'openai-responses' }, 'native-parent', [ending(2)])).toThrow('Session and model protocol')
+    expect(() => deepseekHarnessCompletedReport(request(), 'another-parent', [
+      ending(2),
+    ])).toThrow('stored parent Session')
+    expect(() => deepseekHarnessCompletedReport({
+      ...request(),
+      protocol: 'openai-responses',
+    }, 'native-parent', [
+      ending(2),
+    ])).toThrow('Session and model protocol')
   })
 
-  it.each([0, -1, 0.5, undefined, Number.MAX_SAFE_INTEGER + 1])('rejects an invalid native turn identity: %j', (turn) => {
-    const record = { ...request(), body: { dsh_session_log: { session: { id: 'native-parent' }, events: [{ type: 'turn/start', data: { turn } }] } } }
-    expect(() => deepseekHarnessCompletedReport(record, 'native-parent', [ending(2)])).toThrow('native turn identity')
+  it.each([
+    0,
+    -1,
+    0.5,
+    undefined,
+    Number.MAX_SAFE_INTEGER + 1,
+  ])('rejects an invalid native turn identity: %j', (turn) => {
+    const record = {
+      ...request(),
+      body: {
+        dsh_session_log: {
+          session: { id: 'native-parent' },
+          events: [
+            {
+              type: 'turn/start',
+              data: { turn },
+            },
+          ],
+        },
+      },
+    }
+    expect(() => deepseekHarnessCompletedReport(record, 'native-parent', [
+      ending(2),
+    ])).toThrow('native turn identity')
   })
 
-  it.each(['error', 'aborted', 'interrupted', 'max-tokens'])('rejects a parent report that ends with %s', (kind) => {
-    expect(() => deepseekHarnessCompletedReport(request(), 'native-parent', [ending(2, kind)])).toThrow(`did not complete: ${kind}`)
+  it.each([
+    'error',
+    'aborted',
+    'interrupted',
+    'max-tokens',
+  ])('rejects a parent report that ends with %s', (kind) => {
+    expect(() => deepseekHarnessCompletedReport(request(), 'native-parent', [
+      ending(2, kind),
+    ])).toThrow(`did not complete: ${kind}`)
   })
 
   it('rejects a failed response and duplicate stored completions', () => {
-    expect(() => deepseekHarnessCompletedReport({ ...request(), response: { status: 500, headers: {} } }, 'native-parent', [ending(2)])).toThrow('status 500')
-    expect(() => deepseekHarnessCompletedReport(request(), 'native-parent', [ending(2), ending(2)])).toThrow('duplicate stored turn completions')
+    expect(() => deepseekHarnessCompletedReport({
+      ...request(),
+      response: { status: 500, headers: {} },
+    }, 'native-parent', [
+      ending(2),
+    ])).toThrow('status 500')
+    expect(() => deepseekHarnessCompletedReport(request(), 'native-parent', [
+      ending(2),
+      ending(2),
+    ])).toThrow('duplicate stored turn completions')
   })
 })

@@ -4,5 +4,8 @@ import { expectUnsupportedGoalActions } from '../helpers/unsupportedConfiguratio
 import { opencodeTest } from '../opencode-fixtures'
 
 opencodeTest('proves the native session-goal-set-and-clear limit after a real sidebar operation', async ({ native }) => {
-  await expectUnsupportedGoalActions(native, { actions: [AgentGoalAction.SET, AgentGoalAction.CLEAR], relatedProof: () => exerciseRelatedTodo(native) })
+  await expectUnsupportedGoalActions(native, {
+    actions: [AgentGoalAction.SET, AgentGoalAction.CLEAR],
+    relatedProof: () => exerciseRelatedTodo(native),
+  })
 })

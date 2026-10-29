@@ -9,7 +9,12 @@ import { ensureGitRepositoryRoot } from '../helpers/worktree'
 import { nativeContext } from './scenarios'
 
 diracTest('starts with a real project configuration and no native workspace trust barrier', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+  })
   await exerciseNativeWorkspaceTrustLimit(context, {
     projectConfiguration: {
       prepare: ({ directory }) => {

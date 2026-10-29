@@ -20,7 +20,9 @@ export function getAssistantContent(parsed: unknown): ContentBlock[] | null {
  * Returns null when the inner shape isn't a content array.
  */
 export function getMessageContentArray(parsed: unknown): ContentBlock[] | null {
-  return isObject(parsed) ? getMessageContent(parsed) : null
+  return isObject(parsed)
+    ? getMessageContent(parsed)
+    : null
 }
 
 /** Extract tool name and input from a parsed Claude tool_use message. */
@@ -44,5 +46,7 @@ export function extractToolUseInfo(parsed: ParsedMessageContent, toolUseId?: str
 export function extractPairedToolUseInfo(parsed: unknown, request?: ParsedMessageContent): ReturnType<typeof extractToolUseInfo> {
   const result = getMessageContentArray(parsed)?.find(block => isObject(block) && block.type === 'tool_result')
   const id = pickString(result, 'tool_use_id')
-  return id && request ? extractToolUseInfo(request, id) : null
+  return id && request
+    ? extractToolUseInfo(request, id)
+    : null
 }

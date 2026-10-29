@@ -22,14 +22,20 @@ function renderResult(toolName: string, args: Record<string, unknown>, detail: s
 } = {}) {
   const request = requestSide(toolStarted(toolName, args))
   const end = toolCompleted(toolName, args, detail, options.metadata ?? {})
-  const parsed = { ...input(end, undefined, AgentProvider.CODEWHALE), supplementalContent: options.supplementalContent }
+  const parsed = {
+    ...input(end, undefined, AgentProvider.CODEWHALE),
+    supplementalContent: options.supplementalContent,
+  }
   const category = provider().transcript.classify({ ...parsed, spanType: toolName })
   return render(() => renderMessageContent(end, {
     workingDir: '/project',
     spanType: toolName,
     premeasureMode: true,
     getMessageUiState: () => true,
-    sources: testMessageSources({ current: () => parsed, request: () => request }),
+    sources: testMessageSources({
+      current: () => parsed,
+      request: () => request,
+    }),
     ...options.context,
   }, category, AgentProvider.CODEWHALE))
 }
@@ -38,7 +44,17 @@ describe('codewhale tool rendering', () => {
   it('draws recovered native image bytes in the completed Read media row', () => {
     const openImage = vi.fn()
     const images = imageActionsFrom({ openImage })
-    const { container } = renderResult(CODEWHALE_TOOL.ReadMedia, { path: 'shot.png' }, 'The native image is ready.', { metadata: { tool_media: [MEDIA_DESCRIPTOR] }, supplementalContent: { outputFiles: { [MEDIA_OUTPUT_FILE_ID]: MEDIA_DATA_URI } }, context: images ? { images } : {} })
+    const { container } = renderResult(CODEWHALE_TOOL.ReadMedia, { path: 'shot.png' }, 'The native image is ready.', {
+      metadata: {
+        tool_media: [MEDIA_DESCRIPTOR],
+      },
+      supplementalContent: {
+        outputFiles: { [MEDIA_OUTPUT_FILE_ID]: MEDIA_DATA_URI },
+      },
+      context: images
+        ? { images }
+        : {},
+    })
     const image = container.querySelector('button[aria-label="Open image"] img')
     expect(image).not.toBeNull()
     expect(image?.getAttribute('src')).toBe(MEDIA_DATA_URI)
@@ -50,7 +66,9 @@ describe('codewhale tool rendering', () => {
   })
 
   it('draws a command with its output', () => {
-    const { container } = renderResult(CODEWHALE_TOOL.Bash, { command: 'ls -1' }, 'a.ts\nb.ts\n', { metadata: { exit_code: 0 } })
+    const { container } = renderResult(CODEWHALE_TOOL.Bash, { command: 'ls -1' }, 'a.ts\nb.ts\n', {
+      metadata: { exit_code: 0 },
+    })
     expect(container.textContent).toContain('ls -1')
     expect(container.textContent).toContain('b.ts')
   })
@@ -58,25 +76,55 @@ describe('codewhale tool rendering', () => {
   // The runtime's diff carries context lines that the edit's arguments never state,
   // so a context line on screen proves that the row drew the LANDED change.
   it('draws the diff an edit landed', () => {
-    const { container } = renderResult(CODEWHALE_TOOL.Edit, { path: 'note.txt', edits: [{ oldText: 'hi', newText: 'hello' }] }, 'Replaced 1 block', { metadata: {
-      mutation: { diff: '--- a/note.txt\n+++ b/note.txt\n@@ -1,2 +1,2 @@\n a context line\n-hi\n+hello\n', files: [{ path: 'note.txt', outcome: 'updated' }], renames: [] },
-    } })
+    const { container } = renderResult(CODEWHALE_TOOL.Edit, {
+      path: 'note.txt',
+      edits: [
+        { oldText: 'hi', newText: 'hello' },
+      ],
+    }, 'Replaced 1 block', {
+      metadata: {
+        mutation: {
+          diff: '--- a/note.txt\n+++ b/note.txt\n@@ -1,2 +1,2 @@\n a context line\n-hi\n+hello\n',
+          files: [
+            { path: 'note.txt', outcome: 'updated' },
+          ],
+          renames: [],
+        },
+      },
+    })
     expect(container.textContent).toContain('note.txt')
     expect(container.textContent).toContain('hello')
     expect(container.textContent).toContain('a context line')
   })
 
   it('draws the checklist a to-do call states', () => {
-    const { container } = renderResult(CODEWHALE_TOOL.TodoWrite, { todos: [{ content: 'Run the tests', status: 'pending' }] }, 'Todo list updated')
+    const { container } = renderResult(CODEWHALE_TOOL.TodoWrite, {
+      todos: [
+        { content: 'Run the tests', status: 'pending' },
+      ],
+    }, 'Todo list updated')
     expect(container.textContent).toContain('Run the tests')
   })
 
   // A partial update sends one item, and the runtime answers with the whole list it
   // kept. The item that only the kept list holds proves which list the row drew.
   it('draws the checklist the runtime kept over the one the call sent', () => {
-    const { container } = renderResult(CODEWHALE_TOOL.ChecklistUpdate, { todos: [{ content: 'Run the tests', status: 'completed' }] }, 'Checklist updated', { metadata: {
-      task_updates: { checklist: { items: [{ id: 1, content: 'Read the code', status: 'completed' }, { id: 2, content: 'Run the tests', status: 'completed' }] } },
-    } })
+    const { container } = renderResult(CODEWHALE_TOOL.ChecklistUpdate, {
+      todos: [
+        { content: 'Run the tests', status: 'completed' },
+      ],
+    }, 'Checklist updated', {
+      metadata: {
+        task_updates: {
+          checklist: {
+            items: [
+              { id: 1, content: 'Read the code', status: 'completed' },
+              { id: 2, content: 'Run the tests', status: 'completed' },
+            ],
+          },
+        },
+      },
+    })
     expect(container.textContent).toContain('Read the code')
     expect(container.textContent).toContain('Run the tests')
   })
@@ -86,7 +134,17 @@ describe('codewhale tool rendering', () => {
   // the request row draws the question. An empty result row would hold every
   // later row of the transcript behind its measurement.
   it('draws the question a call asked on its request row, and hides the redacted result row', () => {
-    const args = { questions: [{ id: 'c', question: 'Which color?', options: [{ label: 'Red' }] }] }
+    const args = {
+      questions: [
+        {
+          id: 'c',
+          question: 'Which color?',
+          options: [
+            { label: 'Red' },
+          ],
+        },
+      ],
+    }
     const start = toolStarted(CODEWHALE_TOOL.RequestUserInput, args)
     const end = toolCompleted(CODEWHALE_TOOL.RequestUserInput, args, 'User input submitted')
     const startParsed = input(start, undefined, AgentProvider.CODEWHALE)
@@ -97,7 +155,12 @@ describe('codewhale tool rendering', () => {
       spanType: CODEWHALE_TOOL.RequestUserInput,
       premeasureMode: true,
       getMessageUiState: () => true,
-      sources: testMessageSources({ current: () => startParsed, result: () => endParsed, role: () => 'request', visibleRows: () => both }),
+      sources: testMessageSources({
+        current: () => startParsed,
+        result: () => endParsed,
+        role: () => 'request',
+        visibleRows: () => both,
+      }),
     }, provider().transcript.classify({ ...startParsed, spanType: CODEWHALE_TOOL.RequestUserInput }), AgentProvider.CODEWHALE))
     expect(request.container.textContent).toContain('Which color?')
 
@@ -106,7 +169,12 @@ describe('codewhale tool rendering', () => {
       spanType: CODEWHALE_TOOL.RequestUserInput,
       premeasureMode: true,
       getMessageUiState: () => true,
-      sources: testMessageSources({ current: () => endParsed, request: () => requestSide(start), role: () => 'result', visibleRows: () => both }),
+      sources: testMessageSources({
+        current: () => endParsed,
+        request: () => requestSide(start),
+        role: () => 'result',
+        visibleRows: () => both,
+      }),
     }, provider().transcript.classify({ ...endParsed, spanType: CODEWHALE_TOOL.RequestUserInput }), AgentProvider.CODEWHALE))
     expect(result.container.textContent).toBe('')
   })

@@ -117,7 +117,9 @@ export const CHART_MAX_SERIES = 24
 
 /** Narrow a wire type to one shape, or null for a word no release declared. */
 function chartShape(value: string): ChartShape | null {
-  return KNOWN_SHAPES.has(value) ? value as ChartShape : null
+  return KNOWN_SHAPES.has(value)
+    ? value as ChartShape
+    : null
 }
 
 /**
@@ -144,7 +146,9 @@ function fillsArea(value: unknown): boolean {
 function numbers(raw: unknown): number[] {
   if (!Array.isArray(raw))
     return []
-  return raw.slice(0, CHART_MAX_POINTS).map(entry => (typeof entry === 'number' && Number.isFinite(entry) ? entry : 0))
+  return raw.slice(0, CHART_MAX_POINTS).map(entry => (typeof entry === 'number' && Number.isFinite(entry)
+    ? entry
+    : 0))
 }
 
 /** Every readable coordinate of a point array. A point missing either axis is dropped. */
@@ -157,7 +161,15 @@ function points(raw: unknown): ChartPoint[] {
     const { x, y, r } = entry as { x?: unknown, y?: unknown, r?: unknown }
     if (typeof x !== 'number' || typeof y !== 'number' || !Number.isFinite(x) || !Number.isFinite(y))
       return []
-    return [{ x, y, ...(typeof r === 'number' && Number.isFinite(r) && r > 0 ? { r } : {}) }]
+    return [
+      {
+        x,
+        y,
+        ...(typeof r === 'number' && Number.isFinite(r) && r > 0
+          ? { r }
+          : {}),
+      },
+    ]
   })
 }
 
@@ -168,7 +180,9 @@ function isPointData(raw: unknown): boolean {
 
 /** How many entries one dataset's own `data` array holds, before the cap applies. */
 function dataLength(entry: Record<string, unknown>): number {
-  return Array.isArray(entry.data) ? entry.data.length : 0
+  return Array.isArray(entry.data)
+    ? entry.data.length
+    : 0
 }
 
 /**
@@ -187,7 +201,12 @@ export function chartResultFromSpec(
   spec: string,
   meta: { title?: string, description?: string } = {},
 ): ChartResult {
-  const base = { shape: 'bar' as ChartShape, labels: [], series: [], ...meta }
+  const base = {
+    shape: 'bar' as ChartShape,
+    labels: [],
+    series: [],
+    ...meta,
+  }
   let config: unknown
   try {
     config = JSON.parse(spec)
@@ -199,10 +218,20 @@ export function chartResultFromSpec(
     return { ...base, error: 'The chart configuration is not an object.' }
   const declared = pickString(config, 'type')
   const shape = chartShape(declared)
-  if (!shape)
-    return { ...base, error: declared ? `Unknown chart type: ${declared}` : 'The chart configuration states no type.' }
-  const data = isObject(config.data) ? config.data as Record<string, unknown> : undefined
-  const declaredSeries = Array.isArray(data?.datasets) ? data.datasets.filter(isObject) : []
+  if (!shape) {
+    return {
+      ...base,
+      error: declared
+        ? `Unknown chart type: ${declared}`
+        : 'The chart configuration states no type.',
+    }
+  }
+  const data = isObject(config.data)
+    ? config.data as Record<string, unknown>
+    : undefined
+  const declaredSeries = Array.isArray(data?.datasets)
+    ? data.datasets.filter(isObject)
+    : []
   const rawSeries = declaredSeries.slice(0, CHART_MAX_SERIES)
   const series: ChartSeries[] = rawSeries.map((entry) => {
     const own = chartShape(pickString(entry, 'type'))
@@ -213,27 +242,43 @@ export function chartResultFromSpec(
     // outright and the fill test then asked the CHART's shape -- so a `line` dataset
     // that filled inside a `bar` chart lost its fill and drew as a bare line.
     const effective = own ?? shape
-    const drawn = fill && effective === 'line' ? 'area' : effective
+    const drawn = fill && effective === 'line'
+      ? 'area'
+      : effective
     const label = pickString(entry, 'label')
     // `label` and `shape` stay ABSENT when the series states neither: an absent label
     // falls back to `Series N`, and `shapeOf` reads the chart's own for an absent one.
     // `area` is a filled line, so a filled series says so rather than leaving the
     // renderer to re-derive it from two fields.
     return {
-      ...(label !== '' ? { label } : {}),
+      ...(label !== ''
+        ? { label }
+        : {}),
       // One dataset, one array: its own shape picks which half this series carries.
-      ...(isPointData(raw) ? { points: points(raw) } : { values: numbers(raw) }),
-      ...(drawn !== shape ? { shape: drawn } : {}),
+      ...(isPointData(raw)
+        ? {
+            points: points(raw),
+          }
+        : {
+            values: numbers(raw),
+          }),
+      ...(drawn !== shape
+        ? { shape: drawn }
+        : {}),
     }
   })
   // The chart-level promotion reads the RAW datasets, not a `fill` field on the
   // series. Carrying one there put the same fact in two places -- `shape: area` and
   // `fill: true` -- where nothing outside this function ever read the second.
   const everyDatasetFills = rawSeries.length > 0 && rawSeries.every(entry => fillsArea(entry.fill))
-  const declaredLabels = Array.isArray(data?.labels) ? data.labels : []
+  const declaredLabels = Array.isArray(data?.labels)
+    ? data.labels
+    : []
   const labels = declaredLabels
     .slice(0, CHART_MAX_POINTS)
-    .map(label => (typeof label === 'string' ? label : String(label ?? '')))
+    .map(label => (typeof label === 'string'
+      ? label
+      : String(label ?? '')))
   // What the caps above cut, stated once. The labels count too: the table draws one
   // row per label, so an uncapped label list rebuilt the cost the point cap removed.
   const truncated = declaredSeries.length > CHART_MAX_SERIES
@@ -243,8 +288,18 @@ export function chartResultFromSpec(
   // differently. EVERY series must fill for the promotion to apply: a series that
   // states no shape of its own inherits the chart's, so promoting on one filled
   // dataset painted the unfilled ones as areas too, and the overlap hid them.
-  const resolved = shape === 'line' && everyDatasetFills ? 'area' : shape
-  return { ...base, shape: resolved, labels, series, ...(truncated ? { truncated } : {}) }
+  const resolved = shape === 'line' && everyDatasetFills
+    ? 'area'
+    : shape
+  return {
+    ...base,
+    shape: resolved,
+    labels,
+    series,
+    ...(truncated
+      ? { truncated }
+      : {}),
+  }
 }
 
 /** Whether the chart carries anything at all to draw. */

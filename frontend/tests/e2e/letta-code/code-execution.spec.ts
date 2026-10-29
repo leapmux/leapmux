@@ -12,10 +12,24 @@ import { lettaTest } from '../letta-fixtures'
 import { nativeContext } from './scenarios'
 
 lettaTest('distinguishes the native Workflow executor from absent standalone interpreters', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+  })
   const request = await openNativeCatalogTurn(context)
   nativeCodeExecutionSchema(request, 'Workflow', { script: 'string' })
-  expectNativeCodeExecutionAbsent(request, ['codemode', 'exec', 'eval', 'REPL', 'js_execution', 'code_execution', 'execute_tools', 'mcp__node_repl__js'])
+  expectNativeCodeExecutionAbsent(request, [
+    'codemode',
+    'exec',
+    'eval',
+    'REPL',
+    'js_execution',
+    'code_execution',
+    'execute_tools',
+    'mcp__node_repl__js',
+  ])
 })
 
 lettaTest('executes native Workflow scripts and retains computed results and errors after reload', async ({ native }) => {
@@ -31,12 +45,16 @@ lettaTest('executes native Workflow scripts and retains computed results and err
     })
     nativeCodeExecutionSchema(toolRequest, 'Workflow', { script: 'string' })
     const launch = (await nativeToolOutcome(native, resultRequest, call.id)).text
-    const taskIds = [...launch.matchAll(/Workflow launched in background\. Task ID: (workflow_\d+)/g)]
+    const taskIds = [
+      ...launch.matchAll(/Workflow launched in background\. Task ID: (workflow_\d+)/g),
+    ]
     expect(taskIds).toHaveLength(1)
     const taskId = taskIds[0]![1]!
     const notification = await waitForNewestModelRequest(native.modelScript, (request) => {
       const last = nativeModelConversationTurns(request).filter(turn => turn.role === 'user').at(-1)?.text
-      return last?.includes('<task-notification>') && nativeXmlField(last, 'task-id') === taskId && last.includes(expected) ? last : null
+      return last?.includes('<task-notification>') && nativeXmlField(last, 'task-id') === taskId && last.includes(expected)
+        ? last
+        : null
     })
     expect(notification).toContain(`<status>${failed ? 'failed' : 'completed'}</status>`)
     await waitForAgentIdle(native.page)

@@ -26,7 +26,9 @@ export function installNativeControlObservation(options: { id: string, testId: s
     const state = observations[options.id]
     if (!state)
       return
-    const controls = [...document.querySelectorAll<HTMLElement>(`[data-testid="${options.testId}"]`)]
+    const controls = [
+      ...document.querySelectorAll<HTMLElement>(`[data-testid="${options.testId}"]`),
+    ]
     if (controls.some(control => control.getClientRects().length > 0 && getComputedStyle(control).visibility !== 'hidden'))
       state.seen = true
   }
@@ -72,7 +74,13 @@ async function assertNoNativeControl(
   context: ManagedNativeScenarioContext,
   options: { testId: string, additionalTestIds?: readonly string[], start?: () => Promise<void>, relatedProof: () => Promise<unknown>, nativeCompletion?: () => Promise<void> },
 ): Promise<void> {
-  const observations = [options.testId, ...(options.additionalTestIds ?? [])].map(testId => ({ id: randomUUID(), testId }))
+  const observations = [
+    options.testId,
+    ...(options.additionalTestIds ?? []),
+  ].map(testId => ({
+    id: randomUUID(),
+    testId,
+  }))
   await withCleanup(async () => {
     for (const observation of observations)
       await context.page.evaluate(installNativeControlObservation, observation)

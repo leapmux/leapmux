@@ -17,8 +17,15 @@ export function readOpenCodeNativeOutput(snapshot: NativeMessageSnapshot, callId
   const path = pickObject(output, 'metadata')?.outputPath
   if (!isFilesystemPath(path) || !/[\\/]tool-output[\\/]tool_[A-Za-z0-9]+$/u.test(path))
     throw new Error('The native OpenCode result has no exact filesystem output pointer.')
-  const previewText = typeof output?.output === 'string' ? output.output : ''
-  return { paths: [path], previewText, frame: record.frame, content: record.message.content }
+  const previewText = typeof output?.output === 'string'
+    ? output.output
+    : ''
+  return {
+    paths: [path],
+    previewText,
+    frame: record.frame,
+    content: record.message.content,
+  }
 }
 
 /**
@@ -32,5 +39,8 @@ export function readOpenCodeNativeOutput(snapshot: NativeMessageSnapshot, callId
  * So the preview must hold some numbered line of the output, and it must not hold the first line.
  */
 export function openCodeTailWindowMarkers(output: Pick<ComputedNativeToolOutput, 'firstMarker' | 'lineMarker'>): { previewMarkers: readonly string[], absentMarker: string } {
-  return { previewMarkers: [output.lineMarker], absentMarker: output.firstMarker }
+  return {
+    previewMarkers: [output.lineMarker],
+    absentMarker: output.firstMarker,
+  }
 }

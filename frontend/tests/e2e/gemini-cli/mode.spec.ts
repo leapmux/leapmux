@@ -37,7 +37,7 @@ geminiTest('changes native permission modes and restores the actual file permiss
     })
     const command = operation.toolCall.arguments?.command
     if (typeof command !== 'string')
-      throw new Error('The native Gemini shell write requires a command.')
+      throw new TypeError('The native Gemini shell write requires a command.')
     await operation.beforeDecision()
     await exerciseNativePermissionDecision(native, {
       toolCall: bashToolCall(native.provider, callId, `${command} && cat ${quotePosixShellArgument(join(agent.workingDir, filename))}`),

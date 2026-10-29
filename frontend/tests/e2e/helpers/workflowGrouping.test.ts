@@ -39,8 +39,11 @@ function isFakeRow(value: unknown): value is FakeRow {
 vi.mock('@playwright/test', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@playwright/test')>()
   const check = (value: unknown, message?: string) => {
-    if (isFakeRow(value))
-      return { toHaveAttribute: async (name: string, expected: string) => expect(value.attributes[name], message).toBe(expected) }
+    if (isFakeRow(value)) {
+      return {
+        toHaveAttribute: async (name: string, expected: string) => expect(value.attributes[name], message).toBe(expected),
+      }
+    }
     return expect(value, message)
   }
   return {
@@ -96,7 +99,9 @@ function handle(value: unknown): FakeHandle {
     fakeHandle: true,
     value,
     // A handle argument reaches the browser function as its value, as Playwright passes it.
-    evaluate: async (read, argument) => read(value, typeof argument === 'object' && argument !== null && 'fakeHandle' in argument ? (argument as FakeHandle).value : argument),
+    evaluate: async (read, argument) => read(value, typeof argument === 'object' && argument !== null && 'fakeHandle' in argument
+      ? (argument as FakeHandle).value
+      : argument),
     dispose: async () => {},
   }
 }
@@ -106,7 +111,9 @@ function rowLocator(id: string): Locator {
   const element = document.getElementById(id)
   if (!element)
     throw new Error(`The test row ${id} is absent.`)
-  return Object.assign({} as Locator, { evaluateHandle: async (read: (row: Element) => unknown) => handle(read(element)) })
+  return Object.assign({} as Locator, {
+    evaluateHandle: async (read: (row: Element) => unknown) => handle(read(element)),
+  })
 }
 
 describe('expectRowsInWorkflowGroup', () => {
@@ -121,22 +128,39 @@ describe('expectRowsInWorkflowGroup', () => {
   })
 
   it('accepts rows under one heading that equals the string', async () => {
-    await expectRowsInWorkflowGroup([rowLocator('workflow'), rowLocator('child')], 'leapmux-probe run')
+    await expectRowsInWorkflowGroup([
+      rowLocator('workflow'),
+      rowLocator('child'),
+    ], 'leapmux-probe run')
   })
 
   it('accepts rows under one heading that the pattern matches', async () => {
-    await expectRowsInWorkflowGroup([rowLocator('workflow'), rowLocator('child')], /leapmux-probe/)
+    await expectRowsInWorkflowGroup([
+      rowLocator('workflow'),
+      rowLocator('child'),
+    ], /leapmux-probe/)
   })
 
   it('refuses a string that is only part of the heading', async () => {
-    await expect(expectRowsInWorkflowGroup([rowLocator('workflow'), rowLocator('child')], 'leapmux-probe')).rejects.toThrow('the workflow group heading of the row')
+    await expect(expectRowsInWorkflowGroup([
+      rowLocator('workflow'),
+      rowLocator('child'),
+    ], 'leapmux-probe')).rejects.toThrow('the workflow group heading of the row')
   })
 
   it('refuses a row under a second heading with equal text', async () => {
-    await expect(expectRowsInWorkflowGroup([rowLocator('workflow'), rowLocator('other')], 'leapmux-probe run')).rejects.toThrow('the row follows the group heading of the first row')
+    await expect(expectRowsInWorkflowGroup([
+      rowLocator('workflow'),
+      rowLocator('other'),
+    ], 'leapmux-probe run')).rejects.toThrow('the row follows the group heading of the first row')
   })
 
-  it.each([[[]], [['workflow']]])('refuses fewer than two rows: %j', async (ids) => {
+  it.each([
+    [[]],
+    [
+      ['workflow'],
+    ],
+  ])('refuses fewer than two rows: %j', async (ids) => {
     await expect(expectRowsInWorkflowGroup(ids.map(rowLocator), 'leapmux-probe run')).rejects.toThrow('two or more rows')
   })
 })
@@ -157,51 +181,93 @@ describe('expectOpaqueNativeWorkflowResult', () => {
     }
   }
 
-  it.each([{ ruleNames: [] }, { ruleNames: ['same', 'same'] }])('requires distinct native assignment rules before browser access: $ruleNames', async ({ ruleNames }) => {
+  it.each([
+    { ruleNames: [] },
+    {
+      ruleNames: ['same', 'same'],
+    },
+  ])('requires distinct native assignment rules before browser access: $ruleNames', async ({ ruleNames }) => {
     await expect(expectOpaqueNativeWorkflowResult(context(), { ruleNames, heading: 'Workflow' })).rejects.toThrow('one or more distinct assignment rules')
   })
 
   it('accepts one assignment rule and goes on to the browser', async () => {
-    await expect(expectOpaqueNativeWorkflowResult(context(), { ruleNames: ['one'], heading: 'Workflow' })).rejects.toThrow('before browser access')
+    await expect(expectOpaqueNativeWorkflowResult(context(), {
+      ruleNames: ['one'],
+      heading: 'Workflow',
+    })).rejects.toThrow('before browser access')
   })
 })
 
 describe('expectNoWorkflowToolOffered', () => {
   /** A model script whose recorded requests are `requests`. */
   function script(requests: MockModelRequestRecord[]): Pick<ModelScript, 'status'> {
-    const status: MockModelScenarioStatus = { complete: true, nextStep: requests.length, stepCount: requests.length, ruleMatches: {}, pendingGates: [], requests, unexpectedRequests: [] }
-    return { status: async () => status }
+    const status: MockModelScenarioStatus = {
+      complete: true,
+      nextStep: requests.length,
+      stepCount: requests.length,
+      ruleMatches: {},
+      pendingGates: [],
+      requests,
+      unexpectedRequests: [],
+    }
+    return {
+      status: async () => status,
+    }
   }
 
   function request(tools: string[], stepIndex?: number): MockModelRequestRecord {
     return {
       protocol: 'openai-chat-completions',
       path: '/v1/chat/completions',
-      ...(stepIndex === undefined ? { rule: 'a child rule' } : { stepIndex }),
-      body: { tools: tools.map(name => ({ type: 'function', function: { name } })) },
+      ...(stepIndex === undefined
+        ? { rule: 'a child rule' }
+        : { stepIndex }),
+      body: {
+        tools: tools.map(name => ({
+          type: 'function',
+          function: { name },
+        })),
+      },
     }
   }
 
   it('accepts a parent request whose catalog offers no workflow tool', async () => {
-    await expectNoWorkflowToolOffered(script([request(['Workflow'], undefined), request(['Agent', 'Read'], 0)]))
+    await expectNoWorkflowToolOffered(script([
+      request(['Workflow'], undefined),
+      request(['Agent', 'Read'], 0),
+    ]))
   })
 
   it.each(WORKFLOW_TOOL_NAMES)('refuses a parent request that offers %s', async (tool) => {
-    await expect(expectNoWorkflowToolOffered(script([request(['Agent', tool], 0)]))).rejects.toThrow('the parent request offers no workflow tool')
+    await expect(expectNoWorkflowToolOffered(script([
+      request(['Agent', tool], 0),
+    ]))).rejects.toThrow('the parent request offers no workflow tool')
   })
 
   it('reads the first ordered request, not a later one', async () => {
-    await expectNoWorkflowToolOffered(script([request(['Agent'], 0), request(['Workflow'], 1)]))
+    await expectNoWorkflowToolOffered(script([
+      request(['Agent'], 0),
+      request(['Workflow'], 1),
+    ]))
   })
 
   it('refuses a scenario without an ordered request', async () => {
-    await expect(expectNoWorkflowToolOffered(script([request(['Agent'])]))).rejects.toThrow('no parent model request')
+    await expect(expectNoWorkflowToolOffered(script([
+      request(['Agent']),
+    ]))).rejects.toThrow('no parent model request')
   })
 })
 
 describe('ungroupedChildTaskProblem', () => {
   function task(overrides: Partial<UngroupedChildTask> = {}): UngroupedChildTask {
-    return { kind: BackgroundTaskKind.SUBAGENT, status: BackgroundTaskStatus.SUCCEEDED, childAgentId: '', groupKey: '', groupLabel: '', ...overrides }
+    return {
+      kind: BackgroundTaskKind.SUBAGENT,
+      status: BackgroundTaskStatus.SUCCEEDED,
+      childAgentId: '',
+      groupKey: '',
+      groupLabel: '',
+      ...overrides,
+    }
   }
   const first = task({ childAgentId: 'first-child' })
   const second = task({ childAgentId: 'second-child' })
@@ -209,26 +275,76 @@ describe('ungroupedChildTaskProblem', () => {
   it('accepts two completed ungrouped children in each identity mode', () => {
     expect(ungroupedChildTaskProblem([first, second], 'distinct')).toBe('')
     expect(ungroupedChildTaskProblem([first, second], ['second-child', 'first-child'])).toBe('')
-    expect(ungroupedChildTaskProblem([task(), task()], 'absent')).toBe('')
+    expect(ungroupedChildTaskProblem([
+      task(),
+      task(),
+    ], 'absent')).toBe('')
   })
 
   it.each([
-    ['a workflow task', [first, second, task({ kind: BackgroundTaskKind.WORKFLOW })], 'the registry holds a workflow task'],
-    ['a group key', [first, task({ childAgentId: 'second-child', groupKey: 'run-1' })], 'carry a workflow group key or label'],
-    ['a group label', [first, task({ childAgentId: 'second-child', groupLabel: 'Run' })], 'carry a workflow group key or label'],
-    ['one child', [first], 'holds 1 subagent task(s), not 2'],
-    ['three children', [first, second, task({ childAgentId: 'third-child' })], 'holds 3 subagent task(s), not 2'],
-    ['a running child', [first, task({ childAgentId: 'second-child', status: BackgroundTaskStatus.RUNNING })], 'a subagent task is not completed'],
+    [
+      'a workflow task',
+      [
+        first,
+        second,
+        task({ kind: BackgroundTaskKind.WORKFLOW }),
+      ],
+      'the registry holds a workflow task',
+    ],
+    [
+      'a group key',
+      [
+        first,
+        task({ childAgentId: 'second-child', groupKey: 'run-1' }),
+      ],
+      'carry a workflow group key or label',
+    ],
+    [
+      'a group label',
+      [
+        first,
+        task({ childAgentId: 'second-child', groupLabel: 'Run' }),
+      ],
+      'carry a workflow group key or label',
+    ],
+    [
+      'one child',
+      [first],
+      'holds 1 subagent task(s), not 2',
+    ],
+    [
+      'three children',
+      [
+        first,
+        second,
+        task({ childAgentId: 'third-child' }),
+      ],
+      'holds 3 subagent task(s), not 2',
+    ],
+    [
+      'a running child',
+      [
+        first,
+        task({ childAgentId: 'second-child', status: BackgroundTaskStatus.RUNNING }),
+      ],
+      'a subagent task is not completed',
+    ],
   ])('states %s', (_name, tasks, problem) => {
     expect(ungroupedChildTaskProblem(tasks, 'distinct')).toContain(problem)
   })
 
   it('refuses a child agent where none may exist', () => {
-    expect(ungroupedChildTaskProblem([first, task()], 'absent')).toContain('holds a child agent')
+    expect(ungroupedChildTaskProblem([
+      first,
+      task(),
+    ], 'absent')).toContain('holds a child agent')
   })
 
   it('refuses a missing or shared child agent where each child needs its own', () => {
-    expect(ungroupedChildTaskProblem([first, task()], 'distinct')).toContain('holds no child agent')
+    expect(ungroupedChildTaskProblem([
+      first,
+      task(),
+    ], 'distinct')).toContain('holds no child agent')
     expect(ungroupedChildTaskProblem([first, first], 'distinct')).toContain('hold one child agent')
   })
 
@@ -240,11 +356,22 @@ describe('ungroupedChildTaskProblem', () => {
 describe('exerciseUngroupedNativeChildren', () => {
   it('opens the two slots in order, refuses two children with one agent, and finishes both', async () => {
     const log: string[] = []
-    worker.tasks = [{ kind: BackgroundTaskKind.SUBAGENT, status: BackgroundTaskStatus.RUNNING, childAgentId: 'one-child', groupKey: '', groupLabel: '' }]
+    worker.tasks = [
+      {
+        kind: BackgroundTaskKind.SUBAGENT,
+        status: BackgroundTaskStatus.RUNNING,
+        childAgentId: 'one-child',
+        groupKey: '',
+        groupLabel: '',
+      },
+    ]
     const context = Object.assign({} as ManagedNativeScenarioContext, { provider: AgentProvider.KILO })
     const openChild = async (slot: UngroupedChildSlot): Promise<RunningNativeChild> => {
       log.push(`open ${slot.index} ${slot.allowExistingRows}`)
-      const row: FakeRow = { fakeRow: true, attributes: { 'data-status': 'running', 'data-child-agent-id': 'one-child' } }
+      const row: FakeRow = {
+        fakeRow: true,
+        attributes: { 'data-status': 'running', 'data-child-agent-id': 'one-child' },
+      }
       return {
         row: row as unknown as Locator,
         childId: 'one-child',
@@ -256,6 +383,11 @@ describe('exerciseUngroupedNativeChildren', () => {
       }
     }
     await expect(exerciseUngroupedNativeChildren(context, { openChild })).rejects.toThrow('the two children are distinct agents')
-    expect(log).toEqual(['open 0 false', 'finish 0', 'open 1 true', 'finish 1'])
+    expect(log).toEqual([
+      'open 0 false',
+      'finish 0',
+      'open 1 true',
+      'finish 1',
+    ])
   })
 })

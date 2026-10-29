@@ -6,7 +6,9 @@ import { WatchReplayMode } from '../../../src/generated/proto/leapmux/v1/agent_p
 import { AgentEventSchema, WatchAgentStateSchema, WatchEventsRequestSchema, WatchEventsResponseSchema, WatchMode } from '../../../src/generated/proto/leapmux/v1/workspace_pb'
 import { AGENT_WATCH_UPDATE_ID, AgentEventCollector, agentWatchRequest, readAgentWatchFrame, watchAgentEvents } from './agentEventWatch'
 
-const { getTestChannel } = vi.hoisted(() => ({ getTestChannel: vi.fn() }))
+const { getTestChannel } = vi.hoisted(() => ({
+  getTestChannel: vi.fn(),
+}))
 vi.mock('./api', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./api')>()
   return { ...actual, getTestChannel }
@@ -18,20 +20,44 @@ afterEach(() => {
 
 const server = { hubUrl: 'http://mock.invalid', adminToken: 'mock-admin', workerId: 'worker-1' }
 
-function acknowledgement(updateId = AGENT_WATCH_UPDATE_ID, rejectedAgent?: string, states: WatchAgentState[] = [create(WatchAgentStateSchema, {
-  agentId: 'agent-1',
-  mode: WatchMode.FULL,
-  replayId: AGENT_WATCH_UPDATE_ID,
-})]): Uint8Array {
+function acknowledgement(updateId = AGENT_WATCH_UPDATE_ID, rejectedAgent?: string, states: WatchAgentState[] = [
+  create(WatchAgentStateSchema, {
+    agentId: 'agent-1',
+    mode: WatchMode.FULL,
+    replayId: AGENT_WATCH_UPDATE_ID,
+  }),
+]): Uint8Array {
   return toBinary(WatchEventsResponseSchema, create(WatchEventsResponseSchema, {
-    event: { case: 'updateAck', value: { updateId, rejectedAgents: rejectedAgent === undefined ? [] : [{ entityId: rejectedAgent }], agentStates: states } },
+    event: {
+      case: 'updateAck',
+      value: {
+        updateId,
+        rejectedAgents: rejectedAgent === undefined
+          ? []
+          : [
+              { entityId: rejectedAgent },
+            ],
+        agentStates: states,
+      },
+    },
   }))
 }
 
 /** A frame that carries one input-queue event, whose revision a test selects. */
 function queueEvent(agentId: string, revision: bigint): Uint8Array {
   return toBinary(WatchEventsResponseSchema, create(WatchEventsResponseSchema, {
-    event: { case: 'agentEvent', value: { agentId, event: { case: 'inputQueueChanged', value: { snapshot: { agentId, revision } } } } },
+    event: {
+      case: 'agentEvent',
+      value: {
+        agentId,
+        event: {
+          case: 'inputQueueChanged',
+          value: {
+            snapshot: { agentId, revision },
+          },
+        },
+      },
+    },
   }))
 }
 
@@ -40,21 +66,38 @@ function replayQueueEvent(origin: string, replayId = AGENT_WATCH_UPDATE_ID, dest
     agentId: destination,
     replay: true,
     replayId,
-    event: { case: 'inputQueueChanged', value: { snapshot: { agentId: destination, revision: 7n } } },
+    event: {
+      case: 'inputQueueChanged',
+      value: {
+        snapshot: { agentId: destination, revision: 7n },
+      },
+    },
     replayAgentId: origin,
   })
-  return toBinary(WatchEventsResponseSchema, create(WatchEventsResponseSchema, { event: { case: 'agentEvent', value: event } }))
+  return toBinary(WatchEventsResponseSchema, create(WatchEventsResponseSchema, {
+    event: { case: 'agentEvent', value: event },
+  }))
 }
 
 /** Keep the revision of each input-queue event, and skip every other event. */
 function queueRevision(event: AgentEvent): bigint | undefined {
-  return event.event.case === 'inputQueueChanged' ? event.event.value.snapshot?.revision : undefined
+  return event.event.case === 'inputQueueChanged'
+    ? event.event.value.snapshot?.revision
+    : undefined
 }
 
 describe('agentWatchRequest', () => {
   it('subscribes to the live events of one agent with the shared update ID', () => {
     expect(fromBinary(WatchEventsRequestSchema, agentWatchRequest('agent-1'))).toMatchObject({
-      agents: [{ agentId: 'agent-1', mode: WatchMode.FULL, replay: WatchReplayMode.LATEST, cursorSeq: 0n, replayId: AGENT_WATCH_UPDATE_ID }],
+      agents: [
+        {
+          agentId: 'agent-1',
+          mode: WatchMode.FULL,
+          replay: WatchReplayMode.LATEST,
+          cursorSeq: 0n,
+          replayId: AGENT_WATCH_UPDATE_ID,
+        },
+      ],
       updateId: AGENT_WATCH_UPDATE_ID,
     })
   })
@@ -68,22 +111,69 @@ describe('readAgentWatchFrame', () => {
   const fullState = () => create(WatchAgentStateSchema, { agentId: 'agent-1', mode: WatchMode.FULL, replayId: AGENT_WATCH_UPDATE_ID })
 
   it.each([
-    { label: 'no registered state', states: () => [] },
-    { label: 'another agent', states: () => [create(WatchAgentStateSchema, { agentId: 'agent-2', mode: WatchMode.FULL, replayId: AGENT_WATCH_UPDATE_ID })] },
-    { label: 'an empty agent ID', states: () => [create(WatchAgentStateSchema, { mode: WatchMode.FULL, replayId: AGENT_WATCH_UPDATE_ID })] },
-    { label: 'an unspecified mode', states: () => [create(WatchAgentStateSchema, { agentId: 'agent-1', replayId: AGENT_WATCH_UPDATE_ID })] },
-    { label: 'NOTIFY mode', states: () => [create(WatchAgentStateSchema, { agentId: 'agent-1', mode: WatchMode.NOTIFY })] },
-    { label: 'zero replay identity', states: () => [create(WatchAgentStateSchema, { agentId: 'agent-1', mode: WatchMode.FULL })] },
-    { label: 'a different replay identity', states: () => [create(WatchAgentStateSchema, { agentId: 'agent-1', mode: WatchMode.FULL, replayId: 2n })] },
-    { label: 'a large replay identity', states: () => [create(WatchAgentStateSchema, { agentId: 'agent-1', mode: WatchMode.FULL, replayId: 18446744073709551615n })] },
-    { label: 'a repeated matching state', states: () => [fullState(), fullState()] },
+    {
+      label: 'no registered state',
+      states: () => [],
+    },
+    {
+      label: 'another agent',
+      states: () => [
+        create(WatchAgentStateSchema, { agentId: 'agent-2', mode: WatchMode.FULL, replayId: AGENT_WATCH_UPDATE_ID }),
+      ],
+    },
+    {
+      label: 'an empty agent ID',
+      states: () => [
+        create(WatchAgentStateSchema, { mode: WatchMode.FULL, replayId: AGENT_WATCH_UPDATE_ID }),
+      ],
+    },
+    {
+      label: 'an unspecified mode',
+      states: () => [
+        create(WatchAgentStateSchema, { agentId: 'agent-1', replayId: AGENT_WATCH_UPDATE_ID }),
+      ],
+    },
+    {
+      label: 'NOTIFY mode',
+      states: () => [
+        create(WatchAgentStateSchema, { agentId: 'agent-1', mode: WatchMode.NOTIFY }),
+      ],
+    },
+    {
+      label: 'zero replay identity',
+      states: () => [
+        create(WatchAgentStateSchema, { agentId: 'agent-1', mode: WatchMode.FULL }),
+      ],
+    },
+    {
+      label: 'a different replay identity',
+      states: () => [
+        create(WatchAgentStateSchema, { agentId: 'agent-1', mode: WatchMode.FULL, replayId: 2n }),
+      ],
+    },
+    {
+      label: 'a large replay identity',
+      states: () => [
+        create(WatchAgentStateSchema, { agentId: 'agent-1', mode: WatchMode.FULL, replayId: 18446744073709551615n }),
+      ],
+    },
+    {
+      label: 'a repeated matching state',
+      states: () => [
+        fullState(),
+        fullState(),
+      ],
+    },
   ])('refuses $label in the actual registration acknowledgement', ({ states }) => {
     expect(() => readAgentWatchFrame(acknowledgement(AGENT_WATCH_UPDATE_ID, undefined, states()), 'agent-1', 'test watch'))
       .toThrow('The Worker did not register the test watch with its requested FULL replay identity.')
   })
 
   it('accepts the exact registered identity beside another registered agent', () => {
-    const states = [create(WatchAgentStateSchema, { agentId: 'agent-2', mode: WatchMode.NOTIFY }), fullState()]
+    const states = [
+      create(WatchAgentStateSchema, { agentId: 'agent-2', mode: WatchMode.NOTIFY }),
+      fullState(),
+    ]
     expect(readAgentWatchFrame(acknowledgement(AGENT_WATCH_UPDATE_ID, undefined, states), 'agent-1', 'test watch')).toEqual({ kind: 'acknowledged' })
   })
 
@@ -100,17 +190,49 @@ describe('readAgentWatchFrame', () => {
   it('returns an event of the watched agent and ignores an event of another agent', () => {
     const frame = readAgentWatchFrame(queueEvent('agent-1', 3n), 'agent-1', 'test watch')
     expect(frame.kind).toBe('event')
-    expect(frame.kind === 'event' ? queueRevision(frame.event) : undefined).toBe(3n)
+    expect(frame.kind === 'event'
+      ? queueRevision(frame.event)
+      : undefined).toBe(3n)
     expect(readAgentWatchFrame(queueEvent('agent-2', 3n), 'agent-1', 'test watch')).toEqual({ kind: 'ignored' })
   })
 
   it.each([
-    { label: 'the exact origin and lifetime', origin: 'agent-1', replayId: AGENT_WATCH_UPDATE_ID, accepted: true },
-    { label: 'an empty origin', origin: '', replayId: AGENT_WATCH_UPDATE_ID, accepted: false },
-    { label: 'a foreign origin', origin: 'agent-2', replayId: AGENT_WATCH_UPDATE_ID, accepted: false },
-    { label: 'a zero lifetime', origin: 'agent-1', replayId: 0n, accepted: false },
-    { label: 'another lifetime', origin: 'agent-1', replayId: 2n, accepted: false },
-    { label: 'the maximum lifetime', origin: 'agent-1', replayId: (1n << 64n) - 1n, accepted: false },
+    {
+      label: 'the exact origin and lifetime',
+      origin: 'agent-1',
+      replayId: AGENT_WATCH_UPDATE_ID,
+      accepted: true,
+    },
+    {
+      label: 'an empty origin',
+      origin: '',
+      replayId: AGENT_WATCH_UPDATE_ID,
+      accepted: false,
+    },
+    {
+      label: 'a foreign origin',
+      origin: 'agent-2',
+      replayId: AGENT_WATCH_UPDATE_ID,
+      accepted: false,
+    },
+    {
+      label: 'a zero lifetime',
+      origin: 'agent-1',
+      replayId: 0n,
+      accepted: false,
+    },
+    {
+      label: 'another lifetime',
+      origin: 'agent-1',
+      replayId: 2n,
+      accepted: false,
+    },
+    {
+      label: 'the maximum lifetime',
+      origin: 'agent-1',
+      replayId: (1n << 64n) - 1n,
+      accepted: false,
+    },
   ])('selects replay only with its requested identity: $label', ({ origin, replayId, accepted }) => {
     const frame = readAgentWatchFrame(replayQueueEvent(origin, replayId), 'agent-1', 'test watch')
     expect(frame.kind).toBe(accepted ? 'event' : 'ignored')
@@ -118,7 +240,9 @@ describe('readAgentWatchFrame', () => {
     collector.accept(acknowledgement())
     collector.accept(replayQueueEvent(origin, replayId))
     collector.assertHealthy()
-    expect(collector.items).toEqual(accepted ? [7n] : [])
+    expect(collector.items).toEqual(accepted
+      ? [7n]
+      : [])
   })
 
   it('ignores another replay destination even when its origin matches the watch', () => {
@@ -234,10 +358,26 @@ describe('watchAgentEvents', () => {
   })
 
   it.each([
-    { label: 'an unregistered identity', act: (stream: ReturnType<typeof fakeChannelStream>) => stream.message(acknowledgement(AGENT_WATCH_UPDATE_ID, undefined, [])), message: 'The Worker did not register the test watch' },
-    { label: 'a refused subscription', act: (stream: ReturnType<typeof fakeChannelStream>) => stream.message(acknowledgement(AGENT_WATCH_UPDATE_ID, 'agent-1')), message: 'The Worker refused the test watch' },
-    { label: 'a stream end', act: (stream: ReturnType<typeof fakeChannelStream>) => stream.end(), message: 'The test watch ended before its assertion.' },
-    { label: 'a stream error', act: (stream: ReturnType<typeof fakeChannelStream>) => stream.error(new Error('The native transport disconnected.')), message: 'The native transport disconnected.' },
+    {
+      label: 'an unregistered identity',
+      act: (stream: ReturnType<typeof fakeChannelStream>) => stream.message(acknowledgement(AGENT_WATCH_UPDATE_ID, undefined, [])),
+      message: 'The Worker did not register the test watch',
+    },
+    {
+      label: 'a refused subscription',
+      act: (stream: ReturnType<typeof fakeChannelStream>) => stream.message(acknowledgement(AGENT_WATCH_UPDATE_ID, 'agent-1')),
+      message: 'The Worker refused the test watch',
+    },
+    {
+      label: 'a stream end',
+      act: (stream: ReturnType<typeof fakeChannelStream>) => stream.end(),
+      message: 'The test watch ended before its assertion.',
+    },
+    {
+      label: 'a stream error',
+      act: (stream: ReturnType<typeof fakeChannelStream>) => stream.error(new Error('The native transport disconnected.')),
+      message: 'The native transport disconnected.',
+    },
   ])('rejects $label before the acknowledgement, and cancels the stream', async ({ act, message }) => {
     const stream = fakeChannelStream()
     getTestChannel.mockResolvedValue(stream.channel)

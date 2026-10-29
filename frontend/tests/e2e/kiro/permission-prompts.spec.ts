@@ -15,7 +15,9 @@ const PROVIDER = AgentProvider.KIRO
 
 /** The text of a file, or '' for a file that does not exist. */
 function readIfPresent(path: string): string {
-  return existsSync(path) ? readFileSync(path, 'utf8') : ''
+  return existsSync(path)
+    ? readFileSync(path, 'utf8')
+    : ''
 }
 
 /**
@@ -26,7 +28,10 @@ function workspaceRuleFiles(home: string): Record<string, string> {
   const roots = join(home, '.kiro', 'workspace-roots')
   if (!existsSync(roots))
     return {}
-  return Object.fromEntries(readdirSync(roots).map(hash => [hash, readIfPresent(join(roots, hash, 'permissions.yaml'))]))
+  return Object.fromEntries(readdirSync(roots).map(hash => [
+    hash,
+    readIfPresent(join(roots, hash, 'permissions.yaml')),
+  ]))
 }
 
 kiroTest.describe('Kiro control requests', () => {
@@ -36,7 +41,12 @@ kiroTest.describe('Kiro control requests', () => {
   kiroTest('approves one command and rejects the next with a reason the turn reads', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
     const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, KIRO_AGENT)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
     await exerciseAllowThenFeedbackRejection(context, { workingDir })
   })
 
@@ -55,8 +65,16 @@ kiroTest.describe('Kiro control requests', () => {
     const userRulesBefore = readIfPresent(userRuleFile)
 
     const start = await modelScript.queue(
-      { toolCalls: [bashToolCall(PROVIDER, 'kiro-always-1', command)] },
-      { toolCalls: [bashToolCall(PROVIDER, 'kiro-always-2', command)] },
+      {
+        toolCalls: [
+          bashToolCall(PROVIDER, 'kiro-always-1', command),
+        ],
+      },
+      {
+        toolCalls: [
+          bashToolCall(PROVIDER, 'kiro-always-2', command),
+        ],
+      },
       { text: 'Both ran.' },
     )
     await sendMessage(page, modelScript.prompt('Run the scripted command twice.'))

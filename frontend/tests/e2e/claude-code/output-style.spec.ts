@@ -41,7 +41,9 @@ claudeTest('applies native output-style instructions and restores the selected s
         expect(instructions).toContain(marker)
       else
         expect(instructions).not.toContain('Style Active')
-      const effort = isObject(request.body.output_config) ? request.body.output_config.effort : undefined
+      const effort = isObject(request.body.output_config)
+        ? request.body.output_config.effort
+        : undefined
       if (index === 0) {
         expect(request.protocol).toBe('anthropic-messages')
         expect(request.body.model).toEqual(expect.stringMatching(/^claude-/))

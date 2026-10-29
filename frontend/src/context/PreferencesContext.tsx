@@ -302,7 +302,9 @@ const PreferencesContext = createStableContext<PreferencesState>('context/Prefer
 
 /** Accept one of a closed set of string values, and refuse anything else. */
 function oneOf<T extends string>(...allowed: T[]): (raw: unknown) => T | undefined {
-  return raw => (allowed.includes(raw as T) ? raw as T : undefined)
+  return raw => (allowed.includes(raw as T)
+    ? raw as T
+    : undefined)
 }
 
 /**
@@ -315,12 +317,16 @@ function oneOf<T extends string>(...allowed: T[]): (raw: unknown) => T | undefin
  * `typeof NaN === 'number'`, and it is also what refuses Infinity.
  */
 function numberInRange(min: number, max: number): (raw: unknown) => number | undefined {
-  return raw => (typeof raw === 'number' && Number.isFinite(raw) && raw >= min && raw <= max ? raw : undefined)
+  return raw => (typeof raw === 'number' && Number.isFinite(raw) && raw >= min && raw <= max
+    ? raw
+    : undefined)
 }
 
 /** Accept a stored boolean, and refuse anything else. */
 function parseBoolean(raw: unknown): boolean | undefined {
-  return typeof raw === 'boolean' ? raw : undefined
+  return typeof raw === 'boolean'
+    ? raw
+    : undefined
 }
 
 /**
@@ -588,12 +594,16 @@ export const PreferencesProvider: ParentComponent = (props) => {
       storageName: KEY_BROWSER_PREFS,
       seed: (prefs) => {
         const stored = prefs?.[key]
-        setSignal(typeof stored === 'boolean' ? stored : defaultOn)
+        setSignal(typeof stored === 'boolean'
+          ? stored
+          : defaultOn)
       },
     })
     const set = (next: boolean) => {
       setSignal(next)
-      updateBrowserPref(key, next === defaultOn ? undefined : next)
+      updateBrowserPref(key, next === defaultOn
+        ? undefined
+        : next)
     }
     return [value, set] as const
   }
@@ -620,8 +630,12 @@ export const PreferencesProvider: ParentComponent = (props) => {
       // the argument the other entries use -- except for the null, which means
       // there is no account whose key it may read.
       seed: (prefs) => {
-        const stored = prefs === null ? undefined : localStorageGet<unknown>(storageKey)
-        setSignal(typeof stored === 'boolean' ? stored : defaultOn)
+        const stored = prefs === null
+          ? undefined
+          : localStorageGet<unknown>(storageKey)
+        setSignal(typeof stored === 'boolean'
+          ? stored
+          : defaultOn)
       },
     })
     const set = (next: boolean) => {
@@ -677,7 +691,9 @@ export const PreferencesProvider: ParentComponent = (props) => {
   deviceTier.push({
     storageName: KEY_PREFERRED_EXTERNAL_APP,
     seed: prefs => setPreferredExternalAppIdSignal(
-      prefs === null ? undefined : localStorageGet<string>(KEY_PREFERRED_EXTERNAL_APP),
+      prefs === null
+        ? undefined
+        : localStorageGet<string>(KEY_PREFERRED_EXTERNAL_APP),
     ),
   })
   const setPreferredExternalAppId = (id: string | undefined) => {
@@ -917,7 +933,9 @@ export const PreferencesProvider: ParentComponent = (props) => {
       // The stored browser value passes the SAME parse as a server document,
       // so a corrupt stored entry cannot put a value on screen that the
       // hub would refuse.
-      seed: prefs => setSignal(() => (prefs === null ? null : opts.parse(prefs[opts.browserPrefKey]) ?? null)),
+      seed: prefs => setSignal(() => (prefs === null
+        ? null
+        : opts.parse(prefs[opts.browserPrefKey]) ?? null)),
       // Runs from the `storage` handler and the sign-out reset, never a tracked
       // scope. It re-applies the value WITHOUT the write that `setBrowser`
       // performs: echoing the value back to storage would raise a `storage`
@@ -930,7 +948,12 @@ export const PreferencesProvider: ParentComponent = (props) => {
       updateBrowserPref(opts.browserPrefKey, value ?? undefined)
       opts.onBrowserWrite?.(resolved())
     }
-    return { ...base, browser, setBrowser, resolved }
+    return {
+      ...base,
+      browser,
+      setBrowser,
+      resolved,
+    }
   }
 
   /**
@@ -1096,11 +1119,16 @@ export const PreferencesProvider: ParentComponent = (props) => {
     // A malformed document is an EMPTY override set, not "keep what is
     // on screen": a stored value the client cannot read must not leave
     // stale bindings in force.
-    parse: raw => (Array.isArray(raw) ? raw as UserKeybindingOverride[] : []),
+    parse: raw => (Array.isArray(raw)
+      ? raw as UserKeybindingOverride[]
+      : []),
   })
 
   const settingsByProtoKey = new Map(
-    [...Object.values(dualSettings), keybindings].map(setting => [setting.protoKey, setting] as const),
+    [
+      ...Object.values(dualSettings),
+      keybindings,
+    ].map(setting => [setting.protoKey, setting] as const),
   )
 
   /**

@@ -11,14 +11,18 @@ export function fixedTauriVersion(alert) {
 }
 
 export function lockedTauriVersions(versions, name) {
-  const ecosystem = name.startsWith('@tauri-apps/') ? 'npm' : 'cargo'
-  return versions?.occurrences?.[ecosystem]?.[name] ?? (versions?.[ecosystem]?.[name] ? [versions[ecosystem][name]] : [])
+  const ecosystem = name.startsWith('@tauri-apps/')
+    ? 'npm'
+    : 'cargo'
+  return versions?.occurrences?.[ecosystem]?.[name] ?? (versions?.[ecosystem]?.[name]
+    ? [versions[ecosystem][name]]
+    : [])
 }
 
 /** Preserve all matching advisory ranges, including separately patched release lines. */
 export function tauriAdvisories(alerts) {
   if (!Array.isArray(alerts))
-    throw new Error('Dependabot alerts must be an array.')
+    throw new TypeError('Dependabot alerts must be an array.')
   const packages = new Map()
   for (const alert of alerts) {
     const primary = alert.security_vulnerability
@@ -27,17 +31,24 @@ export function tauriAdvisories(alerts) {
       continue
     const npm = name.startsWith('@tauri-apps/')
     const ecosystem = npm ? 'npm' : 'rust'
-    const paths = npm ? ['frontend/package.json', 'frontend/bun.lock'] : ['desktop/rust/Cargo.toml', 'desktop/rust/Cargo.lock']
+    const paths = npm
+      ? ['frontend/package.json', 'frontend/bun.lock']
+      : ['desktop/rust/Cargo.toml', 'desktop/rust/Cargo.lock']
     if (primary.package.ecosystem !== ecosystem || !paths.includes(alert.dependency?.manifest_path))
       continue
     const vulnerabilities = alert.security_advisory?.vulnerabilities ?? []
     if (!Array.isArray(vulnerabilities))
-      throw new Error(`Invalid advisory ranges for ${name}.`)
-    const records = [primary, ...vulnerabilities.filter(entry => entry.package?.name === name && entry.package.ecosystem === ecosystem)]
+      throw new TypeError(`Invalid advisory ranges for ${name}.`)
+    const records = [
+      primary,
+      ...vulnerabilities.filter(entry => entry.package?.name === name && entry.package.ecosystem === ecosystem),
+    ]
     const ranges = packages.get(name) ?? []
     for (const record of records) {
       const raw = record.vulnerable_version_range
-      const range = typeof raw === 'string' ? raw.replaceAll(',', ' ') : ''
+      const range = typeof raw === 'string'
+        ? raw.replaceAll(',', ' ')
+        : ''
       if (!range || !npmVersioning.isValid(range))
         throw new Error(`Invalid vulnerable version range for ${name}.`)
       const fixed = fixedTauriVersion({ security_vulnerability: record })
@@ -54,7 +65,9 @@ export function tauriAdvisories(alerts) {
       const records = affected(name, version)
       if (!records.length || records.some(entry => entry.fixed === null))
         return null
-      return records.reduce((result, entry) => Bun.semver.order(entry.fixed, result) > 0 ? entry.fixed : result, version)
+      return records.reduce((result, entry) => Bun.semver.order(entry.fixed, result) > 0
+        ? entry.fixed
+        : result, version)
     },
   }
 }

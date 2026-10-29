@@ -149,7 +149,17 @@ describe('dialog', () => {
 
     const dialog = container.querySelector('dialog')!
     // Mock bounding rect so the click coordinates fall outside.
-    dialog.getBoundingClientRect = () => ({ top: 100, left: 100, right: 500, bottom: 500, width: 400, height: 400, x: 100, y: 100, toJSON: () => {} })
+    dialog.getBoundingClientRect = () => ({
+      top: 100,
+      left: 100,
+      right: 500,
+      bottom: 500,
+      width: 400,
+      height: 400,
+      x: 100,
+      y: 100,
+      toJSON: () => {},
+    })
     // Simulate a full press+release on the backdrop (target is dialog, coordinates outside content).
     dialog.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: 10, clientY: 10 }))
     dialog.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: 10, clientY: 10 }))
@@ -165,7 +175,17 @@ describe('dialog', () => {
     ))
 
     const dialog = container.querySelector('dialog')!
-    dialog.getBoundingClientRect = () => ({ top: 100, left: 100, right: 500, bottom: 500, width: 400, height: 400, x: 100, y: 100, toJSON: () => {} })
+    dialog.getBoundingClientRect = () => ({
+      top: 100,
+      left: 100,
+      right: 500,
+      bottom: 500,
+      width: 400,
+      height: 400,
+      x: 100,
+      y: 100,
+      toJSON: () => {},
+    })
     dialog.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: 10, clientY: 10 }))
     dialog.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: 10, clientY: 10 }))
     expect(onClose).not.toHaveBeenCalled()
@@ -180,7 +200,17 @@ describe('dialog', () => {
     ))
 
     const dialog = container.querySelector('dialog')!
-    dialog.getBoundingClientRect = () => ({ top: 100, left: 100, right: 500, bottom: 500, width: 400, height: 400, x: 100, y: 100, toJSON: () => {} })
+    dialog.getBoundingClientRect = () => ({
+      top: 100,
+      left: 100,
+      right: 500,
+      bottom: 500,
+      width: 400,
+      height: 400,
+      x: 100,
+      y: 100,
+      toJSON: () => {},
+    })
     const content = container.querySelector('p')!
     // Press starts inside the dialog content (e.g. beginning of a text selection).
     content.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: 300, clientY: 300 }))
@@ -198,7 +228,17 @@ describe('dialog', () => {
     ))
 
     const dialog = container.querySelector('dialog')!
-    dialog.getBoundingClientRect = () => ({ top: 100, left: 100, right: 500, bottom: 500, width: 400, height: 400, x: 100, y: 100, toJSON: () => {} })
+    dialog.getBoundingClientRect = () => ({
+      top: 100,
+      left: 100,
+      right: 500,
+      bottom: 500,
+      width: 400,
+      height: 400,
+      x: 100,
+      y: 100,
+      toJSON: () => {},
+    })
     // Press starts on the backdrop.
     dialog.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientX: 10, clientY: 10 }))
     // Release ends on the dialog content — click target is the content element.

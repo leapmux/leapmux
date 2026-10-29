@@ -56,7 +56,9 @@ copilotTest('mode: keeps Plan mode and low effort after a turn and reload', asyn
   // The model can still call the kept Plan exit tool. Agent mode raises no plan review for it, and the runtime refuses it.
   const callId = 'copilot-kept-plan-exit'
   const kept = await runNativeToolTurn(native, {
-    toolCalls: [exitPlanModeToolCall(native.provider, callId, 'A plan after the return to Agent mode.')],
+    toolCalls: [
+      exitPlanModeToolCall(native.provider, callId, 'A plan after the return to Agent mode.'),
+    ],
     prompt: 'Call the Plan exit tool in Agent mode.',
     answer: 'The Agent mode refused the Plan exit tool.',
     permissions: 'none',

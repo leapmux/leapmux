@@ -39,7 +39,12 @@ async function trustTurn(
 }
 
 museTest('loads project instructions under the agent trust choice only', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+  })
   await openWorkspace(page, context.workspaceId)
 
   const agentRequest = await trustTurn(context, 'muse-trust-agent-', 'agent')

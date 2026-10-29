@@ -13,7 +13,9 @@ export function formatTaskStatus(status?: string): string {
 
 /** Capitalize the first character; leaves the rest unchanged. */
 export function capitalize(s: string): string {
-  return s.length > 0 ? s.charAt(0).toUpperCase() + s.slice(1) : s
+  return s.length > 0
+    ? s.charAt(0).toUpperCase() + s.slice(1)
+    : s
 }
 
 const UNDERSCORE = /_/g
@@ -98,7 +100,9 @@ export function formatDuration(ms: number): string {
  * wrong beside a counter that steps in whole seconds.
  */
 export function formatShortWait(ms: number): string {
-  return ms < 1000 ? `${Math.round(ms)}ms` : formatSecondsParts(ms / 1000)
+  return ms < 1000
+    ? `${Math.round(ms)}ms`
+    : formatSecondsParts(ms / 1000)
 }
 
 /** Format a number with locale-aware separators (e.g. 1,234). */
@@ -140,14 +144,20 @@ export function formatCompactNumber(n: number): string {
     return String(n)
   if (n < 1_000_000) {
     const v = n / 1000
-    return `${v >= 100 ? Math.round(v) : Number(v.toFixed(1))}k`
+    return `${v >= 100
+      ? Math.round(v)
+      : Number(v.toFixed(1))}k`
   }
   if (n < 1_000_000_000) {
     const v = n / 1_000_000
-    return `${v >= 100 ? Math.round(v) : Number(v.toFixed(1))}m`
+    return `${v >= 100
+      ? Math.round(v)
+      : Number(v.toFixed(1))}m`
   }
   const v = n / 1_000_000_000
-  return `${v >= 100 ? Math.round(v) : Number(v.toFixed(1))}g`
+  return `${v >= 100
+    ? Math.round(v)
+    : Number(v.toFixed(1))}g`
 }
 
 /**

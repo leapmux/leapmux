@@ -4,5 +4,8 @@ import { reasonixTest } from '../reasonix-fixtures'
 import { REASONIX_CHILD } from './childScenario'
 
 reasonixTest('refuses native child interrupt while the actual child task runs', async ({ native }) => {
-  await expectUnsupportedSubagent(native, { operation: 'interrupt', openChild: () => openProfiledNativeChild(native, REASONIX_CHILD) })
+  await expectUnsupportedSubagent(native, {
+    operation: 'interrupt',
+    openChild: () => openProfiledNativeChild(native, REASONIX_CHILD),
+  })
 })

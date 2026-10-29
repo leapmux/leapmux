@@ -14,12 +14,18 @@ function entry(name: string, isRemote: boolean): GitBranchEntry {
 // which name to stamp.
 describe('resolveStampedBranch', () => {
   it('returns the verbatim name for a local branch even when it contains "/"', () => {
-    const branches = [entry('main', false), entry('feature/auth', false)]
+    const branches = [
+      entry('main', false),
+      entry('feature/auth', false),
+    ]
     expect(resolveStampedBranch('feature/auth', branches)).toBe('feature/auth')
   })
 
   it('strips the prefix for a remote-tracking ref', () => {
-    const branches = [entry('main', false), entry('origin/foo', true)]
+    const branches = [
+      entry('main', false),
+      entry('origin/foo', true),
+    ]
     expect(resolveStampedBranch('origin/foo', branches)).toBe('foo')
   })
 
@@ -37,7 +43,9 @@ describe('resolveStampedBranch', () => {
     // known branches list missing the target we have no positive
     // evidence the picked entry is remote, so stay verbatim — the
     // strip-on-missing path was the bug, not the contract.
-    const branches = [entry('main', false)]
+    const branches = [
+      entry('main', false),
+    ]
     expect(resolveStampedBranch('origin/foo', branches)).toBe('origin/foo')
   })
 
@@ -48,17 +56,23 @@ describe('resolveStampedBranch', () => {
     // dropping the doomed branch in DeleteBranchDialog). The new
     // contract is that an unknown entry never overrides verbatim
     // selection — the worker's resolution wins on the next refresh.
-    const branches = [entry('main', false)]
+    const branches = [
+      entry('main', false),
+    ]
     expect(resolveStampedBranch('feature/auth', branches)).toBe('feature/auth')
   })
 
   it('returns the verbatim name when neither side has a slash', () => {
-    const branches = [entry('main', false)]
+    const branches = [
+      entry('main', false),
+    ]
     expect(resolveStampedBranch('main', branches)).toBe('main')
   })
 
   it('handles a multi-segment local branch (e.g. team/feature/auth) verbatim', () => {
-    const branches = [entry('team/feature/auth', false)]
+    const branches = [
+      entry('team/feature/auth', false),
+    ]
     expect(resolveStampedBranch('team/feature/auth', branches)).toBe('team/feature/auth')
   })
 })

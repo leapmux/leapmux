@@ -217,7 +217,9 @@ export function createQuakeTerminalStore(deps: QuakeTerminalDeps) {
    */
   const badgeTabFor = (terminalId: string): string | undefined => {
     const entry = entryForTerminal(terminalId)
-    return entry === undefined ? undefined : deps.tabForKey(entry)?.id
+    return entry === undefined
+      ? undefined
+      : deps.tabForKey(entry)?.id
   }
 
   /** Let go of one dead terminal's xterm instance and metadata row. */
@@ -268,7 +270,10 @@ export function createQuakeTerminalStore(deps: QuakeTerminalDeps) {
    */
   const resolveTerminal = async (key: QuakeKey): Promise<void> => {
     const keyId = quakeKeyId(key)
-    const existing = await workerRpc.listTerminals(key.workerId, { tabIds: [], quakeWorkingDirs: [key.workingDir] })
+    const existing = await workerRpc.listTerminals(key.workerId, {
+      tabIds: [],
+      quakeWorkingDirs: [key.workingDir],
+    })
     const adopted = existing.terminals.find(t => t.quake)
     if (adopted) {
       recordResolvedTerminal(keyId, adopted.terminalId, () =>

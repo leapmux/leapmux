@@ -33,7 +33,11 @@ function createHarness(options?: { kittyKeyboard?: boolean, beforeImeAttach?: (t
   const terminal = new Terminal({
     cols: 80,
     rows: 24,
-    ...(options?.kittyKeyboard ? { vtExtensions: { kittyKeyboard: true } } : {}),
+    ...(options?.kittyKeyboard
+      ? {
+          vtExtensions: { kittyKeyboard: true },
+        }
+      : {}),
   })
   terminal.open(container)
   options?.beforeImeAttach?.(terminal.textarea!)
@@ -47,13 +51,25 @@ function createHarness(options?: { kittyKeyboard?: boolean, beforeImeAttach?: (t
   // interaction with xterm's key path rather than the module in isolation.
   terminal.attachCustomKeyEventHandler(event => !ime.shouldBypassKeyEvent(event))
 
-  const harness: Harness = { terminal, ime, textarea: terminal.textarea!, sent, fromXterm, container }
+  const harness: Harness = {
+    terminal,
+    ime,
+    textarea: terminal.textarea!,
+    sent,
+    fromXterm,
+    container,
+  }
   harnesses.push(harness)
   return harness
 }
 
 function composition(target: HTMLElement, type: string, data: string): void {
-  target.dispatchEvent(new CompositionEvent(type, { data, bubbles: true, cancelable: true, composed: true }))
+  target.dispatchEvent(new CompositionEvent(type, {
+    data,
+    bubbles: true,
+    cancelable: true,
+    composed: true,
+  }))
 }
 
 /**
@@ -64,7 +80,9 @@ function composition(target: HTMLElement, type: string, data: string): void {
  */
 function applyToLine(writes: string[]): string {
   const line: string[] = []
-  for (const ch of [...writes.join('')]) {
+  for (const ch of [
+    ...writes.join(''),
+  ]) {
     if (ch === '\x7F')
       line.pop()
     else
@@ -90,8 +108,15 @@ function wkKeystroke(h: Harness, inputType: string, data: string, replacedRange:
   h.textarea.value = nextValue
   h.textarea.setSelectionRange(nextValue.length, nextValue.length)
   dispatchInputEvent(h.textarea, 'input', { data, inputType })
-  keydown(h.textarea, { key: data.slice(-1), keyCode: 229 })
-  h.textarea.dispatchEvent(new KeyboardEvent('keyup', { key: data.slice(-1), keyCode: 68, bubbles: true }))
+  keydown(h.textarea, {
+    key: data.slice(-1),
+    keyCode: 229,
+  })
+  h.textarea.dispatchEvent(new KeyboardEvent('keyup', {
+    key: data.slice(-1),
+    keyCode: 68,
+    bubbles: true,
+  }))
 }
 
 /**
@@ -107,8 +132,12 @@ function dispatchInputEvent(
 ): void {
   target.dispatchEvent(new InputEvent(type, {
     // InputEventInit optionals reject an explicit undefined; omit when absent.
-    ...(init.data === undefined ? {} : { data: init.data }),
-    ...(init.inputType === undefined ? {} : { inputType: init.inputType }),
+    ...(init.data === undefined
+      ? {}
+      : { data: init.data }),
+    ...(init.inputType === undefined
+      ? {}
+      : { inputType: init.inputType }),
     isComposing: init.isComposing ?? false,
     bubbles: true,
     cancelable: true,
@@ -143,7 +172,9 @@ function chromiumCompose(h: Harness, steps: string[], opts: { start: boolean }):
     composition(h.textarea, 'compositionupdate', text)
     input(h.textarea, 'insertCompositionText', text, true)
     // Chromium writes the composing text into the textarea as it goes.
-    h.textarea.value = h.textarea.value.slice(0, h.textarea.value.length - (index === 0 ? 0 : 1)) + text
+    h.textarea.value = h.textarea.value.slice(0, h.textarea.value.length - (index === 0
+      ? 0
+      : 1)) + text
   })
 }
 
@@ -311,12 +342,14 @@ describe('attachTerminalIme', () => {
       composed: true,
     })
     Object.defineProperty(beforeinput, 'getTargetRanges', {
-      value: () => [{
-        startContainer: h.textarea,
-        endContainer: h.textarea,
-        startOffset: 1,
-        endOffset: 3,
-      }],
+      value: () => [
+        {
+          startContainer: h.textarea,
+          endContainer: h.textarea,
+          startOffset: 1,
+          endOffset: 3,
+        },
+      ],
     })
     h.textarea.dispatchEvent(beforeinput)
     h.textarea.value = 'axd'
@@ -342,12 +375,14 @@ describe('attachTerminalIme', () => {
       composed: true,
     })
     Object.defineProperty(beforeinput, 'getTargetRanges', {
-      value: () => [{
-        startContainer: document.body,
-        endContainer: document.body,
-        startOffset: 0,
-        endOffset: 9,
-      }],
+      value: () => [
+        {
+          startContainer: document.body,
+          endContainer: document.body,
+          startOffset: 0,
+          endOffset: 9,
+        },
+      ],
     })
     h.textarea.dispatchEvent(beforeinput)
     h.textarea.value = 'xb'
@@ -372,7 +407,10 @@ describe('attachTerminalIme', () => {
     h.textarea.value = 'Cㅇ'
     wkKeystroke(h, 'insertReplacementText', '아', [1, 2], 'C아')
 
-    expect(applyToLine([...h.fromXterm, ...h.sent])).toBe('C아')
+    expect(applyToLine([
+      ...h.fromXterm,
+      ...h.sent,
+    ])).toBe('C아')
   })
 
   it('claims a dead key precomposed character that xterm never sends', () => {
@@ -440,7 +478,9 @@ describe('attachTerminalIme', () => {
     input(h.textarea, 'insertFromComposition', '안', true)
     composition(h.textarea, 'compositionend', '안')
 
-    const echo = new KeyboardEvent('keypress', { charCode: '안'.charCodeAt(0) } as KeyboardEventInit)
+    const echo = new KeyboardEvent('keypress', {
+      charCode: '안'.charCodeAt(0),
+    } as KeyboardEventInit)
     expect(h.ime.shouldBypassKeyEvent(echo)).toBe(true)
 
     // Only the commit reached the PTY -- not the echo, and nothing from xterm.
@@ -490,7 +530,9 @@ describe('attachTerminalIme', () => {
 
     for (const ch of ['a', 'b']) {
       expect(h.ime.shouldBypassKeyEvent(
-        new KeyboardEvent('keypress', { charCode: ch.charCodeAt(0) } as KeyboardEventInit),
+        new KeyboardEvent('keypress', {
+          charCode: ch.charCodeAt(0),
+        } as KeyboardEventInit),
       )).toBe(true)
     }
     // The window is spent: a further keypress of a committed character is
@@ -537,7 +579,9 @@ describe('attachTerminalIme', () => {
     keydown(h.textarea, { key: 'ㅇ', keyCode: 229 })
 
     expect(h.ime.shouldBypassKeyEvent(
-      new KeyboardEvent('keypress', { charCode: '안'.charCodeAt(0) } as KeyboardEventInit),
+      new KeyboardEvent('keypress', {
+        charCode: '안'.charCodeAt(0),
+      } as KeyboardEventInit),
     )).toBe(true)
     expect(h.sent).toEqual(['안'])
   })
@@ -585,7 +629,12 @@ describe('attachTerminalIme', () => {
     const h = createHarness({ kittyKeyboard: true })
     await new Promise<void>(resolve => h.terminal.write('\x1B[=31;1u', resolve))
 
-    keydown(h.textarea, { key: 'C', code: 'KeyC', keyCode: 67, shiftKey: true })
+    keydown(h.textarea, {
+      key: 'C',
+      code: 'KeyC',
+      keyCode: 67,
+      shiftKey: true,
+    })
     input(h.textarea, 'insertText', 'C')
 
     expect(h.fromXterm).toEqual(['\x1B[99:67;2;67u'])

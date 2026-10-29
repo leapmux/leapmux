@@ -21,7 +21,9 @@ export function kimiExtractRow(input: RowExtractionInput): ChatRow | null {
   switch (category.kind) {
     case 'assistant_plan': {
       const plan = kimiPlanText(parsed.parentObject)
-      return plan === null ? null : { kind: 'assistant-plan', text: plan }
+      return plan === null
+        ? null
+        : { kind: 'assistant-plan', text: plan }
     }
     case 'tool_use':
     case 'tool_result':
@@ -43,7 +45,9 @@ export function kimiExtractRow(input: RowExtractionInput): ChatRow | null {
  */
 function kimiToolSpanRow(input: RowExtractionInput): ChatRow | null {
   const { resolved: parsed, span, spanType, completion } = input
-  const nativeResult = kimiEventData(parsed.topLevel, KIMI_EVENT.ToolResult) ? parsed.topLevel : span.result?.topLevel
+  const nativeResult = kimiEventData(parsed.topLevel, KIMI_EVENT.ToolResult)
+    ? parsed.topLevel
+    : span.result?.topLevel
   const row = kimiToolRow(parsed.parentObject, spanType, span.request?.parentObject, span.result?.parentObject, completion ?? parsed.completion, nativeResult)
   if (!row)
     return null

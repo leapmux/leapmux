@@ -27,7 +27,11 @@ export function commandCodeText(blocks: unknown): string {
 }
 
 export function commandCodeError(error: unknown): string {
-  return typeof error === 'string' ? error : isObject(error) ? pickString(error, 'message') : ''
+  return typeof error === 'string'
+    ? error
+    : isObject(error)
+      ? pickString(error, 'message')
+      : ''
 }
 
 export const COMMAND_CODE_TOOL_NAME = {

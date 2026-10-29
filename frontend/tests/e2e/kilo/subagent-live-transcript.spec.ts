@@ -10,7 +10,9 @@ kiloTest('shows the child tool result before its final answer', async ({ native,
     childWhen: KILO_CHILD.childTask('Read the assigned file for the live Kilo child'),
     childTask: 'Read the assigned file for the live Kilo child, then report its marker.',
     parentTask: 'Spawn one subagent to read the child note.',
-    toolProof: { read: { workingDir: authenticatedKiloWorkspace.workingDir } },
+    toolProof: {
+      read: { workingDir: authenticatedKiloWorkspace.workingDir },
+    },
   })
   await expectRowBecomesFinal(native.page, child.row)
 })

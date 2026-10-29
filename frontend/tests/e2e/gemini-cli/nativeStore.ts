@@ -62,9 +62,11 @@ export function geminiSessionArchiveMinutes(names: readonly string[], sessionId:
 /** Wait until the UTC minute after `minute` (in the archive spelling) begins. */
 export async function waitForMinuteAfter(minute: string, clock: MinuteClock = realClock): Promise<void> {
   const parts = MINUTE_SPELLING.exec(minute)
-  const start = parts ? Date.parse(`${parts[1]}T${parts[2]}:${parts[3]}:00.000Z`) : Number.NaN
+  const start = parts
+    ? Date.parse(`${parts[1]}T${parts[2]}:${parts[3]}:00.000Z`)
+    : Number.NaN
   if (Number.isNaN(start))
-    throw new Error(`The native Gemini archive minute ${JSON.stringify(minute)} is not a UTC minute.`)
+    throw new TypeError(`The native Gemini archive minute ${JSON.stringify(minute)} is not a UTC minute.`)
   const end = start + 60_000
   for (let remaining = end - clock.now(); remaining > 0; remaining = end - clock.now())
     await clock.sleep(remaining)
@@ -84,7 +86,9 @@ export async function waitForMinuteAfter(minute: string, clock: MinuteClock = re
  */
 export async function waitForGeminiArchiveMinuteToPass(context: ManagedNativeScenarioContext, agent: AgentInfo, clock: MinuteClock = realClock): Promise<void> {
   const minutes = geminiSessionArchiveMinutes(readdirSync(join(geminiNativeProject(context, agent), 'chats')), agent.agentSessionId)
-  const newest = minutes.reduce<string | undefined>((latest, minute) => latest === undefined || minute > latest ? minute : latest, undefined)
+  const newest = minutes.reduce<string | undefined>((latest, minute) => latest === undefined || minute > latest
+    ? minute
+    : latest, undefined)
   if (newest === undefined)
     throw new Error('The native Gemini session has no archive to reopen.')
   await waitForMinuteAfter(newest, clock)

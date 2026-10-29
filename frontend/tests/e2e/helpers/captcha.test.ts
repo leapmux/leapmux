@@ -16,7 +16,9 @@ vi.mock('@playwright/test', async (importOriginal) => {
   const configured = () => actual.expect.configure({ timeout: pollLimit.ms })
   const expect = Object.assign(
     (...args: Parameters<typeof actual.expect>) => configured()(...args),
-    { poll: (...args: Parameters<typeof actual.expect.poll>) => configured().poll(...args) },
+    {
+      poll: (...args: Parameters<typeof actual.expect.poll>) => configured().poll(...args),
+    },
   )
   return { ...actual, expect }
 })
@@ -48,10 +50,18 @@ function form(options: { widget?: boolean, enabled?: boolean, checked?: boolean,
     locator: vi.fn(() => checkbox),
   }
   const submit = {
-    count: vi.fn(async () => options.submit === false ? 0 : 1),
-    first: () => ({ isEnabled: async () => options.enabled ?? false }),
+    count: vi.fn(async () => options.submit === false
+      ? 0
+      : 1),
+    first: () => ({
+      isEnabled: async () => options.enabled ?? false,
+    }),
   }
-  const page = { locator: (selector: string) => selector === 'altcha-widget' ? widget : submit } as unknown as Page
+  const page = {
+    locator: (selector: string) => selector === 'altcha-widget'
+      ? widget
+      : submit,
+  } as unknown as Page
   return { page, widget, checkbox }
 }
 

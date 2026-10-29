@@ -22,7 +22,9 @@ afterEach(() => rmSync(directory, { recursive: true, force: true }))
 
 describe('LEAPMUX_BINARY_NAME', () => {
   it('carries the executable suffix of the platform', () => {
-    expect(LEAPMUX_BINARY_NAME).toBe(process.platform === 'win32' ? 'leapmux.exe' : 'leapmux')
+    expect(LEAPMUX_BINARY_NAME).toBe(process.platform === 'win32'
+      ? 'leapmux.exe'
+      : 'leapmux')
   })
 })
 

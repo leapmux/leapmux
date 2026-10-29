@@ -12,14 +12,24 @@ kiroTest.describe('control requests for Kiro', () => {
   // the SECOND option, so an answer that Kiro never read cannot pass as the first.
   kiroTest('answers a question with a chosen option', async ({ page, askingKiroWorkspace, leapmuxServer, modelScript }) => {
     await expectSettingsChip(page, 'Spec')
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingKiroWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: askingKiroWorkspace.workspaceId,
+    })
 
     const { result } = await exerciseQuestionAnswer(context, {
-      questions: [{
-        question: 'Which database?',
-        header: 'Database',
-        options: [{ label: 'Postgres', description: 'Relational' }, { label: 'SQLite', description: 'Embedded' }],
-      }],
+      questions: [
+        {
+          question: 'Which database?',
+          header: 'Database',
+          options: [
+            { label: 'Postgres', description: 'Relational' },
+            { label: 'SQLite', description: 'Embedded' },
+          ],
+        },
+      ],
       callId: 'kiro-question',
       prompt: 'Ask me for a database.',
       answer: 'SQLite it is.',
@@ -36,12 +46,24 @@ kiroTest.describe('control requests for Kiro', () => {
 
 kiroTest('returns a custom native answer after its draft survives reload', async ({ page, modelScript, leapmuxServer, askingKiroWorkspace }) => {
   await expectSettingsChip(page, 'Spec')
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingKiroWorkspace.workspaceId })
-  await exerciseTypedQuestionAnswer(context, { readResult: request => kiroUserText(request.body) })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: askingKiroWorkspace.workspaceId,
+  })
+  await exerciseTypedQuestionAnswer(context, {
+    readResult: request => kiroUserText(request.body),
+  })
 })
 
 kiroTest('keeps a native question on its owner tab and workspace after reload', async ({ page, modelScript, leapmuxServer, askingKiroWorkspace }) => {
   await expectSettingsChip(page, 'Spec')
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingKiroWorkspace.workspaceId })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: askingKiroWorkspace.workspaceId,
+  })
   await exerciseQuestionIsolation(context, { customAnswerDraft: true })
 })

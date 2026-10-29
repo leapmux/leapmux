@@ -21,5 +21,7 @@ export const claudeProcessTest = createProviderProcessTest({
   agent: CLAUDE_AGENT,
   nativeContext,
   skipReason: CLAUDE_E2E_SKIP_REASON,
-  openOptions: { optionValues: { permissionMode: 'default' } },
+  openOptions: {
+    optionValues: { permissionMode: 'default' },
+  },
 })

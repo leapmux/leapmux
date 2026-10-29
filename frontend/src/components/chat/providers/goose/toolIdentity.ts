@@ -6,7 +6,11 @@ export function gooseToolIdentity(tool: Record<string, unknown>): { name: string
   const fullName = pickString(metadata, 'toolName')
   const separator = fullName.indexOf('__')
   return {
-    name: separator >= 0 ? fullName.slice(separator + 2) : fullName,
-    extension: pickString(metadata, 'extensionName') || (separator >= 0 ? fullName.slice(0, separator) : ''),
+    name: separator >= 0
+      ? fullName.slice(separator + 2)
+      : fullName,
+    extension: pickString(metadata, 'extensionName') || (separator >= 0
+      ? fullName.slice(0, separator)
+      : ''),
   }
 }

@@ -18,5 +18,7 @@ export function qoderOutputFilePaths(input: RowExtractionInput, call: ToolCall):
   const result = pickObject(native, 'tool_use_result')
   const persisted = pickObject(result, 'persistedOutput')
   const path = persisted?.path
-  return isFilesystemPath(path) ? [path] : []
+  return isFilesystemPath(path)
+    ? [path]
+    : []
 }

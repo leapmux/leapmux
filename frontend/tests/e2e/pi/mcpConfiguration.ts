@@ -22,6 +22,15 @@ export function writePiMcpConfiguration(directory: string, runDir: string, serve
   mkdirSync(project, { recursive: true })
   const path = join(project, 'mcp.json')
   assertPrivateNativeAncestor(path, runDir, { refuseSymlink: true })
-  writeFileSync(path, JSON.stringify({ mcpServers: Object.fromEntries(entries.map(([name, server]) => [name, { command: server.command, args: [...server.args], exposure: 'direct' }])) }), { mode: 0o600 })
+  writeFileSync(path, JSON.stringify({
+    mcpServers: Object.fromEntries(entries.map(([name, server]) => [
+      name,
+      {
+        command: server.command,
+        args: [...server.args],
+        exposure: 'direct',
+      },
+    ])),
+  }), { mode: 0o600 })
   return path
 }

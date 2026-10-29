@@ -10,8 +10,12 @@ import { reportStartupFailure } from './serverOutput'
 
 let root: string
 
-vi.mock('./processRegistry', () => ({ spawnTestProcess: vi.fn() }))
-vi.mock('./e2e-channel', () => ({ createTestChannelManager: vi.fn() }))
+vi.mock('./processRegistry', () => ({
+  spawnTestProcess: vi.fn(),
+}))
+vi.mock('./e2e-channel', () => ({
+  createTestChannelManager: vi.fn(),
+}))
 vi.mock('./server', async original => ({
   ...await original<typeof import('./server')>(),
   getGlobalState: () => ({ binaryPath: 'leapmux', tmpDir: root }),
@@ -55,18 +59,26 @@ beforeEach(() => {
     const state = states.get(proc.pid ?? -1)
     if (!state)
       throw new Error('The Hub has no bound port or state file.')
-    return { hubUrl: hubUrlFromStateJson(state), listen: resolvedHubTCPFromStateJson(state) }
+    return {
+      hubUrl: hubUrlFromStateJson(state),
+      listen: resolvedHubTCPFromStateJson(state),
+    }
   })
   vi.mocked(spawnTestProcess).mockReset().mockImplementation((_command, args) => {
     const stub = createProcessStub({ pid: 100 + children.length })
-    const io = { stdout: new PassThrough(), stderr: new PassThrough() }
+    const io = {
+      stdout: new PassThrough(),
+      stderr: new PassThrough(),
+    }
     Object.assign(stub.emitter, io)
     children.push(stub)
     streams.push(io)
     if (args[0] === 'hub' && args.includes('127.0.0.1:0')) {
       const port = 24680 + hubCount++
       nativeHubURLs.add(`http://127.0.0.1:${port}`)
-      states.set(stub.emitter.pid ?? -1, JSON.stringify({ listen: [`127.0.0.1:${port}`] }))
+      states.set(stub.emitter.pid ?? -1, JSON.stringify({
+        listen: [`127.0.0.1:${port}`],
+      }))
     }
     if (args[0] === 'worker')
       workerIDs.push(`worker-${stub.emitter.pid}`)
@@ -88,10 +100,16 @@ beforeEach(() => {
       throw new Error('new registration failed')
     switch (method) {
       case 'GetAltchaChallenge': return Response.json({})
-      case 'SignUp': return new Response('{}', { headers: { 'Set-Cookie': 'leapmux-session=session; HttpOnly' } })
-      case 'GetCurrentUser': return Response.json({ user: { id: 'user' } })
+      case 'SignUp': return new Response('{}', {
+        headers: { 'Set-Cookie': 'leapmux-session=session; HttpOnly' },
+      })
+      case 'GetCurrentUser': return Response.json({
+        user: { id: 'user' },
+      })
       case 'CreateRegistrationKey': return Response.json({ registrationKey: 'registration' })
-      case 'ListWorkers': return Response.json({ workers: workerIDs.map(id => ({ id, online: true })) })
+      case 'ListWorkers': return Response.json({
+        workers: workerIDs.map(id => ({ id, online: true })),
+      })
       default: throw new Error(`Unexpected request: ${method}`)
     }
   }))
@@ -113,7 +131,13 @@ function childAt(i: number) {
 }
 
 describe('multi-worker lifetime', () => {
-  it.each(['readiness', 'SignUp', 'GetCurrentUser', 'CreateRegistrationKey', 'registration'])('closes partial startup after %s fails', async (stage) => {
+  it.each([
+    'readiness',
+    'SignUp',
+    'GetCurrentUser',
+    'CreateRegistrationKey',
+    'registration',
+  ])('closes partial startup after %s fails', async (stage) => {
     failure = stage
     if (stage === 'readiness')
       vi.mocked(waitForHubStart).mockRejectedValueOnce(new Error('readiness failed'))
@@ -155,9 +179,16 @@ describe('multi-worker lifetime', () => {
     const harness = await startMultiWorkerHarness(1)
     try {
       const [, worker] = vi.mocked(spawnTestProcess).mock.calls
-      expect(worker?.[1]).toEqual(expect.arrayContaining(['--hub', harness.hubUrl, '--encryption-mode', 'post-quantum']))
+      expect(worker?.[1]).toEqual(expect.arrayContaining([
+        '--hub',
+        harness.hubUrl,
+        '--encryption-mode',
+        'post-quantum',
+      ]))
       expect(worker?.[1]).not.toContain('--name')
-      expect(worker?.[2]).toEqual(expect.objectContaining({ env: { LEAPMUX_WORKER_NAME: 'worker-A' } }))
+      expect(worker?.[2]).toEqual(expect.objectContaining({
+        env: { LEAPMUX_WORKER_NAME: 'worker-A' },
+      }))
     }
     finally {
       await harness.stop()
@@ -188,7 +219,10 @@ describe('multi-worker lifetime', () => {
   it('assigns distinct worker identities to concurrent additions', async () => {
     const harness = await startMultiWorkerHarness(0)
     try {
-      const added = await Promise.all([harness.addWorker('first'), harness.addWorker('second')])
+      const added = await Promise.all([
+        harness.addWorker('first'),
+        harness.addWorker('second'),
+      ])
       expect(added.map(worker => worker.id)).toEqual(['worker-101', 'worker-102'])
       expect(harness.workers).toHaveLength(2)
     }
@@ -240,7 +274,13 @@ describe('multi-worker lifetime', () => {
     expect(readdirSync(root)).toEqual([])
   })
 
-  it.each([-1, 0.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1])('refuses an invalid worker count: %s', async (count) => {
+  it.each([
+    -1,
+    0.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.MAX_SAFE_INTEGER + 1,
+  ])('refuses an invalid worker count: %s', async (count) => {
     await expect(startMultiWorkerHarness(count)).rejects.toThrow(RangeError)
     expect(children).toEqual([])
     expect(readdirSync(root)).toEqual([])
@@ -272,8 +312,13 @@ describe('multi-worker port ownership', () => {
 
   it('assigns distinct bound ports to concurrent harnesses', async () => {
     requireBoundPort = true
-    const started = await Promise.allSettled([startMultiWorkerHarness(0), startMultiWorkerHarness(0)])
-    const harnesses = started.flatMap(result => result.status === 'fulfilled' ? [result.value] : [])
+    const started = await Promise.allSettled([
+      startMultiWorkerHarness(0),
+      startMultiWorkerHarness(0),
+    ])
+    const harnesses = started.flatMap(result => result.status === 'fulfilled'
+      ? [result.value]
+      : [])
     try {
       expect(started.every(result => result.status === 'fulfilled')).toBe(true)
       expect(harnesses.map(harness => harness.hubUrl).sort()).toEqual(['http://localhost:24680', 'http://localhost:24681'])

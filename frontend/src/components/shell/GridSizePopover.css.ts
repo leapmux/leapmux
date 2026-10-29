@@ -5,16 +5,19 @@ import { popoverBase } from '~/styles/popover.css'
 // `:popover-open`-gated `display: flex` -- without the gate the singleton popover stays
 // mounted and (with position: fixed) covers the page, intercepting clicks on the
 // workspace tab tree behind it.
-export const popover = style([popoverBase, {
-  padding: 'var(--space-3)',
-  border: '1px solid var(--border)',
-  borderRadius: 'var(--radius-medium)',
-  background: 'var(--card)',
-  boxShadow: 'var(--shadow-medium)',
-  flexDirection: 'column',
-  gap: 'var(--space-2)',
-  zIndex: 'var(--z-dropdown)',
-}])
+export const popover = style([
+  popoverBase,
+  {
+    padding: 'var(--space-3)',
+    border: '1px solid var(--border)',
+    borderRadius: 'var(--radius-medium)',
+    background: 'var(--card)',
+    boxShadow: 'var(--shadow-medium)',
+    flexDirection: 'column',
+    gap: 'var(--space-2)',
+    zIndex: 'var(--z-dropdown)',
+  },
+])
 
 export const sizeLabel = style({
   textAlign: 'center',

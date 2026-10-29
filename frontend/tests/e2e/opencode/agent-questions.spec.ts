@@ -5,14 +5,16 @@ import { opencodeTest } from '../opencode-fixtures'
 
 opencodeTest('answers a native question and resumes the turn', async ({ native }) => {
   const { result, request } = await exerciseQuestionAnswer(native, {
-    questions: [{
-      question: 'Pick a color.',
-      header: 'Color',
-      options: [
-        { label: 'Blue', description: 'Use blue.' },
-        { label: 'Green', description: 'Use green.' },
-      ],
-    }],
+    questions: [
+      {
+        question: 'Pick a color.',
+        header: 'Color',
+        options: [
+          { label: 'Blue', description: 'Use blue.' },
+          { label: 'Green', description: 'Use green.' },
+        ],
+      },
+    ],
     callId: 'color-question',
     prompt: 'Ask me to pick a color.',
     answer: 'The answer was recorded.',

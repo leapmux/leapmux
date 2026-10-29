@@ -34,7 +34,19 @@ describe('codex provider capabilities', () => {
       text: true,
       image: true,
       pdf: false,
-      audio: ['audio/wav', 'audio/x-wav', 'audio/wave', 'audio/vnd.wave', 'audio/mpeg', 'audio/mp3', 'audio/mp4', 'audio/m4a', 'audio/x-m4a', 'audio/webm', 'audio/ogg'],
+      audio: [
+        'audio/wav',
+        'audio/x-wav',
+        'audio/wave',
+        'audio/vnd.wave',
+        'audio/mpeg',
+        'audio/mp3',
+        'audio/mp4',
+        'audio/m4a',
+        'audio/x-m4a',
+        'audio/webm',
+        'audio/ogg',
+      ],
       binary: false,
     })
   })
@@ -48,27 +60,47 @@ describe('codex provider capabilities', () => {
 
 describe('codex quotable text', () => {
   it('reads parent.item.text for assistant_text', () => {
-    const parent = { item: { type: 'agentMessage', text: '  Hello  ' } }
-    expect(providerQuotableText(AgentProvider.CODEX, parent, { category: { kind: 'assistant_text' } })).toBe('Hello')
+    const parent = {
+      item: { type: 'agentMessage', text: '  Hello  ' },
+    }
+    expect(providerQuotableText(AgentProvider.CODEX, parent, {
+      category: { kind: 'assistant_text' },
+    })).toBe('Hello')
   })
 
   it('reads parent.item.text for assistant_thinking', () => {
-    const parent = { item: { type: 'reasoning', text: 'thinking...' } }
-    expect(providerQuotableText(AgentProvider.CODEX, parent, { category: { kind: 'assistant_thinking' } })).toBe('thinking...')
+    const parent = {
+      item: { type: 'reasoning', text: 'thinking...' },
+    }
+    expect(providerQuotableText(AgentProvider.CODEX, parent, {
+      category: { kind: 'assistant_thinking' },
+    })).toBe('thinking...')
   })
 
   it('reads parent.content string for user_content / plan_execution', () => {
-    expect(providerQuotableText(AgentProvider.CODEX, { content: 'hi' }, { category: { kind: 'user_content' } })).toBe('hi')
-    expect(providerQuotableText(AgentProvider.CODEX, { content: 'plan' }, { category: { kind: 'plan_execution' } })).toBe('plan')
+    expect(providerQuotableText(AgentProvider.CODEX, { content: 'hi' }, {
+      category: { kind: 'user_content' },
+    })).toBe('hi')
+    expect(providerQuotableText(AgentProvider.CODEX, { content: 'plan' }, {
+      category: { kind: 'plan_execution' },
+    })).toBe('plan')
   })
 
   it('returns null when item has no text', () => {
-    const parent = { item: { type: 'agentMessage' } }
-    expect(providerQuotableText(AgentProvider.CODEX, parent, { category: { kind: 'assistant_text' } })).toBeNull()
+    const parent = {
+      item: { type: 'agentMessage' },
+    }
+    expect(providerQuotableText(AgentProvider.CODEX, parent, {
+      category: { kind: 'assistant_text' },
+    })).toBeNull()
   })
 
   it('returns null for non-quotable categories', () => {
-    expect(providerQuotableText(AgentProvider.CODEX, { item: { type: 'agentMessage', text: 'x' } }, { category: { kind: 'hidden' } })).toBeNull()
+    expect(providerQuotableText(AgentProvider.CODEX, {
+      item: { type: 'agentMessage', text: 'x' },
+    }, {
+      category: { kind: 'hidden' },
+    })).toBeNull()
   })
 })
 
@@ -79,13 +111,17 @@ describe('codex result divider', () => {
   // status word never reaches the label on its own. Codex said "Turn completed" where
   // the Agent Client Protocol providers said "Turn ended".
   it('maps a completed turn to the shared turn-end label', () => {
-    expect(plugin?.transcript.extractDivider!({ turn: { id: 'turn-1', status: 'completed' } }))
+    expect(plugin?.transcript.extractDivider!({
+      turn: { id: 'turn-1', status: 'completed' },
+    }))
       .toEqual({ label: 'Turn ended' })
   })
 
   it('maps the statuses that mean the reader stopped the turn', () => {
     for (const status of ['interrupted', 'cancelled', 'aborted']) {
-      expect(plugin?.transcript.extractDivider!({ turn: { id: 'turn-1', status } }), status)
+      expect(plugin?.transcript.extractDivider!({
+        turn: { id: 'turn-1', status },
+      }), status)
         .toEqual({ label: 'Turn interrupted' })
     }
   })
@@ -93,18 +129,27 @@ describe('codex result divider', () => {
   // A word this build does not know still reads as a turn end, with the word itself
   // kept so nothing the runtime reported is lost.
   it('qualifies the turn end with a status this build does not know', () => {
-    expect(plugin?.transcript.extractDivider!({ turn: { id: 'turn-1', status: 'compacted' } }))
+    expect(plugin?.transcript.extractDivider!({
+      turn: { id: 'turn-1', status: 'compacted' },
+    }))
       .toEqual({ label: 'Turn ended (compacted)' })
   })
 
   it('maps a failed turn to a danger divider with the error inline', () => {
-    expect(plugin?.transcript.extractDivider!({ turn: { status: 'failed', error: { message: 'Boom', additionalDetails: 'timeout' } } }))
+    expect(plugin?.transcript.extractDivider!({
+      turn: {
+        status: 'failed',
+        error: { message: 'Boom', additionalDetails: 'timeout' },
+      },
+    }))
       .toEqual({ label: 'Turn failed — Boom', isError: true, detail: 'timeout' })
   })
 
   // A failure the runtime reports with no error object at all still reads as one.
   it('marks a failed turn that carries no error object', () => {
-    expect(plugin?.transcript.extractDivider!({ turn: { status: 'failed' } }))
+    expect(plugin?.transcript.extractDivider!({
+      turn: { status: 'failed' },
+    }))
       .toEqual({ label: 'Turn failed', isError: true })
   })
 
@@ -112,7 +157,12 @@ describe('codex result divider', () => {
     // An explicit empty-string message is a present string, so pickString's
     // missing-key fallback does not apply -- guard with `|| 'Unknown error'` so
     // the divider never renders a label-less red row.
-    expect(plugin?.transcript.extractDivider!({ turn: { status: 'failed', error: { message: '' } } }))
+    expect(plugin?.transcript.extractDivider!({
+      turn: {
+        status: 'failed',
+        error: { message: '' },
+      },
+    }))
       .toEqual({ label: 'Turn failed — Unknown error', isError: true })
   })
 
@@ -124,7 +174,12 @@ describe('codex result divider', () => {
     // MessageBubble routes result_divider through the shared row extraction, which draws
     // the shared ResultDivider with the inline danger color for a failed turn.
     const { text, isError } = renderDivider(
-      { turn: { status: 'failed', error: { message: 'Boom', additionalDetails: 'timeout' } } },
+      {
+        turn: {
+          status: 'failed',
+          error: { message: 'Boom', additionalDetails: 'timeout' },
+        },
+      },
       AgentProvider.CODEX,
     )
     expect(text).toBe('Turn failed — Boomtimeout')
@@ -158,10 +213,26 @@ describe('codex isAskUserQuestion', () => {
   it('reads each question and its options', () => {
     const payload = {
       method: 'item/tool/requestUserInput',
-      params: { questions: [{ question: 'Which one?', header: 'Pick', options: [{ label: 'A', description: 'first' }] }] },
+      params: {
+        questions: [
+          {
+            question: 'Which one?',
+            header: 'Pick',
+            options: [
+              { label: 'A', description: 'first' },
+            ],
+          },
+        ],
+      },
     }
     expect(plugin?.controls?.askUserQuestion!.extractQuestions(payload)).toEqual([
-      { question: 'Which one?', header: 'Pick', options: [{ label: 'A', description: 'first' }] },
+      {
+        question: 'Which one?',
+        header: 'Pick',
+        options: [
+          { label: 'A', description: 'first' },
+        ],
+      },
     ])
   })
 
@@ -171,14 +242,26 @@ describe('codex isAskUserQuestion', () => {
   it('drops an element the control surface cannot draw', () => {
     const payload = {
       method: 'item/tool/requestUserInput',
-      params: { questions: [null, 'plain text', 7, { question: 'Which one?', options: [] }] },
+      params: {
+        questions: [
+          null,
+          'plain text',
+          7,
+          { question: 'Which one?', options: [] },
+        ],
+      },
     }
-    expect(plugin?.controls?.askUserQuestion!.extractQuestions(payload)).toEqual([{ question: 'Which one?', options: [] }])
+    expect(plugin?.controls?.askUserQuestion!.extractQuestions(payload)).toEqual([
+      { question: 'Which one?', options: [] },
+    ])
   })
 
   it('answers an empty list for a payload that states no questions', () => {
     expect(plugin?.controls?.askUserQuestion!.extractQuestions({ method: 'item/tool/requestUserInput' })).toEqual([])
-    expect(plugin?.controls?.askUserQuestion!.extractQuestions({ method: 'item/tool/requestUserInput', params: { questions: 'nope' } })).toEqual([])
+    expect(plugin?.controls?.askUserQuestion!.extractQuestions({
+      method: 'item/tool/requestUserInput',
+      params: { questions: 'nope' },
+    })).toEqual([])
   })
 })
 
@@ -225,7 +308,11 @@ describe('sendCodexDecision', () => {
     const onRespond = vi.fn(async (content: Uint8Array) => {
       captured = content
     })
-    const decision = { acceptWithExecpolicyAmendment: { execpolicy_amendment: ['touch'] } }
+    const decision = {
+      acceptWithExecpolicyAmendment: {
+        execpolicy_amendment: ['touch'],
+      },
+    }
 
     await sendCodexDecision(onRespond, '9', decision)
 
@@ -259,7 +346,12 @@ describe('sendCodexUserInputResponse', () => {
     const control = providerFor(AgentProvider.CODEX)?.controls?.askUserQuestion
     if (!control)
       throw new Error('The Codex plugin has no native question capability.')
-    return control.extractQuestions({ method: 'item/tool/requestUserInput', params: { questions: [question] } })
+    return control.extractQuestions({
+      method: 'item/tool/requestUserInput',
+      params: {
+        questions: [question],
+      },
+    })
   }
 
   async function answerNativeQuestion(question: Record<string, unknown>, seed: ControlAnswerSeed): Promise<Record<string, unknown>> {
@@ -283,9 +375,21 @@ describe('sendCodexUserInputResponse', () => {
     })
 
     const questions: ControlQuestion[] = [
-      { id: 'q1', question: 'Pick one', header: 'Header1', options: [{ label: 'A' }, { label: 'B' }] },
+      {
+        id: 'q1',
+        question: 'Pick one',
+        header: 'Header1',
+        options: [
+          { label: 'A' },
+          { label: 'B' },
+        ],
+      },
     ]
-    const state = createControlAnswerState({ selections: { 0: ['A'] } })
+    const state = createControlAnswerState({
+      selections: {
+        0: ['A'],
+      },
+    })
 
     await sendCodexUserInputResponse(onRespond, '42', questions, state)
 
@@ -295,7 +399,9 @@ describe('sendCodexUserInputResponse', () => {
       id: '42',
       result: {
         answers: {
-          q1: { answers: ['A'] },
+          q1: {
+            answers: ['A'],
+          },
         },
       },
     })
@@ -308,9 +414,19 @@ describe('sendCodexUserInputResponse', () => {
     })
 
     const questions: ControlQuestion[] = [
-      { question: 'Pick one', header: 'MyHeader', options: [{ label: 'X' }] },
+      {
+        question: 'Pick one',
+        header: 'MyHeader',
+        options: [
+          { label: 'X' },
+        ],
+      },
     ]
-    const state = createControlAnswerState({ selections: { 0: ['X'] } })
+    const state = createControlAnswerState({
+      selections: {
+        0: ['X'],
+      },
+    })
 
     await sendCodexUserInputResponse(onRespond, '5', questions, state)
 
@@ -320,7 +436,9 @@ describe('sendCodexUserInputResponse', () => {
       id: '5',
       result: {
         answers: {
-          MyHeader: { answers: ['X'] },
+          MyHeader: {
+            answers: ['X'],
+          },
         },
       },
     })
@@ -335,7 +453,9 @@ describe('sendCodexUserInputResponse', () => {
     const questions: ControlQuestion[] = [
       { id: 'q1', question: 'Custom input', options: [] },
     ]
-    const state = createControlAnswerState({ customTexts: { 0: 'my custom answer' } })
+    const state = createControlAnswerState({
+      customTexts: { 0: 'my custom answer' },
+    })
 
     await sendCodexUserInputResponse(onRespond, '10', questions, state)
 
@@ -345,7 +465,9 @@ describe('sendCodexUserInputResponse', () => {
       id: '10',
       result: {
         answers: {
-          q1: { answers: ['user_note: my custom answer'] },
+          q1: {
+            answers: ['user_note: my custom answer'],
+          },
         },
       },
     })
@@ -358,9 +480,22 @@ describe('sendCodexUserInputResponse', () => {
     })
 
     const questions: ControlQuestion[] = [
-      { id: 'q1', question: 'Pick multiple', options: [{ label: 'A' }, { label: 'B' }, { label: 'C' }], multiSelect: true },
+      {
+        id: 'q1',
+        question: 'Pick multiple',
+        options: [
+          { label: 'A' },
+          { label: 'B' },
+          { label: 'C' },
+        ],
+        multiSelect: true,
+      },
     ]
-    const state = createControlAnswerState({ selections: { 0: ['A', 'C'] } })
+    const state = createControlAnswerState({
+      selections: {
+        0: ['A', 'C'],
+      },
+    })
 
     await sendCodexUserInputResponse(onRespond, '11', questions, state)
 
@@ -370,7 +505,9 @@ describe('sendCodexUserInputResponse', () => {
       id: '11',
       result: {
         answers: {
-          q1: { answers: ['A', 'C'] },
+          q1: {
+            answers: ['A', 'C'],
+          },
         },
       },
     })
@@ -383,9 +520,21 @@ describe('sendCodexUserInputResponse', () => {
     })
 
     const questions: ControlQuestion[] = [
-      { id: 'q1', question: 'Pick one', options: [{ label: 'A' }, { label: 'B' }] },
+      {
+        id: 'q1',
+        question: 'Pick one',
+        options: [
+          { label: 'A' },
+          { label: 'B' },
+        ],
+      },
     ]
-    const state = createControlAnswerState({ selections: { 0: ['B'] }, customTexts: { 0: 'note for B' } })
+    const state = createControlAnswerState({
+      selections: {
+        0: ['B'],
+      },
+      customTexts: { 0: 'note for B' },
+    })
 
     await sendCodexUserInputResponse(onRespond, '13', questions, state)
 
@@ -395,7 +544,9 @@ describe('sendCodexUserInputResponse', () => {
       id: '13',
       result: {
         answers: {
-          q1: { answers: ['B', 'user_note: note for B'] },
+          q1: {
+            answers: ['B', 'user_note: note for B'],
+          },
         },
       },
     })
@@ -411,9 +562,14 @@ describe('sendCodexUserInputResponse', () => {
       id: 'q1',
       question: 'Pick one',
       isOther: true,
-      options: [{ label: 'A' }, { label: 'B' }],
+      options: [
+        { label: 'A' },
+        { label: 'B' },
+      ],
     })
-    const state = createControlAnswerState({ customTexts: { 0: 'my custom answer' } })
+    const state = createControlAnswerState({
+      customTexts: { 0: 'my custom answer' },
+    })
 
     await sendCodexUserInputResponse(onRespond, '14', questions, state)
 
@@ -423,41 +579,133 @@ describe('sendCodexUserInputResponse', () => {
       id: '14',
       result: {
         answers: {
-          q1: { answers: ['None of the above', 'user_note: my custom answer'] },
+          q1: {
+            answers: ['None of the above', 'user_note: my custom answer'],
+          },
         },
       },
     })
   })
 
   it.each([
-    { label: 'false', flags: { isOther: false } },
+    {
+      label: 'false',
+      flags: { isOther: false },
+    },
     { label: 'absent', flags: {} },
   ])('omits the native Other label when its flag is $label', async ({ flags }) => {
-    const response = await answerNativeQuestion({ id: 'q1', question: 'Pick one', options: [{ label: 'A' }], ...flags }, { customTexts: { 0: 'my custom answer' } })
-    expect(response).toMatchObject({ result: { answers: { q1: { answers: ['user_note: my custom answer'] } } } })
+    const response = await answerNativeQuestion({
+      id: 'q1',
+      question: 'Pick one',
+      options: [
+        { label: 'A' },
+      ],
+      ...flags,
+    }, {
+      customTexts: { 0: 'my custom answer' },
+    })
+    expect(response).toMatchObject({
+      result: {
+        answers: {
+          q1: {
+            answers: ['user_note: my custom answer'],
+          },
+        },
+      },
+    })
   })
 
   it.each([
-    { label: 'empty', fields: { options: [] } },
+    {
+      label: 'empty',
+      fields: { options: [] },
+    },
     { label: 'absent', fields: {} },
   ])('omits the native Other label when options are $label', async ({ fields }) => {
-    const response = await answerNativeQuestion({ id: 'q1', question: 'Free text', isOther: true, ...fields }, { customTexts: { 0: 'my custom answer' } })
-    expect(response).toMatchObject({ result: { answers: { q1: { answers: ['user_note: my custom answer'] } } } })
+    const response = await answerNativeQuestion({
+      id: 'q1',
+      question: 'Free text',
+      isOther: true,
+      ...fields,
+    }, {
+      customTexts: { 0: 'my custom answer' },
+    })
+    expect(response).toMatchObject({
+      result: {
+        answers: {
+          q1: {
+            answers: ['user_note: my custom answer'],
+          },
+        },
+      },
+    })
   })
 
   it('trims outer native note whitespace and preserves its Unicode text and internal spacing', async () => {
-    const response = await answerNativeQuestion({ id: 'q1', question: 'Pick one', isOther: true, options: [{ label: 'A' }] }, { customTexts: { 0: '  \n실제 내용 😀\n  second line  \t' } })
-    expect(response).toMatchObject({ result: { answers: { q1: { answers: ['None of the above', 'user_note: 실제 내용 😀\n  second line'] } } } })
+    const response = await answerNativeQuestion({
+      id: 'q1',
+      question: 'Pick one',
+      isOther: true,
+      options: [
+        { label: 'A' },
+      ],
+    }, {
+      customTexts: { 0: '  \n실제 내용 😀\n  second line  \t' },
+    })
+    expect(response).toMatchObject({
+      result: {
+        answers: {
+          q1: {
+            answers: ['None of the above', 'user_note: 실제 내용 😀\n  second line'],
+          },
+        },
+      },
+    })
   })
 
   it.each(['', ' ', '\t\n'])('keeps an empty answer list for uncommitted native note text %j', async (text) => {
-    const response = await answerNativeQuestion({ id: 'q1', question: 'Pick one', isOther: true, options: [{ label: 'A' }] }, { customTexts: { 0: text } })
-    expect(response).toMatchObject({ result: { answers: { q1: { answers: [] } } } })
+    const response = await answerNativeQuestion({
+      id: 'q1',
+      question: 'Pick one',
+      isOther: true,
+      options: [
+        { label: 'A' },
+      ],
+    }, {
+      customTexts: { 0: text },
+    })
+    expect(response).toMatchObject({
+      result: {
+        answers: {
+          q1: { answers: [] },
+        },
+      },
+    })
   })
 
   it.each(['0', 'false', ''])('preserves the native selected string value %j without an empty note', async (selected) => {
-    const response = await answerNativeQuestion({ id: 'q1', question: 'Pick one', isOther: true, options: [{ label: selected }] }, { selections: { 0: [selected] }, customTexts: { 0: '' } })
-    expect(response).toMatchObject({ result: { answers: { q1: { answers: [selected] } } } })
+    const response = await answerNativeQuestion({
+      id: 'q1',
+      question: 'Pick one',
+      isOther: true,
+      options: [
+        { label: selected },
+      ],
+    }, {
+      selections: {
+        0: [selected],
+      },
+      customTexts: { 0: '' },
+    })
+    expect(response).toMatchObject({
+      result: {
+        answers: {
+          q1: {
+            answers: [selected],
+          },
+        },
+      },
+    })
   })
 
   it('includes unanswered questions with empty answer lists like the native TUI', async () => {
@@ -467,10 +715,26 @@ describe('sendCodexUserInputResponse', () => {
     })
 
     const questions: ControlQuestion[] = [
-      { id: 'q1', question: 'First', options: [{ label: 'A' }] },
-      { id: 'q2', question: 'Second', options: [{ label: 'B' }] },
+      {
+        id: 'q1',
+        question: 'First',
+        options: [
+          { label: 'A' },
+        ],
+      },
+      {
+        id: 'q2',
+        question: 'Second',
+        options: [
+          { label: 'B' },
+        ],
+      },
     ]
-    const state = createControlAnswerState({ selections: { 0: ['A'] } })
+    const state = createControlAnswerState({
+      selections: {
+        0: ['A'],
+      },
+    })
 
     await sendCodexUserInputResponse(onRespond, '12', questions, state)
 
@@ -478,7 +742,9 @@ describe('sendCodexUserInputResponse', () => {
     expect(parsed).toMatchObject({
       result: {
         answers: {
-          q1: { answers: ['A'] },
+          q1: {
+            answers: ['A'],
+          },
           q2: { answers: [] },
         },
       },
@@ -507,7 +773,9 @@ describe('codex settings config', () => {
   })
 
   it('reads the current collaboration mode from optionValues, defaulting when unset', () => {
-    expect(plugin?.configuration?.planMode!.currentMode({ optionValues: { [CODEX_OPTION.CollaborationMode]: 'plan' } })).toBe('plan')
+    expect(plugin?.configuration?.planMode!.currentMode({
+      optionValues: { [CODEX_OPTION.CollaborationMode]: 'plan' },
+    })).toBe('plan')
     expect(plugin?.configuration?.planMode!.currentMode({})).toBe(CODEX_OPTION_DEFAULT.CollaborationMode)
   })
 
@@ -539,7 +807,9 @@ describe('codex control response builder', () => {
   it('uses an offered cancel decision for typed feedback', () => {
     expect(plugin?.controls?.buildControlResponse!({
       method: 'item/commandExecution/requestApproval',
-      params: { availableDecisions: ['accept', 'cancel'] },
+      params: {
+        availableDecisions: ['accept', 'cancel'],
+      },
     }, 'do something else', '7')).toEqual({
       jsonrpc: '2.0',
       id: '7',
@@ -550,7 +820,11 @@ describe('codex control response builder', () => {
   it('uses an empty grant to reject a permission request', () => {
     expect(plugin?.controls?.buildControlResponse!({
       method: 'item/permissions/requestApproval',
-      params: { permissions: { network: { enabled: true } } },
+      params: {
+        permissions: {
+          network: { enabled: true },
+        },
+      },
     }, 'do something else', '7')).toEqual({
       jsonrpc: '2.0',
       id: '7',
@@ -563,7 +837,12 @@ describe('codex control response builder', () => {
 // session-metadata hooks read `parsed.parentObject` (getInnerMessage falls back
 // to topLevel), so both point at the same object.
 function parsed(inner: Record<string, unknown>): ParsedMessageContent {
-  return { rawText: '', topLevel: inner, parentObject: inner, wrapper: null }
+  return {
+    rawText: '',
+    topLevel: inner,
+    parentObject: inner,
+    wrapper: null,
+  }
 }
 
 describe('codex contextUsageFromMessage', () => {
@@ -576,8 +855,20 @@ describe('codex contextUsageFromMessage', () => {
         threadId: 'thread-1',
         turnId: 'turn-1',
         tokenUsage: {
-          total: { totalTokens: 200, inputTokens: 100, cachedInputTokens: 25, outputTokens: 50, reasoningOutputTokens: 9 },
-          last: { totalTokens: 23, inputTokens: 10, cachedInputTokens: 5, outputTokens: 7, reasoningOutputTokens: 1 },
+          total: {
+            totalTokens: 200,
+            inputTokens: 100,
+            cachedInputTokens: 25,
+            outputTokens: 50,
+            reasoningOutputTokens: 9,
+          },
+          last: {
+            totalTokens: 23,
+            inputTokens: 10,
+            cachedInputTokens: 5,
+            outputTokens: 7,
+            reasoningOutputTokens: 1,
+          },
           modelContextWindow: 4096,
         },
       },
@@ -602,7 +893,11 @@ describe('codex rateLimitsFromMessage', () => {
     expect(plugin).toBeDefined()
     expect(plugin.session?.rateLimitsFromMessage?.(parsed({
       method: 'account/rateLimits/updated',
-      params: { rateLimits: { primary: { usedPercent: 99, windowDurationMins: 300 } } },
+      params: {
+        rateLimits: {
+          primary: { usedPercent: 99, windowDurationMins: 300 },
+        },
+      },
     }))).toBeUndefined()
   })
 })
@@ -612,10 +907,17 @@ describe('codex rateLimitsFromMessage', () => {
 // execution carries its whole body in each row and wants nothing.
 describe('codex relatedMessages', () => {
   const plugin = providerFor(AgentProvider.CODEX)!
-  const item = (fields: Record<string, unknown>) => ({ item: { id: 'call', ...fields } })
+  const item = (fields: Record<string, unknown>) => ({
+    item: { id: 'call', ...fields },
+  })
 
   it('an MCP result wants its request', () => {
-    expect(plugin?.transcript.relatedMessages!(input(item({ type: 'mcpToolCall', status: 'completed', server: 's', tool: 't' })))).toEqual(['request'])
+    expect(plugin?.transcript.relatedMessages!(input(item({
+      type: 'mcpToolCall',
+      status: 'completed',
+      server: 's',
+      tool: 't',
+    })))).toEqual(['request'])
   })
 
   it('an image view and a collaboration call want both halves', () => {
@@ -640,7 +942,12 @@ describe('native output without a filesystem pointer', () => {
         exitCode: 0,
       },
     }
-    const call = providerToolCall(AgentProvider.CODEX, frame, { spanId: 'native-call', spanType: 'commandExecution', agentSessionId: 'native-session', role: 'result' })
+    const call = providerToolCall(AgentProvider.CODEX, frame, {
+      spanId: 'native-call',
+      spanType: 'commandExecution',
+      agentSessionId: 'native-session',
+      role: 'result',
+    })
     expect(call).not.toBeNull()
     expect(call?.id).toBe('native-call')
     expect(call?.outputFilePaths).toBeUndefined()

@@ -65,7 +65,10 @@ describe('indexBranches.existingNames', () => {
 
   it('local branches contribute only their exact name', () => {
     // A local branch such as feature/foo must not add foo. Only remote branches lose their first segment.
-    const set = existingNames([entry('main'), entry('feature/foo')])
+    const set = existingNames([
+      entry('main'),
+      entry('feature/foo'),
+    ])
     expect([...set].toSorted()).toEqual(['feature/foo', 'main'])
   })
 
@@ -73,34 +76,45 @@ describe('indexBranches.existingNames', () => {
     // origin/feature/foo adds itself and feature/foo. It must not add foo.
     // The worker removes only one segment, so foo cannot conflict through that conversion.
     // Adding foo would incorrectly reject valid branch names in deeper remote namespaces.
-    const set = existingNames([entry('origin/feature/foo', true)])
+    const set = existingNames([
+      entry('origin/feature/foo', true),
+    ])
     expect([...set].toSorted()).toEqual(['feature/foo', 'origin/feature/foo'])
     expect(set.has('foo')).toBe(false)
   })
 
   it('shallow remote refs add only the post-prefix name', () => {
     // "origin/foo" → adds "origin/foo" and "foo" (single segment strip).
-    const set = existingNames([entry('origin/foo', true)])
+    const set = existingNames([
+      entry('origin/foo', true),
+    ])
     expect([...set].toSorted()).toEqual(['foo', 'origin/foo'])
   })
 
   it('merges local and remote contributions into one collision set', () => {
     // A remote origin/foo must add itself and foo even when a local foo already exists.
-    const set = existingNames([entry('foo'), entry('origin/foo', true)])
+    const set = existingNames([
+      entry('foo'),
+      entry('origin/foo', true),
+    ])
     expect([...set].toSorted()).toEqual(['foo', 'origin/foo'])
   })
 
   it('local branch with a slash does NOT cause suffix-based collisions', () => {
     // Regression guard: only remote branches participate in the suffix
     // strip. A local "feature/foo" must not flag "foo".
-    const set = existingNames([entry('feature/foo')])
+    const set = existingNames([
+      entry('feature/foo'),
+    ])
     expect(set.has('feature/foo')).toBe(true)
     expect(set.has('foo')).toBe(false)
   })
 
   it('handles consecutive slashes in a malformed remote ref by stripping only the first segment', () => {
     // A malformed branch reference can contain //. Remove only one segment even for this invalid input.
-    const set = existingNames([entry('origin//x', true)])
+    const set = existingNames([
+      entry('origin//x', true),
+    ])
     expect(set.has('origin//x')).toBe(true)
     expect(set.has('/x')).toBe(true)
     expect(set.has('x')).toBe(false)
@@ -109,7 +123,9 @@ describe('indexBranches.existingNames', () => {
   it('a trailing slash adds the empty suffix (best-effort, harmless in practice)', () => {
     // validateBranchName rejects empty input before this lookup, so an empty entry cannot cause a false conflict.
     // Keep this case to prevent an empty-string special case from removing valid suffixes.
-    const set = existingNames([entry('origin/', true)])
+    const set = existingNames([
+      entry('origin/', true),
+    ])
     expect(set.has('origin/')).toBe(true)
     expect(set.has('')).toBe(true)
   })
@@ -202,7 +218,9 @@ describe('indexBranches', () => {
 // Dialog callers do not change gitMode independently. These cases verify that later prop changes cannot override the internal selection.
 // ChangeBranchDialog tests cover clicks, but cannot observe that initial-only prop read.
 
-vi.mock('random-word-slugs', () => ({ generateSlug: vi.fn(() => 'seeded-branch-name') }))
+vi.mock('random-word-slugs', () => ({
+  generateSlug: vi.fn(() => 'seeded-branch-name'),
+}))
 
 vi.mock('~/api/workerRpc', () => ({
   listGitBranches: vi.fn(),
@@ -606,7 +624,9 @@ describe('GitOptions branch name field', () => {
     expect(input.value).not.toBe('')
 
     // Clear the field. Its value must remain empty instead of restoring the generated value.
-    fireEvent.input(input, { target: { value: '' } })
+    fireEvent.input(input, {
+      target: { value: '' },
+    })
     await Promise.resolve()
     await Promise.resolve()
     expect(input.value).toBe('')
@@ -642,7 +662,9 @@ describe('GitOptions branch name field', () => {
     expect(input.value).toBe('first-branch')
     fireEvent.click(screen.getByLabelText('Generate random name'))
     expect(input.value).toBe('second-branch')
-    fireEvent.input(input, { target: { value: '' } })
+    fireEvent.input(input, {
+      target: { value: '' },
+    })
     await Promise.resolve()
     await Promise.resolve()
     expect(input.value).toBe('')

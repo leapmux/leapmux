@@ -10,7 +10,9 @@ import { desktopFetch, observeWindowMode, openExternalUrl, parseDesktopBehaviorR
 const isMacMock = vi.hoisted(() => vi.fn<() => boolean>())
 vi.mock('~/lib/shortcuts/platform', () => ({
   isMac: isMacMock,
-  getPlatform: () => (isMacMock() ? 'mac' : 'linux'),
+  getPlatform: () => (isMacMock()
+    ? 'mac'
+    : 'linux'),
 }))
 
 // Only `openExternalUrl` reaches a toast from this module, and its contract is
@@ -33,7 +35,9 @@ describe('desktopFetch', () => {
       if (cmd === 'proxy_http') {
         return {
           status: 200,
-          headers: { 'x-repeated': ['one', 'two'] },
+          headers: {
+            'x-repeated': ['one', 'two'],
+          },
           body: '',
         }
       }
@@ -65,7 +69,9 @@ describe('readClipboardImage', () => {
       putImageData: vi.fn(),
     })) as unknown as typeof HTMLCanvasElement.prototype.getContext
     HTMLCanvasElement.prototype.toBlob = function (cb: BlobCallback, type?: string) {
-      cb(new Blob([new Uint8Array([0x89, 0x50, 0x4E, 0x47])], { type: type ?? 'image/png' }))
+      cb(new Blob([
+        new Uint8Array([0x89, 0x50, 0x4E, 0x47]),
+      ], { type: type ?? 'image/png' }))
     } as typeof HTMLCanvasElement.prototype.toBlob
     ;(globalThis as { ImageData: unknown }).ImageData = class {
       constructor(public data: Uint8ClampedArray, public width: number, public height: number) {}
@@ -187,8 +193,15 @@ describe('cliPathStatus', () => {
 
   it('decodes STATE_OK (1) into { state: "ok", bundled }', async () => {
     mockIPC((cmd) => {
-      if (cmd === 'cli_path_status')
-        return { state: 1, bundled: '/Applications/X.app/Contents/MacOS/leapmux', resolved: '', target: '', targetKind: 2 }
+      if (cmd === 'cli_path_status') {
+        return {
+          state: 1,
+          bundled: '/Applications/X.app/Contents/MacOS/leapmux',
+          resolved: '',
+          target: '',
+          targetKind: 2,
+        }
+      }
       throw new Error(`unmocked: ${cmd}`)
     })
     const got = await platformBridge.cliPathStatus()
@@ -197,22 +210,46 @@ describe('cliPathStatus', () => {
 
   it('decodes STATE_MISSING (2) and surfaces install target + targetKind', async () => {
     mockIPC((cmd) => {
-      if (cmd === 'cli_path_status')
-        return { state: 2, bundled: '/b/leapmux', resolved: '', target: '/usr/local/bin/leapmux', targetKind: 1 }
+      if (cmd === 'cli_path_status') {
+        return {
+          state: 2,
+          bundled: '/b/leapmux',
+          resolved: '',
+          target: '/usr/local/bin/leapmux',
+          targetKind: 1,
+        }
+      }
       throw new Error(`unmocked: ${cmd}`)
     })
     const got = await platformBridge.cliPathStatus()
-    expect(got).toEqual({ state: 'missing', bundled: '/b/leapmux', target: '/usr/local/bin/leapmux', targetKind: 'absent' })
+    expect(got).toEqual({
+      state: 'missing',
+      bundled: '/b/leapmux',
+      target: '/usr/local/bin/leapmux',
+      targetKind: 'absent',
+    })
   })
 
   it('decodes STATE_MISMATCH (3) and surfaces resolved + targetKind', async () => {
     mockIPC((cmd) => {
-      if (cmd === 'cli_path_status')
-        return { state: 3, bundled: '/b/leapmux', resolved: '/opt/homebrew/bin/leapmux', target: '', targetKind: 3 }
+      if (cmd === 'cli_path_status') {
+        return {
+          state: 3,
+          bundled: '/b/leapmux',
+          resolved: '/opt/homebrew/bin/leapmux',
+          target: '',
+          targetKind: 3,
+        }
+      }
       throw new Error(`unmocked: ${cmd}`)
     })
     const got = await platformBridge.cliPathStatus()
-    expect(got).toEqual({ state: 'mismatch', bundled: '/b/leapmux', resolved: '/opt/homebrew/bin/leapmux', targetKind: 'regular_file' })
+    expect(got).toEqual({
+      state: 'mismatch',
+      bundled: '/b/leapmux',
+      resolved: '/opt/homebrew/bin/leapmux',
+      targetKind: 'regular_file',
+    })
   })
 
   it('decodes each targetKind variant', async () => {
@@ -225,8 +262,15 @@ describe('cliPathStatus', () => {
     ]
     for (const c of cases) {
       mockIPC((cmd) => {
-        if (cmd === 'cli_path_status')
-          return { state: 2, bundled: '/b/leapmux', resolved: '', target: '/usr/local/bin/leapmux', targetKind: c.code }
+        if (cmd === 'cli_path_status') {
+          return {
+            state: 2,
+            bundled: '/b/leapmux',
+            resolved: '',
+            target: '/usr/local/bin/leapmux',
+            targetKind: c.code,
+          }
+        }
         throw new Error(`unmocked: ${cmd}`)
       })
       const got = await platformBridge.cliPathStatus()
@@ -236,15 +280,29 @@ describe('cliPathStatus', () => {
 
   it('decodes STATE_UNAVAILABLE (4) and an unknown numeric value into "unavailable"', async () => {
     mockIPC((cmd) => {
-      if (cmd === 'cli_path_status')
-        return { state: 4, bundled: '', resolved: '', target: '', targetKind: 0 }
+      if (cmd === 'cli_path_status') {
+        return {
+          state: 4,
+          bundled: '',
+          resolved: '',
+          target: '',
+          targetKind: 0,
+        }
+      }
       throw new Error(`unmocked: ${cmd}`)
     })
     expect(await platformBridge.cliPathStatus()).toEqual({ state: 'unavailable' })
 
     mockIPC((cmd) => {
-      if (cmd === 'cli_path_status')
-        return { state: 99, bundled: '', resolved: '', target: '', targetKind: 0 }
+      if (cmd === 'cli_path_status') {
+        return {
+          state: 99,
+          bundled: '',
+          resolved: '',
+          target: '',
+          targetKind: 0,
+        }
+      }
       throw new Error(`unmocked: ${cmd}`)
     })
     expect(await platformBridge.cliPathStatus()).toEqual({ state: 'unavailable' })
@@ -263,11 +321,51 @@ describe('cliInstallSymlink', () => {
 
   it('decodes each tagged result variant', async () => {
     const cases = [
-      { in: { result: 1, command: '', path: '', message: '' }, out: { result: 'ok' } },
-      { in: { result: 2, command: 'sudo ln -sf a b', path: '', message: '' }, out: { result: 'needs_sudo', command: 'sudo ln -sf a b' } },
-      { in: { result: 3, command: '', path: '/usr/local/bin/leapmux', message: '' }, out: { result: 'already_exists_real_file', path: '/usr/local/bin/leapmux' } },
-      { in: { result: 4, command: 'sudo mkdir -p /usr/local/bin && ...', path: '/usr/local/bin', message: '' }, out: { result: 'parent_missing', path: '/usr/local/bin', command: 'sudo mkdir -p /usr/local/bin && ...' } },
-      { in: { result: 5, command: '', path: '', message: 'disk full' }, out: { result: 'io_error', message: 'disk full' } },
+      {
+        in: {
+          result: 1,
+          command: '',
+          path: '',
+          message: '',
+        },
+        out: { result: 'ok' },
+      },
+      {
+        in: {
+          result: 2,
+          command: 'sudo ln -sf a b',
+          path: '',
+          message: '',
+        },
+        out: { result: 'needs_sudo', command: 'sudo ln -sf a b' },
+      },
+      {
+        in: {
+          result: 3,
+          command: '',
+          path: '/usr/local/bin/leapmux',
+          message: '',
+        },
+        out: { result: 'already_exists_real_file', path: '/usr/local/bin/leapmux' },
+      },
+      {
+        in: {
+          result: 4,
+          command: 'sudo mkdir -p /usr/local/bin && ...',
+          path: '/usr/local/bin',
+          message: '',
+        },
+        out: { result: 'parent_missing', path: '/usr/local/bin', command: 'sudo mkdir -p /usr/local/bin && ...' },
+      },
+      {
+        in: {
+          result: 5,
+          command: '',
+          path: '',
+          message: 'disk full',
+        },
+        out: { result: 'io_error', message: 'disk full' },
+      },
     ]
     for (const c of cases) {
       mockIPC((cmd) => {
@@ -284,7 +382,12 @@ describe('cliInstallSymlink', () => {
     mockIPC((cmd, args) => {
       if (cmd === 'cli_install_symlink') {
         received.push(args as { force: boolean })
-        return { result: 1, command: '', path: '', message: '' }
+        return {
+          result: 1,
+          command: '',
+          path: '',
+          message: '',
+        }
       }
       throw new Error(`unmocked: ${cmd}`)
     })
@@ -292,13 +395,23 @@ describe('cliInstallSymlink', () => {
     await platformBridge.cliInstallSymlink()
     await platformBridge.cliInstallSymlink(true)
     await platformBridge.cliInstallSymlink(false)
-    expect(received).toEqual([{ force: false }, { force: true }, { force: false }])
+    expect(received).toEqual([
+      { force: false },
+      { force: true },
+      { force: false },
+    ])
   })
 
   it('falls back to an io_error for unknown result codes', async () => {
     mockIPC((cmd) => {
-      if (cmd === 'cli_install_symlink')
-        return { result: 0, command: '', path: '', message: '' }
+      if (cmd === 'cli_install_symlink') {
+        return {
+          result: 0,
+          command: '',
+          path: '',
+          message: '',
+        }
+      }
       throw new Error(`unmocked: ${cmd}`)
     })
     expect(await platformBridge.cliInstallSymlink()).toEqual({
@@ -577,17 +690,34 @@ describe('parseLaunchVisibility', () => {
   // Failing towards a VISIBLE window is the only safe direction here: the
   // other way leaves an app the user cannot reach.
   it('narrows anything else to normal', () => {
-    for (const raw of [undefined, null, '', 'Hidden', 'invisible', 0, {}, ['hidden']])
+    for (const raw of [
+      undefined,
+      null,
+      '',
+      'Hidden',
+      'invisible',
+      0,
+      {},
+      ['hidden'],
+    ])
       expect(parseLaunchVisibility(raw), JSON.stringify(raw ?? null)).toBe('normal')
   })
 })
 
 describe('parseDesktopBehaviorRefusals', () => {
   it('narrows the two choices the operating system can refuse', () => {
-    expect(parseDesktopBehaviorRefusals([{ setting: 'trayEnabled', message: 'no library' }]))
-      .toEqual([{ setting: 'trayEnabled', message: 'no library' }])
-    expect(parseDesktopBehaviorRefusals([{ setting: 'startOnLogin', message: 'declined' }]))
-      .toEqual([{ setting: 'startOnLogin', message: 'declined' }])
+    expect(parseDesktopBehaviorRefusals([
+      { setting: 'trayEnabled', message: 'no library' },
+    ]))
+      .toEqual([
+        { setting: 'trayEnabled', message: 'no library' },
+      ])
+    expect(parseDesktopBehaviorRefusals([
+      { setting: 'startOnLogin', message: 'declined' },
+    ]))
+      .toEqual([
+        { setting: 'startOnLogin', message: 'declined' },
+      ])
   })
 
   // Both at once is the case the list exists for: a Linux desktop with no
@@ -608,7 +738,9 @@ describe('parseDesktopBehaviorRefusals', () => {
     expect(parseDesktopBehaviorRefusals([
       { setting: 'trayOnClose', message: 'not refusable' },
       { setting: 'startOnLogin', message: 'declined' },
-    ])).toEqual([{ setting: 'startOnLogin', message: 'declined' }])
+    ])).toEqual([
+      { setting: 'startOnLogin', message: 'declined' },
+    ])
   })
 
   // Anything else belongs to no row. Printing a transport error beside a
@@ -626,12 +758,24 @@ describe('parseDesktopBehaviorRefusals', () => {
       [undefined],
       [null],
       ['no library'],
-      [{ message: 'no setting' }],
-      [{ setting: 'trayEnabled' }],
-      [{ setting: 'trayEnabled', message: '' }],
-      [{ setting: 'trayEnabled', message: 42 }],
-      [{ setting: 'trayOnClose', message: 'not refusable' }],
-      [{ setting: 'desktop.trayEnabled', message: 'a row id, not a field' }],
+      [
+        { message: 'no setting' },
+      ],
+      [
+        { setting: 'trayEnabled' },
+      ],
+      [
+        { setting: 'trayEnabled', message: '' },
+      ],
+      [
+        { setting: 'trayEnabled', message: 42 },
+      ],
+      [
+        { setting: 'trayOnClose', message: 'not refusable' },
+      ],
+      [
+        { setting: 'desktop.trayEnabled', message: 'a row id, not a field' },
+      ],
     ])
       expect(parseDesktopBehaviorRefusals(err), JSON.stringify(err ?? null)).toEqual([])
   })
@@ -645,7 +789,13 @@ describe('platformBridge getStartupInfo', () => {
     build_time: 't2',
     branch: 'main',
   }
-  const WIRE_CONFIG = { mode: 'solo', hub_url: '', window_width: 0, window_height: 0, window_mode: 'normal' }
+  const WIRE_CONFIG = {
+    mode: 'solo',
+    hub_url: '',
+    window_width: 0,
+    window_height: 0,
+    window_mode: 'normal',
+  }
 
   beforeEach(() => {
     (window as { __TAURI_INTERNALS__?: unknown }).__TAURI_INTERNALS__ = {}
@@ -691,10 +841,17 @@ describe('userevents relay bridge', () => {
 
     await platformBridge.openUserEventsRelay(42, ['ws-1'])
 
-    expect(calls).toEqual([{
-      cmd: 'open_userevents_relay',
-      args: { relayId: 42, workspaceIds: ['ws-1'], resumeHlc: null, resumeEpoch: null },
-    }])
+    expect(calls).toEqual([
+      {
+        cmd: 'open_userevents_relay',
+        args: {
+          relayId: 42,
+          workspaceIds: ['ws-1'],
+          resumeHlc: null,
+          resumeEpoch: null,
+        },
+      },
+    ])
   })
 
   it('serializes a populated resume cursor as wire HLC + epoch string', async () => {
@@ -715,15 +872,17 @@ describe('userevents relay bridge', () => {
       epoch: 7n,
     })
 
-    expect(calls).toEqual([{
-      cmd: 'open_userevents_relay',
-      args: {
-        relayId: 7,
-        workspaceIds: ['ws-1'],
-        resumeHlc: '1754100000000.3.c-abc',
-        resumeEpoch: '7',
+    expect(calls).toEqual([
+      {
+        cmd: 'open_userevents_relay',
+        args: {
+          relayId: 7,
+          workspaceIds: ['ws-1'],
+          resumeHlc: '1754100000000.3.c-abc',
+          resumeEpoch: '7',
+        },
       },
-    }])
+    ])
   })
 
   it('forwards the relay id on close', async () => {
@@ -735,7 +894,12 @@ describe('userevents relay bridge', () => {
 
     await platformBridge.closeUserEventsRelay(42)
 
-    expect(calls).toEqual([{ cmd: 'close_userevents_relay', args: { relayId: 42 } }])
+    expect(calls).toEqual([
+      {
+        cmd: 'close_userevents_relay',
+        args: { relayId: 42 },
+      },
+    ])
   })
 })
 

@@ -31,7 +31,12 @@ const PNG = 'iVBORw0KGgo='
 const PNG_DATA_URL = `data:image/png;base64,${PNG}`
 
 function parsed(parentObject: Record<string, unknown>, provider: AgentProvider = AgentProvider.CLAUDE_CODE) {
-  return resolveMessageForRendering({ rawText: JSON.stringify(parentObject), topLevel: parentObject, parentObject, wrapper: null }, provider)
+  return resolveMessageForRendering({
+    rawText: JSON.stringify(parentObject),
+    topLevel: parentObject,
+    parentObject,
+    wrapper: null,
+  }, provider)
 }
 
 function renderToolResult(provider: AgentProvider, payload: unknown, context?: MessageContentRenderContext) {
@@ -60,9 +65,20 @@ function claudeToolResult(content: unknown, toolUseResult?: Record<string, unkno
     type: 'user',
     message: {
       role: 'user',
-      content: [{ type: 'tool_result', tool_use_id: 'r1', content, ...(isError ? { is_error: true } : {}) }],
+      content: [
+        {
+          type: 'tool_result',
+          tool_use_id: 'r1',
+          content,
+          ...(isError
+            ? { is_error: true }
+            : {}),
+        },
+      ],
     },
-    ...(toolUseResult ? { tool_use_result: toolUseResult } : {}),
+    ...(toolUseResult
+      ? { tool_use_result: toolUseResult }
+      : {}),
   }
 }
 
@@ -71,8 +87,16 @@ describe('claude Read on an image', () => {
   // literal text inside the Read body's <pre>.
   it('renders an img instead of a base64 markdown string', () => {
     const { container } = renderToolResult(AgentProvider.CLAUDE_CODE, claudeToolResult(
-      [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: PNG } }],
-      { type: 'image', file: { base64: PNG, type: 'image/png', originalSize: 136311 } },
+      [
+        {
+          type: 'image',
+          source: { type: 'base64', media_type: 'image/png', data: PNG },
+        },
+      ],
+      {
+        type: 'image',
+        file: { base64: PNG, type: 'image/png', originalSize: 136311 },
+      },
     ), { spanType: 'Read' })
     expect(container.querySelector('img')?.getAttribute('src')).toBe(PNG_DATA_URL)
     expect(container.textContent ?? '').not.toContain('base64,')
@@ -83,13 +107,23 @@ describe('claude Read on an image', () => {
     // picture nobody receives. Reserving from those would mis-size exactly the
     // large screenshots the reservation exists for.
     const { container } = renderToolResult(AgentProvider.CLAUDE_CODE, claudeToolResult(
-      [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: PNG } }],
+      [
+        {
+          type: 'image',
+          source: { type: 'base64', media_type: 'image/png', data: PNG },
+        },
+      ],
       {
         type: 'image',
         file: {
           base64: PNG,
           type: 'image/png',
-          dimensions: { originalWidth: 2480, originalHeight: 2400, displayWidth: 620, displayHeight: 600 },
+          dimensions: {
+            originalWidth: 2480,
+            originalHeight: 2400,
+            displayWidth: 620,
+            displayHeight: 600,
+          },
         },
       },
     ), { spanType: 'Read' })
@@ -98,7 +132,12 @@ describe('claude Read on an image', () => {
 
   it('renders a Bash result whose stdout was a data URI as an image', () => {
     const { container } = renderToolResult(AgentProvider.CLAUDE_CODE, claudeToolResult(
-      [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: PNG } }],
+      [
+        {
+          type: 'image',
+          source: { type: 'base64', media_type: 'image/png', data: PNG },
+        },
+      ],
     ), { spanType: 'Bash' })
     expect(container.querySelector('img')?.getAttribute('src')).toBe(PNG_DATA_URL)
   })
@@ -114,7 +153,12 @@ describe('claude Read on an image', () => {
     // `Agent` has an entry in TOOL_RESULT_ENTRIES and `AgentResultBody` renders
     // text only, so this is the path the catch-all never reaches.
     const { container } = renderToolResult(AgentProvider.CLAUDE_CODE, claudeToolResult(
-      [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: PNG } }],
+      [
+        {
+          type: 'image',
+          source: { type: 'base64', media_type: 'image/png', data: PNG },
+        },
+      ],
       { status: 'completed', description: 'screenshot the page', content: 'done' },
     ), { spanType: 'Agent' })
     expect(container.textContent ?? '').toContain('screenshot the page')
@@ -124,7 +168,10 @@ describe('claude Read on an image', () => {
   it('renders text and image together when a tool returns both', () => {
     const { container } = renderToolResult(AgentProvider.CLAUDE_CODE, claudeToolResult([
       { type: 'text', text: 'captured the page' },
-      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: PNG } },
+      {
+        type: 'image',
+        source: { type: 'base64', media_type: 'image/png', data: PNG },
+      },
     ]), { spanType: 'mcp__playwright__screenshot' })
     expect(container.querySelector('img')?.getAttribute('src')).toBe(PNG_DATA_URL)
     expect(container.textContent ?? '').toContain('captured the page')
@@ -150,7 +197,12 @@ describe('codex image items', () => {
   })
 
   it('shows the header alone while generation is in progress (result is empty)', () => {
-    const item = { type: 'imageGeneration', id: 'gen-1', status: 'in_progress', result: '' }
+    const item = {
+      type: 'imageGeneration',
+      id: 'gen-1',
+      status: 'in_progress',
+      result: '',
+    }
     const { container } = renderToolUse(AgentProvider.CODEX, { item, threadId: 't1' }, 'imageGeneration')
     expect(container.querySelector('img')).toBeNull()
     expect(container.textContent ?? '').toContain('Generate image')
@@ -173,11 +225,19 @@ describe('codex image items', () => {
     // frame states its own status. The picture rides the finished one: a row that
     // says the call still runs carries none (invariant I1).
     const item = { type: 'imageView', id: 'view-1', path: '/repo/shot.png' }
-    const request = parsed({ item: { ...item, status: 'inProgress' }, threadId: 't1' }, AgentProvider.CODEX)
-    const result = parsed({ item: { ...item, status: 'completed' }, threadId: 't1' }, AgentProvider.CODEX)
+    const request = parsed({
+      item: { ...item, status: 'inProgress' },
+      threadId: 't1',
+    }, AgentProvider.CODEX)
+    const result = parsed({
+      item: { ...item, status: 'completed' },
+      threadId: 't1',
+    }, AgentProvider.CODEX)
     const fileImage = vi.fn(async () => ({ filePath: '/repo/shot.png', mimeType: 'image/png', data: PNG }))
     const sources = (role: 'request' | 'result') => testMessageSources({
-      current: () => role === 'request' ? request : result,
+      current: () => role === 'request'
+        ? request
+        : result,
       request: () => request,
       result: () => result,
       role: () => role,
@@ -188,8 +248,18 @@ describe('codex image items', () => {
     // One actions object serves both rows: it closes over `fileImage` alone.
     const images = imageActionsFrom({ fileImage })
     const { container } = render(() => [
-      renderMessageContent(request.parentObject, { sources: sources('request'), ...(images ? { images } : {}) }, category, AgentProvider.CODEX),
-      renderMessageContent(result.parentObject, { sources: sources('result'), ...(images ? { images } : {}) }, category, AgentProvider.CODEX),
+      renderMessageContent(request.parentObject, {
+        sources: sources('request'),
+        ...(images
+          ? { images }
+          : {}),
+      }, category, AgentProvider.CODEX),
+      renderMessageContent(result.parentObject, {
+        sources: sources('result'),
+        ...(images
+          ? { images }
+          : {}),
+      }, category, AgentProvider.CODEX),
     ])
     await waitFor(() => expect(container.querySelector('img')?.getAttribute('src')).toBe(PNG_DATA_URL))
     expect(container.querySelectorAll(`.${toolUseHeader}`)).toHaveLength(1)
@@ -212,7 +282,12 @@ describe('an ACP tool_call_update with image content', () => {
       toolCallId: 'tc-1',
       kind: 'read',
       status: 'completed',
-      content: [{ type: 'content', content: { type: 'image', mimeType: 'image/png', data: PNG } }],
+      content: [
+        {
+          type: 'content',
+          content: { type: 'image', mimeType: 'image/png', data: PNG },
+        },
+      ],
     }
     const { container } = renderToolUse(AgentProvider.OPENCODE, toolUse, 'read')
     expect(container.querySelector('img')?.getAttribute('src')).toBe(PNG_DATA_URL)
@@ -225,8 +300,14 @@ describe('an ACP tool_call_update with image content', () => {
       kind: 'read',
       status: 'completed',
       content: [
-        { type: 'content', content: { type: 'text', text: 'read shot.png' } },
-        { type: 'content', content: { type: 'image', mimeType: 'image/png', data: PNG } },
+        {
+          type: 'content',
+          content: { type: 'text', text: 'read shot.png' },
+        },
+        {
+          type: 'content',
+          content: { type: 'image', mimeType: 'image/png', data: PNG },
+        },
       ],
     }
     const { container } = renderToolUse(AgentProvider.OPENCODE, toolUse, 'read')
@@ -246,10 +327,24 @@ describe('pi read on an image', () => {
       type: 'tool_execution_end',
       toolCallId: 'call-1',
       toolName: 'read',
-      result: { content: [{ type: 'image', data: PNG, mimeType: 'image/png' }] },
+      result: {
+        content: [
+          { type: 'image', data: PNG, mimeType: 'image/png' },
+        ],
+      },
     }
-    const start = { type: 'tool_execution_start', toolCallId: 'call-1', toolName: 'read', args: { filePath: '/repo/shot.png' } }
-    const { container } = renderToolResult(AgentProvider.PI, payload, { spanType: 'read', sources: testMessageSources({ request: () => (parsed(start, AgentProvider.PI)) }) })
+    const start = {
+      type: 'tool_execution_start',
+      toolCallId: 'call-1',
+      toolName: 'read',
+      args: { filePath: '/repo/shot.png' },
+    }
+    const { container } = renderToolResult(AgentProvider.PI, payload, {
+      spanType: 'read',
+      sources: testMessageSources({
+        request: () => (parsed(start, AgentProvider.PI)),
+      }),
+    })
     expect(container.querySelector('img')?.getAttribute('src')).toBe(PNG_DATA_URL)
     expect(container.textContent ?? '').not.toContain('base64,')
   })
@@ -266,14 +361,24 @@ describe('shared image guardrails', () => {
   // same way, so refusing an agent's cost the diagram and bought nothing.
   it('draws an SVG, the same way the file viewer renders one off disk', () => {
     const { container } = renderToolResult(AgentProvider.CLAUDE_CODE, claudeToolResult(
-      [{ type: 'image', source: { type: 'base64', media_type: 'image/svg+xml', data: 'PHN2Zy8+' } }],
+      [
+        {
+          type: 'image',
+          source: { type: 'base64', media_type: 'image/svg+xml', data: 'PHN2Zy8+' },
+        },
+      ],
     ), { spanType: 'Read' })
     expect(container.querySelector('img')).not.toBeNull()
   })
 
   it('refuses a type no `<img>` can draw', () => {
     const { container } = renderToolResult(AgentProvider.CLAUDE_CODE, claudeToolResult(
-      [{ type: 'image', source: { type: 'base64', media_type: 'application/pdf', data: 'JVBERi0=' } }],
+      [
+        {
+          type: 'image',
+          source: { type: 'base64', media_type: 'application/pdf', data: 'JVBERi0=' },
+        },
+      ],
     ), { spanType: 'Read' })
     expect(container.querySelector('img')).toBeNull()
     expect(container.textContent ?? '').toContain('unsupported format')
@@ -281,7 +386,16 @@ describe('shared image guardrails', () => {
 
   it('reserves the intrinsic box by sniffing when the provider states no dimensions', () => {
     const { container } = renderToolResult(AgentProvider.CLAUDE_CODE, claudeToolResult(
-      [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: pngBase64(640, 480) } }],
+      [
+        {
+          type: 'image',
+          source: {
+            type: 'base64',
+            media_type: 'image/png',
+            data: pngBase64(640, 480),
+          },
+        },
+      ],
     ), { spanType: 'Bash' })
     expect(container.querySelector('img')?.getAttribute('data-size-reserved')).toBe('1')
   })
@@ -293,8 +407,14 @@ describe('shared image guardrails', () => {
 
 function imagesOf(provider: AgentProvider, parsedMessage: Record<string, unknown>, spanType?: string, toolUse?: Record<string, unknown>) {
   return providerRowImages(provider, parsedMessage, {
-    ...(spanType !== undefined ? { spanType } : {}),
-    ...(toolUse !== undefined ? { request: parsed(toolUse, provider) } : {}),
+    ...(spanType !== undefined
+      ? { spanType }
+      : {}),
+    ...(toolUse !== undefined
+      ? {
+          request: parsed(toolUse, provider),
+        }
+      : {}),
   })
 }
 
@@ -330,10 +450,28 @@ describe('provider toolResultImages', () => {
 
   it('claude prefers the structured tool_use_result, which alone carries dimensions', () => {
     const images = imagesOf(AgentProvider.CLAUDE_CODE, claudeToolResult(
-      [{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: PNG } }],
-      { type: 'image', file: { base64: PNG, type: 'image/png', dimensions: { displayWidth: 10, displayHeight: 20 } } },
+      [
+        {
+          type: 'image',
+          source: { type: 'base64', media_type: 'image/png', data: PNG },
+        },
+      ],
+      {
+        type: 'image',
+        file: {
+          base64: PNG,
+          type: 'image/png',
+          dimensions: { displayWidth: 10, displayHeight: 20 },
+        },
+      },
     ), 'Read')
-    expect(images).toEqual([{ data: PNG, mimeType: 'image/png', dimensions: { width: 10, height: 20 } }])
+    expect(images).toEqual([
+      {
+        data: PNG,
+        mimeType: 'image/png',
+        dimensions: { width: 10, height: 20 },
+      },
+    ])
   })
 
   // The structured payload describes ONE image, so it can only stand in for the
@@ -346,7 +484,14 @@ describe('provider toolResultImages', () => {
         { type: 'image', data: 'first', mimeType: 'image/png' },
         { type: 'image', data: 'second', mimeType: 'image/png' },
       ],
-      { type: 'image', file: { base64: PNG, type: 'image/png', dimensions: { displayWidth: 10, displayHeight: 20 } } },
+      {
+        type: 'image',
+        file: {
+          base64: PNG,
+          type: 'image/png',
+          dimensions: { displayWidth: 10, displayHeight: 20 },
+        },
+      },
     ), 'mcp__x__y')
     expect(images.map(i => i.data)).toEqual(['first', 'second'])
     expect(images.every(i => i.dimensions === undefined)).toBe(true)
@@ -357,24 +502,48 @@ describe('provider toolResultImages', () => {
   // content block at all is exactly what it describes.
   it('claude falls back to the structured payload when the blocks carry no image', () => {
     const images = imagesOf(AgentProvider.CLAUDE_CODE, claudeToolResult(
-      [{ type: 'text', text: 'no image here' }],
-      { type: 'image', file: { base64: PNG, type: 'image/png' } },
+      [
+        { type: 'text', text: 'no image here' },
+      ],
+      {
+        type: 'image',
+        file: { base64: PNG, type: 'image/png' },
+      },
     ), 'Read')
-    expect(images).toEqual([{ data: PNG, mimeType: 'image/png' }])
+    expect(images).toEqual([
+      { data: PNG, mimeType: 'image/png' },
+    ])
   })
 
   it('claude attaches the tool_use file path, which routes the click to the file itself', () => {
     const images = imagesOf(
       AgentProvider.CLAUDE_CODE,
-      claudeToolResult([{ type: 'image', data: PNG, mimeType: 'image/png' }]),
+      claudeToolResult([
+        { type: 'image', data: PNG, mimeType: 'image/png' },
+      ]),
       'Read',
-      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'r1', name: 'Read', input: { file_path: '/repo/shot.png' } }] } },
+      {
+        type: 'assistant',
+        message: {
+          content: [
+            {
+              type: 'tool_use',
+              id: 'r1',
+              name: 'Read',
+              input: { file_path: '/repo/shot.png' },
+            },
+          ],
+        },
+      },
     )
     expect(images[0]?.filePath).toBe('/repo/shot.png')
   })
 
   it('claude returns nothing for a message with no tool_result', () => {
-    expect(imagesOf(AgentProvider.CLAUDE_CODE, { type: 'assistant', message: { content: [] } })).toEqual([])
+    expect(imagesOf(AgentProvider.CLAUDE_CODE, {
+      type: 'assistant',
+      message: { content: [] },
+    })).toEqual([])
     expect(imagesOf(AgentProvider.CLAUDE_CODE, {})).toEqual([])
   })
 
@@ -386,9 +555,23 @@ describe('provider toolResultImages', () => {
       status: 'completed',
       rawInput: { path: '/repo/shot.png' },
       content: [
-        { type: 'content', content: { type: 'image', mimeType: 'image/png', data: 'first' } },
-        { type: 'content', content: { type: 'text', text: 'between' } },
-        { type: 'content', content: { type: 'image', mimeType: 'image/png', data: 'second', uri: 'file:///repo/other.png' } },
+        {
+          type: 'content',
+          content: { type: 'image', mimeType: 'image/png', data: 'first' },
+        },
+        {
+          type: 'content',
+          content: { type: 'text', text: 'between' },
+        },
+        {
+          type: 'content',
+          content: {
+            type: 'image',
+            mimeType: 'image/png',
+            data: 'second',
+            uri: 'file:///repo/other.png',
+          },
+        },
       ],
     })
     expect(images.map(i => i.data)).toEqual(['first', 'second'])
@@ -401,28 +584,80 @@ describe('provider toolResultImages', () => {
   // A row whose frame says the call still runs carries no result and no picture --
   // invariant I1 -- so an item fixture that omits the word describes no answered call.
   it('codex reads each of its three image-bearing item shapes', () => {
-    expect(imagesOf(AgentProvider.CODEX, { item: { type: 'imageGeneration', status: 'completed', result: PNG, savedPath: '/tmp/a.png' } }))
-      .toEqual([{ data: PNG, mimeType: 'image/png', filePath: '/tmp/a.png' }])
-    expect(imagesOf(AgentProvider.CODEX, { item: { type: 'mcpToolCall', status: 'completed', result: { content: [{ type: 'image', data: PNG, mimeType: 'image/png' }] } } }))
-      .toEqual([{ data: PNG, mimeType: 'image/png' }])
-    expect(imagesOf(AgentProvider.CODEX, { item: { type: 'dynamicToolCall', status: 'completed', contentItems: [{ type: 'inputImage', imageUrl: PNG_DATA_URL }] } }))
-      .toEqual([{ url: PNG_DATA_URL }])
+    expect(imagesOf(AgentProvider.CODEX, {
+      item: {
+        type: 'imageGeneration',
+        status: 'completed',
+        result: PNG,
+        savedPath: '/tmp/a.png',
+      },
+    }))
+      .toEqual([
+        { data: PNG, mimeType: 'image/png', filePath: '/tmp/a.png' },
+      ])
+    expect(imagesOf(AgentProvider.CODEX, {
+      item: {
+        type: 'mcpToolCall',
+        status: 'completed',
+        result: {
+          content: [
+            { type: 'image', data: PNG, mimeType: 'image/png' },
+          ],
+        },
+      },
+    }))
+      .toEqual([
+        { data: PNG, mimeType: 'image/png' },
+      ])
+    expect(imagesOf(AgentProvider.CODEX, {
+      item: {
+        type: 'dynamicToolCall',
+        status: 'completed',
+        contentItems: [
+          { type: 'inputImage', imageUrl: PNG_DATA_URL },
+        ],
+      },
+    }))
+      .toEqual([
+        { url: PNG_DATA_URL },
+      ])
   })
 
   it('codex exposes imageView files through the common image resolver', () => {
-    expect(imagesOf(AgentProvider.CODEX, { item: { type: 'imageView', id: 'v1', status: 'completed', path: '/repo/shot.png' } })).toEqual([{ filePath: '/repo/shot.png' }])
+    expect(imagesOf(AgentProvider.CODEX, {
+      item: {
+        type: 'imageView',
+        id: 'v1',
+        status: 'completed',
+        path: '/repo/shot.png',
+      },
+    })).toEqual([
+      { filePath: '/repo/shot.png' },
+    ])
   })
 
   it('pi keeps wire order and takes the path from the paired start event', () => {
     const images = imagesOf(
       AgentProvider.PI,
-      { type: 'tool_execution_end', toolCallId: 'c1', toolName: 'read', result: { content: [
-        { type: 'text', text: 'between' },
-        { type: 'image', data: 'first', mimeType: 'image/png' },
-        { type: 'image', data: 'second', mimeType: 'image/png' },
-      ] } },
+      {
+        type: 'tool_execution_end',
+        toolCallId: 'c1',
+        toolName: 'read',
+        result: {
+          content: [
+            { type: 'text', text: 'between' },
+            { type: 'image', data: 'first', mimeType: 'image/png' },
+            { type: 'image', data: 'second', mimeType: 'image/png' },
+          ],
+        },
+      },
       'read',
-      { type: 'tool_execution_start', toolCallId: 'c1', toolName: 'read', args: { filePath: '/repo/shot.png' } },
+      {
+        type: 'tool_execution_start',
+        toolCallId: 'c1',
+        toolName: 'read',
+        args: { filePath: '/repo/shot.png' },
+      },
     )
     expect(images.map(i => i.data)).toEqual(['first', 'second'])
     expect(images.every(i => i.filePath === '/repo/shot.png')).toBe(true)
@@ -440,7 +675,10 @@ describe('claude tool-result toolbar with an image', () => {
   it('copies the text beside the image, never the base64', () => {
     const meta = providerToolMeta(AgentProvider.CLAUDE_CODE, claudeToolResult([
       { type: 'text', text: 'captured the page' },
-      { type: 'image', source: { type: 'base64', media_type: 'image/png', data: PNG } },
+      {
+        type: 'image',
+        source: { type: 'base64', media_type: 'image/png', data: PNG },
+      },
     ]), { spanType: 'mcp__playwright__screenshot' })
     const copied = meta?.copyableContent() ?? ''
     expect(copied).toContain('captured the page')
@@ -448,7 +686,12 @@ describe('claude tool-result toolbar with an image', () => {
   })
 
   it('offers nothing to copy for an image-only result', () => {
-    const meta = providerToolMeta(AgentProvider.CLAUDE_CODE, claudeToolResult([{ type: 'image', source: { type: 'base64', media_type: 'image/png', data: PNG } }]), { spanType: 'Read' })
+    const meta = providerToolMeta(AgentProvider.CLAUDE_CODE, claudeToolResult([
+      {
+        type: 'image',
+        source: { type: 'base64', media_type: 'image/png', data: PNG },
+      },
+    ]), { spanType: 'Read' })
     expect(meta?.copyableContent() ?? '').not.toContain('base64,')
   })
 })
@@ -467,9 +710,14 @@ describe('opening a tool-result image', () => {
       { type: 'image', data: PNG, mimeType: 'image/png' },
       { type: 'text', text: 'second' },
       { type: 'image', data: PNG, mimeType: 'image/png' },
-    ]), { spanType: 'mcp__playwright__screenshot', images: imageActions(onOpenImage) })
+    ]), {
+      spanType: 'mcp__playwright__screenshot',
+      images: imageActions(onOpenImage),
+    })
 
-    const buttons = [...container.querySelectorAll('button')].filter(b => b.querySelector('img'))
+    const buttons = [
+      ...container.querySelectorAll('button'),
+    ].filter(b => b.querySelector('img'))
     expect(buttons).toHaveLength(2)
     buttons[1]?.click()
     expect(onOpenImage).toHaveBeenCalledWith(expect.objectContaining({ index: 1 }))
@@ -479,8 +727,28 @@ describe('opening a tool-result image', () => {
     const onOpenImage = vi.fn()
     const { container } = renderToolResult(
       AgentProvider.CLAUDE_CODE,
-      claudeToolResult([{ type: 'image', data: PNG, mimeType: 'image/png' }]),
-      { spanType: 'Read', images: imageActions(onOpenImage), sources: testMessageSources({ request: () => (parsed({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'r1', name: 'Read', input: { file_path: '/repo/shot.png' } }] } })) }) },
+      claudeToolResult([
+        { type: 'image', data: PNG, mimeType: 'image/png' },
+      ]),
+      {
+        spanType: 'Read',
+        images: imageActions(onOpenImage),
+        sources: testMessageSources({
+          request: () => (parsed({
+            type: 'assistant',
+            message: {
+              content: [
+                {
+                  type: 'tool_use',
+                  id: 'r1',
+                  name: 'Read',
+                  input: { file_path: '/repo/shot.png' },
+                },
+              ],
+            },
+          })),
+        }),
+      },
     )
     container.querySelector('button')?.click()
     expect(onOpenImage).toHaveBeenCalledWith(expect.objectContaining({ index: 0, filePath: '/repo/shot.png' }))
@@ -493,8 +761,13 @@ describe('opening a tool-result image', () => {
     const onOpenImage = vi.fn()
     const { container } = renderToolResult(
       AgentProvider.CLAUDE_CODE,
-      claudeToolResult([{ type: 'image', data: PNG, mimeType: 'image/png' }]),
-      { spanType: 'mcp__playwright__screenshot', images: imageActions(onOpenImage) },
+      claudeToolResult([
+        { type: 'image', data: PNG, mimeType: 'image/png' },
+      ]),
+      {
+        spanType: 'mcp__playwright__screenshot',
+        images: imageActions(onOpenImage),
+      },
     )
     container.querySelector('button')?.click()
     expect(onOpenImage).toHaveBeenCalledWith(
@@ -510,10 +783,19 @@ describe('opening a tool-result image', () => {
       kind: 'read',
       status: 'completed',
       rawInput: { description: 'Screenshot the login page' },
-      content: [{ type: 'content', content: { type: 'image', mimeType: 'image/png', data: PNG } }],
+      content: [
+        {
+          type: 'content',
+          content: { type: 'image', mimeType: 'image/png', data: PNG },
+        },
+      ],
     }
-    const { container } = renderToolUse(AgentProvider.OPENCODE, toolUse, 'read', { images: imageActions(onOpenImage) })
-    const imageButton = [...container.querySelectorAll('button')].find(b => b.querySelector('img'))
+    const { container } = renderToolUse(AgentProvider.OPENCODE, toolUse, 'read', {
+      images: imageActions(onOpenImage),
+    })
+    const imageButton = [
+      ...container.querySelectorAll('button'),
+    ].find(b => b.querySelector('img'))
     imageButton?.click()
     expect(onOpenImage).toHaveBeenCalledWith(
       expect.objectContaining({ title: 'Screenshot the login page' }),
@@ -526,8 +808,13 @@ describe('opening a tool-result image', () => {
     const onOpenImage = vi.fn()
     const { container } = renderToolResult(
       AgentProvider.CLAUDE_CODE,
-      claudeToolResult([{ type: 'image', data: PNG, mimeType: 'image/png' }]),
-      { spanType: 'Bash', images: imageActions(onOpenImage) },
+      claudeToolResult([
+        { type: 'image', data: PNG, mimeType: 'image/png' },
+      ]),
+      {
+        spanType: 'Bash',
+        images: imageActions(onOpenImage),
+      },
     )
     container.querySelector('button')?.click()
     expect(onOpenImage).toHaveBeenCalledOnce()
@@ -543,7 +830,9 @@ describe('opening a tool-result image', () => {
     // tab stop on every image in the transcript.
     const { container } = renderToolResult(
       AgentProvider.CLAUDE_CODE,
-      claudeToolResult([{ type: 'image', data: PNG, mimeType: 'image/png' }]),
+      claudeToolResult([
+        { type: 'image', data: PNG, mimeType: 'image/png' },
+      ]),
       { spanType: 'Read' },
     )
     expect(container.querySelector('img')).not.toBeNull()
@@ -558,16 +847,29 @@ describe('opening a tool-result image', () => {
       kind: 'read',
       status: 'completed',
       content: [
-        { type: 'content', content: { type: 'text', text: 'read them' } },
-        { type: 'content', content: { type: 'image', mimeType: 'image/png', data: PNG } },
-        { type: 'content', content: { type: 'image', mimeType: 'image/png', data: PNG } },
+        {
+          type: 'content',
+          content: { type: 'text', text: 'read them' },
+        },
+        {
+          type: 'content',
+          content: { type: 'image', mimeType: 'image/png', data: PNG },
+        },
+        {
+          type: 'content',
+          content: { type: 'image', mimeType: 'image/png', data: PNG },
+        },
       ],
     }
-    const { container } = renderToolUse(AgentProvider.OPENCODE, toolUse, 'read', { images: imageActions(onOpenImage) })
+    const { container } = renderToolUse(AgentProvider.OPENCODE, toolUse, 'read', {
+      images: imageActions(onOpenImage),
+    })
     // Scoped to the buttons that WRAP an image: the row also carries an
     // expand toggle, and picking by position would silently start asserting
     // about that one the day the header grows another control.
-    const imageButtons = [...container.querySelectorAll('button')].filter(b => b.querySelector('img'))
+    const imageButtons = [
+      ...container.querySelectorAll('button'),
+    ].filter(b => b.querySelector('img'))
     expect(imageButtons).toHaveLength(2)
     imageButtons[1]?.click()
     expect(onOpenImage).toHaveBeenCalledWith(expect.objectContaining({ index: 1 }))

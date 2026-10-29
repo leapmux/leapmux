@@ -5,11 +5,16 @@ import { reasonixTest } from '../reasonix-fixtures'
 import { bypassToolRequests } from './scenarios'
 
 reasonixTest('stops a native turn and accepts a new prompt after queue resume', async ({ native }) => {
-  await exerciseInterruptTurn(native, { prepare: () => bypassToolRequests(native) })
+  await exerciseInterruptTurn(native, {
+    prepare: () => bypassToolRequests(native),
+  })
 })
 
 reasonixTest('stops an actual native tool and accepts a new prompt after queue resume', async ({ native }) => {
-  await exerciseInterruptTurn(native, { kind: 'tool', prepare: () => bypassToolRequests(native) })
+  await exerciseInterruptTurn(native, {
+    kind: 'tool',
+    prepare: () => bypassToolRequests(native),
+  })
 })
 
 // Reasonix asks no native question, so a permission request holds the turn. The ask approval mode raises one.
@@ -24,5 +29,7 @@ reasonixTest('withdraws a waiting permission and accepts a new prompt after queu
 })
 
 reasonixTest('keeps interrupted partial text and its marker after reload', async ({ native }) => {
-  await exerciseInterruptedPartialAnswer(native, { prepare: () => bypassToolRequests(native) })
+  await exerciseInterruptedPartialAnswer(native, {
+    prepare: () => bypassToolRequests(native),
+  })
 })

@@ -128,7 +128,9 @@ describe('mergeKeybindings', () => {
 
   it('does not mutate the defaults array', () => {
     const original = DEFAULTS.map(b => ({ ...b }))
-    mergeKeybindings(DEFAULTS, [{ key: '$mod+Shift+a', command: 'app.newAgent' }])
+    mergeKeybindings(DEFAULTS, [
+      { key: '$mod+Shift+a', command: 'app.newAgent' },
+    ])
     expect(DEFAULTS).toEqual(original)
   })
 
@@ -165,7 +167,9 @@ describe('mergeKeybindings', () => {
   it('still unbinds a command through an empty-key override', () => {
     // The empty key is not reserved: the reserved-key skip must not swallow
     // the one override shape that means "remove this binding".
-    const result = mergeKeybindings(DEFAULTS, [{ key: '', command: 'app.newAgent' }])
+    const result = mergeKeybindings(DEFAULTS, [
+      { key: '', command: 'app.newAgent' },
+    ])
     expect(result.some(b => b.command === 'app.newAgent')).toBe(false)
   })
 })
@@ -265,7 +269,9 @@ describe('activateBindings (Mac Option dead-key)', () => {
     resetCommands()
     registerCommand({ id: 'test.deadKey', title: 'Test', handler })
 
-    activateBindings([{ key: 'Alt+n', command: 'test.deadKey' }], 'workspace')
+    activateBindings([
+      { key: 'Alt+n', command: 'test.deadKey' },
+    ], 'workspace')
 
     window.dispatchEvent(new KeyboardEvent('keydown', {
       key: '\u02DC',
@@ -289,8 +295,12 @@ describe('activateBindings (slots)', () => {
     registerCommand({ id: 'test.core', title: 'Core', handler: coreHandler })
     registerCommand({ id: 'test.workspace', title: 'Workspace', handler: workspaceHandler })
 
-    activateBindings([{ key: 'F12', command: 'test.core' }], 'core')
-    activateBindings([{ key: '$mod+w', command: 'test.workspace' }], 'workspace')
+    activateBindings([
+      { key: 'F12', command: 'test.core' },
+    ], 'core')
+    activateBindings([
+      { key: '$mod+w', command: 'test.workspace' },
+    ], 'workspace')
 
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'F12', code: 'F12' }))
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'w', code: 'KeyW', ctrlKey: true }))
@@ -303,8 +313,12 @@ describe('activateBindings (slots)', () => {
     const coreHandler = vi.fn()
     registerCommand({ id: 'test.core', title: 'Core', handler: coreHandler })
 
-    activateBindings([{ key: 'F12', command: 'test.core' }], 'core')
-    activateBindings([{ key: '$mod+w', command: 'noop' }], 'workspace')
+    activateBindings([
+      { key: 'F12', command: 'test.core' },
+    ], 'core')
+    activateBindings([
+      { key: '$mod+w', command: 'noop' },
+    ], 'workspace')
     unbindAll('workspace')
 
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'F12', code: 'F12' }))
@@ -317,8 +331,12 @@ describe('activateBindings (slots)', () => {
     registerCommand({ id: 'test.core', title: 'Core', handler: coreHandler })
     registerCommand({ id: 'test.ws', title: 'Workspace', handler: wsHandler })
 
-    activateBindings([{ key: 'F12', command: 'test.core' }], 'core')
-    activateBindings([{ key: '$mod+w', command: 'test.ws' }], 'workspace')
+    activateBindings([
+      { key: 'F12', command: 'test.core' },
+    ], 'core')
+    activateBindings([
+      { key: '$mod+w', command: 'test.ws' },
+    ], 'workspace')
     unbindAll('core')
 
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'F12', code: 'F12' }))
@@ -334,8 +352,12 @@ describe('activateBindings (slots)', () => {
     registerCommand({ id: 'test.core', title: 'Core', handler: coreHandler })
     registerCommand({ id: 'test.ws', title: 'Workspace', handler: wsHandler })
 
-    activateBindings([{ key: 'F12', command: 'test.core' }], 'core')
-    activateBindings([{ key: '$mod+w', command: 'test.ws' }], 'workspace')
+    activateBindings([
+      { key: 'F12', command: 'test.core' },
+    ], 'core')
+    activateBindings([
+      { key: '$mod+w', command: 'test.ws' },
+    ], 'workspace')
     unbindAll()
 
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'F12', code: 'F12' }))
@@ -353,9 +375,15 @@ describe('activateBindings (slots)', () => {
     registerCommand({ id: 'test.newCore', title: 'NewCore', handler: newCore })
     registerCommand({ id: 'test.ws', title: 'Workspace', handler: ws })
 
-    activateBindings([{ key: 'F12', command: 'test.oldCore' }], 'core')
-    activateBindings([{ key: '$mod+w', command: 'test.ws' }], 'workspace')
-    activateBindings([{ key: 'F12', command: 'test.newCore' }], 'core')
+    activateBindings([
+      { key: 'F12', command: 'test.oldCore' },
+    ], 'core')
+    activateBindings([
+      { key: '$mod+w', command: 'test.ws' },
+    ], 'workspace')
+    activateBindings([
+      { key: 'F12', command: 'test.newCore' },
+    ], 'core')
 
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'F12', code: 'F12' }))
     window.dispatchEvent(new KeyboardEvent('keydown', { key: 'w', code: 'KeyW', ctrlKey: true }))
@@ -382,10 +410,18 @@ describe('activateBindings (fall-through)', () => {
     const downstream = vi.fn()
     registerCommand({ id: 'test.steer', title: 'Steer', handler })
     setContext('ctx', false)
-    activateBindings([{ key: '$mod+Enter', command: 'test.steer', when: 'ctx' }], 'workspace')
+    activateBindings([
+      { key: '$mod+Enter', command: 'test.steer', when: 'ctx' },
+    ], 'workspace')
     document.addEventListener('keydown', downstream)
 
-    const event = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', ctrlKey: true, bubbles: true, cancelable: true })
+    const event = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      code: 'Enter',
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    })
     document.body.dispatchEvent(event)
     document.removeEventListener('keydown', downstream)
 
@@ -399,10 +435,18 @@ describe('activateBindings (fall-through)', () => {
     const downstream = vi.fn()
     registerCommand({ id: 'test.steer', title: 'Steer', handler })
     setContext('ctx', true)
-    activateBindings([{ key: '$mod+Enter', command: 'test.steer', when: 'ctx' }], 'workspace')
+    activateBindings([
+      { key: '$mod+Enter', command: 'test.steer', when: 'ctx' },
+    ], 'workspace')
     document.addEventListener('keydown', downstream)
 
-    const event = new KeyboardEvent('keydown', { key: 'Enter', code: 'Enter', ctrlKey: true, bubbles: true, cancelable: true })
+    const event = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      code: 'Enter',
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    })
     document.body.dispatchEvent(event)
     document.removeEventListener('keydown', downstream)
 
@@ -427,7 +471,9 @@ describe('activateBindings (events from form fields)', () => {
   it('fires a modifier shortcut dispatched from a focused input', () => {
     const handler = vi.fn()
     registerCommand({ id: 'test.fromInput', title: 'Test', handler })
-    activateBindings([{ key: '$mod+k', command: 'test.fromInput' }], 'workspace')
+    activateBindings([
+      { key: '$mod+k', command: 'test.fromInput' },
+    ], 'workspace')
 
     const input = document.createElement('input')
     document.body.appendChild(input)
@@ -446,7 +492,9 @@ describe('activateBindings (events from form fields)', () => {
   it('fires a contenteditable-scoped shortcut from a contenteditable element', () => {
     const handler = vi.fn()
     registerCommand({ id: 'test.fromEditable', title: 'Test', handler })
-    activateBindings([{ key: '$mod+j', command: 'test.fromEditable' }], 'workspace')
+    activateBindings([
+      { key: '$mod+j', command: 'test.fromEditable' },
+    ], 'workspace')
 
     const editable = document.createElement('div')
     editable.setAttribute('contenteditable', 'true')
@@ -481,7 +529,9 @@ describe('activateBindings (a physical key with several codes)', () => {
   it('fires for the code Chrome and Firefox report', () => {
     const handler = vi.fn()
     registerCommand({ id: 'test.grave', title: 'Test', handler })
-    activateBindings([{ key: '$mod+grave', command: 'test.grave' }], 'workspace')
+    activateBindings([
+      { key: '$mod+grave', command: 'test.grave' },
+    ], 'workspace')
 
     pressGrave('Backquote', '`')
 
@@ -491,7 +541,9 @@ describe('activateBindings (a physical key with several codes)', () => {
   it('fires for the code WebKit reports on a macOS ISO keyboard', () => {
     const handler = vi.fn()
     registerCommand({ id: 'test.graveIso', title: 'Test', handler })
-    activateBindings([{ key: '$mod+grave', command: 'test.graveIso' }], 'workspace')
+    activateBindings([
+      { key: '$mod+grave', command: 'test.graveIso' },
+    ], 'workspace')
 
     pressGrave('IntlBackslash', '§')
 
@@ -503,7 +555,9 @@ describe('activateBindings (a physical key with several codes)', () => {
   it('fires when the key produces no character at all', () => {
     const handler = vi.fn()
     registerCommand({ id: 'test.graveDead', title: 'Test', handler })
-    activateBindings([{ key: '$mod+grave', command: 'test.graveDead' }], 'workspace')
+    activateBindings([
+      { key: '$mod+grave', command: 'test.graveDead' },
+    ], 'workspace')
 
     pressGrave('Backquote', 'Dead')
 
@@ -513,7 +567,9 @@ describe('activateBindings (a physical key with several codes)', () => {
   it('fires for no other key', () => {
     const handler = vi.fn()
     registerCommand({ id: 'test.graveOther', title: 'Test', handler })
-    activateBindings([{ key: '$mod+grave', command: 'test.graveOther' }], 'workspace')
+    activateBindings([
+      { key: '$mod+grave', command: 'test.graveOther' },
+    ], 'workspace')
 
     pressGrave('Backslash', '\\')
     pressGrave('KeyG', 'g')
@@ -533,7 +589,9 @@ describe('activateBindings (IME composition)', () => {
     resetCommands()
     registerCommand({ id: 'test.composing', title: 'Test', handler })
 
-    activateBindings([{ key: '$mod+j', command: 'test.composing' }], 'workspace')
+    activateBindings([
+      { key: '$mod+j', command: 'test.composing' },
+    ], 'workspace')
 
     // Simulate a keydown that fires during CJK composition (e.g. Korean
     // double-consonant input on macOS where event.isComposing is true).
@@ -542,7 +600,9 @@ describe('activateBindings (IME composition)', () => {
       code: 'KeyJ',
       ctrlKey: true,
     })
-    Object.defineProperty(event, 'isComposing', { get: () => true })
+    Object.defineProperty(event, 'isComposing', {
+      get: () => true,
+    })
     window.dispatchEvent(event)
 
     expect(handler).not.toHaveBeenCalled()
@@ -553,7 +613,9 @@ describe('activateBindings (IME composition)', () => {
     resetCommands()
     registerCommand({ id: 'test.notComposing', title: 'Test', handler })
 
-    activateBindings([{ key: '$mod+j', command: 'test.notComposing' }], 'workspace')
+    activateBindings([
+      { key: '$mod+j', command: 'test.notComposing' },
+    ], 'workspace')
 
     window.dispatchEvent(new KeyboardEvent('keydown', {
       key: 'j',
@@ -574,7 +636,9 @@ describe('activateBindings (IME composition)', () => {
   // surface while its handler finds nothing to do.
   it('emits no binding for a default with an empty key', () => {
     const merged = mergeKeybindings(
-      [{ key: '', command: 'chat.sendMessage', when: 'chatInputFocused' }],
+      [
+        { key: '', command: 'chat.sendMessage', when: 'chatInputFocused' },
+      ],
       [],
     )
     expect(merged).toEqual([])
@@ -582,11 +646,20 @@ describe('activateBindings (IME composition)', () => {
 
   it('hands a rebinding the clause the keyless default declares', () => {
     const merged = mergeKeybindings(
-      [{ key: '', command: 'chat.sendMessage', when: 'chatInputFocused' }],
-      [{ key: '$mod+k', command: 'chat.sendMessage' }],
+      [
+        { key: '', command: 'chat.sendMessage', when: 'chatInputFocused' },
+      ],
+      [
+        { key: '$mod+k', command: 'chat.sendMessage' },
+      ],
     )
     expect(merged).toEqual([
-      { key: '$mod+k', command: 'chat.sendMessage', when: 'chatInputFocused', args: undefined },
+      {
+        key: '$mod+k',
+        command: 'chat.sendMessage',
+        when: 'chatInputFocused',
+        args: undefined,
+      },
     ])
   })
 })

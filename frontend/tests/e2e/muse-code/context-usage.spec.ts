@@ -19,7 +19,9 @@ museTest('shows the native token counts the host accounts', async ({ native }) =
       [CONTEXT_USAGE_FIELD.OutputTokens]: usage.outputTokens,
     })
     // A later turn with a different usage moves the count the host reports.
-    const second = await exerciseContextUsage(native, { usage: { inputTokens: 24_000, outputTokens: 80, contextWindow: 128_000 } })
+    const second = await exerciseContextUsage(native, {
+      usage: { inputTokens: 24_000, outputTokens: 80, contextWindow: 128_000 },
+    })
     await expect.poll(() => watch.readings().at(-1)).toMatchObject({
       [CONTEXT_USAGE_FIELD.InputTokens]: second.inputTokens,
       [CONTEXT_USAGE_FIELD.OutputTokens]: second.outputTokens,

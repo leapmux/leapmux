@@ -71,7 +71,14 @@ function makeSpanMessage(id: string, seq: bigint, spanId: string, content: strin
  * `previousSeq` to model a reseq broadcast that MOVED this row from an older seq.
  */
 function makeToolUseSpan(id: string, seq: bigint, spanId: string, previousSeq = 0n, input: Record<string, unknown> = {}) {
-  const raw = { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Read', input }] } }
+  const raw = {
+    type: 'assistant',
+    message: {
+      content: [
+        { type: 'tool_use', name: 'Read', input },
+      ],
+    },
+  }
   return create(AgentChatMessageSchema, {
     id,
     source: MessageSource.AGENT,
@@ -86,7 +93,16 @@ function makeToolUseSpan(id: string, seq: bigint, spanId: string, previousSeq = 
 
 /** A Claude tool_result carrying `spanId` (classifies as kind 'tool_result'). */
 function makeToolResultSpan(id: string, seq: bigint, spanId: string) {
-  const raw = { type: 'user', span_type: 'Read', message: { role: 'user', content: [{ type: 'tool_result', content: 'output', tool_use_id: 't1' }] } }
+  const raw = {
+    type: 'user',
+    span_type: 'Read',
+    message: {
+      role: 'user',
+      content: [
+        { type: 'tool_result', content: 'output', tool_use_id: 't1' },
+      ],
+    },
+  }
   return create(AgentChatMessageSchema, {
     id,
     source: MessageSource.USER,
@@ -106,7 +122,9 @@ function makeUserMessage(id: string, seq: bigint, content: string, agentProvider
     contentCompression: ContentCompression.NONE,
     seq,
     // MessageInit optionals reject an explicit undefined; omit when absent.
-    ...(agentProvider === undefined ? {} : { agentProvider }),
+    ...(agentProvider === undefined
+      ? {}
+      : { agentProvider }),
   })
 }
 
@@ -119,11 +137,13 @@ function makeTodoWriteMessage(
   const raw = {
     type: 'assistant',
     message: {
-      content: [{
-        type: 'tool_use',
-        name: 'TodoWrite',
-        input: { todos },
-      }],
+      content: [
+        {
+          type: 'tool_use',
+          name: 'TodoWrite',
+          input: { todos },
+        },
+      ],
     },
   }
   return create(AgentChatMessageSchema, {
@@ -147,7 +167,14 @@ function claudeToolUse(id: string, seq: bigint, spanId: string): AgentChatMessag
       type: 'assistant',
       message: {
         role: 'assistant',
-        content: [{ type: 'tool_use', id: 'toolu_1', name: 'TaskGet', input: { task_id: 'task-1' } }],
+        content: [
+          {
+            type: 'tool_use',
+            id: 'toolu_1',
+            name: 'TaskGet',
+            input: { task_id: 'task-1' },
+          },
+        ],
       },
     }),
     contentCompression: ContentCompression.NONE,
@@ -165,7 +192,9 @@ function claudeToolResult(id: string, seq: bigint, spanId: string, content: stri
       type: 'user',
       message: {
         role: 'user',
-        content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content }],
+        content: [
+          { type: 'tool_result', tool_use_id: 'toolu_1', content },
+        ],
       },
     }),
     contentCompression: ContentCompression.NONE,
@@ -235,15 +264,30 @@ describe('chatstore span content versions', () => {
     ])
 
     expect(JSON.stringify(storeContext(store, agentId).result({ spanId, agentSessionId: '' })?.resolved?.parentObject)).toContain('first result')
-    expect(storeContext(store, agentId).request({ spanId, agentSessionId: '' })?.revision).toEqual({ id: 'request-1', seq: 1n, contentVersion: 0, supplementalRevision: 0n })
-    expect(storeContext(store, agentId).result({ spanId, agentSessionId: '' })?.revision).toEqual({ id: 'result-1', seq: 2n, contentVersion: 0, supplementalRevision: 0n })
+    expect(storeContext(store, agentId).request({ spanId, agentSessionId: '' })?.revision).toEqual({
+      id: 'request-1',
+      seq: 1n,
+      contentVersion: 0,
+      supplementalRevision: 0n,
+    })
+    expect(storeContext(store, agentId).result({ spanId, agentSessionId: '' })?.revision).toEqual({
+      id: 'result-1',
+      seq: 2n,
+      contentVersion: 0,
+      supplementalRevision: 0n,
+    })
     expect((storeContext(store, agentId).result({ spanId, agentSessionId: '' })?.revision.contentVersion ?? 0)).toBe(0)
     expect((storeContext(store, agentId).request({ spanId, agentSessionId: '' })?.revision.contentVersion ?? 0)).toBe(0)
 
     store.addMessage(agentId, claudeToolResult('result-1', 2n, spanId, 'updated result'))
 
     expect(JSON.stringify(storeContext(store, agentId).result({ spanId, agentSessionId: '' })?.resolved?.parentObject)).toContain('updated result')
-    expect(storeContext(store, agentId).result({ spanId, agentSessionId: '' })?.revision).toEqual({ id: 'result-1', seq: 2n, contentVersion: 1, supplementalRevision: 0n })
+    expect(storeContext(store, agentId).result({ spanId, agentSessionId: '' })?.revision).toEqual({
+      id: 'result-1',
+      seq: 2n,
+      contentVersion: 1,
+      supplementalRevision: 0n,
+    })
     expect((storeContext(store, agentId).result({ spanId, agentSessionId: '' })?.revision.contentVersion ?? 0)).toBe(1)
     expect((storeContext(store, agentId).request({ spanId, agentSessionId: '' })?.revision.contentVersion ?? 0)).toBe(0)
   })
@@ -264,7 +308,12 @@ describe('chatstore span content versions', () => {
     ])
 
     expect((storeContext(store, agentId).request({ spanId, agentSessionId: '' })?.revision.contentVersion ?? 0)).toBe(0)
-    expect(storeContext(store, agentId).request({ spanId, agentSessionId: '' })?.revision).toEqual({ id: 'request-2', seq: 3n, contentVersion: 0, supplementalRevision: 0n })
+    expect(storeContext(store, agentId).request({ spanId, agentSessionId: '' })?.revision).toEqual({
+      id: 'request-2',
+      seq: 3n,
+      contentVersion: 0,
+      supplementalRevision: 0n,
+    })
   })
 
   it('returns zero when no result is indexed for a span id', () => {
@@ -272,7 +321,9 @@ describe('chatstore span content versions', () => {
     const agentId = 'agent-1'
     const spanId = 'span-1'
 
-    store.setMessages(agentId, [claudeToolUse('request-1', 1n, spanId)])
+    store.setMessages(agentId, [
+      claudeToolUse('request-1', 1n, spanId),
+    ])
 
     expect(storeContext(store, agentId).result({ spanId, agentSessionId: '' })?.resolved).toBeUndefined()
     expect((storeContext(store, agentId).result({ spanId, agentSessionId: '' })?.revision.contentVersion ?? 0)).toBe(0)
@@ -306,7 +357,9 @@ describe('chatstore loadmessagemarks', () => {
 
     newer.resolve({
       $typeName: 'leapmux.v1.ListMessageMarksResponse',
-      marks: [messageMark(9n, MarkType.USER_MESSAGE)],
+      marks: [
+        messageMark(9n, MarkType.USER_MESSAGE),
+      ],
       minSeq: 1n,
       maxSeq: 9n,
     })
@@ -314,7 +367,9 @@ describe('chatstore loadmessagemarks', () => {
 
     older.resolve({
       $typeName: 'leapmux.v1.ListMessageMarksResponse',
-      marks: [messageMark(2n, MarkType.USER_MESSAGE)],
+      marks: [
+        messageMark(2n, MarkType.USER_MESSAGE),
+      ],
       minSeq: 1n,
       maxSeq: 2n,
     })
@@ -341,7 +396,9 @@ describe('chatstore loadmessagemarks', () => {
     const secondLoad = store.loadMessageMarks('worker-1', 'agent-1')
     fresh.resolve({
       $typeName: 'leapmux.v1.ListMessageMarksResponse',
-      marks: [messageMark(9n, MarkType.USER_MESSAGE)],
+      marks: [
+        messageMark(9n, MarkType.USER_MESSAGE),
+      ],
       minSeq: 9n,
       maxSeq: 9n,
     })
@@ -352,7 +409,10 @@ describe('chatstore loadmessagemarks', () => {
     // can't clobber the reopened window.
     stale.resolve({
       $typeName: 'leapmux.v1.ListMessageMarksResponse',
-      marks: [messageMark(2n, MarkType.USER_MESSAGE), messageMark(3n, MarkType.USER_MESSAGE)],
+      marks: [
+        messageMark(2n, MarkType.USER_MESSAGE),
+        messageMark(3n, MarkType.USER_MESSAGE),
+      ],
       minSeq: 2n,
       maxSeq: 3n,
     })
@@ -375,7 +435,9 @@ describe('chatstore loadmessagemarks', () => {
       .mockReturnValueOnce(stale.promise)
       .mockResolvedValueOnce({
         $typeName: 'leapmux.v1.ListMessageMarksResponse',
-        marks: [messageMark(1n, MarkType.USER_MESSAGE)],
+        marks: [
+          messageMark(1n, MarkType.USER_MESSAGE),
+        ],
         minSeq: 1n,
         maxSeq: 1n,
       })
@@ -394,7 +456,10 @@ describe('chatstore loadmessagemarks', () => {
     // again, instead of re-adding a dot for a row the server no longer holds.
     stale.resolve({
       $typeName: 'leapmux.v1.ListMessageMarksResponse',
-      marks: [messageMark(1n, MarkType.USER_MESSAGE), messageMark(2n, MarkType.USER_MESSAGE)],
+      marks: [
+        messageMark(1n, MarkType.USER_MESSAGE),
+        messageMark(2n, MarkType.USER_MESSAGE),
+      ],
       minSeq: 1n,
       maxSeq: 2n,
     })
@@ -413,7 +478,9 @@ describe('chatstore loadmessagemarks', () => {
       .mockReturnValueOnce(stale.promise)
       .mockResolvedValueOnce({
         $typeName: 'leapmux.v1.ListMessageMarksResponse',
-        marks: [messageMark(2n, MarkType.USER_MESSAGE)],
+        marks: [
+          messageMark(2n, MarkType.USER_MESSAGE),
+        ],
         minSeq: 2n,
         maxSeq: 2n,
       })
@@ -472,7 +539,9 @@ describe('chatstore loadmessagemarks', () => {
       store.addMessage('agent-1', markedMessage('m2', 2n))
       second.resolve({
         $typeName: 'leapmux.v1.ListMessageMarksResponse',
-        marks: [messageMark(1n, MarkType.USER_MESSAGE)],
+        marks: [
+          messageMark(1n, MarkType.USER_MESSAGE),
+        ],
         minSeq: 1n,
         maxSeq: 1n,
       })
@@ -481,7 +550,9 @@ describe('chatstore loadmessagemarks', () => {
       store.addMessage('agent-1', markedMessage('m3', 3n))
       third.resolve({
         $typeName: 'leapmux.v1.ListMessageMarksResponse',
-        marks: [messageMark(2n, MarkType.USER_MESSAGE)],
+        marks: [
+          messageMark(2n, MarkType.USER_MESSAGE),
+        ],
         minSeq: 2n,
         maxSeq: 2n,
       })
@@ -520,13 +591,17 @@ describe('chatstore loadmessagemarks', () => {
       mockListMessageMarks
         .mockResolvedValueOnce({
           $typeName: 'leapmux.v1.ListMessageMarksResponse',
-          marks: [messageMark(3n, MarkType.USER_MESSAGE)],
+          marks: [
+            messageMark(3n, MarkType.USER_MESSAGE),
+          ],
           minSeq: undefined, // indeterminate: the worker left the range unset (a DB error)
           maxSeq: undefined,
         })
         .mockResolvedValueOnce({
           $typeName: 'leapmux.v1.ListMessageMarksResponse',
-          marks: [messageMark(3n, MarkType.USER_MESSAGE)],
+          marks: [
+            messageMark(3n, MarkType.USER_MESSAGE),
+          ],
           minSeq: 1n,
           maxSeq: 8n,
         })
@@ -568,7 +643,9 @@ describe('chatstore loadmessagemarks', () => {
         .mockReturnValueOnce(third.promise)
         .mockResolvedValueOnce({
           $typeName: 'leapmux.v1.ListMessageMarksResponse',
-          marks: [messageMark(99n, MarkType.USER_MESSAGE)],
+          marks: [
+            messageMark(99n, MarkType.USER_MESSAGE),
+          ],
           minSeq: 99n,
           maxSeq: 99n,
         })
@@ -623,7 +700,9 @@ describe('chatstore loadmessagemarks', () => {
       // a fetch every retry-delay for the whole session -- an infinite RPC poll.
       mockListMessageMarks.mockResolvedValue({
         $typeName: 'leapmux.v1.ListMessageMarksResponse',
-        marks: [messageMark(3n, MarkType.USER_MESSAGE)],
+        marks: [
+          messageMark(3n, MarkType.USER_MESSAGE),
+        ],
         minSeq: undefined, // indeterminate: the worker left the range unset (a DB error)
         maxSeq: undefined,
       })
@@ -660,7 +739,9 @@ describe('chatstore loadmessagemarks', () => {
         // 1) First seed: good range reveals the rail with mark 2n.
         .mockResolvedValueOnce({
           $typeName: 'leapmux.v1.ListMessageMarksResponse',
-          marks: [messageMark(2n, MarkType.USER_MESSAGE)],
+          marks: [
+            messageMark(2n, MarkType.USER_MESSAGE),
+          ],
           minSeq: 1n,
           maxSeq: 5n,
         })
@@ -668,14 +749,19 @@ describe('chatstore loadmessagemarks', () => {
         //    noted below, so seed() drops 9n (horizon unknown) while staying loaded.
         .mockResolvedValueOnce({
           $typeName: 'leapmux.v1.ListMessageMarksResponse',
-          marks: [messageMark(2n, MarkType.USER_MESSAGE)],
+          marks: [
+            messageMark(2n, MarkType.USER_MESSAGE),
+          ],
           minSeq: undefined, // indeterminate: the worker left the range unset (a DB error)
           maxSeq: undefined,
         })
         // 3) Retry: horizon healed and now includes 9n -- restores the dropped dot.
         .mockResolvedValueOnce({
           $typeName: 'leapmux.v1.ListMessageMarksResponse',
-          marks: [messageMark(2n, MarkType.USER_MESSAGE), messageMark(9n, MarkType.USER_MESSAGE)],
+          marks: [
+            messageMark(2n, MarkType.USER_MESSAGE),
+            messageMark(9n, MarkType.USER_MESSAGE),
+          ],
           minSeq: 1n,
           maxSeq: 9n,
         })
@@ -721,7 +807,9 @@ describe('chatstore loadmessagemarks', () => {
         .mockRejectedValueOnce(new Error('worker busy'))
         .mockResolvedValueOnce({
           $typeName: 'leapmux.v1.ListMessageMarksResponse',
-          marks: [messageMark(3n, MarkType.USER_MESSAGE)],
+          marks: [
+            messageMark(3n, MarkType.USER_MESSAGE),
+          ],
           minSeq: 1n,
           maxSeq: 8n,
         })
@@ -774,7 +862,9 @@ describe('chatstore loadmessagemarks', () => {
     controller.abort()
     inflight.resolve({
       $typeName: 'leapmux.v1.ListMessageMarksResponse',
-      marks: [messageMark(2n, MarkType.USER_MESSAGE)],
+      marks: [
+        messageMark(2n, MarkType.USER_MESSAGE),
+      ],
       minSeq: 1n,
       maxSeq: 2n,
     })
@@ -905,12 +995,14 @@ describe('createChatStore', () => {
         showHiddenMessages: () => false,
       })
       expect(cache.visibleEntries()[0]?.original.supplementalContent).toBeUndefined()
-      store.setMessages('agent-1', [create(AgentChatMessageSchema, {
-        ...original,
-        supplementalContent: new TextEncoder().encode('{"provider":{"value":"recovered"}}'),
-        supplementalContentCompression: ContentCompression.NONE,
-        supplementalRevision: 1n,
-      })])
+      store.setMessages('agent-1', [
+        create(AgentChatMessageSchema, {
+          ...original,
+          supplementalContent: new TextEncoder().encode('{"provider":{"value":"recovered"}}'),
+          supplementalContentCompression: ContentCompression.NONE,
+          supplementalRevision: 1n,
+        }),
+      ])
       expect(cache.visibleEntries()[0]?.original.supplementalContent).toEqual({ value: 'recovered' })
       dispose()
     })
@@ -979,7 +1071,11 @@ describe('createChatStore', () => {
   it('reconcileAuthoritativeTail drops phantom rows above the tail and clamps the live tail', () => {
     createRoot((dispose) => {
       const store = createChatStore()
-      store.setMessages('a1', [makeMessage('m1', 1n), makeMessage('m2', 2n), makeMessage('m3', 3n)], false)
+      store.setMessages('a1', [
+        makeMessage('m1', 1n),
+        makeMessage('m2', 2n),
+        makeMessage('m3', 3n),
+      ], false)
       store.liveTail.bump('a1', 3n)
       // The worker reports the authoritative tail is 2 (m3 was deleted while the
       // client was disconnected and never received the delete).
@@ -995,7 +1091,10 @@ describe('createChatStore', () => {
   it('reconcileAuthoritativeTail skips an unset (indeterminate) latest_seq (worker could not determine the tail)', () => {
     createRoot((dispose) => {
       const store = createChatStore()
-      store.setMessages('a1', [makeMessage('m1', 1n), makeMessage('m2', 2n)], false)
+      store.setMessages('a1', [
+        makeMessage('m1', 1n),
+        makeMessage('m2', 2n),
+      ], false)
       store.liveTail.bump('a1', 2n)
       store.reconcileAuthoritativeTail('a1', undefined)
       // Nothing trimmed, tail untouched -- we don't act on a value we can't trust.
@@ -1008,7 +1107,10 @@ describe('createChatStore', () => {
   it('reconcileAuthoritativeTail PROBES on an indeterminate CatchUpComplete (nudges the live tail past the loaded tail)', () => {
     createRoot((dispose) => {
       const store = createChatStore()
-      store.setMessages('a1', [makeMessage('m1', 1n), makeMessage('m2', 2n)], false)
+      store.setMessages('a1', [
+        makeMessage('m1', 1n),
+        makeMessage('m2', 2n),
+      ], false)
       store.liveTail.bump('a1', 2n)
       expect(store.caughtUpToLiveTail('a1')).toBe(true)
       // CatchUpComplete with an indeterminate (unset) tail + probeIndeterminate=true: the
@@ -1028,7 +1130,10 @@ describe('createChatStore', () => {
   it('reconcileAuthoritativeTail does NOT probe an indeterminate CatchUpStart (default), leaving the tail untouched', () => {
     createRoot((dispose) => {
       const store = createChatStore()
-      store.setMessages('a1', [makeMessage('m1', 1n), makeMessage('m2', 2n)], false)
+      store.setMessages('a1', [
+        makeMessage('m1', 1n),
+        makeMessage('m2', 2n),
+      ], false)
       store.liveTail.bump('a1', 2n)
       // CatchUpStart path (probeIndeterminate defaults false): the replay hasn't run yet,
       // so a probe would race it. Leave liveTail untouched -- catchUpComplete probes.
@@ -1043,7 +1148,10 @@ describe('createChatStore', () => {
     createRoot((dispose) => {
       const store = createChatStore()
       // Scrolled-up window holding [1,2] with the live tail recorded much higher.
-      store.setMessages('a1', [makeMessage('m1', 1n), makeMessage('m2', 2n)], false)
+      store.setMessages('a1', [
+        makeMessage('m1', 1n),
+        makeMessage('m2', 2n),
+      ], false)
       store.liveTail.bump('a1', 100n)
       // Authoritative tail is 50 (rows above 50 deleted while away, but 3..50 still
       // exist beyond the loaded window). No loaded row exceeds 50, so nothing trims,
@@ -1061,7 +1169,12 @@ describe('createChatStore', () => {
       const store = createChatStore()
       // Replay began with the tail at 3 ([1,2,3] loaded). During catch-up m3 (seq 3)
       // was deleted (tail dropped to 2) and m4 (seq 4) was broadcast LIVE and appended.
-      store.setMessages('a1', [makeMessage('m1', 1n), makeMessage('m2', 2n), makeMessage('m3', 3n), makeMessage('m4', 4n)], false)
+      store.setMessages('a1', [
+        makeMessage('m1', 1n),
+        makeMessage('m2', 2n),
+        makeMessage('m3', 3n),
+        makeMessage('m4', 4n),
+      ], false)
       store.liveTail.bump('a1', 4n)
       // CatchUpComplete: latest_seq 2, start_tail_seq 3. The band (2, 3] reaps the
       // deleted-during-replay phantom m3; m4 (seq above the start tail) is a live
@@ -1082,7 +1195,11 @@ describe('createChatStore', () => {
   it('reconcileAuthoritativeTail with no ceiling reaps every row beyond the tail (indeterminate-cursor fallback)', () => {
     createRoot((dispose) => {
       const store = createChatStore()
-      store.setMessages('a1', [makeMessage('m1', 1n), makeMessage('m2', 2n), makeMessage('m3', 3n)], false)
+      store.setMessages('a1', [
+        makeMessage('m1', 1n),
+        makeMessage('m2', 2n),
+        makeMessage('m3', 3n),
+      ], false)
       store.liveTail.bump('a1', 3n)
       // With no ceiling (the fallback when the resume cursor is unknown) every loaded
       // row beyond the tail is reaped (m2, m3 deleted while disconnected).
@@ -1102,7 +1219,12 @@ describe('createChatStore', () => {
       // the ceiling: the (2, 3] band reaps the phantom m3 while m4 (seq above the resume
       // cursor -- arrived AFTER subscribe) survives, instead of the old no-ceiling reap
       // that dropped m4 then re-added it from the replay burst (a flicker).
-      store.setMessages('a1', [makeMessage('m1', 1n), makeMessage('m2', 2n), makeMessage('m3', 3n), makeMessage('m4', 4n)], false)
+      store.setMessages('a1', [
+        makeMessage('m1', 1n),
+        makeMessage('m2', 2n),
+        makeMessage('m3', 3n),
+        makeMessage('m4', 4n),
+      ], false)
       store.liveTail.bump('a1', 4n)
       store.reconcileAuthoritativeTail('a1', 2n, 3n)
       expect(store.getMessages('a1').map(m => m.id)).toEqual(['m1', 'm2', 'm4'])
@@ -1122,7 +1244,12 @@ describe('createChatStore', () => {
       // Before the fix the handler passed `undefined`, reaping m4 AND clamping the
       // recorded tail to 2 -- losing the raced-in message (the line-620 reap-everything
       // behavior) until a later event re-discovered it.
-      store.setMessages('a1', [makeMessage('m1', 1n), makeMessage('m2', 2n), makeMessage('m3', 3n), makeMessage('m4', 4n)], false)
+      store.setMessages('a1', [
+        makeMessage('m1', 1n),
+        makeMessage('m2', 2n),
+        makeMessage('m3', 3n),
+        makeMessage('m4', 4n),
+      ], false)
       store.liveTail.bump('a1', 4n)
       const resumeCursor = 3n // = resumeTails.get(agentId) at subscribe
       store.reconcileAuthoritativeTail('a1', 2n, resumeCursor, true)
@@ -1140,7 +1267,10 @@ describe('createChatStore', () => {
       // CatchUpStart recorded the authoritative start-tail at 100 -- so seqs 51..100 are
       // KNOWN-but-unloaded. hasMoreNewer is false (the reader is following the tail, not
       // scrolled away), which the old hasMoreNewer-only guard treated as "caught up".
-      store.setMessages('a1', [makeMessage('m1', 1n), makeMessage('m50', 50n)], false)
+      store.setMessages('a1', [
+        makeMessage('m1', 1n),
+        makeMessage('m50', 50n),
+      ], false)
       store.liveTail.bump('a1', 100n)
       expect(store.getLastSeq('a1')).toBe(50n)
       expect(store.state.hasMoreNewer.a1 ?? false).toBe(false)
@@ -1164,7 +1294,10 @@ describe('createChatStore', () => {
     createRoot((dispose) => {
       const store = createChatStore()
       // Same catch-up state: loaded [1..50], known tail 100, hasMoreNewer false.
-      store.setMessages('a1', [makeMessage('m1', 1n), makeMessage('m50', 50n)], false)
+      store.setMessages('a1', [
+        makeMessage('m1', 1n),
+        makeMessage('m50', 50n),
+      ], false)
       store.liveTail.bump('a1', 100n)
       // The replay's next frame (seq 51, WITHIN the known tail) is the contiguous
       // continuation: it must be appended, not dropped as a beyond-tail arrival.
@@ -1179,7 +1312,10 @@ describe('createChatStore', () => {
     createRoot((dispose) => {
       const store = createChatStore()
       // Caught up: the recorded tail equals the window tail (no unfilled gap).
-      store.setMessages('a1', [makeMessage('m1', 1n), makeMessage('m2', 2n)], false)
+      store.setMessages('a1', [
+        makeMessage('m1', 1n),
+        makeMessage('m2', 2n),
+      ], false)
       store.liveTail.bump('a1', 2n)
       store.addMessage('a1', makeMessage('m3', 3n))
       expect(store.getMessages('a1').map(m => m.id)).toEqual(['m1', 'm2', 'm3'])
@@ -1193,7 +1329,10 @@ describe('createChatStore', () => {
       it('should set hasMoreOlder and initialLoadComplete', () => {
         createRoot((dispose) => {
           const store = createChatStore()
-          store.setMessages('a1', [makeMessage('m1', 1n), makeMessage('m2', 2n)], true)
+          store.setMessages('a1', [
+            makeMessage('m1', 1n),
+            makeMessage('m2', 2n),
+          ], true)
           expect(store.hasOlderMessages('a1')).toBe(true)
           expect(store.isInitialLoadComplete('a1')).toBe(true)
           dispose()
@@ -1203,7 +1342,9 @@ describe('createChatStore', () => {
       it('should default hasMore to false', () => {
         createRoot((dispose) => {
           const store = createChatStore()
-          store.setMessages('a1', [makeMessage('m1', 1n)])
+          store.setMessages('a1', [
+            makeMessage('m1', 1n),
+          ])
           expect(store.hasOlderMessages('a1')).toBe(false)
           expect(store.isInitialLoadComplete('a1')).toBe(true)
           dispose()
@@ -1215,7 +1356,10 @@ describe('createChatStore', () => {
       it('should return first message seq', () => {
         createRoot((dispose) => {
           const store = createChatStore()
-          store.setMessages('a1', [makeMessage('m1', 5n), makeMessage('m2', 6n)])
+          store.setMessages('a1', [
+            makeMessage('m1', 5n),
+            makeMessage('m2', 6n),
+          ])
           expect(store.getFirstSeq('a1')).toBe(5n)
           dispose()
         })
@@ -1234,7 +1378,10 @@ describe('createChatStore', () => {
       it('should return last message seq', () => {
         createRoot((dispose) => {
           const store = createChatStore()
-          store.setMessages('a1', [makeMessage('m1', 5n), makeMessage('m2', 10n)])
+          store.setMessages('a1', [
+            makeMessage('m1', 5n),
+            makeMessage('m2', 10n),
+          ])
           expect(store.getLastSeq('a1')).toBe(10n)
           dispose()
         })
@@ -1311,7 +1458,11 @@ describe('createChatStore', () => {
       it('should save and retrieve viewport scroll state', () => {
         createRoot((dispose) => {
           const store = createChatStore()
-          const scroll = { anchor: { id: 'm42', offsetWithinRow: 120 }, atBottom: false, hasMoreNewer: false }
+          const scroll = {
+            anchor: { id: 'm42', offsetWithinRow: 120 },
+            atBottom: false,
+            hasMoreNewer: false,
+          }
           store.viewportScroll.set('a1', scroll)
           expect(store.viewportScroll.get('a1')).toEqual(scroll)
           dispose()
@@ -1331,7 +1482,11 @@ describe('createChatStore', () => {
       it('should clear saved viewport scroll state', () => {
         createRoot((dispose) => {
           const store = createChatStore()
-          store.viewportScroll.set('a1', { anchor: { id: 'm1', offsetWithinRow: 120 }, atBottom: false, hasMoreNewer: true })
+          store.viewportScroll.set('a1', {
+            anchor: { id: 'm1', offsetWithinRow: 120 },
+            atBottom: false,
+            hasMoreNewer: true,
+          })
           store.viewportScroll.clear('a1')
           expect(store.viewportScroll.get('a1')).toBeUndefined()
           dispose()
@@ -1350,8 +1505,14 @@ describe('createChatStore', () => {
         createRoot((dispose) => {
           const store = createChatStore()
           // A loaded window marks the agent's chat as live (initialLoadComplete).
-          store.setMessages('a1', [makeMessage('m1', 1n)], true)
-          const scroll = { anchor: { id: 'm1', offsetWithinRow: 40 }, atBottom: false, hasMoreNewer: false }
+          store.setMessages('a1', [
+            makeMessage('m1', 1n),
+          ], true)
+          const scroll = {
+            anchor: { id: 'm1', offsetWithinRow: 40 },
+            atBottom: false,
+            hasMoreNewer: false,
+          }
           store.saveViewportScrollForRemount('a1', scroll)
           expect(store.viewportScroll.get('a1')).toEqual(scroll)
           dispose()
@@ -1373,7 +1534,9 @@ describe('createChatStore', () => {
       it('saveViewportScrollForRemount does NOT resurrect an entry for a reaped agent', () => {
         createRoot((dispose) => {
           const store = createChatStore()
-          store.setMessages('a1', [makeMessage('m1', 1n)], true)
+          store.setMessages('a1', [
+            makeMessage('m1', 1n),
+          ], true)
           // Agent close reaps the whole per-agent state first (forgetAgent), and the
           // ChatView unmount-save fires AFTER it -- the save must not leak an entry back.
           store.forgetAgent('a1')
@@ -1390,8 +1553,14 @@ describe('createChatStore', () => {
           // A workspace switch removes the tab (a tabStore concern) but never calls
           // forgetAgent, so the chat window stays live and the switch-away position must
           // survive for the switch-back restore -- the case a tabStore-liveness guard drops.
-          store.setMessages('a1', [makeMessage('m1', 1n)], true)
-          const scroll = { anchor: { id: 'm1', offsetWithinRow: 8 }, atBottom: false, hasMoreNewer: false }
+          store.setMessages('a1', [
+            makeMessage('m1', 1n),
+          ], true)
+          const scroll = {
+            anchor: { id: 'm1', offsetWithinRow: 8 },
+            atBottom: false,
+            hasMoreNewer: false,
+          }
           store.saveViewportScrollForRemount('a1', scroll)
           expect(store.viewportScroll.get('a1')).toEqual(scroll)
           dispose()
@@ -1419,7 +1588,12 @@ describe('createChatStore', () => {
       it('should skip if already loaded', async () => {
         await createRoot(async (dispose) => {
           const store = createChatStore()
-          mockListAgentMessages.mockResolvedValueOnce({ messages: [makeMessage('m1', 1n)], hasMore: false })
+          mockListAgentMessages.mockResolvedValueOnce({
+            messages: [
+              makeMessage('m1', 1n),
+            ],
+            hasMore: false,
+          })
 
           await store.loadInitialMessages('w1', 'a1')
           const callCount = mockListAgentMessages.mock.calls.length
@@ -1482,7 +1656,9 @@ describe('createChatStore', () => {
       it('should not fetch when hasMoreOlder is false', async () => {
         await createRoot(async (dispose) => {
           const store = createChatStore()
-          store.setMessages('a1', [makeMessage('m1', 1n)], false)
+          store.setMessages('a1', [
+            makeMessage('m1', 1n),
+          ], false)
 
           const callCount = mockListAgentMessages.mock.calls.length
           await store.loadOlderMessages('w1', 'a1')
@@ -1494,7 +1670,9 @@ describe('createChatStore', () => {
       it('should not fetch when already fetching', async () => {
         await createRoot(async (dispose) => {
           const store = createChatStore()
-          const initial = [makeMessage('m1', 10n)]
+          const initial = [
+            makeMessage('m1', 10n),
+          ]
           store.setMessages('a1', initial, true)
 
           let resolveFn: (value: unknown) => void
@@ -1517,10 +1695,16 @@ describe('createChatStore', () => {
       it('should deduplicate overlapping seqs', async () => {
         await createRoot(async (dispose) => {
           const store = createChatStore()
-          store.setMessages('a1', [makeMessage('m5', 5n), makeMessage('m6', 6n)], true)
+          store.setMessages('a1', [
+            makeMessage('m5', 5n),
+            makeMessage('m6', 6n),
+          ], true)
 
           // Return messages that overlap with existing ones
-          const older = [makeMessage('m4', 4n), makeMessage('m5_dup', 5n)]
+          const older = [
+            makeMessage('m4', 4n),
+            makeMessage('m5_dup', 5n),
+          ]
           mockListAgentMessages.mockResolvedValueOnce({ messages: older, hasMore: false })
 
           await store.loadOlderMessages('w1', 'a1')
@@ -1611,7 +1795,9 @@ describe('createChatStore', () => {
         await createRoot(async (dispose) => {
           mockListAgentMessages.mockClear()
           const store = createChatStore()
-          store.setMessages('a1', [makeMessage('m1', 1n)])
+          store.setMessages('a1', [
+            makeMessage('m1', 1n),
+          ])
 
           const controller = new AbortController()
 
@@ -1636,7 +1822,9 @@ describe('createChatStore', () => {
         await createRoot(async (dispose) => {
           mockListAgentMessages.mockClear()
           const store = createChatStore()
-          store.setMessages('a1', [makeMessage('m1', 1n)]) // at tail, hasMoreNewer=false
+          store.setMessages('a1', [
+            makeMessage('m1', 1n),
+          ]) // at tail, hasMoreNewer=false
 
           // Hold catch-up's first AFTER page pending so a user fetch can supersede
           // it mid-flight.
@@ -1646,7 +1834,12 @@ describe('createChatStore', () => {
           })
           mockListAgentMessages
             .mockReturnValueOnce(catchUpPage) // catch-up's first page (stays pending)
-            .mockResolvedValueOnce({ messages: [makeMessage('m1', 1n)], hasMore: false }) // jump's LATEST
+            .mockResolvedValueOnce({
+              messages: [
+                makeMessage('m1', 1n),
+              ],
+              hasMore: false,
+            }) // jump's LATEST
             .mockResolvedValue({ messages: [], hasMore: false })
 
           const catchUpDone = store.catchUpToTail('w1', 'a1', 1n)
@@ -1658,7 +1851,13 @@ describe('createChatStore', () => {
 
           // Resolve catch-up's now-superseded page: it must be DISCARDED, not spliced
           // in behind the jump's fresh window.
-          resolveCatchUp({ messages: [makeMessage('m2', 2n), makeMessage('m3', 3n)], hasMore: true })
+          resolveCatchUp({
+            messages: [
+              makeMessage('m2', 2n),
+              makeMessage('m3', 3n),
+            ],
+            hasMore: true,
+          })
           await catchUpDone
           await jumpDone
 
@@ -1674,7 +1873,9 @@ describe('createChatStore', () => {
         await createRoot(async (dispose) => {
           mockListAgentMessages.mockClear()
           const store = createChatStore()
-          store.setMessages('a1', [makeMessage('m1', 1n)])
+          store.setMessages('a1', [
+            makeMessage('m1', 1n),
+          ])
 
           mockListAgentMessages.mockResolvedValueOnce({ messages: [], hasMore: false })
 
@@ -1689,14 +1890,24 @@ describe('createChatStore', () => {
         await createRoot(async (dispose) => {
           mockListAgentMessages.mockReset()
           const store = createChatStore()
-          store.setMessages('a1', [makeMessage('m1', 1n)])
+          store.setMessages('a1', [
+            makeMessage('m1', 1n),
+          ])
           // A live message at seq 5 was observed (recorded) then DELETED while we were
           // scrolled away, so the server can no longer give it back.
           store.liveTail.bump('a1', 5n)
           // LATEST re-anchors at [1,2,3]; every AFTER page is empty (seq 5 is gone).
           mockListAgentMessages.mockImplementation(async (_w: string, req: { anchor: MessagePageAnchor }) => {
-            if (req.anchor === MessagePageAnchor.LATEST)
-              return { messages: [makeMessage('m1', 1n), makeMessage('m2', 2n), makeMessage('m3', 3n)], hasMore: false }
+            if (req.anchor === MessagePageAnchor.LATEST) {
+              return {
+                messages: [
+                  makeMessage('m1', 1n),
+                  makeMessage('m2', 2n),
+                  makeMessage('m3', 3n),
+                ],
+                hasMore: false,
+              }
+            }
             return { messages: [], hasMore: false } // the vanished seq is unreachable
           })
 
@@ -1714,20 +1925,33 @@ describe('createChatStore', () => {
         await createRoot(async (dispose) => {
           mockListAgentMessages.mockReset()
           const store = createChatStore()
-          store.setMessages('a1', [makeMessage('m1', 1n)])
+          store.setMessages('a1', [
+            makeMessage('m1', 1n),
+          ])
           // The recorded tail sits far ahead and stays there (an ongoing storm).
           store.liveTail.bump('a1', 100n)
           // LATEST re-anchors at [1]; each AFTER page advances the window by exactly
           // one, so EVERY fill round makes progress yet never catches the tail.
           mockListAgentMessages.mockImplementation(async (_w: string, req: { anchor: MessagePageAnchor, cursorSeq?: bigint }) => {
-            if (req.anchor === MessagePageAnchor.LATEST)
-              return { messages: [makeMessage('m1', 1n)], hasMore: false }
+            if (req.anchor === MessagePageAnchor.LATEST) {
+              return {
+                messages: [
+                  makeMessage('m1', 1n),
+                ],
+                hasMore: false,
+              }
+            }
             const cursor = req.cursorSeq ?? 0n
             // retryDedupStall probes just below the recorded tail (~99): unreachable.
             if (cursor >= 50n)
               return { messages: [], hasMore: false }
             const next = cursor + 1n
-            return { messages: [makeMessage(`m${next}`, next)], hasMore: false }
+            return {
+              messages: [
+                makeMessage(`m${next}`, next),
+              ],
+              hasMore: false,
+            }
           })
 
           await store.jumpToLatestMessages('w1', 'a1')
@@ -1761,19 +1985,32 @@ describe('createChatStore', () => {
         await createRoot(async (dispose) => {
           mockListAgentMessages.mockReset()
           const store = createChatStore()
-          store.setMessages('a1', [makeMessage('m1', 1n)])
+          store.setMessages('a1', [
+            makeMessage('m1', 1n),
+          ])
           // Arm the exhaustion-forced deferral: an ongoing broadcast storm (recorded tail
           // far ahead) where every AFTER page advances by one but never catches up, so the
           // bounded fill runs out of attempts while still advancing -> tailFillDeferred set.
           store.liveTail.bump('a1', 100n)
           mockListAgentMessages.mockImplementation(async (_w: string, req: { anchor: MessagePageAnchor, cursorSeq?: bigint }) => {
-            if (req.anchor === MessagePageAnchor.LATEST)
-              return { messages: [makeMessage('m1', 1n)], hasMore: false }
+            if (req.anchor === MessagePageAnchor.LATEST) {
+              return {
+                messages: [
+                  makeMessage('m1', 1n),
+                ],
+                hasMore: false,
+              }
+            }
             const cursor = req.cursorSeq ?? 0n
             if (cursor >= 50n)
               return { messages: [], hasMore: false }
             const next = cursor + 1n
-            return { messages: [makeMessage(`m${next}`, next)], hasMore: false }
+            return {
+              messages: [
+                makeMessage(`m${next}`, next),
+              ],
+              hasMore: false,
+            }
           })
           await store.jumpToLatestMessages('w1', 'a1')
           expect(store.isTailFillDeferred('a1')).toBe(true)
@@ -1795,17 +2032,31 @@ describe('createChatStore', () => {
           mockListAgentMessages.mockReset()
           const store = createChatStore()
           // At the tail (hasMoreNewer false) with room to trim.
-          store.setMessages('a1', [makeMessage('m1', 1n), makeMessage('m2', 2n), makeMessage('m3', 3n)])
+          store.setMessages('a1', [
+            makeMessage('m1', 1n),
+            makeMessage('m2', 2n),
+            makeMessage('m3', 3n),
+          ])
           expect(store.hasNewerMessages('a1')).toBe(false)
 
           // The first forward page reports more pages, but as it lands a
           // concurrent older-history load trims the newest end -> hasMoreNewer.
           mockListAgentMessages.mockImplementationOnce(async () => {
             store.trimNewestEnd('a1', 1) // window -> [m1], hasMoreNewer = true
-            return { messages: [makeMessage('m4', 4n)], hasMore: true }
+            return {
+              messages: [
+                makeMessage('m4', 4n),
+              ],
+              hasMore: true,
+            }
           })
           // A second iteration would consume this page; the loop must NOT reach it.
-          mockListAgentMessages.mockResolvedValue({ messages: [makeMessage('m99', 99n)], hasMore: false })
+          mockListAgentMessages.mockResolvedValue({
+            messages: [
+              makeMessage('m99', 99n),
+            ],
+            hasMore: false,
+          })
 
           await store.catchUpToTail('w1', 'a1', 3n)
           // Exactly one fetch: the re-checked hasMoreNewer broke the loop.
@@ -1957,7 +2208,10 @@ describe('createChatStore', () => {
           store.setMessages('a1', [result, ...filler], true)
           // Scroll up: the older page carries the real request (seq 50).
           const request = makeSpanMessage('op', 50n, 's1', 'REQUEST')
-          mockListAgentMessages.mockResolvedValueOnce({ messages: [request], hasMore: false })
+          mockListAgentMessages.mockResolvedValueOnce({
+            messages: [request],
+            hasMore: false,
+          })
           await store.loadOlderMessages('w1', 'a1')
           // After the prepend and reindex over the seq-ascending window, request and
           // result are correctly separated rather than swapped.
@@ -1990,7 +2244,9 @@ describe('createChatStore', () => {
         createRoot((dispose) => {
           const store = createChatStore()
           // A server tool_result occupies seq 51 (span s1).
-          store.setMessages('a1', [makeToolResultSpan('res', 51n, 's1')])
+          store.setMessages('a1', [
+            makeToolResultSpan('res', 51n, 's1'),
+          ])
           expect(storeContext(store, 'a1').result({ spanId: 's1', agentSessionId: '' })?.resolved?.parentObject?.type).toBe('user')
           // A re-broadcast arrives with the SAME seq under a DIFFERENT id and span.
           // addMessage's dedup short-circuit discards it (seq 51 already present),
@@ -2064,7 +2320,12 @@ describe('createChatStore', () => {
           expect(msgs).toHaveLength(50)
           expect(msgs.at(-1)!.seq).toBe(50n)
           expect(store.hasNewerMessages('a1')).toBe(false)
-          expect(mockListAgentMessages).toHaveBeenLastCalledWith('w1', { agentId: 'a1', anchor: MessagePageAnchor.AFTER, cursorSeq: 30n, limit: MESSAGE_PAGE_LIMIT })
+          expect(mockListAgentMessages).toHaveBeenLastCalledWith('w1', {
+            agentId: 'a1',
+            anchor: MessagePageAnchor.AFTER,
+            cursorSeq: 30n,
+            limit: MESSAGE_PAGE_LIMIT,
+          })
           dispose()
         })
       })
@@ -2079,7 +2340,10 @@ describe('createChatStore', () => {
           // new, higher seq. Seq-only dedup would miss it and insert a duplicate row
           // sharing one id -- which the id-keyed virtualizer collapses onto one slot.
           const reseqd = makeMessage('m10', 35n)
-          const newer = [makeMessage('n31', 31n), reseqd]
+          const newer = [
+            makeMessage('n31', 31n),
+            reseqd,
+          ]
           mockListAgentMessages.mockResolvedValueOnce({ messages: newer, hasMore: false })
 
           await store.loadNewerPage('w1', 'a1')
@@ -2097,7 +2361,11 @@ describe('createChatStore', () => {
           // The reseq'd row is reinserted BY SEQ (35, after the seq-30 tail), not
           // merely appended -- the whole server window stays seq-ascending.
           const serverSeqs = msgs.map(m => m.seq)
-          expect(serverSeqs).toEqual([...serverSeqs].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)))
+          expect(serverSeqs).toEqual([...serverSeqs].sort((a, b) => (a < b
+            ? -1
+            : a > b
+              ? 1
+              : 0)))
           expect(serverSeqs.at(-1)).toBe(35n)
           dispose()
         })
@@ -2115,7 +2383,13 @@ describe('createChatStore', () => {
           // reseq to MAX(seq)+1 never collides -- a collision means the occupant is
           // stale and its true position arrives in a later fetch).
           const reseqd = makeMessage('m10', 21n)
-          mockListAgentMessages.mockResolvedValueOnce({ messages: [makeMessage('n31', 31n), reseqd], hasMore: false })
+          mockListAgentMessages.mockResolvedValueOnce({
+            messages: [
+              makeMessage('n31', 31n),
+              reseqd,
+            ],
+            hasMore: false,
+          })
 
           await store.loadNewerPage('w1', 'a1')
           const msgs = store.getMessages('a1')
@@ -2135,7 +2409,11 @@ describe('createChatStore', () => {
           // The window stays strictly seq-ascending (no duplicate seq), so the binary
           // searches over the offset map remain valid.
           const serverSeqs = msgs.map(m => m.seq)
-          expect(serverSeqs).toEqual([...serverSeqs].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)))
+          expect(serverSeqs).toEqual([...serverSeqs].sort((a, b) => (a < b
+            ? -1
+            : a > b
+              ? 1
+              : 0)))
           dispose()
         })
       })
@@ -2144,7 +2422,9 @@ describe('createChatStore', () => {
         await createRoot(async (dispose) => {
           mockListAgentMessages.mockClear()
           const store = createChatStore()
-          store.setMessages('a1', [makeMessage('m1', 1n)])
+          store.setMessages('a1', [
+            makeMessage('m1', 1n),
+          ])
           await store.loadNewerPage('w1', 'a1')
           expect(mockListAgentMessages).not.toHaveBeenCalled()
           dispose()
@@ -2270,7 +2550,9 @@ describe('createChatStore', () => {
       it('during catch-up drops a non-contiguous beyond-tail frame (recording the live tail) but splices a contiguous one', () => {
         createRoot((dispose) => {
           const store = createChatStore()
-          store.setMessages('a1', [makeMessage('m1', 1n)]) // at tail, lastSeq=1, hasMoreNewer=false
+          store.setMessages('a1', [
+            makeMessage('m1', 1n),
+          ]) // at tail, lastSeq=1, hasMoreNewer=false
           store.setCatchingUp('a1', true)
           // seq 3 is more than one past the loaded tail (1): the bounded replay hasn't
           // filled seq 2 yet, so splicing would tear a hole. Dropped + recorded in
@@ -2290,7 +2572,9 @@ describe('createChatStore', () => {
       it('in the LIVE phase splices a non-contiguous beyond-tail frame (a delete-gap, not a catch-up gap)', () => {
         createRoot((dispose) => {
           const store = createChatStore()
-          store.setMessages('a1', [makeMessage('m1', 1n)]) // live phase (catchingUp false), lastSeq=1
+          store.setMessages('a1', [
+            makeMessage('m1', 1n),
+          ]) // live phase (catchingUp false), lastSeq=1
           // A frame at seq 3 (for example, a failed input reserved seq 2): in the LIVE
           // phase the recorded-live-tail comparison keeps it (recordedLiveTail <= lastSeq),
           // so it SPLICES rather than drop+refetch -- the opposite of the catch-up phase.
@@ -2343,7 +2627,10 @@ describe('createChatStore', () => {
           // A request (tool_use) and its result (tool_result) share one spanId. The
           // result sizes its diff from the REQUEST, so it must observe the request's
           // content version (which an in-place request edit increments).
-          store.setMessages('a1', [makeToolUseSpan('op', 1n, 'spanX'), makeToolResultSpan('res', 2n, 'spanX')])
+          store.setMessages('a1', [
+            makeToolUseSpan('op', 1n, 'spanX'),
+            makeToolResultSpan('res', 2n, 'spanX'),
+          ])
           expect((storeContext(store, 'a1').request({ spanId: 'spanX', agentSessionId: '' })?.revision.contentVersion ?? 0)).toBe(0)
           // The request's body is replaced in place with NEW content (same id+seq, edited
           // tool input) -> its version bumps, and the result's spanId lookup reflects it.
@@ -2386,7 +2673,10 @@ describe('createChatStore', () => {
           // A full-window replace (jump-to-latest / reconnect snapshot / setMessages)
           // drops m0 and m2 but re-lands m1. Without reclamation here the un-capped
           // messageContentVersions map would orphan m0's counter for the session.
-          store.setMessages('a1', [makeMessage('m1', 2n), makeMessage('m9', 9n)])
+          store.setMessages('a1', [
+            makeMessage('m1', 2n),
+            makeMessage('m9', 9n),
+          ])
           expect(store.getMessageContentVersion('m0')).toBe(0) // dropped -> reclaimed
           expect(store.getMessageContentVersion('m1')).toBe(1) // re-landed -> preserved
           dispose()
@@ -2416,7 +2706,9 @@ describe('createChatStore', () => {
           // pre-update body unless the store both bumps the content version AND evicts
           // the by-reference parse cache. Wire a real cache to the store and prove it.
           const store = createChatStore()
-          store.setMessages('a1', [makeUserMessage('m1', 1n, 'first')])
+          store.setMessages('a1', [
+            makeUserMessage('m1', 1n, 'first'),
+          ])
           const cache = createClassifiedEntryCache({
             messages: () => store.getMessages('a1'),
             contentVersionById: id => store.getMessageContentVersion(id),
@@ -2546,7 +2838,10 @@ describe('createChatStore', () => {
       it('returns the window tail when caught up to the live tail', () => {
         createRoot((dispose) => {
           const store = createChatStore()
-          store.setMessages('a1', [makeMessage('m1', 1n), makeMessage('m2', 2n)])
+          store.setMessages('a1', [
+            makeMessage('m1', 1n),
+            makeMessage('m2', 2n),
+          ])
           expect(store.getResumeAfterSeq('a1')).toBe(2n)
           dispose()
         })
@@ -2670,10 +2965,22 @@ describe('createChatStore', () => {
           // jumpToLatest re-anchors on a LATEST page that raced the burst (reaches only
           // seq 50), so the gap-free forward fill pages AFTER to the live tail -- 150+
           // rows across four pages.
-          mockListAgentMessages.mockResolvedValueOnce({ messages: pageOf(1, 50), hasMore: false }) // LATEST -> 1..50
-          mockListAgentMessages.mockResolvedValueOnce({ messages: pageOf(51, 50), hasMore: true }) // AFTER 50 -> 51..100
-          mockListAgentMessages.mockResolvedValueOnce({ messages: pageOf(101, 50), hasMore: true }) // AFTER 100 -> 101..150
-          mockListAgentMessages.mockResolvedValueOnce({ messages: pageOf(151, 50), hasMore: false }) // AFTER 150 -> 151..200 (tail)
+          mockListAgentMessages.mockResolvedValueOnce({
+            messages: pageOf(1, 50),
+            hasMore: false,
+          }) // LATEST -> 1..50
+          mockListAgentMessages.mockResolvedValueOnce({
+            messages: pageOf(51, 50),
+            hasMore: true,
+          }) // AFTER 50 -> 51..100
+          mockListAgentMessages.mockResolvedValueOnce({
+            messages: pageOf(101, 50),
+            hasMore: true,
+          }) // AFTER 100 -> 101..150
+          mockListAgentMessages.mockResolvedValueOnce({
+            messages: pageOf(151, 50),
+            hasMore: false,
+          }) // AFTER 150 -> 151..200 (tail)
 
           await store.jumpToLatestMessages('w1', 'a1')
 
@@ -2754,7 +3061,10 @@ describe('createChatStore', () => {
           // ...but the auto-retry anchored at latestLiveSeq-1 (cursor 51) reaches the
           // genuine tail (seq 52), healing the gap.
           mockListAgentMessages.mockResolvedValueOnce({
-            messages: [makeMessage('m51', 51n), makeMessage('live52', 52n)],
+            messages: [
+              makeMessage('m51', 51n),
+              makeMessage('live52', 52n),
+            ],
             hasMore: false,
           })
 
@@ -2783,7 +3093,10 @@ describe('createChatStore', () => {
           // guard drops it but records it as the live tail (latestLiveSeq=70).
           mockListAgentMessages.mockImplementationOnce(async () => {
             store.addMessage('a1', makeMessage('live70', 70n))
-            return { messages: Array.from({ length: 50 }, (_, i) => makeMessage(`m${i}`, BigInt(i + 1))), hasMore: false } // 1..50
+            return {
+              messages: Array.from({ length: 50 }, (_, i) => makeMessage(`m${i}`, BigInt(i + 1))),
+              hasMore: false,
+            } // 1..50
           })
           // Every subsequent AFTER fetch can't yet see seq 70 (committed after the
           // query snapshot): it returns only already-present rows -- a dedup-stall.
@@ -2898,7 +3211,12 @@ describe('createChatStore', () => {
 
           // When the stuck fetch finally resolves, its result is discarded
           // (superseded) and it must not clobber the flag or inject a ghost row.
-          resolveStuck({ messages: [makeMessage('ghost', 999n)], hasMore: true })
+          resolveStuck({
+            messages: [
+              makeMessage('ghost', 999n),
+            ],
+            hasMore: true,
+          })
           await stuck
           expect(store.getMessages('a1').some(m => m.id === 'ghost')).toBe(false)
           expect(store.isFetchingNewer('a1')).toBe(false)
@@ -2937,7 +3255,12 @@ describe('createChatStore', () => {
           expect(store.isFetchingNewer('a1')).toBe(false)
 
           // Proof the wedge is gone: a subsequent loadNewerPage actually fetches.
-          mockListAgentMessages.mockResolvedValueOnce({ messages: [makeMessage('newpage', 31n)], hasMore: false })
+          mockListAgentMessages.mockResolvedValueOnce({
+            messages: [
+              makeMessage('newpage', 31n),
+            ],
+            hasMore: false,
+          })
           await store.loadNewerPage('w1', 'a1')
           expect(store.getMessages('a1').some(m => m.id === 'newpage')).toBe(true)
           dispose()
@@ -2958,13 +3281,23 @@ describe('createChatStore', () => {
           expect(store.isFetchingOlder('a1')).toBe(true)
 
           // A jump-to-latest fires while it's still in flight and lands fresh.
-          mockListAgentMessages.mockResolvedValueOnce({ messages: [makeMessage('fresh', 99n)], hasMore: false })
+          mockListAgentMessages.mockResolvedValueOnce({
+            messages: [
+              makeMessage('fresh', 99n),
+            ],
+            hasMore: false,
+          })
           await store.jumpToLatestMessages('w1', 'a1')
           expect(store.getMessages('a1').map(m => m.id)).toEqual(['fresh'])
 
           // The stale initial page resolves last; superseded, it must be discarded
           // rather than overwriting the jump's window.
-          releaseInitial({ messages: [makeMessage('stale', 1n)], hasMore: true })
+          releaseInitial({
+            messages: [
+              makeMessage('stale', 1n),
+            ],
+            hasMore: true,
+          })
           await initial
           expect(store.getMessages('a1').map(m => m.id)).toEqual(['fresh'])
           expect(store.hasNewerMessages('a1')).toBe(false)
@@ -2990,7 +3323,9 @@ describe('createChatStore', () => {
       await createRoot(async (dispose) => {
         const store = createChatStore()
         mockListAgentMessages.mockResolvedValueOnce({
-          messages: [makeMessage('m1', 1n)],
+          messages: [
+            makeMessage('m1', 1n),
+          ],
           hasMore: false,
           todos: sampleTodos,
           todosLoaded: true,
@@ -3000,8 +3335,22 @@ describe('createChatStore', () => {
         expect(store.todos.get('a1')).toEqual([
           // No id from this provider, so the reconciliation key is the row's
           // position paired with its content -- see TodoItem.rowKey.
-          { id: undefined, rowKey: '0:Write tests', content: 'Write tests', status: 'completed', activeForm: 'Writing tests', description: undefined },
-          { id: undefined, rowKey: '1:Deploy', content: 'Deploy', status: 'in_progress', activeForm: 'Deploying', description: undefined },
+          {
+            id: undefined,
+            rowKey: '0:Write tests',
+            content: 'Write tests',
+            status: 'completed',
+            activeForm: 'Writing tests',
+            description: undefined,
+          },
+          {
+            id: undefined,
+            rowKey: '1:Deploy',
+            content: 'Deploy',
+            status: 'in_progress',
+            activeForm: 'Deploying',
+            description: undefined,
+          },
         ])
         dispose()
       })
@@ -3014,7 +3363,9 @@ describe('createChatStore', () => {
         // (todosLoaded true): it overwrites to empty.
         store.todos.replace('a1', sampleTodos)
         mockListAgentMessages.mockResolvedValueOnce({
-          messages: [makeMessage('m1', 1n)],
+          messages: [
+            makeMessage('m1', 1n),
+          ],
           hasMore: false,
           todos: [],
           todosLoaded: true,
@@ -3035,7 +3386,9 @@ describe('createChatStore', () => {
         // Must NOT wipe the populated list (the wire can't otherwise distinguish a
         // failed load from a genuine empty list).
         mockListAgentMessages.mockResolvedValueOnce({
-          messages: [makeMessage('m1', 1n)],
+          messages: [
+            makeMessage('m1', 1n),
+          ],
           hasMore: false,
           todos: [],
           todosLoaded: false,
@@ -3083,7 +3436,10 @@ describe('createChatStore', () => {
     it('getFirstSeq returns the first message sequence', () => {
       createRoot((dispose) => {
         const store = createChatStore()
-        store.setMessages('a1', [makeMessage('s1', 5n), makeMessage('s2', 6n)])
+        store.setMessages('a1', [
+          makeMessage('s1', 5n),
+          makeMessage('s2', 6n),
+        ])
         expect(store.getFirstSeq('a1')).toBe(5n)
         dispose()
       })
@@ -3129,7 +3485,10 @@ describe('createChatStore', () => {
     it('should not increment on setMessages', () => {
       createRoot((dispose) => {
         const store = createChatStore()
-        store.setMessages('a1', [makeMessage('m1', 1n), makeMessage('m2', 2n)])
+        store.setMessages('a1', [
+          makeMessage('m1', 1n),
+          makeMessage('m2', 2n),
+        ])
         expect(store.getMessageVersion('a1')).toBe(0)
         dispose()
       })
@@ -3168,13 +3527,18 @@ describe('createChatStore', () => {
       createRoot((dispose) => {
         const store = createChatStore()
         // Window holds [m2, m3] with older history unloaded (hasMoreOlder=true).
-        store.setMessages('a1', [makeMessage('m2', 2n), makeMessage('m3', 3n)], true)
+        store.setMessages('a1', [
+          makeMessage('m2', 2n),
+          makeMessage('m3', 3n),
+        ], true)
         // A marked message for seq 1 (< firstSeq) belongs to the unloaded older region,
         // so the live-append guard DROPS it -- but the mark is recorded first.
         const dropped = store.addMessage('a1', makeMarkedMessage('m1', 1n, MarkType.USER_MESSAGE))
         expect(dropped).toBe(false) // not loaded into the window
         expect(store.getMessages('a1').map(m => m.id)).toEqual(['m2', 'm3'])
-        expect(store.messageMarks.get('a1').marks).toEqual([{ seq: 1n, type: MarkType.USER_MESSAGE }])
+        expect(store.messageMarks.get('a1').marks).toEqual([
+          { seq: 1n, type: MarkType.USER_MESSAGE },
+        ])
         dispose()
       })
     })
@@ -3183,7 +3547,9 @@ describe('createChatStore', () => {
       createRoot((dispose) => {
         const store = createChatStore()
         store.addMessage('a1', makeMarkedMessage('m1', 3n, MarkType.CONTROL_RESPONSE))
-        expect(store.messageMarks.get('a1').marks).toEqual([{ seq: 3n, type: MarkType.CONTROL_RESPONSE }])
+        expect(store.messageMarks.get('a1').marks).toEqual([
+          { seq: 3n, type: MarkType.CONTROL_RESPONSE },
+        ])
         // A reseq MOVE re-emits the same id at a higher seq, carrying its mark.
         const moved = create(AgentChatMessageSchema, {
           id: 'm1',
@@ -3195,7 +3561,9 @@ describe('createChatStore', () => {
         })
         store.addMessage('a1', moved)
         // The mark follows to seq 8 with no ghost left behind at seq 3.
-        expect(store.messageMarks.get('a1').marks).toEqual([{ seq: 8n, type: MarkType.CONTROL_RESPONSE }])
+        expect(store.messageMarks.get('a1').marks).toEqual([
+          { seq: 8n, type: MarkType.CONTROL_RESPONSE },
+        ])
         dispose()
       })
     })
@@ -3236,9 +3604,13 @@ describe('createChatStore', () => {
     it('getRailData takes the live-tail high-water over the seeded max', () => {
       createRoot((dispose) => {
         const store = createChatStore()
-        store.messageMarks.seed('a1', [{ seq: 2n, type: MarkType.USER_MESSAGE }], 1n, 5n)
+        store.messageMarks.seed('a1', [
+          { seq: 2n, type: MarkType.USER_MESSAGE },
+        ], 1n, 5n)
         // A beyond-window live message bumps liveTail past the seed's max.
-        store.setMessages('a1', [makeMessage('m2', 2n)], true)
+        store.setMessages('a1', [
+          makeMessage('m2', 2n),
+        ], true)
         store.addMessage('a1', makeMessage('m9', 9n)) // dropped beyond window, bumps liveTail
         const rail = store.getRailData('a1')
         expect(rail.loaded).toBe(true)
@@ -3250,7 +3622,10 @@ describe('createChatStore', () => {
 
     it('loadMessageMarks seeds from the RPC and survives an RPC failure', async () => {
       mockListMessageMarks.mockResolvedValueOnce({
-        marks: [{ seq: 3n, type: MarkType.USER_MESSAGE }, { seq: 7n, type: MarkType.CONTROL_RESPONSE }],
+        marks: [
+          { seq: 3n, type: MarkType.USER_MESSAGE },
+          { seq: 7n, type: MarkType.CONTROL_RESPONSE },
+        ],
         minSeq: 1n,
         maxSeq: 10n,
       })

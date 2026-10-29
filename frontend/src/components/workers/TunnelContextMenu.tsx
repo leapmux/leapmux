@@ -12,7 +12,9 @@ export const TunnelContextMenu: Component<TunnelContextMenuProps> = (props) => {
   return (
     <DropdownMenu
       trigger={rowContextMenuTrigger()}
-      {...(props.contextMenuFor !== undefined ? { contextMenuFor: props.contextMenuFor } : {})}
+      {...(props.contextMenuFor !== undefined
+        ? { contextMenuFor: props.contextMenuFor }
+        : {})}
     >
       <button role="menuitem" class={dangerMenuItem} onClick={() => props.onDelete()}>
         Delete...

@@ -473,11 +473,25 @@ export async function readCheckpoint(userId: string, clientId: string): Promise<
         const { frames, truncated, nextOrdinal } = await readOpLogFrames(db, userId, clientId)
         if (truncated)
           log.warn('op-log read stopped early; replaying the prefix and rewriting the checkpoint')
-        return { status: 'ok', checkpoint, chunks, opLogFrames: frames, opLogTruncated: truncated, opLogNextOrdinal: nextOrdinal }
+        return {
+          status: 'ok',
+          checkpoint,
+          chunks,
+          opLogFrames: frames,
+          opLogTruncated: truncated,
+          opLogNextOrdinal: nextOrdinal,
+        }
       }
       catch {
         log.warn('op-log unreadable; replaying nothing onto the checkpoint and rewriting it')
-        return { status: 'ok', checkpoint, chunks, opLogFrames: [], opLogTruncated: true, opLogNextOrdinal: 0 }
+        return {
+          status: 'ok',
+          checkpoint,
+          chunks,
+          opLogFrames: [],
+          opLogTruncated: true,
+          opLogNextOrdinal: 0,
+        }
       }
     })
   }
@@ -579,7 +593,12 @@ export async function appendOpLogSegment(userId: string, clientId: string, frame
     const db = await openDb()
     // `add`, not `put`: the key is store-assigned, so a duplicate is impossible
     // by construction and an accidental overwrite should fail loud.
-    await db.opLog.add({ userId, clientId, ordinal, framesBytes })
+    await db.opLog.add({
+      userId,
+      clientId,
+      ordinal,
+      framesBytes,
+    })
   }
   catch {
     // Quota/private-browsing failures: persistence is an optimization only.
@@ -659,7 +678,12 @@ async function writeDeltaInto(
   })))
   // Keyed deletes: the owner tuple is part of the primary key, so an entity
   // that left the state needs no index walk.
-  await db.checkpointChunks.bulkDelete(delta.deletes.map(ref => [userId, clientId, ref.kind, ref.entityId] as [string, string, string, string]))
+  await db.checkpointChunks.bulkDelete(delta.deletes.map(ref => [
+    userId,
+    clientId,
+    ref.kind,
+    ref.entityId,
+  ] as [string, string, string, string]))
   await db.checkpoints.put({
     userId,
     clientId,
@@ -860,7 +884,12 @@ export async function adoptCheckpoint(
         db,
         userId,
         clientId,
-        { headerBytes: snapshot.headerBytes, upserts: snapshot.chunks, deletes: [], full: true },
+        {
+          headerBytes: snapshot.headerBytes,
+          upserts: snapshot.chunks,
+          deletes: [],
+          full: true,
+        },
         snapshot.watermark,
         snapshot.currentEpoch,
         now,
@@ -876,7 +905,9 @@ export async function adoptCheckpoint(
         })
       }
     })
-    return snapshot.opLogFrames.length > 0 ? 1 : 0
+    return snapshot.opLogFrames.length > 0
+      ? 1
+      : 0
   }
   catch {
     log.warn('checkpoint adoption failed (quota exceeded / private mode); this tab will cold-start its own checkpoint')
@@ -1139,7 +1170,12 @@ export async function sweepAbandonedCheckpoints(
     const victims = [
       ...misdated,
       ...selectSweepVictims(foreign, { now, ttlMs }),
-      ...selectSweepVictims(mine, { now, ttlMs, maxEntries: maxOwners, reserved }),
+      ...selectSweepVictims(mine, {
+        now,
+        ttlMs,
+        maxEntries: maxOwners,
+        reserved,
+      }),
     ]
     if (victims.length === 0)
       return 0

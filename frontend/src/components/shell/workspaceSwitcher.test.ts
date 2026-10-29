@@ -99,7 +99,12 @@ describe('createWorkspaceSwitcher', () => {
     withTestBridge((harness) => {
       createRoot((dispose) => {
         const { switchWorkspace, view, active } = setup()
-        emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: 'M' })
+        emitAddTab({
+          type: TabType.AGENT,
+          id: 'a1',
+          tileId: harness.rootTileId,
+          position: 'M',
+        })
         switchWorkspace(harness.workspaceId)
         switchWorkspace(harness.workspaceId)
 

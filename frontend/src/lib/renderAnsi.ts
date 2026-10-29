@@ -120,7 +120,9 @@ export function renderAnsi(text: string): string {
       // This runs on the main thread, so the transformer injects the CSS
       // rules directly — no dictionary transport needed.
       mergeSameStyleTokens: true,
-      transformers: [shikiStyleClassTransformer()],
+      transformers: [
+        shikiStyleClassTransformer(),
+      ],
     })
   }
   catch {

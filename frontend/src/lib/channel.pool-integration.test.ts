@@ -488,7 +488,9 @@ describe('ChannelManager pooled channel identity', () => {
       ws = new AutoOpenMockWebSocket()
       return ws
     }, () => identity)
-    const cm = makeIdentityCipherManager(transport, { expectedUserId: () => identity })
+    const cm = makeIdentityCipherManager(transport, {
+      expectedUserId: () => identity,
+    })
     try {
       const first = cm.getOrOpenChannel('worker-1')
       await waitForPendingChannel(cm, 'ch-1')
@@ -523,7 +525,9 @@ describe('ChannelManager pooled channel identity', () => {
       ws = new AutoOpenMockWebSocket()
       return ws
     }, () => identity)
-    const cm = makeIdentityCipherManager(transport, { expectedUserId: () => identity })
+    const cm = makeIdentityCipherManager(transport, {
+      expectedUserId: () => identity,
+    })
     try {
       const first = cm.getOrOpenChannel('worker-1')
       await waitForPendingChannel(cm, 'ch-1')
@@ -548,7 +552,9 @@ describe('ChannelManager pooled channel identity', () => {
       ws = new AutoOpenMockWebSocket()
       return ws
     }, () => 'user-a')
-    const cm = makeIdentityCipherManager(transport, { expectedUserId: () => 'user-a' })
+    const cm = makeIdentityCipherManager(transport, {
+      expectedUserId: () => 'user-a',
+    })
     try {
       const first = cm.getOrOpenChannel('worker-1')
       await waitForPendingChannel(cm, 'ch-1')

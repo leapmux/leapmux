@@ -20,16 +20,37 @@ gooseTest('shows the child transcript while the child still runs', async ({ nati
   await modelScript.rule({
     name: 'the permission judge clears the delegate',
     when: { system: 'permission-safety classifier' },
-    respond: { toolCalls: [goosePermissionJudgmentToolCall('judge-goose-live', [LIVE_CHILD_SPAWN_CALL_ID])] },
+    respond: {
+      toolCalls: [
+        goosePermissionJudgmentToolCall('judge-goose-live', [LIVE_CHILD_SPAWN_CALL_ID]),
+      ],
+    },
   })
   const gate = 'goose-live-child-held'
   const start = await modelScript.queue(
-    { toolCalls: [spawnSubagentToolCall(provider, LIVE_CHILD_SPAWN_CALL_ID, {
-      description: 'Run the live shell probe',
-      prompt: modelScript.prompt('Run `echo goose-live` and report the result.'),
-    })] },
-    { toolCalls: [{ id: 'goose-live-shell', name: 'shell', arguments: { command: 'echo goose-live' } }] },
-    { toolCalls: [gooseFinalOutputToolCall('live-child-final-goose', 'GOOSE_CHILD_LIVE_DONE')], gate },
+    {
+      toolCalls: [
+        spawnSubagentToolCall(provider, LIVE_CHILD_SPAWN_CALL_ID, {
+          description: 'Run the live shell probe',
+          prompt: modelScript.prompt('Run `echo goose-live` and report the result.'),
+        }),
+      ],
+    },
+    {
+      toolCalls: [
+        {
+          id: 'goose-live-shell',
+          name: 'shell',
+          arguments: { command: 'echo goose-live' },
+        },
+      ],
+    },
+    {
+      toolCalls: [
+        gooseFinalOutputToolCall('live-child-final-goose', 'GOOSE_CHILD_LIVE_DONE'),
+      ],
+      gate,
+    },
     { text: 'The child reported the probe output.' },
   )
   await sendMessage(page, modelScript.prompt('Delegate the live shell probe to a child.'))

@@ -39,29 +39,56 @@ export function parseProcessRow(line: string): ProcessRow | null {
     return null
   const normalized = command.join(' ')
   const raw = /^\s*\d+\s+\d+\s+(\S.*)$/.exec(line)?.[1]?.trimEnd()
-  return { pid: processId, ppid: parentId, command: normalized, ...(raw !== undefined && raw !== normalized ? { rawCommand: raw } : {}) }
+  return {
+    pid: processId,
+    ppid: parentId,
+    command: normalized,
+    ...(raw !== undefined && raw !== normalized
+      ? { rawCommand: raw }
+      : {}),
+  }
 }
 
 /** Read the native Windows process records without losing an executable path with spaces. */
 export function parseWindowsProcessTable(text: string): ProcessRow[] {
-  const decoded: unknown = text.trim() === '' ? [] : JSON.parse(text)
+  const decoded: unknown = text.trim() === ''
+    ? []
+    : JSON.parse(text)
   if (decoded === null)
     return []
-  const entries = Array.isArray(decoded) ? decoded : [decoded]
+  const entries = Array.isArray(decoded)
+    ? decoded
+    : [decoded]
   return entries.map((value: unknown) => {
     if (typeof value !== 'object' || value === null || Array.isArray(value)
       || !('ProcessId' in value) || typeof value.ProcessId !== 'number' || !Number.isSafeInteger(value.ProcessId) || value.ProcessId < 0
       || !('ParentProcessId' in value) || typeof value.ParentProcessId !== 'number' || !Number.isSafeInteger(value.ParentProcessId) || value.ParentProcessId < 0) {
       throw new Error('The Windows process table contains an invalid process ID.')
     }
-    const command = 'CommandLine' in value ? value.CommandLine : null
-    const executable = 'ExecutablePath' in value ? value.ExecutablePath : null
-    const creationTime = 'CreationTime' in value ? value.CreationTime : null
+    const command = 'CommandLine' in value
+      ? value.CommandLine
+      : null
+    const executable = 'ExecutablePath' in value
+      ? value.ExecutablePath
+      : null
+    const creationTime = 'CreationTime' in value
+      ? value.CreationTime
+      : null
     if ((command !== null && typeof command !== 'string') || (executable !== null && typeof executable !== 'string'))
       throw new Error('The Windows process table contains an invalid command or executable.')
     if (creationTime !== null && (typeof creationTime !== 'string' || !/^[1-9]\d{0,18}$/u.test(creationTime) || BigInt(creationTime) > 9_223_372_036_854_775_807n))
       throw new Error('The Windows process table contains an invalid creation identity.')
-    return { pid: value.ProcessId, ppid: value.ParentProcessId, command: command ?? executable ?? '', ...(executable ? { executable } : {}), ...(creationTime !== null ? { creationTime } : {}) }
+    return {
+      pid: value.ProcessId,
+      ppid: value.ParentProcessId,
+      command: command ?? executable ?? '',
+      ...(executable
+        ? { executable }
+        : {}),
+      ...(creationTime !== null
+        ? { creationTime }
+        : {}),
+    }
   }).filter(row => row.pid > 0)
 }
 
@@ -73,7 +100,11 @@ export function listProcesses(): ProcessRow[] {
     const directory = mkdtempSync(join(scratch, 'windows-process-table-'))
     let rows: ProcessRow[]
     try {
-      const output = execFileSync('powershell.exe', windowsJobArguments('Snapshot'), { encoding: 'utf8', env: { ...process.env, TEMP: directory, TMP: directory }, timeout: 30_000 })
+      const output = execFileSync('powershell.exe', windowsJobArguments('Snapshot'), {
+        encoding: 'utf8',
+        env: { ...process.env, TEMP: directory, TMP: directory },
+        timeout: 30_000,
+      })
       rows = parseWindowsProcessTable(output)
     }
     catch (error) {
@@ -91,7 +122,9 @@ export function listProcesses(): ProcessRow[] {
   const output = execFileSync('ps', ['-axo', 'pid=,ppid=,command='], { encoding: 'utf8' })
   return output.split('\n').flatMap((line) => {
     const row = parseProcessRow(line)
-    return row ? [row] : []
+    return row
+      ? [row]
+      : []
   })
 }
 

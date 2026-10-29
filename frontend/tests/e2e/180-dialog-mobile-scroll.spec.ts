@@ -28,7 +28,9 @@ interface DialogGeometry {
 }
 
 test.describe('creation dialog on a phone', () => {
-  test.use({ viewport: { width: 390, height: 667 } })
+  test.use({
+    viewport: { width: 390, height: 667 },
+  })
 
   test('body scrolls as one container; header and footer stay pinned; the scrollbar sits at the dialog edge', async ({ page, authenticatedWorkspace }) => {
     // The section header menu that holds "New workspace..." lives behind the
@@ -58,7 +60,13 @@ test.describe('creation dialog on a phone', () => {
         return null
       const rect = (el: Element) => {
         const r = el.getBoundingClientRect()
-        return { top: r.top, bottom: r.bottom, left: r.left, right: r.right, height: r.height }
+        return {
+          top: r.top,
+          bottom: r.bottom,
+          left: r.left,
+          right: r.right,
+          height: r.height,
+        }
       }
       return {
         viewportH: window.innerHeight,

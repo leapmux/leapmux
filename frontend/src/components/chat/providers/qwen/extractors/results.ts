@@ -21,12 +21,23 @@ const READ_PARTIAL = /^Showing lines (\d+)-\d+ of (?:at least )?\d+ total lines\
  */
 export function qwenReadResult(text: string, offset: number | null): ReadFileResult {
   const partial = READ_PARTIAL.exec(text)
-  const body = partial ? text.slice(partial[0].length) : text
-  const startLine = partial ? Number(partial[1]) : (offset ?? 0) + 1
-  const content = body.endsWith('\n') ? body.slice(0, -1) : body
+  const body = partial
+    ? text.slice(partial[0].length)
+    : text
+  const startLine = partial
+    ? Number(partial[1])
+    : (offset ?? 0) + 1
+  const content = body.endsWith('\n')
+    ? body.slice(0, -1)
+    : body
   const result = readFileResultFromContent({ content, startLine, fallbackContent: text })
   return partial
-    ? { ...result, leading: [{ label: 'Partial view', text: partial[0].split('\n')[0] ?? '' }] }
+    ? {
+        ...result,
+        leading: [
+          { label: 'Partial view', text: partial[0].split('\n')[0] ?? '' },
+        ],
+      }
     : result
 }
 
@@ -43,8 +54,19 @@ const GREP_LINE = /^L(\d+): (.*)$/
  * match, then `---`. A truncation notice may follow the last group.
  */
 export function qwenGrepResult(text: string): SearchResult | null {
-  if (GREP_NONE.test(text))
-    return { filenames: [], content: '', lines: [], numFiles: 0, numLines: 0, matchCount: 0, truncated: false, fallbackContent: '', empty: true }
+  if (GREP_NONE.test(text)) {
+    return {
+      filenames: [],
+      content: '',
+      lines: [],
+      numFiles: 0,
+      numLines: 0,
+      matchCount: 0,
+      truncated: false,
+      fallbackContent: '',
+      empty: true,
+    }
+  }
   const header = GREP_FOUND.exec(text)
   if (!header)
     return null
@@ -54,14 +76,23 @@ export function qwenGrepResult(text: string): SearchResult | null {
   for (const line of text.slice(header[0].length).split('\n')) {
     const fileMatch = GREP_FILE.exec(line)
     const lineMatch = GREP_LINE.exec(line)
-    if (fileMatch)
+    if (fileMatch) {
       file = fileMatch[1] ?? ''
-    else if (lineMatch && file)
-      lines.push({ filePath: file, lineNumber: Number(lineMatch[1]), text: lineMatch[2] ?? '' })
-    else if (line.includes('truncated]') || line.endsWith('...'))
+    }
+    else if (lineMatch && file) {
+      lines.push({
+        filePath: file,
+        lineNumber: Number(lineMatch[1]),
+        text: lineMatch[2] ?? '',
+      })
+    }
+    else if (line.includes('truncated]') || line.endsWith('...')) {
       truncated = true
+    }
   }
-  const filenames = [...new Set(lines.map(line => line.filePath))]
+  const filenames = [
+    ...new Set(lines.map(line => line.filePath)),
+  ]
   return {
     filenames,
     content: '',
@@ -81,8 +112,17 @@ const GLOB_NONE = /^No files found matching pattern /
 
 /** The files one `glob` found, newest first as Qwen sorts them. */
 export function qwenGlobResult(text: string): SearchResult | null {
-  if (GLOB_NONE.test(text))
-    return { filenames: [], content: '', numFiles: 0, numLines: 0, truncated: false, fallbackContent: '', empty: true }
+  if (GLOB_NONE.test(text)) {
+    return {
+      filenames: [],
+      content: '',
+      numFiles: 0,
+      numLines: 0,
+      truncated: false,
+      fallbackContent: '',
+      empty: true,
+    }
+  }
   const header = GLOB_FOUND.exec(text)
   if (!header)
     return null
@@ -94,7 +134,11 @@ export function qwenGlobResult(text: string): SearchResult | null {
     numFiles: filenames.length,
     numLines: 0,
     truncated: notice !== undefined,
-    ...(notice !== undefined ? { notice: notice.trim() } : {}),
+    ...(notice !== undefined
+      ? {
+          notice: notice.trim(),
+        }
+      : {}),
     fallbackContent: text,
     empty: false,
   }
@@ -124,7 +168,11 @@ export function qwenListResult(text: string): ListResult | null {
   return {
     entries,
     totalEntries: Number(header[1]),
-    ...(entries.length < Number(header[1]) ? { truncated: true } : {}),
-    ...(notice ? { notice } : {}),
+    ...(entries.length < Number(header[1])
+      ? { truncated: true }
+      : {}),
+    ...(notice
+      ? { notice }
+      : {}),
   }
 }

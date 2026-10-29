@@ -34,11 +34,36 @@ describe('junieNativeNoticePath', () => {
 
 const callId = '8b4a1496-1260-4d91-a8bc-4a3a56240fbe'
 const output = 'NATIVE_FIRST42\nNATIVE_MIDDLE77\nNATIVE_LAST42'
-const nativeFrame = { sessionUpdate: 'tool_call', toolCallId: callId, kind: 'execute', status: 'in_progress', content: [{ type: 'terminal', terminalId: callId }] }
-const retained = { provider: { sessionUpdate: nativeFrame.sessionUpdate, toolCallId: callId, status: nativeFrame.status, terminals: { [callId]: { output, exitCode: 0, truncated: false } } } }
+const nativeFrame = {
+  sessionUpdate: 'tool_call',
+  toolCallId: callId,
+  kind: 'execute',
+  status: 'in_progress',
+  content: [
+    { type: 'terminal', terminalId: callId },
+  ],
+}
+const retained = {
+  provider: {
+    sessionUpdate: nativeFrame.sessionUpdate,
+    toolCallId: callId,
+    status: nativeFrame.status,
+    terminals: {
+      [callId]: { output, exitCode: 0, truncated: false },
+    },
+  },
+}
 
 function stored(frame: unknown = nativeFrame, supplement: unknown = retained) {
-  return nativeOutputSnapshot([{ frame, spanId: callId, spanType: 'execute', completion: MessageCompletion.COMPLETE, supplement }], { agentSessionId: 'session-current' })
+  return nativeOutputSnapshot([
+    {
+      frame,
+      spanId: callId,
+      spanType: 'execute',
+      completion: MessageCompletion.COMPLETE,
+      supplement,
+    },
+  ], { agentSessionId: 'session-current' })
 }
 
 /** A stored completed command whose provider supplement holds the pointer-only path receipt of Junie. */
@@ -46,13 +71,45 @@ function pointerReceiptFixture() {
   const sessionId = 'session-261003-225241-1cba'
   const taskId = 'task-261003-225242-1bq0'
   const path = `/owned/junie/sessions/${sessionId}/${taskId}/terminal-output/terminal-output-123.txt`
-  const frame = { sessionUpdate: 'tool_call_update', toolCallId: callId, kind: 'execute', status: 'completed', content: [], rawInput: { command: 'node exact-script.js', cwd: '/owned/project' }, rawOutput: { output }, _meta: { terminal_exit: { terminal_id: callId, exit_code: 0, signal: null } } }
-  const receipt = { sessionId, toolCallId: callId, taskId, command: 'node exact-script.js', cwd: '/owned/project', path, exitCode: 0 }
-  const supplement = { provider: { sessionUpdate: frame.sessionUpdate, toolCallId: callId, status: frame.status, outputFilePath: receipt } }
+  const frame = {
+    sessionUpdate: 'tool_call_update',
+    toolCallId: callId,
+    kind: 'execute',
+    status: 'completed',
+    content: [],
+    rawInput: { command: 'node exact-script.js', cwd: '/owned/project' },
+    rawOutput: { output },
+    _meta: {
+      terminal_exit: { terminal_id: callId, exit_code: 0, signal: null },
+    },
+  }
+  const receipt = {
+    sessionId,
+    toolCallId: callId,
+    taskId,
+    command: 'node exact-script.js',
+    cwd: '/owned/project',
+    path,
+    exitCode: 0,
+  }
+  const supplement = {
+    provider: {
+      sessionUpdate: frame.sessionUpdate,
+      toolCallId: callId,
+      status: frame.status,
+      outputFilePath: receipt,
+    },
+  }
   const snapshot = stored(frame, supplement)
   snapshot.agentSessionId = sessionId
   snapshot.messages[0]!.agentSessionId = sessionId
-  return { snapshot, frame, receipt, supplement, path }
+  return {
+    snapshot,
+    frame,
+    receipt,
+    supplement,
+    path,
+  }
 }
 
 describe('readJunieNativeOutputPaths', () => {
@@ -101,28 +158,110 @@ describe('junieHostTerminalPreview', () => {
   })
 
   it('retains an empty successful terminal output as an empty string', () => {
-    const supplement = { provider: { ...retained.provider, terminals: { [callId]: { output: '', exitCode: 0, truncated: false } } } }
+    const supplement = {
+      provider: {
+        ...retained.provider,
+        terminals: {
+          [callId]: { output: '', exitCode: 0, truncated: false },
+        },
+      },
+    }
     expect(junieHostTerminalPreview(stored(nativeFrame, supplement), callId)).toBe('')
   })
 
   // A supplement whose identity differs from the frame, or that is absent, owns no terminal of the row. A terminal of
   // the row with an unsuccessful field reaches the field check.
   it.each([
-    [{ provider: { ...retained.provider, toolCallId: 'foreign' } }, 'requires one exact retained native terminal'],
-    [{ provider: { ...retained.provider, status: 'completed' } }, 'requires one exact retained native terminal'],
-    [{ provider: { ...retained.provider, terminals: { [callId]: { output, exitCode: 1, truncated: false } } } }, 'lacks exact successful native terminal fields'],
-    [{ provider: { ...retained.provider, terminals: { [callId]: { output: false, exitCode: 0, truncated: false } } } }, 'lacks exact successful native terminal fields'],
-    [{ provider: { ...retained.provider, terminals: { [callId]: { output, exitCode: 0, truncated: false, signal: 'SIGTERM' } } } }, 'lacks exact successful native terminal fields'],
+    [
+      {
+        provider: { ...retained.provider, toolCallId: 'foreign' },
+      },
+      'requires one exact retained native terminal',
+    ],
+    [
+      {
+        provider: { ...retained.provider, status: 'completed' },
+      },
+      'requires one exact retained native terminal',
+    ],
+    [
+      {
+        provider: {
+          ...retained.provider,
+          terminals: {
+            [callId]: { output, exitCode: 1, truncated: false },
+          },
+        },
+      },
+      'lacks exact successful native terminal fields',
+    ],
+    [
+      {
+        provider: {
+          ...retained.provider,
+          terminals: {
+            [callId]: { output: false, exitCode: 0, truncated: false },
+          },
+        },
+      },
+      'lacks exact successful native terminal fields',
+    ],
+    [
+      {
+        provider: {
+          ...retained.provider,
+          terminals: {
+            [callId]: {
+              output,
+              exitCode: 0,
+              truncated: false,
+              signal: 'SIGTERM',
+            },
+          },
+        },
+      },
+      'lacks exact successful native terminal fields',
+    ],
     // The shared ACP terminal reader reads these two as a complete success, so this reader keeps its own field check.
-    [{ provider: { ...retained.provider, terminals: { [callId]: { output, exitCode: 0 } } } }, 'lacks exact successful native terminal fields'],
-    [{ provider: { ...retained.provider, terminals: { [callId]: { output, exitCode: 0, truncated: false, signal: '' } } } }, 'lacks exact successful native terminal fields'],
+    [
+      {
+        provider: {
+          ...retained.provider,
+          terminals: {
+            [callId]: { output, exitCode: 0 },
+          },
+        },
+      },
+      'lacks exact successful native terminal fields',
+    ],
+    [
+      {
+        provider: {
+          ...retained.provider,
+          terminals: {
+            [callId]: {
+              output,
+              exitCode: 0,
+              truncated: false,
+              signal: '',
+            },
+          },
+        },
+      },
+      'lacks exact successful native terminal fields',
+    ],
     [{}, 'requires one exact retained native terminal'],
   ])('rejects foreign or unsuccessful native host fields %j', (supplement, error) => {
     expect(() => junieHostTerminalPreview(stored(nativeFrame, supplement), callId)).toThrow(error)
   })
 
   it('rejects a terminal reference that disagrees with the actual call', () => {
-    const frame = { ...nativeFrame, content: [{ type: 'terminal', terminalId: 'foreign' }] }
+    const frame = {
+      ...nativeFrame,
+      content: [
+        { type: 'terminal', terminalId: 'foreign' },
+      ],
+    }
     expect(() => junieHostTerminalPreview(stored(frame), callId)).toThrow('different native terminal')
   })
 
@@ -135,7 +274,14 @@ describe('junieHostTerminalPreview', () => {
 
 describe('native clipped host preview', () => {
   it('keeps a native clipped preview without treating it as complete file bytes', () => {
-    const supplement = { provider: { ...retained.provider, terminals: { [callId]: { output: 'Native clipped preview', exitCode: 0, truncated: true } } } }
+    const supplement = {
+      provider: {
+        ...retained.provider,
+        terminals: {
+          [callId]: { output: 'Native clipped preview', exitCode: 0, truncated: true },
+        },
+      },
+    }
     expect(junieHostTerminalPreview(stored(nativeFrame, supplement), callId)).toBe('Native clipped preview')
   })
 })

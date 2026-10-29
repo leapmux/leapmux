@@ -3,8 +3,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { withExtraClients } from './multiClient'
 import { attachToastLog, installToastRecorder } from './toast'
 
-const testInfo = vi.hoisted(() => ({ attach: vi.fn() }))
-vi.mock('@playwright/test', () => ({ test: { info: () => testInfo } }))
+const testInfo = vi.hoisted(() => ({
+  attach: vi.fn(),
+}))
+vi.mock('@playwright/test', () => ({
+  test: {
+    info: () => testInfo,
+  },
+}))
 vi.mock('./toast', () => ({
   attachToastLog: vi.fn(async () => {}),
   installToastRecorder: vi.fn(async () => {}),
@@ -39,7 +45,10 @@ function fakeBrowser(contexts: FakeContext[]) {
       throw new Error('The test opened more contexts than it prepared.')
     return next
   })
-  return { browser: { newContext } as unknown as Browser, newContext }
+  return {
+    browser: { newContext } as unknown as Browser,
+    newContext,
+  }
 }
 
 const server = { hubUrl: 'http://127.0.0.1:4321' }
@@ -51,7 +60,10 @@ beforeEach(() => {
 
 describe('withExtraClients', () => {
   it('opens each client in its own context on the hub, records its toasts, and closes every context', async () => {
-    const contexts = [fakeContext('a'), fakeContext('b')]
+    const contexts = [
+      fakeContext('a'),
+      fakeContext('b'),
+    ]
     const { browser, newContext } = fakeBrowser(contexts)
     const result = await withExtraClients(browser, server, 2, async ([pageA, pageB]) => {
       expect(pageA).toBe(contexts[0]!.page)
@@ -61,8 +73,18 @@ describe('withExtraClients', () => {
       return 'done'
     })
     expect(result).toBe('done')
-    expect(newContext.mock.calls).toEqual([[{ baseURL: server.hubUrl }], [{ baseURL: server.hubUrl }]])
-    expect(vi.mocked(installToastRecorder).mock.calls).toEqual([[contexts[0]!.page], [contexts[1]!.page]])
+    expect(newContext.mock.calls).toEqual([
+      [
+        { baseURL: server.hubUrl },
+      ],
+      [
+        { baseURL: server.hubUrl },
+      ],
+    ])
+    expect(vi.mocked(installToastRecorder).mock.calls).toEqual([
+      [contexts[0]!.page],
+      [contexts[1]!.page],
+    ])
     expect(vi.mocked(attachToastLog).mock.calls).toEqual([
       [contexts[0]!.page, testInfo as unknown as TestInfo, 'toast-log-client-1'],
       [contexts[1]!.page, testInfo as unknown as TestInfo, 'toast-log-client-2'],
@@ -72,7 +94,10 @@ describe('withExtraClients', () => {
   })
 
   it('closes every context and rethrows the error of the test when the test fails', async () => {
-    const contexts = [fakeContext('a'), fakeContext('b')]
+    const contexts = [
+      fakeContext('a'),
+      fakeContext('b'),
+    ]
     const { browser } = fakeBrowser(contexts)
     const failure = new Error('The assertion of the test failed.')
     await expect(withExtraClients(browser, server, 2, async () => {
@@ -84,7 +109,10 @@ describe('withExtraClients', () => {
 
   it('closes the context that it opened when the setup of a later client fails, and never calls the test', async () => {
     const failure = new Error('The controlled second page setup failed.')
-    const contexts = [fakeContext('a'), fakeContext('b', failure)]
+    const contexts = [
+      fakeContext('a'),
+      fakeContext('b', failure),
+    ]
     const { browser } = fakeBrowser(contexts)
     const use = vi.fn(async () => {})
     await expect(withExtraClients(browser, server, 2, use)).rejects.toBe(failure)
@@ -92,11 +120,16 @@ describe('withExtraClients', () => {
     for (const context of contexts)
       expect(context.close).toHaveBeenCalledTimes(1)
     // The page that never opened has no toast log to attach.
-    expect(vi.mocked(attachToastLog).mock.calls).toEqual([[contexts[0]!.page, testInfo as unknown as TestInfo, 'toast-log-client-1']])
+    expect(vi.mocked(attachToastLog).mock.calls).toEqual([
+      [contexts[0]!.page, testInfo as unknown as TestInfo, 'toast-log-client-1'],
+    ])
   })
 
   it('closes the other contexts when one close fails, and reports the failed close', async () => {
-    const contexts = [fakeContext('a'), fakeContext('b')]
+    const contexts = [
+      fakeContext('a'),
+      fakeContext('b'),
+    ]
     const closeFailure = new Error('The first context did not close.')
     contexts[0]!.close.mockRejectedValue(closeFailure)
     const { browser } = fakeBrowser(contexts)
@@ -107,7 +140,9 @@ describe('withExtraClients', () => {
   })
 
   it('closes a context although its toast log cannot attach', async () => {
-    const contexts = [fakeContext('a')]
+    const contexts = [
+      fakeContext('a'),
+    ]
     const attachFailure = new Error('The report refused the attachment.')
     vi.mocked(attachToastLog).mockRejectedValue(attachFailure)
     const { browser } = fakeBrowser(contexts)

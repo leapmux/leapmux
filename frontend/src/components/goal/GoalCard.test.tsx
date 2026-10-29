@@ -16,7 +16,13 @@ const ALL: GoalAction[] = ['set', 'clear', 'pause', 'resume']
 describe('GoalCard', () => {
   it('shows the objective and no status for an unconfirmed status', () => {
     const { getByTestId, queryByTestId } = render(() => (
-      <GoalCard goal={{ current: goal({ statusDetail: 'cannot confirm' }), progress: { tokensUsed: 0 }, actions: ['set', 'clear'], statusUnconfirmed: true }} />
+      <GoalCard goal={{
+        current: goal({ statusDetail: 'cannot confirm' }),
+        progress: { tokensUsed: 0 },
+        actions: ['set', 'clear'],
+        statusUnconfirmed: true,
+      }}
+      />
     ))
     expect(getByTestId('goal-objective').textContent).toBe('every test passes')
     expect(queryByTestId('goal-status-dot')).toBeNull()
@@ -26,14 +32,29 @@ describe('GoalCard', () => {
 
   it('announces an unconfirmed goal without a status word', () => {
     const { container } = render(() => (
-      <GoalCard goal={{ current: goal({ objective: '**Run** the tests', statusDetail: 'cannot confirm' }), progress: {}, actions: ['set', 'clear'], statusUnconfirmed: true }} announce />
+      <GoalCard
+        goal={{
+          current: goal({ objective: '**Run** the tests', statusDetail: 'cannot confirm' }),
+          progress: {},
+          actions: ['set', 'clear'],
+          statusUnconfirmed: true,
+        }}
+        announce
+      />
     ))
     expect(container.querySelector('[role="status"]')?.textContent).toBe('Session goal: Run the tests')
   })
 
   it.each(['done', 'Achieved'])('hides a detail equal to the status token or label %s', (statusDetail) => {
     const { queryByTestId, container } = render(() => (
-      <GoalCard goal={{ current: goal({ status: 'done', statusDetail }), progress: {}, actions: ALL }} announce />
+      <GoalCard
+        goal={{
+          current: goal({ status: 'done', statusDetail }),
+          progress: {},
+          actions: ALL,
+        }}
+        announce
+      />
     ))
     expect(queryByTestId('goal-status-detail')).toBeNull()
     expect(container.querySelector('[role="status"]')?.textContent).toBe('Session goal achieved: every test passes')
@@ -41,7 +62,14 @@ describe('GoalCard', () => {
 
   it.each(['Active', 'active', ' ACTIVE '])('hides the repeated status detail %s in the card and announcement', (statusDetail) => {
     const { queryByTestId, container } = render(() => (
-      <GoalCard goal={{ current: goal({ statusDetail }), progress: {}, actions: ALL }} announce />
+      <GoalCard
+        goal={{
+          current: goal({ statusDetail }),
+          progress: {},
+          actions: ALL,
+        }}
+        announce
+      />
     ))
     expect(queryByTestId('goal-status-detail')).toBeNull()
     expect(container.querySelector('[role="status"]')?.textContent).toBe('Session goal active: every test passes')
@@ -49,7 +77,12 @@ describe('GoalCard', () => {
 
   it('shows the objective and its status', () => {
     const { getByTestId } = render(() => (
-      <GoalCard goal={{ current: goal(), progress: {}, actions: ALL }} />
+      <GoalCard goal={{
+        current: goal(),
+        progress: {},
+        actions: ALL,
+      }}
+      />
     ))
     expect(getByTestId('goal-objective').textContent).toBe('every test passes')
     expect(getByTestId('goal-status-dot').getAttribute('data-status')).toBe('active')
@@ -59,7 +92,12 @@ describe('GoalCard', () => {
   // The neutral status alone cannot identify each native limit.
   it('shows the provider status detail beside the neutral status', () => {
     const { getByTestId } = render(() => (
-      <GoalCard goal={{ current: goal({ status: 'blocked', statusDetail: 'usageLimited' }), progress: {}, actions: ALL }} />
+      <GoalCard goal={{
+        current: goal({ status: 'blocked', statusDetail: 'usageLimited' }),
+        progress: {},
+        actions: ALL,
+      }}
+      />
     ))
     expect(getByTestId('goal-status-detail').textContent).toContain('usageLimited')
   })
@@ -70,7 +108,12 @@ describe('GoalCard', () => {
    */
   it('renders only the counters the provider reported', () => {
     const { getByTestId } = render(() => (
-      <GoalCard goal={{ current: goal(), progress: { tokensUsed: 1200, timeUsedSeconds: 90 }, actions: ALL }} />
+      <GoalCard goal={{
+        current: goal(),
+        progress: { tokensUsed: 1200, timeUsedSeconds: 90 },
+        actions: ALL,
+      }}
+      />
     ))
     const text = getByTestId('goal-progress').textContent ?? ''
     expect(text).toContain('1,200 tokens')
@@ -80,14 +123,24 @@ describe('GoalCard', () => {
 
   it('shows a token budget beside the usage when one is reported', () => {
     const { getByTestId } = render(() => (
-      <GoalCard goal={{ current: goal(), progress: { tokensUsed: 500, tokenBudget: 2000 }, actions: ALL }} />
+      <GoalCard goal={{
+        current: goal(),
+        progress: { tokensUsed: 500, tokenBudget: 2000 },
+        actions: ALL,
+      }}
+      />
     ))
     expect(getByTestId('goal-progress').textContent).toContain('500 / 2,000 tokens')
   })
 
   it('omits the progress row entirely when nothing was reported', () => {
     const { queryByTestId } = render(() => (
-      <GoalCard goal={{ current: goal(), progress: {}, actions: ALL }} />
+      <GoalCard goal={{
+        current: goal(),
+        progress: {},
+        actions: ALL,
+      }}
+      />
     ))
     expect(queryByTestId('goal-progress')).toBeNull()
   })
@@ -101,7 +154,12 @@ describe('GoalCard', () => {
     vi.useFakeTimers()
     try {
       const { getByTestId } = render(() => (
-        <GoalCard goal={{ current: goal(), progress: { timeUsedSeconds: 30 }, actions: ALL }} />
+        <GoalCard goal={{
+          current: goal(),
+          progress: { timeUsedSeconds: 30 },
+          actions: ALL,
+        }}
+        />
       ))
       const before = getByTestId('goal-progress').textContent
       vi.advanceTimersByTime(5000)
@@ -118,7 +176,13 @@ describe('GoalCard', () => {
    */
   it('offers the actions menu for a goal it can act on', () => {
     const { getByTestId } = render(() => (
-      <GoalCard goal={{ current: goal(), progress: {}, actions: ALL, onAction: vi.fn() }} />
+      <GoalCard goal={{
+        current: goal(),
+        progress: {},
+        actions: ALL,
+        onAction: vi.fn(),
+      }}
+      />
     ))
     expect(getByTestId('goal-actions-trigger')).not.toBeNull()
   })
@@ -130,7 +194,13 @@ describe('GoalCard', () => {
   it('runs a menu verb against the handler its surface carries', () => {
     const onAction = vi.fn()
     const { getByTestId } = render(() => (
-      <GoalCard goal={{ current: goal(), progress: {}, actions: ALL, onAction }} />
+      <GoalCard goal={{
+        current: goal(),
+        progress: {},
+        actions: ALL,
+        onAction,
+      }}
+      />
     ))
 
     fireEvent.click(getByTestId('goal-actions-trigger'))
@@ -142,7 +212,12 @@ describe('GoalCard', () => {
   // The read-only surface displays the goal and offers no change controls.
   it('offers no actions menu when the surface has no handler', () => {
     const { queryByTestId, getByTestId } = render(() => (
-      <GoalCard goal={{ current: goal(), progress: {}, actions: ALL }} />
+      <GoalCard goal={{
+        current: goal(),
+        progress: {},
+        actions: ALL,
+      }}
+      />
     ))
     expect(queryByTestId('goal-actions-trigger')).toBeNull()
     // Keep the goal visible when its actions are absent.
@@ -152,7 +227,13 @@ describe('GoalCard', () => {
   // A provider with no supported actions displays the goal without controls.
   it('renders no controls when the agent supports no action', () => {
     const { queryByTestId } = render(() => (
-      <GoalCard goal={{ current: goal(), progress: {}, actions: [], onAction: vi.fn() }} />
+      <GoalCard goal={{
+        current: goal(),
+        progress: {},
+        actions: [],
+        onAction: vi.fn(),
+      }}
+      />
     ))
     expect(queryByTestId('goal-actions-trigger')).toBeNull()
     for (const action of ALL)
@@ -165,7 +246,12 @@ describe('GoalCard', () => {
    */
   it('offers no actions menu in the empty state', () => {
     const { queryByTestId } = render(() => (
-      <GoalCard goal={{ progress: {}, actions: ['set'], onAction: vi.fn() }} />
+      <GoalCard goal={{
+        progress: {},
+        actions: ['set'],
+        onAction: vi.fn(),
+      }}
+      />
     ))
     expect(queryByTestId('goal-actions-trigger')).toBeNull()
   })
@@ -174,7 +260,12 @@ describe('GoalCard', () => {
   it('offers Set a goal in the empty state when the agent supports it', () => {
     const onAction = vi.fn()
     const { getByTestId } = render(() => (
-      <GoalCard goal={{ progress: {}, actions: ['set'], onAction }} />
+      <GoalCard goal={{
+        progress: {},
+        actions: ['set'],
+        onAction,
+      }}
+      />
     ))
     const button = getByTestId('goal-action-set') as HTMLButtonElement
     expect(button.disabled).toBe(false)
@@ -188,14 +279,24 @@ describe('GoalCard', () => {
    */
   it('draws no separator of its own', () => {
     const { container } = render(() => (
-      <GoalCard goal={{ current: goal(), progress: {}, actions: ALL }} />
+      <GoalCard goal={{
+        current: goal(),
+        progress: {},
+        actions: ALL,
+      }}
+      />
     ))
     expect(container.querySelectorAll('hr')).toHaveLength(0)
   })
 
   it('omits Set a goal for an agent that cannot set one', () => {
     const { queryByTestId, getByTestId } = render(() => (
-      <GoalCard goal={{ progress: {}, actions: [], onAction: vi.fn() }} />
+      <GoalCard goal={{
+        progress: {},
+        actions: [],
+        onAction: vi.fn(),
+      }}
+      />
     ))
     expect(queryByTestId('goal-action-set')).toBeNull()
     // The card still says what it knows, which is that there is no goal.
@@ -206,7 +307,14 @@ describe('GoalCard', () => {
   // Replacing that node could cause an additional screen-reader announcement.
   it('keeps one polite live region that states the current goal', () => {
     const { container } = render(() => (
-      <GoalCard goal={{ current: goal({ status: 'blocked', statusDetail: 'notSatisfied' }), progress: {}, actions: [] }} announce />
+      <GoalCard
+        goal={{
+          current: goal({ status: 'blocked', statusDetail: 'notSatisfied' }),
+          progress: {},
+          actions: [],
+        }}
+        announce
+      />
     ))
     const live = container.querySelectorAll('[role="status"][aria-live="polite"]')
     expect(live.length).toBe(1)
@@ -242,7 +350,12 @@ describe('GoalCard', () => {
    */
   it('holds no live region unless it owns the announcement', () => {
     const { container } = render(() => (
-      <GoalCard goal={{ current: goal(), progress: {}, actions: [] }} />
+      <GoalCard goal={{
+        current: goal(),
+        progress: {},
+        actions: [],
+      }}
+      />
     ))
     expect(container.querySelectorAll('[role="status"][aria-live="polite"]')).toHaveLength(0)
     // The objective is still on screen; only the announcement is elsewhere.
@@ -256,7 +369,12 @@ describe('GoalCard', () => {
    */
   it('renders a dormant goal as waiting rather than as a fault', () => {
     const { getByTestId } = render(() => (
-      <GoalCard goal={{ current: goal({ status: 'dormant' }), progress: {}, actions: ALL }} />
+      <GoalCard goal={{
+        current: goal({ status: 'dormant' }),
+        progress: {},
+        actions: ALL,
+      }}
+      />
     ))
     expect(getByTestId('goal-status-dot').getAttribute('data-status')).toBe('dormant')
     expect(getByTestId('goal-card').textContent).toContain('Not running')
@@ -266,8 +384,22 @@ describe('GoalCard', () => {
 
 describe('unknown goal presentation', () => {
   it('shows a neutral unknown status and retains the native detail and counters', () => {
-    const current = protoGoalToStore(create(AgentGoalSchema, { nativeId: 'unknown-goal', objective: 'Keep the **objective**', status: AgentGoalStatus.UNKNOWN, statusDetail: 'provider-future-state' }))
-    const { getByTestId, container } = render(() => <GoalCard goal={{ current, progress: { tokensUsed: 0, timeUsedSeconds: 30, iterations: 2 }, actions: ALL }} announce />)
+    const current = protoGoalToStore(create(AgentGoalSchema, {
+      nativeId: 'unknown-goal',
+      objective: 'Keep the **objective**',
+      status: AgentGoalStatus.UNKNOWN,
+      statusDetail: 'provider-future-state',
+    }))
+    const { getByTestId, container } = render(() => (
+      <GoalCard
+        goal={{
+          current,
+          progress: { tokensUsed: 0, timeUsedSeconds: 30, iterations: 2 },
+          actions: ALL,
+        }}
+        announce
+      />
+    ))
     const dot = getByTestId('goal-status-dot')
     expect(getByTestId('goal-objective').textContent).toContain('Keep the objective')
     expect(getByTestId('goal-status-detail')).toHaveTextContent('provider-future-state')

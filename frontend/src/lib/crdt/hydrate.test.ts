@@ -25,7 +25,10 @@ import { loadHydrationState } from './hydrate'
 // store rather than a stand-in.
 vi.mock('./checkpointStore', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./checkpointStore')>()
-  return { ...actual, adoptCheckpoint: vi.fn(actual.adoptCheckpoint) }
+  return {
+    ...actual,
+    adoptCheckpoint: vi.fn(actual.adoptCheckpoint),
+  }
 })
 
 const opLog = createOpLogAppender()
@@ -52,10 +55,17 @@ const WM = { physical: 5n, logical: 0n, clientId: 'c' }
 function stateOf(userId: string, maxPhysical = 10n): UserCrdtState {
   return create(UserCrdtStateSchema, {
     userId,
-    nodes: { n1: { nodeId: 'n1' }, n2: { nodeId: 'n2' } },
-    tabs: { t1: { tabId: 't1', tabType: 1 } },
+    nodes: {
+      n1: { nodeId: 'n1' },
+      n2: { nodeId: 'n2' },
+    },
+    tabs: {
+      t1: { tabId: 't1', tabType: 1 },
+    },
     floatingWindows: {},
-    workspaces: { ws1: { workspaceId: 'ws1', rootNodeId: 'n1' } },
+    workspaces: {
+      ws1: { workspaceId: 'ws1', rootNodeId: 'n1' },
+    },
     maxHlc: { physical: maxPhysical, logical: 0n, clientId: 'c' },
     currentEpoch: 1n,
   })
@@ -63,7 +73,10 @@ function stateOf(userId: string, maxPhysical = 10n): UserCrdtState {
 
 function batchFrame(batchId: string): Uint8Array {
   return toBinary(WatchUserEventSchema, create(WatchUserEventSchema, {
-    event: { case: 'batch', value: { batchId, ops: [] } },
+    event: {
+      case: 'batch',
+      value: { batchId, ops: [] },
+    },
   }))
 }
 
@@ -105,7 +118,9 @@ describe('loadHydrationState', () => {
   it('wipes only the failing tab, leaving the sibling\'s rows intact', async () => {
     // A healthy sibling tab.
     await seed('u', 'tab-good', stateOf('u', 5n))
-    await opLog.append('u', 'tab-good', [batchFrame('b-good')])
+    await opLog.append('u', 'tab-good', [
+      batchFrame('b-good'),
+    ])
     // ...and a tab whose header blob does not deserialize.
     await seedDelta('u', 'tab-bad', {
       headerBytes: new Uint8Array([0xFF, 0xFF, 0xFF]),
@@ -146,7 +161,9 @@ describe('loadHydrationState', () => {
       deletes: [],
       full: true,
     })
-    await opLog.append('u', 'tab-bad', [batchFrame('b-bad')])
+    await opLog.append('u', 'tab-bad', [
+      batchFrame('b-bad'),
+    ])
     expect((await readCheckpoint('u', 'tab-bad')).status).toBe('ok')
 
     expect(await loadHydrationState('u', 'tab-bad')).toBeNull()
@@ -161,8 +178,12 @@ describe('loadHydrationState', () => {
   it('round-trips a well-formed checkpoint + op-log', async () => {
     const source = stateOf('u', 5n)
     await seed('u', CLIENT, source)
-    await opLog.append('u', CLIENT, [batchFrame('b1')])
-    await opLog.append('u', CLIENT, [batchFrame('b2')])
+    await opLog.append('u', CLIENT, [
+      batchFrame('b1'),
+    ])
+    await opLog.append('u', CLIENT, [
+      batchFrame('b2'),
+    ])
 
     const payload = await loadHydrationState('u', CLIENT)
     expect(payload).not.toBeNull()
@@ -202,8 +223,16 @@ describe('loadHydrationState', () => {
       await seedDelta('u', CLIENT, {
         headerBytes: serializeHeader(source),
         upserts: [
-          { kind: 'node', entityId: 'n1', bytes: toBinary(NodeRecordSchema, source.nodes.n1!) },
-          { kind: 'tab', entityId: 't1', bytes: new Uint8Array([0xFF, 0xFE, 0xFD]) },
+          {
+            kind: 'node',
+            entityId: 'n1',
+            bytes: toBinary(NodeRecordSchema, source.nodes.n1!),
+          },
+          {
+            kind: 'tab',
+            entityId: 't1',
+            bytes: new Uint8Array([0xFF, 0xFE, 0xFD]),
+          },
         ],
         deletes: [],
         full: true,
@@ -218,7 +247,13 @@ describe('loadHydrationState', () => {
       const source = stateOf('u', 5n)
       await seedDelta('u', CLIENT, {
         headerBytes: serializeHeader(source),
-        upserts: [{ kind: 'gizmo', entityId: 'g1', bytes: toBinary(TabRecordSchema, source.tabs.t1!) }],
+        upserts: [
+          {
+            kind: 'gizmo',
+            entityId: 'g1',
+            bytes: toBinary(TabRecordSchema, source.tabs.t1!),
+          },
+        ],
         deletes: [],
         full: true,
       })
@@ -231,8 +266,16 @@ describe('loadHydrationState', () => {
       await seedDelta('u', CLIENT, {
         headerBytes: serializeHeader(source),
         upserts: [
-          { kind: 'node', entityId: 'n1', bytes: toBinary(NodeRecordSchema, source.nodes.n1!) },
-          { kind: 'node', entityId: 'n2', bytes: new Uint8Array([0x08, 0xFF]) },
+          {
+            kind: 'node',
+            entityId: 'n1',
+            bytes: toBinary(NodeRecordSchema, source.nodes.n1!),
+          },
+          {
+            kind: 'node',
+            entityId: 'n2',
+            bytes: new Uint8Array([0x08, 0xFF]),
+          },
         ],
         deletes: [],
         full: true,
@@ -253,7 +296,9 @@ describe('loadHydrationState', () => {
 
   it('wipes both stores and returns null when the checkpoint header is unparseable', async () => {
     await seed('u', CLIENT, stateOf('u', 5n))
-    await opLog.append('u', CLIENT, [batchFrame('b1')])
+    await opLog.append('u', CLIENT, [
+      batchFrame('b1'),
+    ])
     // Now corrupt the header in place via a direct rewrite.
     await seedDelta('u', CLIENT, {
       headerBytes: new Uint8Array([0xFF, 0xFE, 0xFD]),
@@ -261,7 +306,9 @@ describe('loadHydrationState', () => {
       deletes: [],
       full: true,
     })
-    await opLog.append('u', CLIENT, [batchFrame('b2')])
+    await opLog.append('u', CLIENT, [
+      batchFrame('b2'),
+    ])
 
     expect(await loadHydrationState('u', CLIENT)).toBeNull()
     // The pair was wiped: a second load also returns null (no poison record).
@@ -272,9 +319,15 @@ describe('loadHydrationState', () => {
     await seed('u', CLIENT, stateOf('u', 5n))
     // One good frame, then a corrupt frame, then another good one that must NOT
     // be replayed (it sits after the break, so its ordering context is lost).
-    await opLog.append('u', CLIENT, [batchFrame('good')])
-    await opLog.append('u', CLIENT, [new Uint8Array([0xFF, 0xFE, 0xFD])])
-    await opLog.append('u', CLIENT, [batchFrame('after-corrupt')])
+    await opLog.append('u', CLIENT, [
+      batchFrame('good'),
+    ])
+    await opLog.append('u', CLIENT, [
+      new Uint8Array([0xFF, 0xFE, 0xFD]),
+    ])
+    await opLog.append('u', CLIENT, [
+      batchFrame('after-corrupt'),
+    ])
 
     const payload = await loadHydrationState('u', CLIENT)
     // The checkpoint is independently valid, so it survives: discarding it
@@ -289,7 +342,10 @@ describe('loadHydrationState', () => {
 
   it('reports truncated=false when every op-log frame decodes', async () => {
     await seed('u', CLIENT, stateOf('u', 5n))
-    await opLog.append('u', CLIENT, [batchFrame('a'), batchFrame('b')])
+    await opLog.append('u', CLIENT, [
+      batchFrame('a'),
+      batchFrame('b'),
+    ])
 
     const payload = await loadHydrationState('u', CLIENT)
     expect(payload).not.toBeNull()
@@ -302,7 +358,9 @@ describe('loadHydrationState', () => {
     // the same way the wire path refuses a foreign-tenant UserMaterialized --
     // otherwise the persisted record, not the session, decides what is rendered.
     await seed('u', CLIENT, stateOf('other-user', 5n))
-    await opLog.append('u', CLIENT, [batchFrame('b1')])
+    await opLog.append('u', CLIENT, [
+      batchFrame('b1'),
+    ])
 
     expect(await loadHydrationState('u', CLIENT)).toBeNull()
     // Wiped, so the poison record cannot be re-adopted on the next reload.
@@ -316,7 +374,9 @@ describe('loadHydrationState', () => {
     // here (watermark, epoch, chunk kind) treats absent as fatal. No writer
     // produces one, which is precisely why a row that has one is corrupt.
     await seed('u', CLIENT, stateOf('', 5n))
-    await opLog.append('u', CLIENT, [batchFrame('b1')])
+    await opLog.append('u', CLIENT, [
+      batchFrame('b1'),
+    ])
 
     expect(await loadHydrationState('u', CLIENT)).toBeNull()
     expect(await loadHydrationState('u', CLIENT)).toBeNull()
@@ -368,7 +428,9 @@ describe('loadHydrationState', () => {
     // produces -- invisible to the owner sweep and to the seed scan. Only the
     // watermark is malformed, which is what this case is about.
     await seed('u', CLIENT, stateOf('u', 5n))
-    await opLog.append('u', CLIENT, [batchFrame('b1')])
+    await opLog.append('u', CLIENT, [
+      batchFrame('b1'),
+    ])
     const db = await openDbRaw()
     await new Promise<void>((resolve) => {
       const tx = db.transaction('checkpoints', 'readwrite')
@@ -390,7 +452,9 @@ describe('loadHydrationState', () => {
 
   it('wipes both stores and returns null when the epoch is out of range', async () => {
     await seed('u', CLIENT, stateOf('u', 5n))
-    await opLog.append('u', CLIENT, [batchFrame('b1')])
+    await opLog.append('u', CLIENT, [
+      batchFrame('b1'),
+    ])
     // Overwrite with an out-of-int64 epoch.
     const db = await openDbRaw()
     await new Promise<void>((resolve) => {
@@ -435,7 +499,9 @@ async function openDbRaw(): Promise<IDBDatabase> {
 describe('loadHydrationState seeding from a sibling', () => {
   it('seeds from the only sibling when this tab has no checkpoint', async () => {
     await seed('u', 'tab-old', stateOf('u', 5n))
-    await opLog.append('u', 'tab-old', [batchFrame('b1')])
+    await opLog.append('u', 'tab-old', [
+      batchFrame('b1'),
+    ])
 
     const payload = await loadHydrationState('u', 'tab-new')
 
@@ -457,7 +523,10 @@ describe('loadHydrationState seeding from a sibling', () => {
 
   it('copies the sibling\'s header, chunks and op-log under THIS tab\'s owner key', async () => {
     await seed('u', 'tab-old', stateOf('u', 5n))
-    await opLog.append('u', 'tab-old', [batchFrame('b1'), batchFrame('b2')])
+    await opLog.append('u', 'tab-old', [
+      batchFrame('b1'),
+      batchFrame('b2'),
+    ])
 
     await loadHydrationState('u', 'tab-new')
 
@@ -465,14 +534,20 @@ describe('loadHydrationState seeding from a sibling', () => {
     expect(mine.status).toBe('ok')
     const theirs = await readCheckpoint('u', 'tab-old')
     expect(mine.status === 'ok' && theirs.status === 'ok'
-      && mine.checkpoint.headerBytes).toEqual(theirs.status === 'ok' ? theirs.checkpoint.headerBytes : null)
-    expect(mine.status === 'ok' && mine.chunks).toHaveLength(theirs.status === 'ok' ? theirs.chunks.length : -1)
+      && mine.checkpoint.headerBytes).toEqual(theirs.status === 'ok'
+      ? theirs.checkpoint.headerBytes
+      : null)
+    expect(mine.status === 'ok' && mine.chunks).toHaveLength(theirs.status === 'ok'
+      ? theirs.chunks.length
+      : -1)
     expect(mine.status === 'ok' && mine.opLogFrames).toHaveLength(2)
   })
 
   it('leaves the sibling\'s rows byte-identical', async () => {
     await seed('u', 'tab-old', stateOf('u', 5n))
-    await opLog.append('u', 'tab-old', [batchFrame('b1')])
+    await opLog.append('u', 'tab-old', [
+      batchFrame('b1'),
+    ])
     const before = await readCheckpoint('u', 'tab-old')
 
     await loadHydrationState('u', 'tab-new')
@@ -486,9 +561,15 @@ describe('loadHydrationState seeding from a sibling', () => {
   // which readOpLogFrames reads as a hole and discards an intact log for.
   it('numbers the copied log from 0, not from the sibling\'s next ordinal', async () => {
     await seed('u', 'tab-old', stateOf('u', 5n))
-    await opLog.append('u', 'tab-old', [batchFrame('b1')])
-    await opLog.append('u', 'tab-old', [batchFrame('b2')])
-    await opLog.append('u', 'tab-old', [batchFrame('b3')])
+    await opLog.append('u', 'tab-old', [
+      batchFrame('b1'),
+    ])
+    await opLog.append('u', 'tab-old', [
+      batchFrame('b2'),
+    ])
+    await opLog.append('u', 'tab-old', [
+      batchFrame('b3'),
+    ])
     // The source is three segments in, so a naive copy would hand us 3.
     expect((await readCheckpoint('u', 'tab-old')).status === 'ok'
       && (await readCheckpoint('u', 'tab-old') as { opLogNextOrdinal: number }).opLogNextOrdinal).toBe(3)
@@ -501,7 +582,9 @@ describe('loadHydrationState seeding from a sibling', () => {
     // a later cold start reads the whole log, not a prefix ending at a hole.
     // Direct, not via the opLog helper: this test hand-picks the ordinal, which
     // is exactly the case that helper's doc reserves for the raw call.
-    await appendOpLogSegment('u', 'tab-new', [batchFrame('b4')], settled!.nextOpLogOrdinal)
+    await appendOpLogSegment('u', 'tab-new', [
+      batchFrame('b4'),
+    ], settled!.nextOpLogOrdinal)
     const next = await loadHydrationState('u', 'tab-new')
     expect(next!.frames).toHaveLength(4)
     expect(next!.truncated).toBe(false)
@@ -594,10 +677,14 @@ describe('loadHydrationState seeding from a sibling', () => {
 
   it('carries a sibling\'s truncated op-log through as truncated', async () => {
     await seed('u', 'tab-old', stateOf('u', 5n))
-    await opLog.append('u', 'tab-old', [batchFrame('b1')])
+    await opLog.append('u', 'tab-old', [
+      batchFrame('b1'),
+    ])
     // A frame that will not decode: the replay stops at it, and the payload is
     // a strict prefix.
-    await opLog.append('u', 'tab-old', [new Uint8Array([0xFF, 0xFF, 0xFF])])
+    await opLog.append('u', 'tab-old', [
+      new Uint8Array([0xFF, 0xFF, 0xFF]),
+    ])
 
     const payload = await loadHydrationState('u', 'tab-new')
 
@@ -611,8 +698,12 @@ describe('loadHydrationState seeding from a sibling', () => {
   // from a watermark that keeps rewinding.
   it('adopts only the frames it validated, never the sibling\'s poison tail', async () => {
     await seed('u', 'tab-old', stateOf('u', 5n))
-    await opLog.append('u', 'tab-old', [batchFrame('b1')])
-    await opLog.append('u', 'tab-old', [new Uint8Array([0xFF, 0xFF, 0xFF])])
+    await opLog.append('u', 'tab-old', [
+      batchFrame('b1'),
+    ])
+    await opLog.append('u', 'tab-old', [
+      new Uint8Array([0xFF, 0xFF, 0xFF]),
+    ])
 
     const payload = await loadHydrationState('u', 'tab-new')
     expect(await payload!.persistedBase).toEqual({ nextOpLogOrdinal: 1 })
@@ -639,7 +730,9 @@ describe('loadHydrationState seeding from a sibling', () => {
   // are on disk.
   it('reports no persisted base when the adoption write fails, and still returns the state', async () => {
     await seed('u', 'tab-old', stateOf('u', 5n))
-    await opLog.append('u', 'tab-old', [batchFrame('b1')])
+    await opLog.append('u', 'tab-old', [
+      batchFrame('b1'),
+    ])
     vi.mocked(adoptCheckpoint).mockResolvedValueOnce(null)
 
     const payload = await loadHydrationState('u', 'tab-new')
@@ -656,7 +749,9 @@ describe('loadHydrationState seeding from a sibling', () => {
   it('writes nothing when the run was superseded before the adoption', async () => {
     await seed('u', 'tab-old', stateOf('u', 5n))
 
-    const payload = await loadHydrationState('u', 'tab-new', { superseded: () => true })
+    const payload = await loadHydrationState('u', 'tab-new', {
+      superseded: () => true,
+    })
 
     expect(await payload!.persistedBase).toBeNull()
     expect((await readCheckpoint('u', 'tab-new')).status).toBe('miss')
@@ -676,7 +771,9 @@ describe('loadHydrationState seeding from a sibling', () => {
     })
     await seed('u', 'tab-old', stateOf('u', 5n))
 
-    expect(await loadHydrationState('u', 'tab-new', { superseded: () => true })).toBeNull()
+    expect(await loadHydrationState('u', 'tab-new', {
+      superseded: () => true,
+    })).toBeNull()
 
     // Still there -- untouched, and not seeded over either.
     const mine = await readCheckpoint('u', 'tab-new')

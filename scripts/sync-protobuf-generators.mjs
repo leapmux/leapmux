@@ -20,8 +20,11 @@ export function synchronizeGenerators(config, goMetadata, frontend) {
     if (!version || !Number.isSafeInteger(Number(version[1])))
       throw new Error(`Missing exact runtime version for ${module}.`)
     const suffix = family.exec(selected.Path)[1]
-    if (suffix ? Number(suffix) < 2 || String(Number(suffix)) !== suffix || suffix !== version[1] : Number(version[1]) > 1)
+    if (suffix
+      ? Number(suffix) < 2 || String(Number(suffix)) !== suffix || suffix !== version[1]
+      : Number(version[1]) > 1) {
       throw new Error(`The runtime path and version disagree for ${selected.Path}.`)
+    }
     versions.set(generator, selected.Version)
   }
   const es = frontend?.dependencies?.['@bufbuild/protobuf']
@@ -35,8 +38,11 @@ export function synchronizeGenerators(config, goMetadata, frontend) {
       throw new Error(`Expected one generator entry for ${generator}.`)
     // Replace only a literal mapping value, preserving comments and the checked-in YAML format.
     const pattern = new RegExp(`(^[\\t ]*(?:-[\\t ]*)?["']?remote["']?:[\\t ]*["']?)${RegExp.escape(entries[0].remote)}(["']?)(?=[\\t ]*(?:#|$))`, 'gm')
-    if ([...config.matchAll(pattern)].length !== 1)
+    if ([
+      ...config.matchAll(pattern),
+    ].length !== 1) {
       throw new Error(`Expected one literal generator entry for ${generator}.`)
+    }
     config = config.replace(pattern, `$1${generator}:${version}$2`)
   }
   return config
@@ -49,7 +55,12 @@ if (import.meta.main) {
     const root = resolve(import.meta.dirname, '..')
     const file = resolve(root, 'buf.gen.yaml')
     const original = readFileSync(file, 'utf8')
-    const result = spawnSync('go', ['mod', 'edit', '-json'], { cwd: resolve(root, 'backend'), encoding: 'utf8', env: { ...process.env, GOWORK: 'off', GOTOOLCHAIN: 'local' }, maxBuffer: 4 * 1024 * 1024 })
+    const result = spawnSync('go', ['mod', 'edit', '-json'], {
+      cwd: resolve(root, 'backend'),
+      encoding: 'utf8',
+      env: { ...process.env, GOWORK: 'off', GOTOOLCHAIN: 'local' },
+      maxBuffer: 4 * 1024 * 1024,
+    })
     if (result.status !== 0)
       throw new Error(`Cannot read backend module metadata: ${result.error?.message ?? result.stderr}`)
     const updated = synchronizeGenerators(original, JSON.parse(result.stdout), JSON.parse(readFileSync(resolve(root, 'frontend/package.json'), 'utf8')))

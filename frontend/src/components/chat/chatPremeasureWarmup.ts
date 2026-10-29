@@ -113,7 +113,9 @@ export function createPremeasureWarmup(deps: PremeasureWarmupDeps) {
         below += 1
       }
     }
-    return out.length === 0 ? EMPTY : out
+    return out.length === 0
+      ? EMPTY
+      : out
   }
 
   const tick = (): void => {
@@ -121,7 +123,9 @@ export function createPremeasureWarmup(deps: PremeasureWarmupDeps) {
     if (!untrack(deps.enabled))
       return
     const batch = untrack(computeNextBatch)
-    setWarmupCandidates(prev => (sameCandidateIds(prev, batch) ? prev : batch))
+    setWarmupCandidates(prev => (sameCandidateIds(prev, batch)
+      ? prev
+      : batch))
     // Keep ticking while there is work; an empty scan parks the ticker until
     // the arming effect re-fires (items change, re-enable).
     if (batch.length > 0)

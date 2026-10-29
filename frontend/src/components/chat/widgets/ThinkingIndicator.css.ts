@@ -113,20 +113,26 @@ const verbSlotBase = {
 // cleared to '', leaving an empty slot whose synthesized baseline yanks the
 // whole verb vertically. The strut carries the verb's exact font metrics, so
 // it always supplies the same text baseline regardless of which slot is empty.
-export const baselineStrut = style([verbSlotBase, {
-  width: 0,
-  overflow: 'hidden',
-  visibility: 'hidden',
-}])
+export const baselineStrut = style([
+  verbSlotBase,
+  {
+    width: 0,
+    overflow: 'hidden',
+    visibility: 'hidden',
+  },
+])
 
-export const verb = style([verbSlotBase, {
-  opacity: 0,
-  // ROTATION_FADE_MS in ThinkingIndicator.tsx tracks --transition via
-  // motion.medium from tokens.ts —
-  // keep them in lockstep so the inactive-slot clear lands exactly
-  // when the fade visually completes.
-  transition: 'opacity var(--transition)',
-}])
+export const verb = style([
+  verbSlotBase,
+  {
+    opacity: 0,
+    // ROTATION_FADE_MS in ThinkingIndicator.tsx tracks --transition via
+    // motion.medium from tokens.ts —
+    // keep them in lockstep so the inactive-slot clear lands exactly
+    // when the fade visually completes.
+    transition: 'opacity var(--transition)',
+  },
+])
 
 // Applied to whichever of the two stacked slots is currently the
 // "live" one. The other slot stays opacity 0; CSS transitions on

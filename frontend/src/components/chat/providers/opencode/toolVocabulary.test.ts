@@ -21,7 +21,14 @@ const WIRE_KIND: Readonly<Record<string, string>> = {
 /** The kind the family answers for one call titled with the registry id. */
 function kindOf(name: string): ToolKind {
   return acpToolCall(
-    { sessionUpdate: 'tool_call', toolCallId: 'vocab-1', status: 'pending', kind: WIRE_KIND[name] ?? 'other', title: name, rawInput: {} },
+    {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'vocab-1',
+      status: 'pending',
+      kind: WIRE_KIND[name] ?? 'other',
+      title: name,
+      rawInput: {},
+    },
     openCodeToolCallAdapterFor({ refusals: OPENCODE_REFUSED_TOOL_ERRORS }),
     undefined,
   ).kind

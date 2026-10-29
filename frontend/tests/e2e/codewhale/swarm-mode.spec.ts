@@ -19,10 +19,18 @@ codewhaleTest('applies native Operate orchestration and retains its mode after r
       const home = native.leapmuxServer.agentEnv?.CODEWHALE_HOME
       if (!home)
         throw new Error('The native Codewhale mode proof has no private home.')
-      const receipt = readCodewhaleNativeMode({ home, runDir: getGlobalState().tmpDir, threadId: agent.agentSessionId, workingDir: agent.workingDir })
+      const receipt = readCodewhaleNativeMode({
+        home,
+        runDir: getGlobalState().tmpDir,
+        threadId: agent.agentSessionId,
+        workingDir: agent.workingDir,
+      })
       expect(receipt.mode).toBe(step.value)
       expect(hasCodewhaleOperateContract(request)).toBe(index > 0)
-      await testInfo.attach(`codewhale-native-mode-${index}`, { body: JSON.stringify({ receipt, request }), contentType: 'application/json' })
+      await testInfo.attach(`codewhale-native-mode-${index}`, {
+        body: JSON.stringify({ receipt, request }),
+        contentType: 'application/json',
+      })
     },
   })
 })

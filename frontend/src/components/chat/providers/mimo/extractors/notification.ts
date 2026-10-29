@@ -9,7 +9,10 @@ import { mimoEvent } from './toolCommon'
 export function mimoErrorText(properties: Record<string, unknown>): { name: string, message: string } {
   const error = pickObject(properties, 'error')
   const data = pickObject(error, 'data')
-  return { name: pickString(error, 'name'), message: pickString(data, 'message') }
+  return {
+    name: pickString(error, 'name'),
+    message: pickString(data, 'message'),
+  }
 }
 
 /** True for a compaction part that states the END of its compaction. */
@@ -33,38 +36,64 @@ export function mimoNotificationEntry(msg: Record<string, unknown>): Notificatio
     return []
   switch (event.type) {
     case MIMO_EVENT.SessionRetryAttempt: {
-      const facts: RetryFacts = { error: pickString(event.properties, 'reason') }
+      const facts: RetryFacts = {
+        error: pickString(event.properties, 'reason'),
+      }
       assignDefined(facts, 'attempt', pickNumber(event.properties, 'attempt', undefined))
       assignDefined(facts, 'maxAttempts', pickNumber(event.properties, 'maxAttempts', undefined))
       assignDefined(facts, 'delayMs', pickNumber(event.properties, 'nextDelayMs', undefined))
-      return [retryEntry('api', facts)]
+      return [
+        retryEntry('api', facts),
+      ]
     }
     case MIMO_EVENT.SessionStatus: {
       const status = pickObject(event.properties, 'status')
       if (pickString(status, 'type') === MIMO_STATUS_TYPE.Notice) {
         const text = pickString(status, 'message').trim()
-        return text ? [{ kind: 'status', text }] : []
+        return text
+          ? [
+              { kind: 'status', text },
+            ]
+          : []
       }
       if (pickString(status, 'type') !== MIMO_STATUS_TYPE.Retry)
         return []
       const attempt = pickNumber(status, 'attempt', undefined)
       const error = pickString(status, 'message') || undefined
-      return [retryEntry('api', {
-        ...(attempt !== undefined ? { attempt } : {}),
-        ...(error !== undefined ? { error } : {}),
-      })]
+      return [
+        retryEntry('api', {
+          ...(attempt !== undefined
+            ? { attempt }
+            : {}),
+          ...(error !== undefined
+            ? { error }
+            : {}),
+        }),
+      ]
     }
     case MIMO_EVENT.MessagePartUpdated: {
       const part = pickObject(event.properties, 'part')
       if (!part || pickString(part, 'type') !== MIMO_PART_TYPE.Compaction || !mimoCompactionEnded(part))
         return []
-      const trigger = part[MIMO_PART_FIELD.Auto] === true ? 'auto' : 'manual'
-      return [{ kind: 'compaction', phase: 'end', detail: { trigger } }]
+      const trigger = part[MIMO_PART_FIELD.Auto] === true
+        ? 'auto'
+        : 'manual'
+      return [
+        {
+          kind: 'compaction',
+          phase: 'end',
+          detail: { trigger },
+        },
+      ]
     }
     case MIMO_EVENT.SessionError: {
       const { name, message } = mimoErrorText(event.properties)
       const text = [name, message].filter(Boolean).join(': ')
-      return text ? [{ kind: 'text', text: `MiMo reported an error: ${text}` }] : []
+      return text
+        ? [
+            { kind: 'text', text: `MiMo reported an error: ${text}` },
+          ]
+        : []
     }
     default:
       return []

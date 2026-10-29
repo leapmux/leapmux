@@ -98,7 +98,17 @@ export function readLettaMcpCliReceipt(path: string, nativeResult: string, expec
   if (!isAbsolute(path) || !lstatSync(path).isFile())
     throw new Error('The Letta MCP CLI receipt must be an actual private file.')
   const value: unknown = JSON.parse(readFileSync(path, 'utf8'))
-  const fields = ['receiptId', 'callId', 'executable', 'args', 'stdout', 'stderr', 'exitCode', 'signal', 'spawnError']
+  const fields = [
+    'receiptId',
+    'callId',
+    'executable',
+    'args',
+    'stdout',
+    'stderr',
+    'exitCode',
+    'signal',
+    'spawnError',
+  ]
   if (!isObject(value) || Object.keys(value).length !== fields.length || !fields.every(field => Object.hasOwn(value, field))
     || typeof value.receiptId !== 'string' || typeof value.callId !== 'string' || typeof value.executable !== 'string'
     || !Array.isArray(value.args) || !value.args.every((arg: unknown) => typeof arg === 'string')

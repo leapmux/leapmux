@@ -30,7 +30,10 @@ export function droidExtractRow(input: RowExtractionInput): ChatRow | null {
     case 'user_content':
       return leapmuxUserRow(payload)
     case 'result_divider':
-      return { kind: 'divider', divider: { label: 'Turn ended' } }
+      return {
+        kind: 'divider',
+        divider: { label: 'Turn ended' },
+      }
     default:
       return null
   }
@@ -66,19 +69,27 @@ function droidToolRow(
   // A native result can omit its tool name and arguments.
   // Use its request only when the native call IDs match.
   const requestPayload = span.request?.parentObject
-  const requestCandidate = isObject(requestPayload) ? (pickObject(requestPayload, DROID_NOTIFICATION_FIELD.ToolUse) ?? requestPayload) : undefined
+  const requestCandidate = isObject(requestPayload)
+    ? (pickObject(requestPayload, DROID_NOTIFICATION_FIELD.ToolUse) ?? requestPayload)
+    : undefined
   const requestID = pickString(requestCandidate, 'id') || pickString(requestPayload, DROID_NOTIFICATION_FIELD.ToolUseID)
-  const requestToolUse = id !== '' && requestID === id ? requestCandidate : undefined
+  const requestToolUse = id !== '' && requestID === id
+    ? requestCandidate
+    : undefined
   const name = pickString(toolUse, 'name') || pickString(toolUse, DROID_NOTIFICATION_FIELD.ToolName)
     || pickString(payload, DROID_NOTIFICATION_FIELD.ToolName)
     || pickString(requestToolUse, 'name') || pickString(requestToolUse, DROID_NOTIFICATION_FIELD.ToolName) || 'Tool'
-  const args = pickObject(toolUse, 'input') ?? (requestToolUse ? pickObject(requestToolUse, 'input') : undefined) ?? {}
+  const args = pickObject(toolUse, 'input') ?? (requestToolUse
+    ? pickObject(requestToolUse, 'input')
+    : undefined) ?? {}
   const isError = Boolean(payload[DROID_NOTIFICATION_FIELD.IsError])
   const content = payload[DROID_NOTIFICATION_FIELD.Content]
   const resultContent = droidResultContent(content)
 
   const declared = droidToolKind(name)
-  const kind = declared === 'unspecified' ? 'other' : declared
+  const kind = declared === 'unspecified'
+    ? 'other'
+    : declared
   const lifecycle = droidLifecycle(completion, isError, isResult, content !== undefined)
   const envelope = { id, name, lifecycle }
   // The request row draws a file diff. The result row keeps its outcome as prose.
@@ -95,29 +106,48 @@ function droidToolRow(
     const call = createToolCall(envelope, {
       kind,
       name,
-      request: { changes: [change] },
-      ...(content !== undefined ? { result: { changes: [change] } } : {}),
+      request: {
+        changes: [change],
+      },
+      ...(content !== undefined
+        ? {
+            result: {
+              changes: [change],
+            },
+          }
+        : {}),
     })
     return toolCallRow(call, 'request', span.visibleRows)
   }
 
   // A command result states how the command ended, which only the command body draws.
-  const commandText = kind === 'execute' && hasInput && isResult && content !== undefined ? droidCommandText(resultContent) : undefined
+  const commandText = kind === 'execute' && hasInput && isResult && content !== undefined
+    ? droidCommandText(resultContent)
+    : undefined
   if (commandText !== undefined) {
     const call = createToolCall(envelope, {
       kind: 'execute',
       name,
       request: toolRequestFor('execute', args, {}, {}),
-      result: { commands: [droidCommandResult(commandText)], unresolvedTerminals: [] },
+      result: {
+        commands: [
+          droidCommandResult(commandText),
+        ],
+        unresolvedTerminals: [],
+      },
     })
     return toolCallRow(call, 'result', span.visibleRows)
   }
 
   // Other result rows keep the generic card because their request row already shows the typed input.
   // A request row receives the typed request for its declared kind.
-  const requestKind = hasInput && !isResult ? kind : 'other'
+  const requestKind = hasInput && !isResult
+    ? kind
+    : 'other'
   const request = requestKind === 'todo'
-    ? { items: rawTodosToItems(args.todos) }
+    ? {
+        items: rawTodosToItems(args.todos),
+      }
     : toolRequestFor(requestKind, args, {}, {})
   const call = createToolCall(envelope, {
     kind: requestKind,
@@ -126,7 +156,9 @@ function droidToolRow(
     // Retained finality supplies no native result content.
     // Keep an actual empty result, and keep absent content absent.
     ...(content !== undefined
-      ? { result: { content: resultContent } }
+      ? {
+          result: { content: resultContent },
+        }
       : {}),
   })
   return toolCallRow(call, isResult ? 'result' : 'request', span.visibleRows)
@@ -157,7 +189,9 @@ function droidCommandText(content: readonly McpContentItem[]): string | undefine
  */
 function droidCommandResult(text: string): CommandResult {
   const trailer = DROID_EXIT_TRAILER.exec(text)
-  const exitCode = trailer ? Number(trailer[1]) : Number.NaN
+  const exitCode = trailer
+    ? Number(trailer[1])
+    : Number.NaN
   if (!trailer || !Number.isSafeInteger(exitCode))
     return { output: text }
   let output = text.slice(0, trailer.index).replace(/\r?\n\r?\n$/u, '')
@@ -169,11 +203,18 @@ function droidCommandResult(text: string): CommandResult {
 
 /** Read Droid's result blocks without turning a picture into JSON text. */
 function droidResultContent(content: unknown): McpContentItem[] {
-  if (typeof content === 'string')
-    return [{ type: 'text', text: content }]
+  if (typeof content === 'string') {
+    return [
+      { type: 'text', text: content },
+    ]
+  }
   if (!Array.isArray(content)) {
     const text = JSON.stringify(content)
-    return text === undefined ? [] : [{ type: 'text', text }]
+    return text === undefined
+      ? []
+      : [
+          { type: 'text', text },
+        ]
   }
   return content.map((block): McpContentItem => {
     if (isObject(block) && block.type === 'image') {
@@ -181,8 +222,12 @@ function droidResultContent(content: unknown): McpContentItem[] {
       if (source?.type === 'base64') {
         const data = pickString(source, 'data', undefined)
         const mimeType = pickString(source, 'mediaType', undefined)
-        if (data && mimeType)
-          return { type: 'image', source: { data, mimeType } }
+        if (data && mimeType) {
+          return {
+            type: 'image',
+            source: { data, mimeType },
+          }
+        }
       }
     }
     return parseMcpContentItem(block)

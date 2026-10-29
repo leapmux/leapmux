@@ -120,7 +120,9 @@ function sameChildLists(a: readonly LayoutNodeLocal[], b: readonly LayoutNodeLoc
 function childrenOf(node: LayoutNodeLocal): LayoutNodeLocal[] {
   if (node.type === 'leaf')
     return []
-  return node.type === 'grid' ? node.cells : node.children
+  return node.type === 'grid'
+    ? node.cells
+    : node.children
 }
 
 export interface LayoutStoreState {
@@ -233,7 +235,9 @@ export function firstLeafId(node: LayoutNodeLocal): string | undefined {
   if (node.type === 'leaf')
     return node.id
   const first = childrenOf(node)[0]
-  return first ? firstLeafId(first) : undefined
+  return first
+    ? firstLeafId(first)
+    : undefined
 }
 
 /**
@@ -276,7 +280,9 @@ export function closeAffordance(
   const isGrid = mode.kind === 'grid'
   const label = isGrid ? 'Close grid' : 'Close tile'
   const base = isGrid ? 'close-grid' : 'close-tile'
-  const testId = surface === 'menu' ? `${base}-menu-item` : base
+  const testId = surface === 'menu'
+    ? `${base}-menu-item`
+    : base
   return { label, testId }
 }
 
@@ -349,7 +355,9 @@ function walkPredicates(
   // Anchor on the top-right visual position. For a vertical-divider
   // split (side-by-side panes) that's the rightmost child; for a
   // horizontal-divider split (stacked panes) that's the topmost.
-  const anchorChildIdx = node.direction === 'vertical' ? lastIdx : 0
+  const anchorChildIdx = node.direction === 'vertical'
+    ? lastIdx
+    : 0
   for (let i = 0; i < node.children.length; i++) {
     const child = node.children[i]
     if (child === undefined)
@@ -358,7 +366,9 @@ function walkPredicates(
       ctx,
       child,
       depth + 1,
-      i === anchorChildIdx ? innermostAnchorGridId : null,
+      i === anchorChildIdx
+        ? innermostAnchorGridId
+        : null,
       false,
     )
   }
@@ -470,7 +480,9 @@ export function createLayoutStore(opts: CreateLayoutStoreOpts) {
       if (!fresh)
         continue
       const prev = previousLocalTrees.get(wsId)
-      const node = prev && sameLayoutNode(prev, fresh) ? prev : fresh
+      const node = prev && sameLayoutNode(prev, fresh)
+        ? prev
+        : fresh
       reused &&= node === prev
       out.set(wsId, node)
     }
@@ -566,7 +578,9 @@ export function createLayoutStore(opts: CreateLayoutStoreOpts) {
   const layoutOwner: LayoutOwner = {
     collectTileIdsInGrid: (gridId) => {
       const grid = findGridById(projectedRoot(), gridId)
-      return grid ? getAllTileIds(grid) : []
+      return grid
+        ? getAllTileIds(grid)
+        : []
     },
     findHeirTile: tileId => findHeirTileId(projectedRoot(), tileId),
     firstLeafId: () => firstLeafId(projectedRoot()) ?? null,
@@ -623,7 +637,9 @@ export function createLayoutStore(opts: CreateLayoutStoreOpts) {
      */
     firstLeafIdFor(workspaceId: string): string | null {
       const local = localTreeFor(workspaceId)
-      return local ? firstLeafId(local) ?? null : null
+      return local
+        ? firstLeafId(local) ?? null
+        : null
     },
 
     /**
@@ -644,7 +660,9 @@ export function createLayoutStore(opts: CreateLayoutStoreOpts) {
      */
     tileOrderFor(workspaceId: string): readonly string[] {
       const local = localTreeFor(workspaceId)
-      return local ? tileIdsFor(local) : EMPTY_TILE_ORDER
+      return local
+        ? tileIdsFor(local)
+        : EMPTY_TILE_ORDER
     },
 
     /**
@@ -705,7 +723,9 @@ export function createLayoutStore(opts: CreateLayoutStoreOpts) {
       // `containsTileId`, not `getAllTileIds(...).includes(...)`: it early-returns
       // on the first match instead of materialising every leaf id first. Both
       // match leaves only, so the answer is identical.
-      return local && containsTileId(local, tileId) ? tileId : null
+      return local && containsTileId(local, tileId)
+        ? tileId
+        : null
     },
 
     focusedTileId(): string {
@@ -728,7 +748,9 @@ export function createLayoutStore(opts: CreateLayoutStoreOpts) {
       if (!local)
         return ''
       const focused = focusedTileIdRaw()
-      return focused && containsTileId(local, focused) ? focused : firstLeafId(local) ?? ''
+      return focused && containsTileId(local, focused)
+        ? focused
+        : firstLeafId(local) ?? ''
     },
 
     /**
@@ -825,7 +847,9 @@ export function useLayoutFocusSweep(
 ): void {
   const live = createMemo<ReadonlySet<string> | null>(() => {
     const proj = projection()
-    return proj ? new Set(proj.workspaces.keys()) : null
+    return proj
+      ? new Set(proj.workspaces.keys())
+      : null
   }, null, {
     // Membership only: the projection is rebuilt every tick, but which
     // workspaces exist changes far more rarely.

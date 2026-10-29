@@ -4,13 +4,19 @@ import { applyClaudeChildHandback, claudeDeliveredChildResponse } from './claude
 
 /** Recognize only the native delivered-child continuation before ordered script selection. */
 export function claudeLifecycleAnswer(context: ModelRequestContext): { rule: string, step: MockModelStep } | undefined {
-  const step = context.protocol === 'anthropic-messages' ? claudeDeliveredChildResponse(context.body) : undefined
-  return step ? { rule: 'claude-child-handback-complete', step } : undefined
+  const step = context.protocol === 'anthropic-messages'
+    ? claudeDeliveredChildResponse(context.body)
+    : undefined
+  return step
+    ? { rule: 'claude-child-handback-complete', step }
+    : undefined
 }
 
 /** Adapt an exact native child report without changing another model protocol. */
 export function prepareClaudeMessageStep(protocol: MockModelProtocol, body: unknown, step: MockModelStep, id: string): MockModelStep {
-  return protocol === 'anthropic-messages' ? applyClaudeChildHandback(body, step, id) : step
+  return protocol === 'anthropic-messages'
+    ? applyClaudeChildHandback(body, step, id)
+    : step
 }
 
 /** Encode the quota fields that the installed Claude service client reads. */
@@ -19,7 +25,9 @@ export function claudeRateLimitHeaders(rateLimits: MockModelRateLimits): Record<
     'anthropic-ratelimit-unified-status': rateLimits.status,
     'anthropic-ratelimit-unified-representative-claim': rateLimits.type,
   }
-  const abbrev = rateLimits.type.startsWith('seven_day') ? '7d' : '5h'
+  const abbrev = rateLimits.type.startsWith('seven_day')
+    ? '7d'
+    : '5h'
   if (rateLimits.utilization !== undefined)
     headers[`anthropic-ratelimit-unified-${abbrev}-utilization`] = String(rateLimits.utilization)
   if (rateLimits.resetsAt !== undefined) {

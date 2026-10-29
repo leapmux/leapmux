@@ -46,9 +46,13 @@ function textRow(
   kind: 'assistant-text' | 'assistant-thinking',
 ): ChatRow {
   const text = anthropicBlocks(payload, blockType)
-    .map(block => anthropicBlockText(block, blockType === 'thinking' ? 'thinking' : 'text'))
+    .map(block => anthropicBlockText(block, blockType === 'thinking'
+      ? 'thinking'
+      : 'text'))
     .join('')
-  return text ? { kind, text } : { kind: 'hidden' }
+  return text
+    ? { kind, text }
+    : { kind: 'hidden' }
 }
 
 function toolSpanRow(
@@ -65,16 +69,28 @@ function toolSpanRow(
   if (!callId)
     return null
   const requestPayload = matchingSessionPayload(payload, span.request?.parentObject)
-  const resultPayload = ownResult ? payload : matchingSessionPayload(payload, span.result?.parentObject)
-  const requestUse = requestPayload ? anthropicBlock(requestPayload, 'tool_use', callId) : undefined
-  const result = ownResult ?? (resultPayload ? anthropicBlock(resultPayload, 'tool_result', callId) : undefined)
+  const resultPayload = ownResult
+    ? payload
+    : matchingSessionPayload(payload, span.result?.parentObject)
+  const requestUse = requestPayload
+    ? anthropicBlock(requestPayload, 'tool_use', callId)
+    : undefined
+  const result = ownResult ?? (resultPayload
+    ? anthropicBlock(resultPayload, 'tool_result', callId)
+    : undefined)
   const toolName = String(use?.name ?? requestUse?.name ?? input.spanType ?? '')
   const nativeInput = use?.input ?? requestUse?.input
-  const args = isObject(nativeInput) ? nativeInput : {}
-  const content = result ? resultContent(result) : { text: '', ordered: [] }
+  const args = isObject(nativeInput)
+    ? nativeInput
+    : {}
+  const content = result
+    ? resultContent(result)
+    : { text: '', ordered: [] }
   const isError = result?.is_error === true
 
-  const role = span.role === 'result' || (span.role === 'other' && !use) ? 'result' : 'request'
+  const role = span.role === 'result' || (span.role === 'other' && !use)
+    ? 'result'
+    : 'request'
   const call = anthropicToolCall({
     callId,
     toolName,
@@ -100,7 +116,9 @@ function matchingSessionPayload(payload: Record<string, unknown>, candidate: Rec
     return undefined
   const own = pickString(payload, 'session_id')
   const other = pickString(candidate, 'session_id')
-  return own && other && own !== other ? undefined : candidate
+  return own && other && own !== other
+    ? undefined
+    : candidate
 }
 
 /** Read the command's own exit metadata without guessing from output text. */
@@ -111,7 +129,9 @@ function qoderCommandExit(payload: Record<string, unknown> | undefined, failed: 
     return { exitCode: code }
   if (typeof result?.signal === 'string' && result.signal)
     return { signal: result.signal }
-  return failed ? { failed: true } : {}
+  return failed
+    ? { failed: true }
+    : {}
 }
 
 // A tool_result is a string or a list of content blocks. Keep the old text

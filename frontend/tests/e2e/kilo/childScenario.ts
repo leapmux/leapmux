@@ -46,10 +46,12 @@ export async function exerciseKiloSpawnTranscript(context: ManagedNativeScenario
   await modelScript.rule(kiloSpawnChildRule())
   const start = await modelScript.queue(
     {
-      toolCalls: [spawnSubagentToolCall(context.provider, 'spawn-kilo', {
-        description: 'Run the shell probe',
-        prompt: modelScript.prompt(KILO_SPAWN_TASK),
-      })],
+      toolCalls: [
+        spawnSubagentToolCall(context.provider, 'spawn-kilo', {
+          description: 'Run the shell probe',
+          prompt: modelScript.prompt(KILO_SPAWN_TASK),
+        }),
+      ],
     },
     { text: 'The subagent reported kilo-done.' },
   )

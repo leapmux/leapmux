@@ -166,7 +166,10 @@ export function codewhaleMcpToolName(toolName: string): { server: string, tool: 
   const separator = rest.indexOf('_')
   if (separator <= 0 || separator === rest.length - 1)
     return null
-  return { server: rest.slice(0, separator), tool: rest.slice(separator + 1) }
+  return {
+    server: rest.slice(0, separator),
+    tool: rest.slice(separator + 1),
+  }
 }
 
 /** The kind of one Codewhale tool. An empty name states no kind; an unknown one is uncategorized. */

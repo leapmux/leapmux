@@ -10,7 +10,15 @@ describe('fastagentAudioConfiguration', () => {
   it.each(['', '   ', `${original}google:\n  api_key: existing\n`])('refuses an absent configuration or a duplicate Google provider: %j', (content) => {
     expect(() => fastagentAudioConfiguration(content, 'http://127.0.0.1:4321/v1')).toThrow('existing configuration')
   })
-  it.each(['https://127.0.0.1:4321/v1', 'http://example.com/v1', 'http://user:secret@localhost:4321/v1', 'http://localhost:4321/v1?key=value', 'http://localhost:4321/v1#fragment', 'http://localhost:4321/another', 'invalid'])('refuses an unsafe or unexpected native endpoint: %j', (endpoint) => {
+  it.each([
+    'https://127.0.0.1:4321/v1',
+    'http://example.com/v1',
+    'http://user:secret@localhost:4321/v1',
+    'http://localhost:4321/v1?key=value',
+    'http://localhost:4321/v1#fragment',
+    'http://localhost:4321/another',
+    'invalid',
+  ])('refuses an unsafe or unexpected native endpoint: %j', (endpoint) => {
     expect(() => fastagentAudioConfiguration(original, endpoint)).toThrow('Fast Agent audio fixture')
   })
 })

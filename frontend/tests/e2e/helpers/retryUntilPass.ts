@@ -31,7 +31,9 @@ const OUT_OF_TIME = Symbol('out of time')
 export async function retryUntilPass<T>(attempt: () => T | Promise<T>): Promise<T> {
   const limit = waitTimeoutBeforeTestDeadline()
   const started = Date.now()
-  const deadline = limit > 0 ? started + limit : undefined
+  const deadline = limit > 0
+    ? started + limit
+    : undefined
   let lastError: unknown
   for (let attempts = 1; ; attempts++) {
     let result: T | typeof OUT_OF_TIME
@@ -74,7 +76,9 @@ async function raceDeadline<T>(attempt: () => T | Promise<T>, deadline: number |
 function outOfTimeError(lastError: unknown, attempts: number, started: number): Error {
   const reason = lastError === undefined
     ? 'No attempt ended before the limit of the wait.'
-    : lastError instanceof Error ? lastError.message : String(lastError)
+    : lastError instanceof Error
+      ? lastError.message
+      : String(lastError)
   const summary = `The wait ran ${attempts} attempt(s) in ${Date.now() - started}ms and ended before the test's own deadline.`
   return new Error(`${reason}\n\n${summary}`, { cause: lastError })
 }

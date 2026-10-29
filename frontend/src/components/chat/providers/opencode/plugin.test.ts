@@ -16,8 +16,12 @@ import './plugin'
 
 describe('opencode quotable text', () => {
   it('reads parent.content string for user_content / plan_execution', () => {
-    expect(providerQuotableText(AgentProvider.OPENCODE, { content: 'hi' }, { category: { kind: 'user_content' } })).toBe('hi')
-    expect(providerQuotableText(AgentProvider.OPENCODE, { content: 'plan' }, { category: { kind: 'plan_execution' } })).toBe('plan')
+    expect(providerQuotableText(AgentProvider.OPENCODE, { content: 'hi' }, {
+      category: { kind: 'user_content' },
+    })).toBe('hi')
+    expect(providerQuotableText(AgentProvider.OPENCODE, { content: 'plan' }, {
+      category: { kind: 'plan_execution' },
+    })).toBe('plan')
   })
 
   // An assistant row carries LeapMux's own assembled-message envelope, which the
@@ -29,12 +33,18 @@ describe('opencode quotable text', () => {
   it('reads assistant text and reasoning through the shared assembled path', () => {
     const text = assembledMessageRow('text', 'Hello')
     const reasoning = assembledMessageRow('reasoning', 'thinking')
-    expect(providerQuotableText(AgentProvider.OPENCODE, text, { category: { kind: 'assistant_text' } })).toBe('Hello')
-    expect(providerQuotableText(AgentProvider.OPENCODE, reasoning, { category: { kind: 'assistant_thinking' } })).toBe('thinking')
+    expect(providerQuotableText(AgentProvider.OPENCODE, text, {
+      category: { kind: 'assistant_text' },
+    })).toBe('Hello')
+    expect(providerQuotableText(AgentProvider.OPENCODE, reasoning, {
+      category: { kind: 'assistant_thinking' },
+    })).toBe('thinking')
   })
 
   it('returns null for non-quotable categories', () => {
-    expect(providerQuotableText(AgentProvider.OPENCODE, { content: 'x' }, { category: { kind: 'hidden' } })).toBeNull()
+    expect(providerQuotableText(AgentProvider.OPENCODE, { content: 'x' }, {
+      category: { kind: 'hidden' },
+    })).toBeNull()
   })
 })
 
@@ -43,10 +53,26 @@ describe('opencode classify', () => {
 
   // Attachment caps, assembled-text handling and config_option_update hiding are the
   // standard Agent Client Protocol behaviours; the cases below are OpenCode's own.
-  describeACPProviderBasics(AgentProvider.OPENCODE, { text: true, image: true, pdf: true, audio: ['audio/wav', 'audio/mpeg', 'audio/mp3', 'audio/aac', 'audio/ogg', 'audio/flac', 'audio/webm'], binary: false })
+  describeACPProviderBasics(AgentProvider.OPENCODE, {
+    text: true,
+    image: true,
+    pdf: true,
+    audio: [
+      'audio/wav',
+      'audio/mpeg',
+      'audio/mp3',
+      'audio/aac',
+      'audio/ogg',
+      'audio/flac',
+      'audio/webm',
+    ],
+    binary: false,
+  })
 
   it('maps bypass to the family Auto-approve option and offers no smart preset', () => {
-    expect(plugin.controls?.permissionPresets?.bypass).toEqual({ sets: { [OPENCODE_OPTION.AutoApprove]: 'true' } })
+    expect(plugin.controls?.permissionPresets?.bypass).toEqual({
+      sets: { [OPENCODE_OPTION.AutoApprove]: 'true' },
+    })
     expect(plugin.controls?.permissionPresets?.smart).toBeUndefined()
   })
 
@@ -62,14 +88,38 @@ describe('opencode classify', () => {
     expect(plugin?.controls?.controlResponseDisplay!({
       claimToken: 'claim-1',
       requestId: 'q1',
-      request: { type: 'question.asked', properties: { questions: [{ header: 'Task' }] } },
-      response: { result: { answers: [['Build']] } },
+      request: {
+        type: 'question.asked',
+        properties: {
+          questions: [
+            { header: 'Task' },
+          ],
+        },
+      },
+      response: {
+        result: {
+          answers: [
+            ['Build'],
+          ],
+        },
+      },
     })).toEqual({ kind: 'label', text: 'Task: Build' })
     expect(plugin?.controls?.controlResponseDisplay!({
       claimToken: 'claim-1',
       requestId: '7',
-      request: { method: 'session/request_permission', params: { options: [{ optionId: 'proceed_once', name: 'Allow once' }] } },
-      response: { result: { outcome: { optionId: 'proceed_once' } } },
+      request: {
+        method: 'session/request_permission',
+        params: {
+          options: [
+            { optionId: 'proceed_once', name: 'Allow once' },
+          ],
+        },
+      },
+      response: {
+        result: {
+          outcome: { optionId: 'proceed_once' },
+        },
+      },
     })).toEqual({ kind: 'label', text: 'Allow once' })
   })
 
@@ -103,7 +153,12 @@ describe('opencode classify', () => {
       status: 'completed',
       kind: 'execute',
       title: 'bash',
-      content: [{ type: 'content', content: { type: 'text', text: 'output' } }],
+      content: [
+        {
+          type: 'content',
+          content: { type: 'text', text: 'output' },
+        },
+      ],
     }
     expect(plugin?.transcript.classify(input(parent))).toEqual({ kind: 'tool_use' })
   })
@@ -135,7 +190,10 @@ describe('opencode classify', () => {
       status: 'in_progress',
       kind: 'execute',
     }
-    expect(plugin?.transcript.classify({ ...input(parent), completion: MessageCompletion.INTERRUPTED })).toEqual({ kind: 'tool_use' })
+    expect(plugin?.transcript.classify({
+      ...input(parent),
+      completion: MessageCompletion.INTERRUPTED,
+    })).toEqual({ kind: 'tool_use' })
   })
 
   it('classifies plan as tool_use', () => {
@@ -189,7 +247,12 @@ describe('opencode classify', () => {
   })
 
   it('classifies settings_changed as notification', () => {
-    const parent = { type: 'settings_changed', changes: { model: { old: 'a', new: 'b' } } }
+    const parent = {
+      type: 'settings_changed',
+      changes: {
+        model: { old: 'a', new: 'b' },
+      },
+    }
     expect(plugin?.transcript.classify(input(parent)).kind).toBe('notification')
   })
 
@@ -197,7 +260,9 @@ describe('opencode classify', () => {
     const parent = { type: 'agent_error', error: 'something went wrong' }
     expect(plugin?.transcript.classify(input(parent))).toEqual({
       kind: 'notification',
-      entries: [{ kind: 'text', text: 'something went wrong' }],
+      entries: [
+        { kind: 'text', text: 'something went wrong' },
+      ],
     })
   })
 
@@ -213,7 +278,12 @@ describe('opencode classify', () => {
   })
 
   it('hides JSON-RPC response envelope', () => {
-    const parent = { id: 5, result: { outcome: { optionId: 'once' } } }
+    const parent = {
+      id: 5,
+      result: {
+        outcome: { optionId: 'once' },
+      },
+    }
     expect(plugin?.transcript.classify(input(parent))).toEqual({ kind: 'hidden' })
   })
 
@@ -225,11 +295,15 @@ describe('opencode classify', () => {
   it('handles notification thread wrappers', () => {
     const wrapper = {
       old_seqs: [1],
-      messages: [{ type: 'interrupted' }],
+      messages: [
+        { type: 'interrupted' },
+      ],
     }
     expect(plugin?.transcript.classify(input(undefined, wrapper))).toEqual({
       kind: 'notification',
-      entries: [{ kind: 'text', text: 'Interrupted' }],
+      entries: [
+        { kind: 'text', text: 'Interrupted' },
+      ],
     })
   })
 
@@ -263,7 +337,10 @@ describe('stored system frames (opencode)', () => {
       { type: 'system', subtype: 'compact_boundary' },
     ]) {
       expect(plugin?.transcript.classify(input(parent))).toStrictEqual({ kind: 'unknown' })
-      expect(plugin?.transcript.classify(input(parent, { old_seqs: [], messages: [parent] }))).toStrictEqual({ kind: 'unknown' })
+      expect(plugin?.transcript.classify(input(parent, {
+        old_seqs: [],
+        messages: [parent],
+      }))).toStrictEqual({ kind: 'unknown' })
     }
   })
 
@@ -272,9 +349,17 @@ describe('stored system frames (opencode)', () => {
   it('keeps the visible notification of a thread that holds a system message', () => {
     const interrupted = { type: 'interrupted' }
     const initMsg = { type: 'system', subtype: 'init' }
-    const wrapper = { old_seqs: [1, 2], messages: [initMsg, interrupted] }
+    const wrapper = {
+      old_seqs: [1, 2],
+      messages: [initMsg, interrupted],
+    }
     expect(plugin?.transcript.classify(input(initMsg, wrapper)))
-      .toStrictEqual({ kind: 'notification', entries: [{ kind: 'text', text: 'Interrupted' }] })
+      .toStrictEqual({
+        kind: 'notification',
+        entries: [
+          { kind: 'text', text: 'Interrupted' },
+        ],
+      })
   })
 })
 
@@ -282,11 +367,16 @@ describe('opencode result divider', () => {
   const plugin = providerFor(AgentProvider.OPENCODE)!
 
   it('maps end_turn to "Turn ended"', () => {
-    expect(acpResultDivider({ stopReason: 'end_turn', usage: { totalTokens: 100 } })).toEqual({ label: 'Turn ended' })
+    expect(acpResultDivider({
+      stopReason: 'end_turn',
+      usage: { totalTokens: 100 },
+    })).toEqual({ label: 'Turn ended' })
   })
 
   it('maps a missing stopReason to "Turn ended"', () => {
-    expect(acpResultDivider({ usage: { totalTokens: 100 } })).toEqual({ label: 'Turn ended' })
+    expect(acpResultDivider({
+      usage: { totalTokens: 100 },
+    })).toEqual({ label: 'Turn ended' })
   })
 
   it('maps a non-end_turn stopReason to "Turn ended (reason)"', () => {
@@ -338,7 +428,9 @@ describe('opencode plan mode', () => {
   const plugin = providerFor(AgentProvider.OPENCODE)!
 
   it('reads the current mode from optionValues.primaryAgent', () => {
-    expect(plugin?.configuration?.planMode?.currentMode({ optionValues: { primaryAgent: 'plan' } })).toBe('plan')
+    expect(plugin?.configuration?.planMode?.currentMode({
+      optionValues: { primaryAgent: 'plan' },
+    })).toBe('plan')
     expect(plugin?.configuration?.planMode?.currentMode({ optionValues: {} })).toBe('build')
   })
 
@@ -377,7 +469,12 @@ describe('opencode tool_call_update renderer', () => {
         output: 'abc123 fix something\ndef456 add feature',
         metadata: { exit: 0, description: 'Shows recent commit messages', truncated: false },
       },
-      content: [{ type: 'content', content: { type: 'text', text: 'abc123 fix something\ndef456 add feature' } }],
+      content: [
+        {
+          type: 'content',
+          content: { type: 'text', text: 'abc123 fix something\ndef456 add feature' },
+        },
+      ],
     }
     const category = plugin?.transcript.classify(input(toolUse))
     expect(category.kind).toBe('tool_use')
@@ -394,7 +491,10 @@ describe('opencode tool_call_update renderer', () => {
       kind: 'execute',
       title: 'Run failing command',
       rawInput: { command: 'false' },
-      rawOutput: { error: 'command failed', metadata: { exit: 1 } },
+      rawOutput: {
+        error: 'command failed',
+        metadata: { exit: 1 },
+      },
       content: [],
     }
     const { container } = renderACPRow(AgentProvider.OPENCODE, toolUse)
@@ -410,7 +510,12 @@ describe('opencode tool_call_update renderer', () => {
       kind: 'edit',
       title: 'src/main.ts',
       content: [
-        { type: 'diff', path: 'src/main.ts', oldText: 'const a = 1', newText: 'const a = 2' },
+        {
+          type: 'diff',
+          path: 'src/main.ts',
+          oldText: 'const a = 1',
+          newText: 'const a = 2',
+        },
       ],
     }
     const category = plugin?.transcript.classify(input(toolUse))
@@ -424,7 +529,12 @@ describe('opencode tool_call_update renderer', () => {
       status: 'completed',
       kind: 'execute',
       title: 'simple command',
-      content: [{ type: 'content', content: { type: 'text', text: 'output' } }],
+      content: [
+        {
+          type: 'content',
+          content: { type: 'text', text: 'output' },
+        },
+      ],
     }
     const { container } = renderACPRow(AgentProvider.OPENCODE, toolUse)
     expect(container.textContent).toContain('simple command')
@@ -446,7 +556,12 @@ describe('opencode tool_call_update renderer', () => {
         output: 'Found 24 matches\n/workspace/backend/agent.go:\n  Line 262: func UpdateSettings',
         metadata: { matches: 24, truncated: false },
       },
-      content: [{ type: 'content', content: { type: 'text', text: 'Found 24 matches\n...' } }],
+      content: [
+        {
+          type: 'content',
+          content: { type: 'text', text: 'Found 24 matches\n...' },
+        },
+      ],
     }
     const { container } = renderACPRow(AgentProvider.OPENCODE, toolUse)
     expect(container.textContent).toContain('UpdateSettings')
@@ -468,7 +583,12 @@ describe('opencode tool_call_update renderer', () => {
         output: '537: func foo() {\n538:   return\n539: }',
         metadata: { preview: 'func foo() {', truncated: true, loaded: [] },
       },
-      content: [{ type: 'content', content: { type: 'text', text: '537: func foo() {\n538:   return\n539: }' } }],
+      content: [
+        {
+          type: 'content',
+          content: { type: 'text', text: '537: func foo() {\n538:   return\n539: }' },
+        },
+      ],
     }
     const { container } = renderACPRow(AgentProvider.OPENCODE, toolUse)
     expect(container.textContent).toContain('backend/agent.go')
@@ -482,7 +602,10 @@ describe('opencode tool_call_update renderer', () => {
       kind: 'execute',
       title: 'check status',
       content: [],
-      rawOutput: { output: 'everything ok', metadata: { exit: 0 } },
+      rawOutput: {
+        output: 'everything ok',
+        metadata: { exit: 0 },
+      },
     }
     const { container } = renderACPRow(AgentProvider.OPENCODE, toolUse)
     expect(container.textContent).toContain('check status')
@@ -502,7 +625,14 @@ describe('opencode refused tool calls', () => {
   const REJECTED = 'The user rejected permission to use this specific tool call.'
   const COMMAND = 'rm ../opencode-permission-probe.txt'
   const RAW_INPUT = { command: COMMAND, description: 'Remove the probe file' }
-  const opening = { sessionUpdate: 'tool_call', toolCallId: 'refused-call', status: 'pending', kind: 'execute', title: 'bash', rawInput: RAW_INPUT }
+  const opening = {
+    sessionUpdate: 'tool_call',
+    toolCallId: 'refused-call',
+    status: 'pending',
+    kind: 'execute',
+    title: 'bash',
+    rawInput: RAW_INPUT,
+  }
 
   /** The final update of the call, in the daemon's own shape. */
   const ending = (status: 'failed' | 'completed', text: string) => ({
@@ -513,17 +643,27 @@ describe('opencode refused tool calls', () => {
     title: 'bash',
     rawInput: RAW_INPUT,
     content: acpTextContent(text),
-    rawOutput: status === 'failed' ? { error: text } : { output: text, metadata: { exit: 0 } },
+    rawOutput: status === 'failed'
+      ? { error: text }
+      : {
+          output: text,
+          metadata: { exit: 0 },
+        },
   })
 
   const callOf = (frame: Record<string, unknown>, request: Record<string, unknown> = opening) =>
-    providerToolCall(AgentProvider.OPENCODE, frame, { request: input(request, null, AgentProvider.OPENCODE) as ParsedMessageContent, spanType: 'tool_call_update' })
+    providerToolCall(AgentProvider.OPENCODE, frame, {
+      request: input(request, null, AgentProvider.OPENCODE) as ParsedMessageContent,
+      spanType: 'tool_call_update',
+    })
 
   it('reads the Deny answer as declined, with the refusal as the result', () => {
     const call = callOf(ending('failed', REJECTED))
     expect(call?.kind).toBe('execute')
     expect(call?.status).toBe('declined')
-    expect(call?.kind === 'execute' ? call.request.command : undefined).toBe(COMMAND)
+    expect(call?.kind === 'execute'
+      ? call.request.command
+      : undefined).toBe(COMMAND)
     expect(call?.result).toStrictEqual({ failure: true, text: REJECTED })
     expect(call?.images).toStrictEqual([])
     expect(call?.degradation).toBeUndefined()
@@ -539,9 +679,34 @@ describe('opencode refused tool calls', () => {
   })
 
   it('reads a dismissed question as declined', () => {
-    const question = { sessionUpdate: 'tool_call', toolCallId: 'refused-call', status: 'pending', kind: 'other', title: 'question', rawInput: { questions: [{ header: 'Scope', question: 'Which package?', options: [{ label: 'frontend' }] }] } }
+    const question = {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'refused-call',
+      status: 'pending',
+      kind: 'other',
+      title: 'question',
+      rawInput: {
+        questions: [
+          {
+            header: 'Scope',
+            question: 'Which package?',
+            options: [
+              { label: 'frontend' },
+            ],
+          },
+        ],
+      },
+    }
     const error = 'The user dismissed this question'
-    const call = callOf({ sessionUpdate: 'tool_call_update', toolCallId: 'refused-call', status: 'failed', kind: 'other', title: 'question', content: acpTextContent(error), rawOutput: { error } }, question)
+    const call = callOf({
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'refused-call',
+      status: 'failed',
+      kind: 'other',
+      title: 'question',
+      content: acpTextContent(error),
+      rawOutput: { error },
+    }, question)
     expect(call?.kind).toBe('question')
     expect(call?.status).toBe('declined')
     expect(call?.result).toStrictEqual({ failure: true, text: error })
@@ -551,7 +716,14 @@ describe('opencode refused tool calls', () => {
     const { container } = renderACPToolPair(
       AgentProvider.OPENCODE,
       { kind: 'execute', title: 'bash', rawInput: RAW_INPUT },
-      { kind: 'execute', title: 'bash', rawInput: RAW_INPUT, status: 'failed', content: acpTextContent(REJECTED), rawOutput: { error: REJECTED } },
+      {
+        kind: 'execute',
+        title: 'bash',
+        rawInput: RAW_INPUT,
+        status: 'failed',
+        content: acpTextContent(REJECTED),
+        rawOutput: { error: REJECTED },
+      },
     )
     expect(container.textContent).toContain('Declined')
     expect(container.textContent).toContain(REJECTED)
@@ -587,7 +759,9 @@ describe('opencode isAskUserQuestion', () => {
   it('returns false for permission requests', () => {
     const payload = {
       method: 'requestPermission',
-      params: { toolCall: { toolCallId: 'tc-1' } },
+      params: {
+        toolCall: { toolCallId: 'tc-1' },
+      },
     }
     expect(plugin?.controls?.askUserQuestion!.isRequest(payload)).toBe(false)
   })
@@ -615,7 +789,9 @@ describe('the opencode permission sender', () => {
     expect(parsed).toMatchObject({
       jsonrpc: '2.0',
       id: '5',
-      result: { outcome: { outcome: 'selected', optionId: 'once' } },
+      result: {
+        outcome: { outcome: 'selected', optionId: 'once' },
+      },
     })
   })
 
@@ -631,7 +807,9 @@ describe('the opencode permission sender', () => {
     expect(parsed).toMatchObject({
       jsonrpc: '2.0',
       id: '7',
-      result: { outcome: { outcome: 'selected', optionId: 'reject' } },
+      result: {
+        outcome: { outcome: 'selected', optionId: 'reject' },
+      },
     })
   })
 
@@ -647,7 +825,9 @@ describe('the opencode permission sender', () => {
     expect(parsed).toMatchObject({
       jsonrpc: '2.0',
       id: '9',
-      result: { outcome: { outcome: 'selected', optionId: 'always' } },
+      result: {
+        outcome: { outcome: 'selected', optionId: 'always' },
+      },
     })
   })
 
@@ -663,7 +843,9 @@ describe('the opencode permission sender', () => {
     expect(parsed).toMatchObject({
       jsonrpc: '2.0',
       id: 'abc',
-      result: { outcome: { outcome: 'selected', optionId: 'once' } },
+      result: {
+        outcome: { outcome: 'selected', optionId: 'once' },
+      },
     })
   })
 })
@@ -680,16 +862,35 @@ describe('sendOpenCodeQuestionResponse', () => {
     })
 
     await sendOpenCodeQuestionResponse(onRespond, 'que_1', [
-      { question: 'Action?', options: [{ label: 'Build' }] },
-      { question: 'Env?', options: [{ label: 'Dev' }] },
-    ], createControlAnswerState({ selections: { 0: ['Build'], 1: [] }, customTexts: { 1: 'Dev' } }))
+      {
+        question: 'Action?',
+        options: [
+          { label: 'Build' },
+        ],
+      },
+      {
+        question: 'Env?',
+        options: [
+          { label: 'Dev' },
+        ],
+      },
+    ], createControlAnswerState({
+      selections: {
+        0: ['Build'],
+        1: [],
+      },
+      customTexts: { 1: 'Dev' },
+    }))
 
     const parsed = decode(captured!)
     expect(parsed).toMatchObject({
       jsonrpc: '2.0',
       id: 'que_1',
       result: {
-        answers: [['Build'], ['Dev']],
+        answers: [
+          ['Build'],
+          ['Dev'],
+        ],
       },
     })
   })
@@ -714,7 +915,16 @@ describe('opencode question recognition', () => {
     properties: {
       id: 'que_1',
       sessionID: 'ses_9',
-      questions: [{ question: 'Which one?', header: 'Task', options: [{ label: 'Inspect', description: 'Look only' }], multiple: true }],
+      questions: [
+        {
+          question: 'Which one?',
+          header: 'Task',
+          options: [
+            { label: 'Inspect', description: 'Look only' },
+          ],
+          multiple: true,
+        },
+      ],
     },
   }
 
@@ -727,7 +937,9 @@ describe('opencode question recognition', () => {
       {
         question: 'Which one?',
         header: 'Task',
-        options: [{ label: 'Inspect', description: 'Look only' }],
+        options: [
+          { label: 'Inspect', description: 'Look only' },
+        ],
         multiple: true,
         multiSelect: true,
       },
@@ -735,8 +947,20 @@ describe('opencode question recognition', () => {
   })
 
   it.each([
-    ['a settled question', { type: OPENCODE_EVENT.QuestionReplied, properties: { requestID: 'que_1' } }],
-    ['a permission request', { type: 'permission.asked', properties: { id: 'per_1' } }],
+    [
+      'a settled question',
+      {
+        type: OPENCODE_EVENT.QuestionReplied,
+        properties: { requestID: 'que_1' },
+      },
+    ],
+    [
+      'a permission request',
+      {
+        type: 'permission.asked',
+        properties: { id: 'per_1' },
+      },
+    ],
     ['an empty payload', {}],
   ])('refuses %s', (_name, payload) => {
     expect(capability()?.isRequest(payload)).toBeFalsy()

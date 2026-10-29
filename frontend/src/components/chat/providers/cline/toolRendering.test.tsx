@@ -16,7 +16,10 @@ import '../testMocks'
 const plugin = () => providerFor(AgentProvider.CLINE)!
 
 function parsed(row: Record<string, unknown>): ResolvedMessageContent {
-  return { ...input(row, undefined, AgentProvider.CLINE), supplementalContent: undefined }
+  return {
+    ...input(row, undefined, AgentProvider.CLINE),
+    supplementalContent: undefined,
+  }
 }
 
 /**
@@ -45,8 +48,15 @@ describe('cline tool rendering', () => {
   // code instead, and it says that the command failed.
   it('draws why a command failed without an expansion, and heads it with the exit code', () => {
     const query = 'echo "cline-fail-$((70 + 7))" >&2; exit 3'
-    const { container } = renderResult(CLINE_TOOL.RunCommands, { commands: [query] }, [
-      { query, result: '[Command exited with code 3]\n\n[stderr]\ncline-fail-77\n', error: 'Command exited with code 3', success: false },
+    const { container } = renderResult(CLINE_TOOL.RunCommands, {
+      commands: [query],
+    }, [
+      {
+        query,
+        result: '[Command exited with code 3]\n\n[stderr]\ncline-fail-77\n',
+        error: 'Command exited with code 3',
+        success: false,
+      },
     ])
     expect(container.textContent).toContain('cline-fail-77')
     expect(container.textContent).toContain(toolOutcomeLabel('failed', 'exit 3'))
@@ -56,9 +66,16 @@ describe('cline tool rendering', () => {
   })
 
   it('heads each command of a call with its own outcome', () => {
-    const { container } = renderResult(CLINE_TOOL.RunCommands, { commands: ['echo ok', 'make'] }, [
+    const { container } = renderResult(CLINE_TOOL.RunCommands, {
+      commands: ['echo ok', 'make'],
+    }, [
       { query: 'echo ok', result: 'ok\n', success: true },
-      { query: 'make', result: '[Command exited with code 2]\nmake: *** No targets.', error: 'Command exited with code 2', success: false },
+      {
+        query: 'make',
+        result: '[Command exited with code 2]\nmake: *** No targets.',
+        error: 'Command exited with code 2',
+        success: false,
+      },
     ])
     expect(container.textContent).toContain('ok')
     expect(container.textContent).toContain('make: *** No targets.')
@@ -69,8 +86,15 @@ describe('cline tool rendering', () => {
   // A command that did not start states no code. Its error is the only statement of
   // why, so the body keeps it.
   it('keeps the error of a command that failed with no exit code, under a failure header', () => {
-    const { container } = renderResult(CLINE_TOOL.RunCommands, { commands: ['nope'] }, [
-      { query: 'nope', result: '', error: 'Command failed: spawn nope ENOENT', success: false },
+    const { container } = renderResult(CLINE_TOOL.RunCommands, {
+      commands: ['nope'],
+    }, [
+      {
+        query: 'nope',
+        result: '',
+        error: 'Command failed: spawn nope ENOENT',
+        success: false,
+      },
     ])
     expect(container.textContent).toContain('Command failed: spawn nope ENOENT')
     expect(container.textContent).toContain(toolOutcomeLabel('failed'))
@@ -79,9 +103,16 @@ describe('cline tool rendering', () => {
   // One call, two commands: the one that ran states no outcome, and the one that ran
   // out of time states its failure, although the call itself completed.
   it('heads only the command that failed with no exit code', () => {
-    const { container } = renderResult(CLINE_TOOL.RunCommands, { commands: ['echo ok', 'sleep 99'] }, [
+    const { container } = renderResult(CLINE_TOOL.RunCommands, {
+      commands: ['echo ok', 'sleep 99'],
+    }, [
       { query: 'echo ok', result: 'ok\n', success: true },
-      { query: 'sleep 99', result: '', error: 'Command failed: Command timed out after 30000ms', success: false },
+      {
+        query: 'sleep 99',
+        result: '',
+        error: 'Command failed: Command timed out after 30000ms',
+        success: false,
+      },
     ])
     const headers = container.textContent?.split(toolOutcomeLabel('failed')).length ?? 0
     expect(headers - 1).toBe(1)

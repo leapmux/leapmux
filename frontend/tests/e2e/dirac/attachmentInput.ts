@@ -12,11 +12,13 @@ export function diracAttachmentRequest(request: MockModelRequestRecord): MockMod
   if (!isObject(last) || last.role !== 'user' || !isObject(previous) || previous.role !== 'tool')
     return request
   if (typeof previous.tool_call_id !== 'string')
-    throw new Error('The preceding Dirac tool result has no call ID.')
+    throw new TypeError('The preceding Dirac tool result has no call ID.')
   const call = nativeToolCallArguments(request, previous.tool_call_id)
   if (call.name !== 'respond' || !isObject(call.arguments) || call.arguments.operation !== 'complete')
     throw new Error('The Dirac attachment follows a tool result that did not complete the prior turn.')
-  const content = Array.isArray(last.content) ? last.content : undefined
+  const content = Array.isArray(last.content)
+    ? last.content
+    : undefined
   const first: unknown = content?.[0]
   const feedback = isObject(first) && first.type === 'text' && typeof first.text === 'string'
     && first.text.startsWith('<feedback>\n') && first.text.endsWith('\n</feedback>')
@@ -27,5 +29,11 @@ export function diracAttachmentRequest(request: MockModelRequestRecord): MockMod
     throw new Error('The Dirac attachment has no native user feedback envelope or valid image-only content.')
   }
   // Keep the original row and its bytes. The generic reader otherwise treats a user row after a tool as tool output.
-  return { ...request, body: { ...request.body, messages: [last] } }
+  return {
+    ...request,
+    body: {
+      ...request.body,
+      messages: [last],
+    },
+  }
 }

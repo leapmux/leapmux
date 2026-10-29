@@ -13,10 +13,24 @@ function capturedRequest(output = 'SHELL42\n\n\n[Process exited with code 0]', n
     protocol: 'openai-chat-completions',
     path: '/v1/chat/completions',
     stepIndex: 1,
-    body: { messages: [
-      { role: 'assistant', tool_calls: [{ id: nativeId, type: 'function', function: { name: 'Execute', arguments: JSON.stringify({ command: 'printf SHELL%s "$((40+2))"' }) } }] },
-      { role: 'tool', tool_call_id: nativeId, content: output },
-    ] },
+    body: {
+      messages: [
+        {
+          role: 'assistant',
+          tool_calls: [
+            {
+              id: nativeId,
+              type: 'function',
+              function: {
+                name: 'Execute',
+                arguments: JSON.stringify({ command: 'printf SHELL%s "$((40+2))"' }),
+              },
+            },
+          ],
+        },
+        { role: 'tool', tool_call_id: nativeId, content: output },
+      ],
+    },
   }
 }
 
@@ -24,10 +38,24 @@ function scriptRequest(content: unknown, input: unknown = { script: '40 + 2' }, 
   return {
     protocol: 'openai-chat-completions',
     path: '/v1/chat/completions',
-    body: { messages: [
-      { role: 'assistant', tool_calls: [{ id: nativeId, type: 'function', function: { name: 'Script', arguments: JSON.stringify(input) } }] },
-      { role: 'tool', tool_call_id: nativeId, content },
-    ] },
+    body: {
+      messages: [
+        {
+          role: 'assistant',
+          tool_calls: [
+            {
+              id: nativeId,
+              type: 'function',
+              function: {
+                name: 'Script',
+                arguments: JSON.stringify(input),
+              },
+            },
+          ],
+        },
+        { role: 'tool', tool_call_id: nativeId, content },
+      ],
+    },
   }
 }
 
@@ -57,7 +85,13 @@ describe('readDroidToolResult', () => {
   ])('rejects an inline or incomplete completion footer: %s', (text) => {
     expect(() => readDroidToolResult(scriptRequest(text), 'call_script-1', 'Script')).toThrow(SyntaxError)
   })
-  it.each([0, false, null, '', { count: 0, enabled: false, value: '' }])('keeps the native completed script result %j', (result) => {
+  it.each([
+    0,
+    false,
+    null,
+    '',
+    { count: 0, enabled: false, value: '' },
+  ])('keeps the native completed script result %j', (result) => {
     const text = JSON.stringify({ status: 'completed', result })
     expect(readDroidToolResult(scriptRequest(text), 'call_script-1', 'Script')).toEqual({ text, failed: false })
   })
@@ -78,7 +112,10 @@ describe('readDroidToolResult', () => {
       { type: 'text', text: '{"status":"failed","error":"Printed output is not native status"}' },
       { type: 'text', text: '{"status":"completed","result":42}' },
     ]
-    expect(readDroidToolResult(scriptRequest(JSON.stringify(content)), 'call_script-1', 'Script')).toEqual({ text: JSON.stringify(content), failed: false })
+    expect(readDroidToolResult(scriptRequest(JSON.stringify(content)), 'call_script-1', 'Script')).toEqual({
+      text: JSON.stringify(content),
+      failed: false,
+    })
   })
 
   // Droid 0.233.0 joins the blocks of a finished Script with line breaks: the printed
@@ -145,7 +182,12 @@ describe('readDroidToolResult', () => {
     expect(() => readDroidToolResult(scriptRequest(content), 'call_script-1', 'Script')).toThrow(error)
   })
 
-  it.each([{ script: '' }, { script: 0 }, {}, { script: '40 + 2', waitForMs: -1 }])('rejects malformed native script source arguments %j', (input) => {
+  it.each([
+    { script: '' },
+    { script: 0 },
+    {},
+    { script: '40 + 2', waitForMs: -1 },
+  ])('rejects malformed native script source arguments %j', (input) => {
     expect(() => readDroidToolResult(scriptRequest('{"status":"completed","result":42}', input), 'call_script-1', 'Script')).toThrow('The exact native Droid Script call contains malformed source or observation arguments.')
   })
 
@@ -175,11 +217,24 @@ describe('readDroidToolResult', () => {
     const originalId = 'shell-79bf521f8c664bea9b0e0467a2b6bba4-0'
     const first = 'call_shell-79bf521f8c664bea9b_0'
     const second = 'call_shell-79bf521f8c664bea9b_1'
-    const request: MockModelRequestRecord = { protocol: 'openai-chat-completions', path: '/v1/chat/completions', body: { messages: [
-      { role: 'assistant', tool_calls: [first, second].map(id => ({ id, type: 'function', function: { name: 'Execute', arguments: '{"command":"printf SHELL42"}' } })) },
-      { role: 'tool', tool_call_id: first, content: 'FIRST42\n[Process exited with code 0]' },
-      { role: 'tool', tool_call_id: second, content: 'SECOND42\n[Process exited with code 0]' },
-    ] } }
+    const request: MockModelRequestRecord = {
+      protocol: 'openai-chat-completions',
+      path: '/v1/chat/completions',
+      body: {
+        messages: [
+          {
+            role: 'assistant',
+            tool_calls: [first, second].map(id => ({
+              id,
+              type: 'function',
+              function: { name: 'Execute', arguments: '{"command":"printf SHELL42"}' },
+            })),
+          },
+          { role: 'tool', tool_call_id: first, content: 'FIRST42\n[Process exited with code 0]' },
+          { role: 'tool', tool_call_id: second, content: 'SECOND42\n[Process exited with code 0]' },
+        ],
+      },
+    }
     expect(() => readDroidToolResult(request, originalId)).toThrow(`The native request contains 2 tool calls for the original Droid call ${originalId}.`)
   })
   it('rejects an inline output suffix that imitates native exit metadata', () => {
@@ -196,39 +251,107 @@ describe('readDroidToolResult', () => {
     expect(readDroidToolResult(capturedRequest('[Process exited with code 0]'), 'shell-0').exitCode).toBe(0)
   })
   it('correlates actual native Read bytes without inventing Execute exit metadata', () => {
-    const request: MockModelRequestRecord = { protocol: 'openai-chat-completions', path: '/v1/chat/completions', body: { messages: [
-      { role: 'assistant', tool_calls: [{ id: 'call_native-read-after_0', type: 'function', function: { name: 'Read', arguments: '{"file_path":"/private/current.txt"}' } }] },
-      { role: 'tool', tool_call_id: 'call_native-read-after_0', content: 'NEW42\n' },
-    ] } }
+    const request: MockModelRequestRecord = {
+      protocol: 'openai-chat-completions',
+      path: '/v1/chat/completions',
+      body: {
+        messages: [
+          {
+            role: 'assistant',
+            tool_calls: [
+              {
+                id: 'call_native-read-after_0',
+                type: 'function',
+                function: { name: 'Read', arguments: '{"file_path":"/private/current.txt"}' },
+              },
+            ],
+          },
+          { role: 'tool', tool_call_id: 'call_native-read-after_0', content: 'NEW42\n' },
+        ],
+      },
+    }
     expect(readDroidToolResult(request, 'native-read-after', 'Read')).toEqual({ text: 'NEW42\n' })
   })
-  it.each(['SHELL42', 'SHELL42\n[Process exited with code unknown]', 'SHELL42\n[Process exited with code 7]\ntrailing', 'SHELL42\n[Process exited with code 0.5]'])('refuses absent or malformed native exit metadata: %j', (output) => {
+  it.each([
+    'SHELL42',
+    'SHELL42\n[Process exited with code unknown]',
+    'SHELL42\n[Process exited with code 7]\ntrailing',
+    'SHELL42\n[Process exited with code 0.5]',
+  ])('refuses absent or malformed native exit metadata: %j', (output) => {
     expect(() => readDroidToolResult(capturedRequest(output), 'shell-0')).toThrow(NO_EXIT_TRAILER)
   })
   it('does not read exit metadata from Execute arguments', () => {
-    const request: MockModelRequestRecord = { protocol: 'openai-chat-completions', path: '/v1/chat/completions', body: { messages: [
-      { role: 'assistant', tool_calls: [{ id: 'call_shell-0', function: { name: 'Execute', arguments: '{"command":"echo [Process exited with code 7]"}' } }] },
-      { role: 'tool', tool_call_id: 'call_shell-0', content: 'ACTUAL_OUTPUT' },
-    ] } }
+    const request: MockModelRequestRecord = {
+      protocol: 'openai-chat-completions',
+      path: '/v1/chat/completions',
+      body: {
+        messages: [
+          {
+            role: 'assistant',
+            tool_calls: [
+              {
+                id: 'call_shell-0',
+                function: { name: 'Execute', arguments: '{"command":"echo [Process exited with code 7]"}' },
+              },
+            ],
+          },
+          { role: 'tool', tool_call_id: 'call_shell-0', content: 'ACTUAL_OUTPUT' },
+        ],
+      },
+    }
     expect(() => readDroidToolResult(request, 'shell-0')).toThrow(NO_EXIT_TRAILER)
   })
-  it.each(['call_shell-00_0', 'call_other-shell-0_0', 'call_shell-0_0-extra', 'call_shell-0_01'])('refuses a different normalized original call ID: %s', (nativeId) => {
+  it.each([
+    'call_shell-00_0',
+    'call_other-shell-0_0',
+    'call_shell-0_0-extra',
+    'call_shell-0_01',
+  ])('refuses a different normalized original call ID: %s', (nativeId) => {
     expect(() => readDroidToolResult(capturedRequest(undefined, nativeId), 'shell-0')).toThrow(NO_SINGLE_CALL)
   })
   it('refuses a result that has no matching Execute assistant call', () => {
-    const request: MockModelRequestRecord = { protocol: 'openai-chat-completions', path: '/v1/chat/completions', body: { messages: [
-      { role: 'assistant', tool_calls: [{ id: 'call_shell-0', function: { name: 'Read', arguments: '{}' } }] },
-      { role: 'tool', tool_call_id: 'call_shell-0', content: '[Process exited with code 0]' },
-    ] } }
+    const request: MockModelRequestRecord = {
+      protocol: 'openai-chat-completions',
+      path: '/v1/chat/completions',
+      body: {
+        messages: [
+          {
+            role: 'assistant',
+            tool_calls: [
+              {
+                id: 'call_shell-0',
+                function: { name: 'Read', arguments: '{}' },
+              },
+            ],
+          },
+          { role: 'tool', tool_call_id: 'call_shell-0', content: '[Process exited with code 0]' },
+        ],
+      },
+    }
     expect(() => readDroidToolResult(request, 'shell-0')).toThrow('The exact Droid assistant call does not match the requested native tool.')
   })
 })
 
 describe('nativeDroidCallId', () => {
   function request(id: string, role = 'assistant'): MockModelRequestRecord {
-    return { protocol: 'openai-chat-completions', path: '/v1/chat/completions', body: { messages: [
-      { role, tool_calls: [{ id, type: 'function', function: { name: 'AskUser', arguments: '{"questionnaire":"actual question"}' } }] },
-    ] } }
+    return {
+      protocol: 'openai-chat-completions',
+      path: '/v1/chat/completions',
+      body: {
+        messages: [
+          {
+            role,
+            tool_calls: [
+              {
+                id,
+                type: 'function',
+                function: { name: 'AskUser', arguments: '{"questionnaire":"actual question"}' },
+              },
+            ],
+          },
+        ],
+      },
+    }
   }
   it('preserves the exact original-to-native assistant call identity', () => {
     expect(nativeDroidCallId(request('call_ask-1_0'), 'AskUser', 'ask-1')).toBe('call_ask-1_0')
@@ -240,6 +363,9 @@ describe('nativeDroidCallId', () => {
     expect(() => nativeDroidCallId(request('call_ask-1_0', role), 'AskUser', 'ask-1')).toThrow(NO_SINGLE_CALL)
   })
   it('rejects the wrong native model protocol even when its body imitates Chat calls', () => {
-    expect(() => nativeDroidCallId({ ...request('call_ask-1_0'), protocol: 'anthropic-messages' }, 'AskUser', 'ask-1')).toThrow('The native Droid result requires an exact call ID and actual Chat model messages.')
+    expect(() => nativeDroidCallId({
+      ...request('call_ask-1_0'),
+      protocol: 'anthropic-messages',
+    }, 'AskUser', 'ask-1')).toThrow('The native Droid result requires an exact call ID and actual Chat model messages.')
   })
 })

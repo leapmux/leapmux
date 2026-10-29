@@ -32,7 +32,12 @@ fastAgentTest.describe('Fast Agent control requests', () => {
     const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, FAST_AGENT_AGENT)
     const written = join(workingDir, 'fa-local.txt')
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
     const refusal = 'The user has declined permission to use this tool'
     await exerciseNativePermissionDecision(context, {
       toolCall: writeToolCall(context.provider, 'fa-write', { path: written, content: 'fa-local-content' }),
@@ -71,7 +76,12 @@ fastAgentTest.describe('Fast Agent control requests', () => {
     const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, FAST_AGENT_AGENT)
     const written = join(workingDir, 'fa-shell-denied.txt')
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
     await exerciseNativePermissionDecision(context, {
       toolCall: bashToolCall(context.provider, 'fa-shell-deny', `printf 'forbidden' > ${JSON.stringify(written)}`),
       decision: 'deny',
@@ -87,7 +97,12 @@ fastAgentTest.describe('Fast Agent control requests', () => {
     const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, FAST_AGENT_AGENT)
     const written = join(workingDir, 'fa-local-allowed.txt')
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
     await exerciseNativePermissionDecision(context, {
       toolCall: writeToolCall(context.provider, 'fa-write-allow', { path: written, content: 'FA_FILE_ALLOWED_MARKER' }),
       decision: 'allow',
@@ -106,7 +121,12 @@ fastAgentTest.describe('Fast Agent control requests', () => {
     const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, FAST_AGENT_AGENT)
     const server = writeMcpPermissionServer(workingDir)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
     // The server writes its ready file once the client lists its tools.
     await connectNativeMcp(context, server, server.ready)
     await exerciseNativePermissionDecision(context, {

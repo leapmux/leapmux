@@ -30,7 +30,13 @@ vi.mock('~/lib/clipboard', async importOriginal => ({
  */
 
 function makeSection(id: string, name: string, sectionType: SectionType) {
-  return create(SectionSchema, { id, name, position: '', sectionType, sidebar: Sidebar.LEFT })
+  return create(SectionSchema, {
+    id,
+    name,
+    position: '',
+    sectionType,
+    sidebar: Sidebar.LEFT,
+  })
 }
 
 const IN_PROGRESS = makeSection('sec-ip', 'In Progress', SectionType.WORKSPACES_IN_PROGRESS)
@@ -122,8 +128,13 @@ describe('WorkspaceContextMenu', () => {
     //
     // The repository-derived label is the observable half of that gate, and a
     // dropped `onToggle` leaves it stuck on the no-repository shape forever.
-    const { store, tabs } = tabsAndStore([{ toplevel: '/home/me/leapmux' }])
-    renderMenu({ getTabs: () => tabs, repoGitStore: store })
+    const { store, tabs } = tabsAndStore([
+      { toplevel: '/home/me/leapmux' },
+    ])
+    renderMenu({
+      getTabs: () => tabs,
+      repoGitStore: store,
+    })
 
     // No repository resolved yet, so the menu shows the no-target shape.
     expect(screen.getByTestId('workspace-new-agent').textContent).toBe('New agent...')
@@ -158,7 +169,11 @@ describe('WorkspaceContextMenu', () => {
     const { store, tabs } = tabsAndStore([
       { toplevel: '/home/me/leapmux', originUrl: 'https://example.com/o/r.git' },
     ])
-    renderMenu({ getTabs: () => tabs, repoGitStore: store, isLocalWorkerFn: () => false })
+    renderMenu({
+      getTabs: () => tabs,
+      repoGitStore: store,
+      isLocalWorkerFn: () => false,
+    })
     openMenu()
 
     // The flat shape names the repository in the item, because nothing else on
@@ -179,7 +194,11 @@ describe('WorkspaceContextMenu', () => {
     // `isWorkspaceMutatable` says archival is the one thing that blocks
     // mutation, and the tab bar already routes the sibling operation through
     // `canRenameTab(archived, tab)`. This row was the one surface ignoring it.
-    renderMenu({ isArchived: true, sections: [IN_PROGRESS, ARCHIVED], currentSectionId: 'sec-archived' })
+    renderMenu({
+      isArchived: true,
+      sections: [IN_PROGRESS, ARCHIVED],
+      currentSectionId: 'sec-archived',
+    })
     openMenu()
 
     const items = itemsOf('workspace-context-menu')
@@ -188,7 +207,11 @@ describe('WorkspaceContextMenu', () => {
   })
 
   it('hides the tab-creation items on an archived workspace', () => {
-    renderMenu({ isArchived: true, sections: [IN_PROGRESS, ARCHIVED], currentSectionId: 'sec-archived' })
+    renderMenu({
+      isArchived: true,
+      sections: [IN_PROGRESS, ARCHIVED],
+      currentSectionId: 'sec-archived',
+    })
     openMenu()
 
     const items = itemsOf('workspace-context-menu')
@@ -200,14 +223,22 @@ describe('WorkspaceContextMenu', () => {
     // Moving writes `workspace_section_items.section_id`, which is not a
     // mutation OF the workspace -- and it is the only way to unarchive into a
     // SPECIFIC custom section, because Unarchive always targets In progress.
-    renderMenu({ isArchived: true, sections: [IN_PROGRESS, CUSTOM, ARCHIVED], currentSectionId: 'sec-archived' })
+    renderMenu({
+      isArchived: true,
+      sections: [IN_PROGRESS, CUSTOM, ARCHIVED],
+      currentSectionId: 'sec-archived',
+    })
     openMenu()
 
     expect(itemsOf('workspace-context-menu')).toContain('Move to')
   })
 
   it('swaps Archive for Unarchive once archived', () => {
-    renderMenu({ isArchived: true, sections: [IN_PROGRESS, ARCHIVED], currentSectionId: 'sec-archived' })
+    renderMenu({
+      isArchived: true,
+      sections: [IN_PROGRESS, ARCHIVED],
+      currentSectionId: 'sec-archived',
+    })
     openMenu()
 
     const items = itemsOf('workspace-context-menu')
@@ -233,7 +264,10 @@ describe('WorkspaceContextMenu', () => {
     })
 
     it('is absent when nothing else can hold the workspace', () => {
-      renderMenu({ sections: [IN_PROGRESS, ARCHIVED], currentSectionId: 'sec-ip' })
+      renderMenu({
+        sections: [IN_PROGRESS, ARCHIVED],
+        currentSectionId: 'sec-ip',
+      })
       openMenu()
 
       expect(itemsOf('workspace-context-menu')).not.toContain('Move to')
@@ -265,9 +299,15 @@ describe('WorkspaceContextMenu', () => {
     })
 
     it('renders FLAT for one repository, with no submenu to click through', () => {
-      const { store, tabs } = tabsAndStore([{ toplevel: '/home/me/leapmux' }])
+      const { store, tabs } = tabsAndStore([
+        { toplevel: '/home/me/leapmux' },
+      ])
       const startActions = stubWorkspaceStartActions()
-      renderMenu({ getTabs: () => tabs, repoGitStore: store, startActions })
+      renderMenu({
+        getTabs: () => tabs,
+        repoGitStore: store,
+        startActions,
+      })
       openMenu()
 
       expect(screen.queryByTestId('workspace-repository-leapmux')).not.toBeInTheDocument()
@@ -288,11 +328,22 @@ describe('WorkspaceContextMenu', () => {
         { toplevel: '/home/me/beta' },
       ])
       const startActions = stubWorkspaceStartActions()
-      renderMenu({ getTabs: () => tabs, repoGitStore: store, startActions })
+      renderMenu({
+        getTabs: () => tabs,
+        repoGitStore: store,
+        startActions,
+      })
       openMenu()
 
       expect(itemsOf('workspace-context-menu').toSorted())
-        .toEqual(['Archive', 'Delete', 'Move to', 'Rename', 'alpha', 'beta'])
+        .toEqual([
+          'Archive',
+          'Delete',
+          'Move to',
+          'Rename',
+          'alpha',
+          'beta',
+        ])
 
       fireEvent.click(screen.getByTestId('workspace-repository-beta'))
       fireEvent.click(
@@ -313,7 +364,11 @@ describe('WorkspaceContextMenu', () => {
         { toplevel: '/home/me/alpha', originUrl: 'https://example.com/o/a.git' },
         { toplevel: '/home/me/beta' },
       ])
-      renderMenu({ getTabs: () => tabs, repoGitStore: store, isLocalWorkerFn: () => false })
+      renderMenu({
+        getTabs: () => tabs,
+        repoGitStore: store,
+        isLocalWorkerFn: () => false,
+      })
       openMenu()
       // Labelled by the formatted origin, which is what `repoKeyAndLabel`
       // prefers over the directory name once a repository has a remote.
@@ -364,8 +419,14 @@ describe('WorkspaceContextMenu', () => {
     // workspace that HAS a repository must never fall back to it: it would
     // start an agent on a machine the user never picked.
     it('never offers the no-target item once a repository exists', () => {
-      const { store, tabs } = tabsAndStore([{ toplevel: '/home/me/leapmux' }])
-      renderMenu({ getTabs: () => tabs, repoGitStore: store, isWorkerOnline: () => false })
+      const { store, tabs } = tabsAndStore([
+        { toplevel: '/home/me/leapmux' },
+      ])
+      renderMenu({
+        getTabs: () => tabs,
+        repoGitStore: store,
+        isWorkerOnline: () => false,
+      })
       openMenu()
 
       expect(screen.queryByTestId('workspace-new-agent')).not.toBeInTheDocument()
@@ -376,8 +437,13 @@ describe('WorkspaceContextMenu', () => {
     // submenu. It carried no stable selector after the menu was reorganized
     // around the repository, so every lookup fell back to a localized label.
     it('gives the flat repository items a stable selector of their own', () => {
-      const { store, tabs } = tabsAndStore([{ toplevel: '/home/me/leapmux' }])
-      renderMenu({ getTabs: () => tabs, repoGitStore: store })
+      const { store, tabs } = tabsAndStore([
+        { toplevel: '/home/me/leapmux' },
+      ])
+      renderMenu({
+        getTabs: () => tabs,
+        repoGitStore: store,
+      })
       openMenu()
 
       expect(screen.getByTestId('workspace-repo-new-agent')).toBeInTheDocument()
@@ -391,7 +457,10 @@ describe('WorkspaceContextMenu', () => {
         { toplevel: '/home/me/alpha' },
         { toplevel: '/home/me/beta' },
       ])
-      renderMenu({ getTabs: () => tabs, repoGitStore: store })
+      renderMenu({
+        getTabs: () => tabs,
+        repoGitStore: store,
+      })
       openMenu()
 
       expect(screen.queryByTestId('workspace-repo-new-agent')).not.toBeInTheDocument()
@@ -402,7 +471,10 @@ describe('WorkspaceContextMenu', () => {
     // needs a way in.
     it('keeps the no-target item for a workspace with no checkout', () => {
       const startActions = stubWorkspaceStartActions()
-      renderMenu({ isWorkerOnline: () => false, startActions })
+      renderMenu({
+        isWorkerOnline: () => false,
+        startActions,
+      })
       openMenu()
 
       const item = screen.getByTestId('workspace-new-agent') as HTMLButtonElement
@@ -419,8 +491,14 @@ describe('WorkspaceContextMenu', () => {
 
   describe('the Repository block', () => {
     it('offers Copy repository URL only for a repository that has an origin', () => {
-      const { store, tabs } = tabsAndStore([{ toplevel: '/home/me/leapmux' }])
-      renderMenu({ getTabs: () => tabs, repoGitStore: store, isLocalWorkerFn: () => false })
+      const { store, tabs } = tabsAndStore([
+        { toplevel: '/home/me/leapmux' },
+      ])
+      renderMenu({
+        getTabs: () => tabs,
+        repoGitStore: store,
+        isLocalWorkerFn: () => false,
+      })
       openMenu()
 
       const items = itemsOf('workspace-context-menu')
@@ -433,13 +511,23 @@ describe('WorkspaceContextMenu', () => {
     // directory. The PATH is still worth copying: pasting it into an ssh
     // session on the machine that has it is exactly the use.
     it('offers Reveal in file manager only for a LOCAL worker', () => {
-      const { store, tabs } = tabsAndStore([{ toplevel: '/home/me/leapmux' }])
-      renderMenu({ getTabs: () => tabs, repoGitStore: store, isLocalWorkerFn: () => false })
+      const { store, tabs } = tabsAndStore([
+        { toplevel: '/home/me/leapmux' },
+      ])
+      renderMenu({
+        getTabs: () => tabs,
+        repoGitStore: store,
+        isLocalWorkerFn: () => false,
+      })
       openMenu()
       expect(itemsOf('workspace-context-menu')).not.toContain('Reveal in file manager')
 
       cleanup()
-      renderMenu({ getTabs: () => tabs, repoGitStore: store, isLocalWorkerFn: () => true })
+      renderMenu({
+        getTabs: () => tabs,
+        repoGitStore: store,
+        isLocalWorkerFn: () => true,
+      })
       openMenu()
       expect(itemsOf('workspace-context-menu')).toContain('Reveal in file manager')
     })
@@ -448,7 +536,11 @@ describe('WorkspaceContextMenu', () => {
       const { store, tabs } = tabsAndStore([
         { toplevel: '/home/me/leapmux', originUrl: 'https://example.com/o/r.git' },
       ])
-      renderMenu({ getTabs: () => tabs, repoGitStore: store, isLocalWorkerFn: () => false })
+      renderMenu({
+        getTabs: () => tabs,
+        repoGitStore: store,
+        isLocalWorkerFn: () => false,
+      })
       openMenu()
       fireEvent.click(screen.getByRole('menuitem', { name: 'Copy repository path', hidden: true }))
 
@@ -480,8 +572,13 @@ describe('WorkspaceContextMenu', () => {
 
   describe('the info block', () => {
     it('reports the workspace, its section and its tab count', () => {
-      const { store, tabs } = tabsAndStore([{ toplevel: '/home/me/leapmux' }])
-      renderMenu({ getTabs: () => tabs, repoGitStore: store })
+      const { store, tabs } = tabsAndStore([
+        { toplevel: '/home/me/leapmux' },
+      ])
+      renderMenu({
+        getTabs: () => tabs,
+        repoGitStore: store,
+      })
       openMenu()
 
       const info = screen.getByTestId('workspace-info-button')
@@ -495,7 +592,10 @@ describe('WorkspaceContextMenu', () => {
         { toplevel: '/home/me/alpha' },
         { toplevel: '/home/me/beta' },
       ])
-      renderMenu({ getTabs: () => tabs, repoGitStore: store })
+      renderMenu({
+        getTabs: () => tabs,
+        repoGitStore: store,
+      })
       openMenu()
 
       expect(screen.getByTestId('workspace-info-button').textContent).not.toContain('Repository')
@@ -508,7 +608,9 @@ describe('WorkspaceContextMenu', () => {
   it('opens from a right-click on the row it is given', () => {
     const row = document.createElement('div')
     document.body.append(row)
-    renderMenu({ contextMenuFor: () => row })
+    renderMenu({
+      contextMenuFor: () => row,
+    })
 
     // Fake timers because the gesture defers the open by a tick -- see
     // `attachContextMenuGesture`, which opens after the platform's own
@@ -518,7 +620,12 @@ describe('WorkspaceContextMenu', () => {
       // The info block is the content that depends on the open state, so its presence is what says
       // the menu really opened rather than merely being mounted.
       expect(screen.queryByTestId('workspace-info-button')).not.toBeInTheDocument()
-      row.dispatchEvent(new MouseEvent('contextmenu', { clientX: 10, clientY: 10, bubbles: true, cancelable: true }))
+      row.dispatchEvent(new MouseEvent('contextmenu', {
+        clientX: 10,
+        clientY: 10,
+        bubbles: true,
+        cancelable: true,
+      }))
       vi.runAllTimers()
       expect(screen.getByTestId('workspace-info-button')).toBeInTheDocument()
     }

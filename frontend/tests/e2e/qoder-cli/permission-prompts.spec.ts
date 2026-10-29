@@ -13,7 +13,12 @@ import { expectQoderModeChip, nativeContext } from './scenarios'
 
 qoderTest.describe('Qoder CLI control requests', () => {
   qoderTest('raises a banner for a tool call and runs it once allowed', async ({ askingQoderWorkspace, page, modelScript, leapmuxServer }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingQoderWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: askingQoderWorkspace.workspaceId,
+    })
     const output = join(askingQoderWorkspace.workingDir, 'qoder-control-probe.txt')
     const command = 'printf hi > ./qoder-control-probe.txt'
     await exerciseNativePermissionDecision(context, {
@@ -36,7 +41,11 @@ qoderTest.describe('Qoder CLI control requests', () => {
   qoderTest('keeps a denied write out of the workspace', async ({ askingQoderWorkspace, page, modelScript }) => {
     const output = join(askingQoderWorkspace.workingDir, 'qoder-control-denied.txt')
     const command = 'printf denied > ./qoder-control-denied.txt'
-    const start = await modelScript.queue({ toolCalls: [bashToolCall(AgentProvider.QODER, 'denied-call', command)] })
+    const start = await modelScript.queue({
+      toolCalls: [
+        bashToolCall(AgentProvider.QODER, 'denied-call', command),
+      ],
+    })
     // The fallback answers any request after the denial. This test proves only that the denied command never runs,
     // so it does not state whether the runtime asks the model again.
     await modelScript.fallback({ text: 'The denied call ended.' })
@@ -60,7 +69,12 @@ qoderTest.describe('Qoder CLI settings', () => {
     const { workingDir } = askingQoderWorkspace
     await waitForSettingsHydrated(page)
     await expectQoderModeChip(page, 'Default')
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingQoderWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: askingQoderWorkspace.workspaceId,
+    })
 
     // The observation fails if a banner shows at any time in the turn.
     let followUp: MockModelRequestRecord | undefined
@@ -68,7 +82,9 @@ qoderTest.describe('Qoder CLI settings', () => {
       testId: 'control-banner',
       relatedProof: async () => {
         ({ resultRequest: followUp } = await runNativeToolTurn(context, {
-          toolCalls: [bashToolCall(context.provider, 'read-only', 'pwd')],
+          toolCalls: [
+            bashToolCall(context.provider, 'read-only', 'pwd'),
+          ],
           prompt: 'Run pwd.',
           answer: 'The command ran.',
         }))
@@ -88,7 +104,12 @@ qoderTest.describe('Qoder CLI settings', () => {
 qoderTest.describe('Qoder CLI control answers', () => {
   // The reason rides in the `message` and `reason` of Qoder's own decision, and Qoder hands it to the model.
   qoderTest('a denied write does not run, and the typed reason reaches the model', async ({ askingQoderWorkspace, page, modelScript, leapmuxServer }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingQoderWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: askingQoderWorkspace.workspaceId,
+    })
     const marker = join(askingQoderWorkspace.workingDir, 'qoder-denied-marker')
     await exerciseNativePermissionReason(context, {
       toolCall: bashToolCall(context.provider, 'deny-call', 'printf x > qoder-denied-marker'),
@@ -111,7 +132,12 @@ qoderTest.describe('Qoder CLI control answers', () => {
   // time. A session rule lives in the session alone, so no rule file needs
   // restoring.
   qoderTest('a session allow covers the same command in the next turn', async ({ askingQoderWorkspace, page, modelScript, leapmuxServer }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingQoderWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: askingQoderWorkspace.workspaceId,
+    })
     const proof = join(askingQoderWorkspace.workingDir, 'qoder-session-proof.txt')
     // Each run appends, so the file states how many runs happened.
     const command = 'printf qoder-session >> qoder-session-proof.txt'

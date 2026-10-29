@@ -10,15 +10,31 @@ describe('acpFileEditFromToolCallContent', () => {
 
   it('returns null when no diff entry is present', () => {
     expect(acpFileEditFromToolCallContent([
-      { type: 'content', content: { text: 'hi' } },
+      {
+        type: 'content',
+        content: { text: 'hi' },
+      },
     ])).toBeNull()
   })
 
   it('extracts the first { type: "diff", path, oldText, newText } entry', () => {
     expect(acpFileEditFromToolCallContent([
-      { type: 'content', content: { text: 'noise' } },
-      { type: 'diff', path: '/x.ts', oldText: 'before', newText: 'after' },
-      { type: 'diff', path: '/ignored.ts', oldText: '', newText: 'second' },
+      {
+        type: 'content',
+        content: { text: 'noise' },
+      },
+      {
+        type: 'diff',
+        path: '/x.ts',
+        oldText: 'before',
+        newText: 'after',
+      },
+      {
+        type: 'diff',
+        path: '/ignored.ts',
+        oldText: '',
+        newText: 'second',
+      },
     ])).toEqual({
       filePath: '/x.ts',
       structuredPatch: null,
@@ -39,13 +55,20 @@ describe('acpFileEditFromToolCallContent', () => {
   })
 
   it('returns null when the diff entry is empty (no path / oldText / newText)', () => {
-    expect(acpFileEditFromToolCallContent([{ type: 'diff' }])).toBeNull()
+    expect(acpFileEditFromToolCallContent([
+      { type: 'diff' },
+    ])).toBeNull()
   })
 
   it('skips empty diff entries and takes the next non-empty one', () => {
     expect(acpFileEditFromToolCallContent([
       { type: 'diff' },
-      { type: 'diff', path: '/x.ts', oldText: 'a', newText: 'b' },
+      {
+        type: 'diff',
+        path: '/x.ts',
+        oldText: 'a',
+        newText: 'b',
+      },
     ])).toEqual({
       filePath: '/x.ts',
       structuredPatch: null,
@@ -59,7 +82,12 @@ describe('acpFileEditFromToolCallContent', () => {
       'string',
       42,
       null,
-      { type: 'diff', path: '/x.ts', oldText: 'a', newText: 'b' },
+      {
+        type: 'diff',
+        path: '/x.ts',
+        oldText: 'a',
+        newText: 'b',
+      },
     ])).toEqual({
       filePath: '/x.ts',
       structuredPatch: null,
@@ -77,10 +105,23 @@ describe('acpFileEditsFromToolCallRawInput', () => {
   it('states one change for each entry of an `edits` list', () => {
     expect(acpFileEditsFromToolCallRawInput('edit', {
       path: '/p/file.ts',
-      edits: [{ old_string: 'firstBefore', new_string: 'firstAfter' }, { old_string: 'secondBefore', new_string: 'secondAfter' }],
+      edits: [
+        { old_string: 'firstBefore', new_string: 'firstAfter' },
+        { old_string: 'secondBefore', new_string: 'secondAfter' },
+      ],
     })).toStrictEqual([
-      { filePath: '/p/file.ts', structuredPatch: null, oldStr: 'firstBefore', newStr: 'firstAfter' },
-      { filePath: '/p/file.ts', structuredPatch: null, oldStr: 'secondBefore', newStr: 'secondAfter' },
+      {
+        filePath: '/p/file.ts',
+        structuredPatch: null,
+        oldStr: 'firstBefore',
+        newStr: 'firstAfter',
+      },
+      {
+        filePath: '/p/file.ts',
+        structuredPatch: null,
+        oldStr: 'secondBefore',
+        newStr: 'secondAfter',
+      },
     ])
   })
 
@@ -91,13 +132,37 @@ describe('acpFileEditsFromToolCallRawInput', () => {
     ['oldString', 'newString'],
     ['old_string', 'new_string'],
   ])('reads a listed entry spelled %s and %s', (from, to) => {
-    expect(acpFileEditsFromToolCallRawInput('edit', { filePath: '/p/a.ts', edits: [{ [from]: 'before', [to]: 'after' }] }))
-      .toStrictEqual([{ filePath: '/p/a.ts', structuredPatch: null, oldStr: 'before', newStr: 'after' }])
+    expect(acpFileEditsFromToolCallRawInput('edit', {
+      filePath: '/p/a.ts',
+      edits: [
+        { [from]: 'before', [to]: 'after' },
+      ],
+    }))
+      .toStrictEqual([
+        {
+          filePath: '/p/a.ts',
+          structuredPatch: null,
+          oldStr: 'before',
+          newStr: 'after',
+        },
+      ])
   })
 
   it('states half a listed entry when the entry states one side alone', () => {
-    expect(acpFileEditsFromToolCallRawInput('edit', { path: '/p/a.ts', edits: [{ newText: 'only the new side' }] }))
-      .toStrictEqual([{ filePath: '/p/a.ts', structuredPatch: null, oldStr: '', newStr: 'only the new side' }])
+    expect(acpFileEditsFromToolCallRawInput('edit', {
+      path: '/p/a.ts',
+      edits: [
+        { newText: 'only the new side' },
+      ],
+    }))
+      .toStrictEqual([
+        {
+          filePath: '/p/a.ts',
+          structuredPatch: null,
+          oldStr: '',
+          newStr: 'only the new side',
+        },
+      ])
   })
 
   // An entry that states neither side describes no change at all, and a non-object
@@ -105,8 +170,20 @@ describe('acpFileEditsFromToolCallRawInput', () => {
   it('skips a listed entry that states neither side', () => {
     expect(acpFileEditsFromToolCallRawInput('edit', {
       path: '/p/a.ts',
-      edits: ['a string', null, { note: 'no sides here' }, { oldText: 'kept', newText: 'also kept' }],
-    })).toStrictEqual([{ filePath: '/p/a.ts', structuredPatch: null, oldStr: 'kept', newStr: 'also kept' }])
+      edits: [
+        'a string',
+        null,
+        { note: 'no sides here' },
+        { oldText: 'kept', newText: 'also kept' },
+      ],
+    })).toStrictEqual([
+      {
+        filePath: '/p/a.ts',
+        structuredPatch: null,
+        oldStr: 'kept',
+        newStr: 'also kept',
+      },
+    ])
   })
 
   // Pi normalizes its own arguments into exactly this order, so a call that sends both
@@ -114,7 +191,9 @@ describe('acpFileEditsFromToolCallRawInput', () => {
   it('states the listed substitutions before a root pair', () => {
     expect(acpFileEditsFromToolCallRawInput('edit', {
       path: '/p/a.ts',
-      edits: [{ oldText: 'in the list', newText: 'first' }],
+      edits: [
+        { oldText: 'in the list', newText: 'first' },
+      ],
       oldText: 'at the root',
       newText: 'second',
     }).map(change => change.oldStr)).toStrictEqual(['in the list', 'at the root'])
@@ -124,17 +203,37 @@ describe('acpFileEditsFromToolCallRawInput', () => {
   // change, so a call that carries both is read as the edit it is.
   it('reads the write body only when nothing else stated a change', () => {
     expect(acpFileEditsFromToolCallRawInput('write', { path: '/p/a.ts', content: 'package main\n' }))
-      .toStrictEqual([{ filePath: '/p/a.ts', structuredPatch: null, oldStr: '', newStr: 'package main\n' }])
+      .toStrictEqual([
+        {
+          filePath: '/p/a.ts',
+          structuredPatch: null,
+          oldStr: '',
+          newStr: 'package main\n',
+        },
+      ])
     expect(acpFileEditsFromToolCallRawInput('edit', {
       path: '/p/a.ts',
-      edits: [{ oldText: 'before', newText: 'after' }],
+      edits: [
+        { oldText: 'before', newText: 'after' },
+      ],
       content: 'never read',
-    })).toStrictEqual([{ filePath: '/p/a.ts', structuredPatch: null, oldStr: 'before', newStr: 'after' }])
+    })).toStrictEqual([
+      {
+        filePath: '/p/a.ts',
+        structuredPatch: null,
+        oldStr: 'before',
+        newStr: 'after',
+      },
+    ])
   })
 
   it('states nothing for an input that carries no file, no list and no shape', () => {
     expect(acpFileEditsFromToolCallRawInput('edit', null)).toStrictEqual([])
-    expect(acpFileEditsFromToolCallRawInput('edit', { edits: [{ oldText: 'a', newText: 'b' }] })).toStrictEqual([])
+    expect(acpFileEditsFromToolCallRawInput('edit', {
+      edits: [
+        { oldText: 'a', newText: 'b' },
+      ],
+    })).toStrictEqual([])
     expect(acpFileEditsFromToolCallRawInput('edit', { path: '/p/a.ts', edits: 'not a list' })).toStrictEqual([])
     expect(acpFileEditsFromToolCallRawInput('edit', { path: '/p/a.ts', somethingElse: 'value' })).toStrictEqual([])
   })

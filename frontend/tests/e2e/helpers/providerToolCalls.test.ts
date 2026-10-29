@@ -120,48 +120,62 @@ import { quotePosixShellArgument } from './shellArguments'
 describe('native Codex code-mode result metadata', () => {
   it.each([0, 7])('retains the actual computed exit %s and output from the generated shell wrapper', async (exitCode) => {
     const program = `process.stdout.write('CALCULATED'+String(40+2));process.stderr.write('STDERR'+String(70+7));process.exitCode=${exitCode}`
-    const executable = process.platform === 'win32' ? JSON.stringify(process.execPath) : quotePosixShellArgument(process.execPath)
+    const executable = process.platform === 'win32'
+      ? JSON.stringify(process.execPath)
+      : quotePosixShellArgument(process.execPath)
     const command = `${executable} -e ${JSON.stringify(program)}`
     const outputs: unknown[] = []
     const call = bashToolCall(AgentProvider.CODEX, 'native-exit', command)
     await runInNewContext(`(async () => { ${call.input} })()`, {
-      tools: { exec_command: async (request: { cmd: string }) => {
-        const result = spawnSync(request.cmd, { shell: true, encoding: 'utf8' })
-        if (result.error)
-          throw result.error
-        return { output: `${result.stdout}${result.stderr}`, exit_code: result.status, wall_time_seconds: 0 }
-      } },
+      tools: {
+        exec_command: async (request: { cmd: string }) => {
+          const result = spawnSync(request.cmd, { shell: true, encoding: 'utf8' })
+          if (result.error)
+            throw result.error
+          return { output: `${result.stdout}${result.stderr}`, exit_code: result.status, wall_time_seconds: 0 }
+        },
+      },
       text: (value: unknown) => outputs.push(value),
     })
     expect(outputs).toHaveLength(1)
-    expect(outputs).toEqual([JSON.stringify({ output: 'CALCULATED42STDERR77', exit_code: exitCode, wall_time_seconds: 0 })])
+    expect(outputs).toEqual([
+      JSON.stringify({ output: 'CALCULATED42STDERR77', exit_code: exitCode, wall_time_seconds: 0 }),
+    ])
   })
 
   it('retains the escalated command result instead of discarding its native status', async () => {
     const outputs: unknown[] = []
     const call = codexEscalatedCommandToolCall('native-escalated', 'printf native-result')
     await runInNewContext(`(async () => { ${call.input} })()`, {
-      tools: { exec_command: async (request: { cmd: string, sandbox_permissions: string }) => {
-        expect(request.cmd).toBe('printf native-result')
-        expect(request.sandbox_permissions).toBe('require_escalated')
-        return { output: 'native-result', exit_code: 0, wall_time_seconds: 0 }
-      } },
+      tools: {
+        exec_command: async (request: { cmd: string, sandbox_permissions: string }) => {
+          expect(request.cmd).toBe('printf native-result')
+          expect(request.sandbox_permissions).toBe('require_escalated')
+          return { output: 'native-result', exit_code: 0, wall_time_seconds: 0 }
+        },
+      },
       text: (value: unknown) => outputs.push(value),
     })
-    expect(outputs).toEqual([JSON.stringify({ output: 'native-result', exit_code: 0, wall_time_seconds: 0 })])
+    expect(outputs).toEqual([
+      JSON.stringify({ output: 'native-result', exit_code: 0, wall_time_seconds: 0 }),
+    ])
   })
 
   it('retains native read output and its zero exit status', async () => {
     const outputs: unknown[] = []
     const call = readToolCall(AgentProvider.CODEX, 'native-read', '/private/file with spaces.txt')
     await runInNewContext(`(async () => { ${call.input} })()`, {
-      tools: { exec_command: async (request: { cmd: string }) => {
-        expect(request.cmd).toBe('cat \'/private/file with spaces.txt\'')
-        return { output: 'native file\n', exit_code: 0 }
-      } },
+      tools: {
+        exec_command: async (request: { cmd: string }) => {
+          expect(request.cmd).toBe('cat \'/private/file with spaces.txt\'')
+          return { output: 'native file\n', exit_code: 0 }
+        },
+      },
       text: (value: unknown) => outputs.push(value),
     })
-    expect(outputs).toEqual([JSON.stringify({ output: 'native file\n', exit_code: 0 })])
+    expect(outputs).toEqual([
+      JSON.stringify({ output: 'native file\n', exit_code: 0 }),
+    ])
   })
 })
 
@@ -171,10 +185,12 @@ describe('native added-file patch encoding', () => {
     let actualPatch: unknown
     if (provider === AgentProvider.CODEX) {
       await runInNewContext(`(async () => { ${call.input} })()`, {
-        tools: { apply_patch: async (patch: unknown) => {
-          actualPatch = patch
-          return {}
-        } },
+        tools: {
+          apply_patch: async (patch: unknown) => {
+            actualPatch = patch
+            return {}
+          },
+        },
         text: () => {},
       })
     }
@@ -196,10 +212,22 @@ describe('native added-file patch encoding', () => {
 })
 
 describe('native Fast Agent label schema', () => {
-  it.each(['', 'a'.repeat(33), 'invalid label!', '_first', 'last_', '한글'])('rejects a label that the native subagent refuses: %j', (description) => {
+  it.each([
+    '',
+    'a'.repeat(33),
+    'invalid label!',
+    '_first',
+    'last_',
+    '한글',
+  ])('rejects a label that the native subagent refuses: %j', (description) => {
     expect(() => spawnSubagentToolCall(AgentProvider.FAST_AGENT, 'native-child', { description, prompt: 'Actual child task.' })).toThrow('The native Fast Agent label must contain 1 to 32 ASCII characters. It must start and end with a letter or digit.')
   })
-  it.each(['a', 'a'.repeat(32), 'native-child_1', ' native child '])('preserves valid native label bytes: %j', (description) => {
+  it.each([
+    'a',
+    'a'.repeat(32),
+    'native-child_1',
+    ' native child ',
+  ])('preserves valid native label bytes: %j', (description) => {
     expect(spawnSubagentToolCall(AgentProvider.FAST_AGENT, 'native-child', { description, prompt: 'Actual child task.' }).arguments)
       .toEqual({ message: 'Actual child task.', label: description })
   })
@@ -207,7 +235,11 @@ describe('native Fast Agent label schema', () => {
 
 describe('native Goose text Read tool', () => {
   it.each(['/private/note.txt', '/private/path $(touch marker); \'quoted\'/note.txt'])('uses the actual read operation for %j', (path) => {
-    expect(readToolCall(AgentProvider.GOOSE, 'native-goose-read', path)).toEqual({ id: 'native-goose-read', name: 'read', arguments: { path } })
+    expect(readToolCall(AgentProvider.GOOSE, 'native-goose-read', path)).toEqual({
+      id: 'native-goose-read',
+      name: 'read',
+      arguments: { path },
+    })
   })
 })
 
@@ -218,7 +250,11 @@ describe('zcodeReadRangeToolCall', () => {
     { offset: Number.MAX_SAFE_INTEGER, limit: Number.MAX_SAFE_INTEGER },
   ])('passes the exact source-valid native Read range %j', (range) => {
     expect(zcodeReadRangeToolCall('native-fresh-read', '/private/native file.txt', range))
-      .toEqual({ id: 'native-fresh-read', name: 'Read', arguments: { file_path: '/private/native file.txt', ...range } })
+      .toEqual({
+        id: 'native-fresh-read',
+        name: 'Read',
+        arguments: { file_path: '/private/native file.txt', ...range },
+      })
   })
   it.each([
     { offset: -1, limit: 1 },
@@ -236,18 +272,46 @@ describe('zcodeReadRangeToolCall', () => {
 
 describe('lettaMcpCatalogArguments', () => {
   it('uses the exact native registered catalog operation and agent identity', () => {
-    expect(lettaMcpCatalogArguments('agent-native', 'echo_probe')).toEqual(['mcp', 'tools', 'echo_probe', '--full', '--agent', 'agent-native'])
+    expect(lettaMcpCatalogArguments('agent-native', 'echo_probe')).toEqual([
+      'mcp',
+      'tools',
+      'echo_probe',
+      '--full',
+      '--agent',
+      'agent-native',
+    ])
   })
-  it.each(['', ' ', 'agent native', 'agent\n', '$(touch unexpected)', '한글'])('rejects an invalid native agent ID: %j', (agentId) => {
+  it.each([
+    '',
+    ' ',
+    'agent native',
+    'agent\n',
+    '$(touch unexpected)',
+    '한글',
+  ])('rejects an invalid native agent ID: %j', (agentId) => {
     expect(() => lettaMcpCatalogArguments(agentId, 'echo_probe')).toThrow('valid agent and server IDs')
   })
-  it.each(['', ' ', 'echo probe', 'echo\n', 'echo;touch unexpected', '한글'])('rejects an invalid native server ID: %j', (server) => {
+  it.each([
+    '',
+    ' ',
+    'echo probe',
+    'echo\n',
+    'echo;touch unexpected',
+    '한글',
+  ])('rejects an invalid native server ID: %j', (server) => {
     expect(() => lettaMcpCatalogArguments('agent-native', server)).toThrow('valid agent and server IDs')
   })
   it('preserves underscores and long valid native identifiers', () => {
     const agent = `agent_${'a'.repeat(50_000)}`
     const server = `server_${'_'.repeat(50_000)}`
-    expect(lettaMcpCatalogArguments(agent, server)).toEqual(['mcp', 'tools', server, '--full', '--agent', agent])
+    expect(lettaMcpCatalogArguments(agent, server)).toEqual([
+      'mcp',
+      'tools',
+      server,
+      '--full',
+      '--agent',
+      agent,
+    ])
   })
 })
 
@@ -262,15 +326,32 @@ describe('lettaMcpCatalogToolCall', () => {
       const recorder = join(directory, 'capture "한글" $(touch forbidden).cjs')
       writeFileSync(recorder, 'process.stdout.write(JSON.stringify(process.argv.slice(2)))')
       const executable = join(directory, 'native "한글";`echo forbidden`')
-      const options = { executable, nodeExecutable: process.execPath, captureScriptPath: recorder, receiptId: 'actual-receipt', agentId: 'agent-native', server: 'echo_probe' }
+      const options = {
+        executable,
+        nodeExecutable: process.execPath,
+        captureScriptPath: recorder,
+        receiptId: 'actual-receipt',
+        agentId: 'agent-native',
+        server: 'echo_probe',
+      }
       const call = lettaMcpCatalogToolCall('catalog-native', options)
       expect(call.name).toBe('Bash')
       expect(call.id).toBe('catalog-native')
       const command = call.arguments?.command
       if (typeof command !== 'string')
-        throw new Error('The native Letta catalog call contains no shell command.')
+        throw new TypeError('The native Letta catalog call contains no shell command.')
       const args = JSON.parse(execFileSync('/bin/sh', ['-c', command], { cwd: directory, encoding: 'utf8' }))
-      expect(args).toEqual(['actual-receipt', 'catalog-native', executable, 'mcp', 'tools', 'echo_probe', '--full', '--agent', 'agent-native'])
+      expect(args).toEqual([
+        'actual-receipt',
+        'catalog-native',
+        executable,
+        'mcp',
+        'tools',
+        'echo_probe',
+        '--full',
+        '--agent',
+        'agent-native',
+      ])
       expect(readdirSync(directory)).toEqual(['capture "한글" $(touch forbidden).cjs'])
     }
     finally {
@@ -284,21 +365,56 @@ describe('lettaMcpCatalogToolCall', () => {
     { receiptId: '' },
     { receiptId: 'receipt:invalid' },
   ])('rejects an invalid capture identity or relative native path: %j', (overrides) => {
-    const options = { executable: resolve('letta'), nodeExecutable: process.execPath, captureScriptPath: resolve('capture.cjs'), receiptId: 'receipt-native', agentId: 'agent-native', server: 'echo_probe', ...overrides }
+    const options = {
+      executable: resolve('letta'),
+      nodeExecutable: process.execPath,
+      captureScriptPath: resolve('capture.cjs'),
+      receiptId: 'receipt-native',
+      agentId: 'agent-native',
+      server: 'echo_probe',
+      ...overrides,
+    }
     expect(() => lettaMcpCatalogToolCall('catalog-native', options)).toThrow('valid identities and absolute executable paths')
   })
-  it.each(['', 'catalog:invalid', 'catalog\n', '$(touch unexpected)'])('rejects an invalid native call ID: %j', (callId) => {
-    expect(() => lettaMcpCatalogToolCall(callId, { executable: resolve('letta'), nodeExecutable: process.execPath, captureScriptPath: resolve('capture.cjs'), receiptId: 'receipt-native', agentId: 'agent-native', server: 'echo_probe' })).toThrow('valid identities and absolute executable paths')
+  it.each([
+    '',
+    'catalog:invalid',
+    'catalog\n',
+    '$(touch unexpected)',
+  ])('rejects an invalid native call ID: %j', (callId) => {
+    expect(() => lettaMcpCatalogToolCall(callId, {
+      executable: resolve('letta'),
+      nodeExecutable: process.execPath,
+      captureScriptPath: resolve('capture.cjs'),
+      receiptId: 'receipt-native',
+      agentId: 'agent-native',
+      server: 'echo_probe',
+    })).toThrow('valid identities and absolute executable paths')
   })
 })
 
 describe('lettaMcpCliToolCall', () => {
   it.each([
-    { label: 'empty', input: { value: '' } },
-    { label: 'zero', input: { value: 0 } },
-    { label: 'false', input: { value: false } },
-    { label: 'Unicode', input: { value: '한글 "quoted" \\ path' } },
-    { label: 'shell substitution', input: { value: '$(touch BAD_SHELL_EXPANSION) `touch BAD_BACKTICK_EXPANSION` \' " 한글\\' } },
+    {
+      label: 'empty',
+      input: { value: '' },
+    },
+    {
+      label: 'zero',
+      input: { value: 0 },
+    },
+    {
+      label: 'false',
+      input: { value: false },
+    },
+    {
+      label: 'Unicode',
+      input: { value: '한글 "quoted" \\ path' },
+    },
+    {
+      label: 'shell substitution',
+      input: { value: '$(touch BAD_SHELL_EXPANSION) `touch BAD_BACKTICK_EXPANSION` \' " 한글\\' },
+    },
     // The command runs through sh, which no Windows host offers; the quoting it asserts is POSIX shell quoting.
   ].filter(() => process.platform !== 'win32'))('passes the $label payload as unchanged native arguments', ({ input }) => {
     const scratch = resolve(process.cwd(), '../.tmp')
@@ -310,10 +426,18 @@ describe('lettaMcpCliToolCall', () => {
       const call = lettaMcpCliToolCall('native-mcp', 'agent-native', 'mcp__echo_probe__echo', input)
       const command = call.arguments?.command
       if (typeof command !== 'string')
-        throw new Error('The native Letta MCP builder returned no Bash command.')
+        throw new TypeError('The native Letta MCP builder returned no Bash command.')
       const script = `letta() { node ${quotePosixShellArgument(recorder)} "$@"; }\n${command}`
       const output = execFileSync('sh', ['-c', script], { cwd: directory, encoding: 'utf8' })
-      expect(JSON.parse(output)).toEqual(['mcp', 'call', 'mcp__echo_probe__echo', '--agent', 'agent-native', '--args', JSON.stringify(input)])
+      expect(JSON.parse(output)).toEqual([
+        'mcp',
+        'call',
+        'mcp__echo_probe__echo',
+        '--agent',
+        'agent-native',
+        '--args',
+        JSON.stringify(input),
+      ])
       expect(readdirSync(directory)).toEqual(['arguments.cjs'])
     }
     finally {
@@ -321,10 +445,24 @@ describe('lettaMcpCliToolCall', () => {
     }
   })
 
-  it.each(['', ' ', 'agent native', 'agent-native ', '$(unsafe)'])('rejects an invalid native agent ID: %j', (agentId) => {
+  it.each([
+    '',
+    ' ',
+    'agent native',
+    'agent-native ',
+    '$(unsafe)',
+  ])('rejects an invalid native agent ID: %j', (agentId) => {
     expect(() => lettaMcpCliToolCall('native-mcp', agentId, 'mcp__echo_probe__echo', {})).toThrow('valid agent ID')
   })
-  it.each(['', 'echo', 'mcp__server', 'mcp__server__tool;unsafe', 'mcp__a__', 'mcp____tool', 'mcp_____'])('rejects an invalid native MCP tool ID: %j', (toolId) => {
+  it.each([
+    '',
+    'echo',
+    'mcp__server',
+    'mcp__server__tool;unsafe',
+    'mcp__a__',
+    'mcp____tool',
+    'mcp_____',
+  ])('rejects an invalid native MCP tool ID: %j', (toolId) => {
     expect(() => lettaMcpCliToolCall('native-mcp', 'agent-native', toolId, {})).toThrow('server and tool')
   })
 
@@ -346,9 +484,21 @@ describe('lettaMcpCliToolCall', () => {
 })
 
 describe('goosePermissionJudgmentToolCall', () => {
-  it.each([{ ids: [] }, { ids: ['actual-read'] }, { ids: ['실제 요청', 'quoted"request', ''] }])('preserves the native read-only IDs without sharing the input array: $ids', ({ ids }) => {
+  it.each([
+    { ids: [] },
+    {
+      ids: ['actual-read'],
+    },
+    {
+      ids: ['실제 요청', 'quoted"request', ''],
+    },
+  ])('preserves the native read-only IDs without sharing the input array: $ids', ({ ids }) => {
     const result = goosePermissionJudgmentToolCall('native-judge', ids)
-    expect(result).toEqual({ id: 'native-judge', name: 'platform__tool_by_tool_permission', arguments: { read_only_request_ids: ids } })
+    expect(result).toEqual({
+      id: 'native-judge',
+      name: 'platform__tool_by_tool_permission',
+      arguments: { read_only_request_ids: ids },
+    })
     expect(result.arguments?.read_only_request_ids).not.toBe(ids)
   })
 })
@@ -357,11 +507,20 @@ describe('codebuddyFindToolsToolCall', () => {
   it('preserves exact deferred names without sharing the caller array', () => {
     const names = ['REPL', 'Workflow']
     const call = codebuddyFindToolsToolCall('native-search', names)
-    expect(call).toEqual({ id: 'native-search', name: 'ToolSearch', arguments: { tool_names: names } })
+    expect(call).toEqual({
+      id: 'native-search',
+      name: 'ToolSearch',
+      arguments: { tool_names: names },
+    })
     expect(call.arguments?.tool_names).not.toBe(names)
   })
 
-  it.each([{ names: [] }, { names: [''] }])('refuses missing deferred tool names: %j', ({ names }) => {
+  it.each([
+    { names: [] },
+    {
+      names: [''],
+    },
+  ])('refuses missing deferred tool names: %j', ({ names }) => {
     expect(() => codebuddyFindToolsToolCall('native-search', names)).toThrow('exact tool names')
   })
 })
@@ -376,7 +535,14 @@ describe('droidToolSearchToolCall', () => {
     expect(droidToolSearchToolCall('call_search', 'select:Read').arguments).toEqual({ query: 'select:Read' })
   })
 
-  it.each([0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1])('rejects an invalid native result maximum: %s', (maxResults) => {
+  it.each([
+    0,
+    -1,
+    1.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.MAX_SAFE_INTEGER + 1,
+  ])('rejects an invalid native result maximum: %s', (maxResults) => {
     expect(() => droidToolSearchToolCall('search', 'execute', maxResults)).toThrow('positive safe result maximum')
   })
 })
@@ -384,7 +550,11 @@ describe('droidToolSearchToolCall', () => {
 describe('droidScriptToolCall', () => {
   it('keeps raw source and native directives with the exact native call ID', () => {
     const script = '// @script: {"await":true}\nreturn "출력" + (40 + 2);\n'
-    expect(droidScriptToolCall('native-script', script)).toEqual({ id: 'call_native-script', name: 'Script', arguments: { script } })
+    expect(droidScriptToolCall('native-script', script)).toEqual({
+      id: 'call_native-script',
+      name: 'Script',
+      arguments: { script },
+    })
     expect(droidScriptToolCall('call_native-script', script).arguments).toEqual({ script })
   })
 
@@ -398,14 +568,27 @@ describe('droidScriptToolCall', () => {
     expect(() => droidScriptToolCall('script', source)).toThrow('nonempty source')
   })
 
-  it.each([null, undefined, 0, -1, Number.NaN, Number.POSITIVE_INFINITY, {}, []])('rejects a non-string source: %j', (source) => {
+  it.each([
+    null,
+    undefined,
+    0,
+    -1,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    {},
+    [],
+  ])('rejects a non-string source: %j', (source) => {
     expect(() => Reflect.apply(droidScriptToolCall, undefined, ['script', source])).toThrow('nonempty source')
   })
 })
 
 describe('codebuddyReplToolCall', () => {
   it('keeps the direct native code source without a deferred wrapper', () => {
-    expect(codebuddyReplToolCall('native-repl', '\nreturn 40 + 2;\n')).toEqual({ id: 'native-repl', name: 'REPL', arguments: { code: '\nreturn 40 + 2;\n' } })
+    expect(codebuddyReplToolCall('native-repl', '\nreturn 40 + 2;\n')).toEqual({
+      id: 'native-repl',
+      name: 'REPL',
+      arguments: { code: '\nreturn 40 + 2;\n' },
+    })
   })
 })
 
@@ -433,12 +616,21 @@ describe('codeExecutionToolCall', () => {
   ])('preserves native source text for $provider', ({ provider, name, field }) => {
     const source = 'const value = "출력";\nreturn value;'
     const call = codeExecutionToolCall(provider, 'native-code', source)
-    expect(call.id).toBe(provider === AgentProvider.DROID ? 'call_native-code' : 'native-code')
+    expect(call.id).toBe(provider === AgentProvider.DROID
+      ? 'call_native-code'
+      : 'native-code')
     expect(call.name).toBe(name)
-    if (field === 'deferred')
-      expect(call.arguments).toEqual({ toolName: 'REPL', params: { code: source } })
-    else
-      expect(field === 'input' ? call.input : call.arguments?.[field]).toBe(source)
+    if (field === 'deferred') {
+      expect(call.arguments).toEqual({
+        toolName: 'REPL',
+        params: { code: source },
+      })
+    }
+    else {
+      expect(field === 'input'
+        ? call.input
+        : call.arguments?.[field]).toBe(source)
+    }
   })
 
   it('refuses a provider without an audited native executor', () => {
@@ -463,7 +655,11 @@ describe('native Droid Execute arguments', () => {
   it.each(['low', 'medium', 'high'] as const)('retains an explicitly selected native risk %s', (riskLevel) => {
     const command = '\n  printf "출력"\n'
     expect(droidExecuteToolCall('explicit', { command, summary: 'Print the native output', riskLevel }))
-      .toEqual({ id: 'call_explicit', name: 'Execute', arguments: { command, summary: 'Print the native output', riskLevel } })
+      .toEqual({
+        id: 'call_explicit',
+        name: 'Execute',
+        arguments: { command, summary: 'Print the native output', riskLevel },
+      })
   })
 
   it.each([
@@ -471,13 +667,26 @@ describe('native Droid Execute arguments', () => {
     { id: 'call', command: ' ', summary: 'Print a value' },
     { id: 'call', command: 'echo value', summary: '' },
   ])('rejects a missing required native field %j', ({ id, command, summary }) => {
-    expect(() => droidExecuteToolCall(id, { command, summary, riskLevel: 'low' })).toThrow(id === '' ? 'nonempty ID' : 'requires an ID')
+    expect(() => droidExecuteToolCall(id, { command, summary, riskLevel: 'low' })).toThrow(id === ''
+      ? 'nonempty ID'
+      : 'requires an ID')
   })
 })
 
 describe('piCodemodeToolCall', () => {
-  it.each([{ label: 'empty', code: '' }, { label: 'Unicode', code: 'text("실제 출력");\n' }, { label: 'large', code: 'text("line");\n'.repeat(2_000) }])('preserves every character of the $label native script', ({ code }) => {
-    expect(piCodemodeToolCall('native-mcp-script', code)).toEqual({ id: 'native-mcp-script', name: 'codemode', arguments: { code } })
+  it.each([
+    { label: 'empty', code: '' },
+    { label: 'Unicode', code: 'text("실제 출력");\n' },
+    {
+      label: 'large',
+      code: 'text("line");\n'.repeat(2_000),
+    },
+  ])('preserves every character of the $label native script', ({ code }) => {
+    expect(piCodemodeToolCall('native-mcp-script', code)).toEqual({
+      id: 'native-mcp-script',
+      name: 'codemode',
+      arguments: { code },
+    })
   })
 })
 
@@ -486,12 +695,20 @@ describe('piMcpResourceToolCall', () => {
     { operation: 'list' as const, name: 'list_mcp_resources' },
     { operation: 'templates' as const, name: 'list_mcp_resource_templates' },
   ])('uses the native $operation resource catalog', ({ operation, name }) => {
-    expect(piMcpResourceToolCall('resource', { operation, server: 'probe' })).toEqual({ id: 'resource', name, arguments: { server: 'probe' } })
+    expect(piMcpResourceToolCall('resource', { operation, server: 'probe' })).toEqual({
+      id: 'resource',
+      name,
+      arguments: { server: 'probe' },
+    })
   })
 
   it('preserves an exact resource URI in the native read', () => {
     expect(piMcpResourceToolCall('resource', { operation: 'read', server: 'probe', uri: 'probe://text/출력?zero=0' }))
-      .toEqual({ id: 'resource', name: 'read_mcp_resource', arguments: { server: 'probe', uri: 'probe://text/출력?zero=0' } })
+      .toEqual({
+        id: 'resource',
+        name: 'read_mcp_resource',
+        arguments: { server: 'probe', uri: 'probe://text/출력?zero=0' },
+      })
   })
 
   it('refuses absent call identity, server identity, and read URI', () => {
@@ -519,13 +736,21 @@ describe('claudeSubagentHandbackToolCall', () => {
 
 describe('codewhaleToolSearchToolCall', () => {
   it.each(['image_probe show', '', 'a"quote\n$literal'])('preserves the native discovery query: %s', (query) => {
-    expect(codewhaleToolSearchToolCall('native-discovery', query)).toEqual({ id: 'native-discovery', name: 'tool_search', arguments: { query } })
+    expect(codewhaleToolSearchToolCall('native-discovery', query)).toEqual({
+      id: 'native-discovery',
+      name: 'tool_search',
+      arguments: { query },
+    })
   })
 })
 
 describe('codewhaleReadMediaToolCall', () => {
   it.each(['/work/shot.png', '', '/work/a space/quote".png'])('preserves the native media path: %s', (path) => {
-    expect(codewhaleReadMediaToolCall('native-media', path)).toEqual({ id: 'native-media', name: 'read_media', arguments: { path } })
+    expect(codewhaleReadMediaToolCall('native-media', path)).toEqual({
+      id: 'native-media',
+      name: 'read_media',
+      arguments: { path },
+    })
   })
 })
 
@@ -555,21 +780,61 @@ describe('the Copilot edit and write builders', () => {
 
 describe('WORKFLOW_TOOL_NAMES', () => {
   it('holds each workflow tool name of the table once, in order', () => {
-    expect(WORKFLOW_TOOL_NAMES).toEqual(['AgentSwarm', 'CreateWorkflow', 'SubagentWorkflow', 'Workflow', 'team_run_task', 'workflow'])
+    expect(WORKFLOW_TOOL_NAMES).toEqual([
+      'AgentSwarm',
+      'CreateWorkflow',
+      'SubagentWorkflow',
+      'Workflow',
+      'team_run_task',
+      'workflow',
+    ])
   })
 
   it.each([
-    { provider: AgentProvider.CLAUDE_CODE, call: codeExecutionToolCall(AgentProvider.CLAUDE_CODE, 'w', 'return 1') },
-    { provider: AgentProvider.QODER, call: codeExecutionToolCall(AgentProvider.QODER, 'w', 'return 1') },
-    { provider: AgentProvider.PI, call: piWorkflowToolCall('w', 'return 1') },
-    { provider: AgentProvider.ZCODE, call: zcodeCreateWorkflowToolCall('w', 'probe', 'return 1') },
-    { provider: AgentProvider.MIMO_CODE, call: mimoWorkflowToolCall('w', 'return 1') },
-    { provider: AgentProvider.KIMI_CODE, call: kimiAgentSwarmToolCall('w', 'Probe', 'Reply {{item}}.', ['A']) },
-    { provider: AgentProvider.QWEN_CODE, call: qwenWorkflowToolCall('w', 'return 1') },
-    { provider: AgentProvider.CODEWHALE, call: codewhaleWorkflowToolCall('w', 'Goal', 'Prompt') },
-    { provider: AgentProvider.GROK_BUILD, call: grokWorkflowToolCall('w', 'return 1') },
-    { provider: AgentProvider.CLINE, call: clineRunTeammateTaskToolCall('w', 'researcher', 'Find the bug.') },
-    { provider: AgentProvider.DEEPSEEK_HARNESS, call: codeExecutionToolCall(AgentProvider.DEEPSEEK_HARNESS, 'w', 'return 1') },
+    {
+      provider: AgentProvider.CLAUDE_CODE,
+      call: codeExecutionToolCall(AgentProvider.CLAUDE_CODE, 'w', 'return 1'),
+    },
+    {
+      provider: AgentProvider.QODER,
+      call: codeExecutionToolCall(AgentProvider.QODER, 'w', 'return 1'),
+    },
+    {
+      provider: AgentProvider.PI,
+      call: piWorkflowToolCall('w', 'return 1'),
+    },
+    {
+      provider: AgentProvider.ZCODE,
+      call: zcodeCreateWorkflowToolCall('w', 'probe', 'return 1'),
+    },
+    {
+      provider: AgentProvider.MIMO_CODE,
+      call: mimoWorkflowToolCall('w', 'return 1'),
+    },
+    {
+      provider: AgentProvider.KIMI_CODE,
+      call: kimiAgentSwarmToolCall('w', 'Probe', 'Reply {{item}}.', ['A']),
+    },
+    {
+      provider: AgentProvider.QWEN_CODE,
+      call: qwenWorkflowToolCall('w', 'return 1'),
+    },
+    {
+      provider: AgentProvider.CODEWHALE,
+      call: codewhaleWorkflowToolCall('w', 'Goal', 'Prompt'),
+    },
+    {
+      provider: AgentProvider.GROK_BUILD,
+      call: grokWorkflowToolCall('w', 'return 1'),
+    },
+    {
+      provider: AgentProvider.CLINE,
+      call: clineRunTeammateTaskToolCall('w', 'researcher', 'Find the bug.'),
+    },
+    {
+      provider: AgentProvider.DEEPSEEK_HARNESS,
+      call: codeExecutionToolCall(AgentProvider.DEEPSEEK_HARNESS, 'w', 'return 1'),
+    },
   ])('lists the tool of the workflow builder of $provider', ({ provider, call }) => {
     expect(workflowToolNames(provider)).toContain(call.name)
     expect(WORKFLOW_TOOL_NAMES).toContain(call.name)
@@ -579,7 +844,13 @@ describe('WORKFLOW_TOOL_NAMES', () => {
     expect(workflowToolNames(AgentProvider.CODEBUDDY)).toContain(codebuddyWorkflowToolCall('w', 'return 1').arguments?.toolName)
   })
 
-  it.each([AgentProvider.GITHUB_COPILOT, AgentProvider.GOOSE, AgentProvider.OPENCODE, AgentProvider.KILO, AgentProvider.REASONIX])('states no workflow tool for %s, whose grouping spec proves none', (provider) => {
+  it.each([
+    AgentProvider.GITHUB_COPILOT,
+    AgentProvider.GOOSE,
+    AgentProvider.OPENCODE,
+    AgentProvider.KILO,
+    AgentProvider.REASONIX,
+  ])('states no workflow tool for %s, whose grouping spec proves none', (provider) => {
     expect(hasToolFor(provider, 'workflowTools')).toBe(false)
     expect(workflowToolNames(provider)).toEqual([])
   })
@@ -599,7 +870,11 @@ describe('copilotApplyPatchToolCall', () => {
 describe('piWorkflowToolCall', () => {
   it('preserves the native metadata and two-stage workflow source', () => {
     const script = 'export const meta = { name: \'Probe\', description: \'Run two native stages.\' };\nphase(\'First\');\nconst first = await agent(\'Run the first stage.\');\nphase(\'Second\');\nreturn [first, await agent(\'Run the second stage.\')];'
-    expect(piWorkflowToolCall('native-workflow', script)).toEqual({ id: 'native-workflow', name: 'SubagentWorkflow', arguments: { script } })
+    expect(piWorkflowToolCall('native-workflow', script)).toEqual({
+      id: 'native-workflow',
+      name: 'SubagentWorkflow',
+      arguments: { script },
+    })
   })
 
   it('preserves an empty script for native metadata validation', () => {
@@ -622,20 +897,46 @@ describe('cursor execution tool calls', () => {
     })
   })
   it('builds source-backed shell and file operations for the native Run surface', () => {
-    expect(bashToolCall(AgentProvider.CURSOR, 'shell', 'printf actual')).toEqual({ id: 'shell', name: 'shell', arguments: { command: 'printf actual' } })
-    expect(readToolCall(AgentProvider.CURSOR, 'read', '/project/a.txt')).toEqual({ id: 'read', name: 'read', arguments: { path: '/project/a.txt' } })
-    expect(writeToolCall(AgentProvider.CURSOR, 'write', { path: '/project/a.txt', content: '' })).toEqual({ id: 'write', name: 'write', arguments: { path: '/project/a.txt', content: '' } })
-    expect(editToolCall(AgentProvider.CURSOR, 'edit', { path: '/project/a.txt', before: 'old', after: '' })).toEqual({ id: 'edit', name: 'edit', arguments: { path: '/project/a.txt', before: 'old', after: '' } })
+    expect(bashToolCall(AgentProvider.CURSOR, 'shell', 'printf actual')).toEqual({
+      id: 'shell',
+      name: 'shell',
+      arguments: { command: 'printf actual' },
+    })
+    expect(readToolCall(AgentProvider.CURSOR, 'read', '/project/a.txt')).toEqual({
+      id: 'read',
+      name: 'read',
+      arguments: { path: '/project/a.txt' },
+    })
+    expect(writeToolCall(AgentProvider.CURSOR, 'write', { path: '/project/a.txt', content: '' })).toEqual({
+      id: 'write',
+      name: 'write',
+      arguments: { path: '/project/a.txt', content: '' },
+    })
+    expect(editToolCall(AgentProvider.CURSOR, 'edit', { path: '/project/a.txt', before: 'old', after: '' })).toEqual({
+      id: 'edit',
+      name: 'edit',
+      arguments: { path: '/project/a.txt', before: 'old', after: '' },
+    })
   })
 
   it('keeps a task completion gate outside the native task arguments', () => {
-    const call = spawnSubagentToolCall(AgentProvider.CURSOR, 'task', { description: 'Hold the child', prompt: 'Do the child work.', report: 'Child complete.', completionGate: 'child-completion' })
+    const call = spawnSubagentToolCall(AgentProvider.CURSOR, 'task', {
+      description: 'Hold the child',
+      prompt: 'Do the child work.',
+      report: 'Child complete.',
+      completionGate: 'child-completion',
+    })
     expect(call).toMatchObject({ completionGate: 'child-completion' })
     expect(call.arguments).toEqual({ description: 'Hold the child', prompt: 'Do the child work.', report: 'Child complete.' })
   })
 
   it('keeps native child progress in service metadata instead of TaskArgs', () => {
-    const call = spawnSubagentToolCall(AgentProvider.CURSOR, 'task-progress', { description: 'Actual child delta', prompt: 'Do the child work.', report: 'Child complete.', taskProgress: 'CHILD_NATIVE_PROGRESS' })
+    const call = spawnSubagentToolCall(AgentProvider.CURSOR, 'task-progress', {
+      description: 'Actual child delta',
+      prompt: 'Do the child work.',
+      report: 'Child complete.',
+      taskProgress: 'CHILD_NATIVE_PROGRESS',
+    })
     expect(call).toMatchObject({ taskProgress: 'CHILD_NATIVE_PROGRESS' })
     expect(call.arguments).toEqual({ description: 'Actual child delta', prompt: 'Do the child work.', report: 'Child complete.' })
   })
@@ -645,8 +946,16 @@ describe('zcode MCP tool calls', () => {
   it('uses the actual native catalog tool ID and preserves empty, zero, and false arguments', () => {
     expect(mcpToolCall(AgentProvider.ZCODE, 'native-ask', { server: 'form_probe', tool: 'ask', input: {} }))
       .toEqual({ id: 'native-ask', name: 'mcp__form_probe__ask', arguments: {} })
-    expect(mcpToolCall(AgentProvider.ZCODE, 'native-echo', { server: 'form_probe', tool: 'echo', input: { count: 0, enabled: false, text: '' } }))
-      .toEqual({ id: 'native-echo', name: 'mcp__form_probe__echo', arguments: { count: 0, enabled: false, text: '' } })
+    expect(mcpToolCall(AgentProvider.ZCODE, 'native-echo', {
+      server: 'form_probe',
+      tool: 'echo',
+      input: { count: 0, enabled: false, text: '' },
+    }))
+      .toEqual({
+        id: 'native-echo',
+        name: 'mcp__form_probe__echo',
+        arguments: { count: 0, enabled: false, text: '' },
+      })
   })
 })
 
@@ -665,7 +974,10 @@ describe('readToolCall', () => {
       let output: string | undefined
       await runInNewContext(`(async () => { ${call.input} })()`, {
         tools: {
-          exec_command: async (options: { cmd: string }) => ({ output: execFileSync('/bin/sh', ['-c', options.cmd], { cwd: directory, encoding: 'utf8' }), exit_code: 0 }),
+          exec_command: async (options: { cmd: string }) => ({
+            output: execFileSync('/bin/sh', ['-c', options.cmd], { cwd: directory, encoding: 'utf8' }),
+            exit_code: 0,
+          }),
         },
         text: (value: string) => { output = value },
       })
@@ -705,11 +1017,22 @@ describe('codexWaitAgentToolCall', () => {
     expect(codexWaitAgentToolCall('default-agent-wait').arguments).toEqual({})
   })
 
-  it.each([0, -1, Number.MIN_SAFE_INTEGER, Number.MAX_SAFE_INTEGER])('preserves the integer timeout %s for native validation', (timeoutMs) => {
+  it.each([
+    0,
+    -1,
+    Number.MIN_SAFE_INTEGER,
+    Number.MAX_SAFE_INTEGER,
+  ])('preserves the integer timeout %s for native validation', (timeoutMs) => {
     expect(codexWaitAgentToolCall('native-timeout', timeoutMs).arguments).toEqual({ timeout_ms: timeoutMs })
   })
 
-  it.each([0.5, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1])('rejects a timeout that JSON cannot preserve as a safe integer: %s', (timeoutMs) => {
+  it.each([
+    0.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.NEGATIVE_INFINITY,
+    Number.MAX_SAFE_INTEGER + 1,
+  ])('rejects a timeout that JSON cannot preserve as a safe integer: %s', (timeoutMs) => {
     expect(() => codexWaitAgentToolCall('invalid-timeout', timeoutMs)).toThrow('must be a safe integer')
   })
 })
@@ -770,10 +1093,22 @@ describe('image-read tool calls', () => {
   })
 
   it('reads the same native ZCode workflow with its exact run identity', () => {
-    expect(zcodeGetWorkflowRunToolCall('read-native-run', 'workflow-run-42')).toEqual({ id: 'read-native-run', name: 'GetWorkflowRun', arguments: { run_id: 'workflow-run-42' } })
+    expect(zcodeGetWorkflowRunToolCall('read-native-run', 'workflow-run-42')).toEqual({
+      id: 'read-native-run',
+      name: 'GetWorkflowRun',
+      arguments: { run_id: 'workflow-run-42' },
+    })
   })
 
-  it.each(['', '   ', '\0', undefined, null, 0, false])('rejects an absent or malformed native workflow identity: %j', (value) => {
+  it.each([
+    '',
+    '   ',
+    '\0',
+    undefined,
+    null,
+    0,
+    false,
+  ])('rejects an absent or malformed native workflow identity: %j', (value) => {
     expect(() => Reflect.apply(zcodeGetWorkflowRunToolCall, undefined, [value, 'workflow-run-42'])).toThrow('call ID and run ID')
     expect(() => Reflect.apply(zcodeGetWorkflowRunToolCall, undefined, ['read-native-run', value])).toThrow('call ID and run ID')
   })
@@ -781,21 +1116,31 @@ describe('image-read tool calls', () => {
 
 describe('Cursor interactive tool calls', () => {
   it('builds a question with stable native question and option ids', () => {
-    expect(askUserQuestionToolCall(AgentProvider.CURSOR, 'cursor-q', [{
-      header: 'Color',
-      question: 'Which color?',
-      options: [{ label: 'Blue', description: 'Use blue.' }, { label: 'Green', description: 'Use green.' }],
-    }])).toEqual({
+    expect(askUserQuestionToolCall(AgentProvider.CURSOR, 'cursor-q', [
+      {
+        header: 'Color',
+        question: 'Which color?',
+        options: [
+          { label: 'Blue', description: 'Use blue.' },
+          { label: 'Green', description: 'Use green.' },
+        ],
+      },
+    ])).toEqual({
       id: 'cursor-q',
       name: 'askQuestion',
       arguments: {
         title: 'Color',
-        questions: [{
-          id: 'question-1',
-          prompt: 'Which color?',
-          allowMultiple: false,
-          options: [{ id: 'option-1-1', label: 'Blue' }, { id: 'option-1-2', label: 'Green' }],
-        }],
+        questions: [
+          {
+            id: 'question-1',
+            prompt: 'Which color?',
+            allowMultiple: false,
+            options: [
+              { id: 'option-1-1', label: 'Blue' },
+              { id: 'option-1-2', label: 'Green' },
+            ],
+          },
+        ],
       },
     })
   })
@@ -842,7 +1187,11 @@ describe('Copilot native tool calls', () => {
 
 describe('Amp MCP tool calls', () => {
   it('uses the installed MCP tool name and input', () => {
-    expect(mcpToolCall(AgentProvider.AMP, 'amp-echo', { server: 'echo_probe', tool: 'echo', input: { value: 'amp' } })).toEqual({
+    expect(mcpToolCall(AgentProvider.AMP, 'amp-echo', {
+      server: 'echo_probe',
+      tool: 'echo',
+      input: { value: 'amp' },
+    })).toEqual({
       id: 'amp-echo',
       name: 'mcp__echo_probe__echo',
       arguments: { value: 'amp' },
@@ -886,7 +1235,14 @@ describe('codewhaleWorkflowToolCall', () => {
           goal: 'Probe the workflow',
           risk: 'read_only',
           phases: [],
-          children: [{ label: 'Probe child', prompt: 'Reply with PONG.', type: 'explore', file_scope: [] }],
+          children: [
+            {
+              label: 'Probe child',
+              prompt: 'Reply with PONG.',
+              type: 'explore',
+              file_scope: [],
+            },
+          ],
           gates: [],
         },
       },
@@ -894,11 +1250,17 @@ describe('codewhaleWorkflowToolCall', () => {
   })
 
   it('preserves two distinct native read-only assignments', () => {
-    const children = [{ label: 'First child', prompt: 'Read the first item.' }, { label: 'Second child', prompt: 'Read the second item.' }]
+    const children = [
+      { label: 'First child', prompt: 'Read the first item.' },
+      { label: 'Second child', prompt: 'Read the second item.' },
+    ]
     const call = codewhaleWorkflowToolCall('run-two', 'Read both items.', 'Unused default.', children)
     expect(call.arguments).toHaveProperty('plan.children', children.map(child => ({ ...child, type: 'explore', file_scope: [] })))
     expect(call.arguments).toHaveProperty('plan.risk', 'read_only')
-    expect(children).toEqual([{ label: 'First child', prompt: 'Read the first item.' }, { label: 'Second child', prompt: 'Read the second item.' }])
+    expect(children).toEqual([
+      { label: 'First child', prompt: 'Read the first item.' },
+      { label: 'Second child', prompt: 'Read the second item.' },
+    ])
   })
 
   it('rejects empty native children', () => {
@@ -910,17 +1272,31 @@ describe('codewhaleWorkflowToolCall', () => {
   })
 
   it.each([
-    { children: [null] },
-    { children: ['child'] },
-    { children: [{ label: 7, prompt: 'Read.' }] },
-    { children: [{ label: 'Child', prompt: 7 }] },
+    {
+      children: [null],
+    },
+    {
+      children: ['child'],
+    },
+    {
+      children: [
+        { label: 7, prompt: 'Read.' },
+      ],
+    },
+    {
+      children: [
+        { label: 'Child', prompt: 7 },
+      ],
+    },
   ])('rejects a malformed native child $children', ({ children }) => {
     expect(() => Reflect.apply(codewhaleWorkflowToolCall, undefined, ['run', 'Read.', 'Unused.', children])).toThrow('nonempty child assignment')
   })
 
   it.each(['', ' ', '\n\t'])('rejects an empty native assignment %j', (prompt) => {
     expect(() => codewhaleWorkflowToolCall('run', 'Read.', prompt)).toThrow('nonempty child assignment')
-    expect(() => codewhaleWorkflowToolCall('run', 'Read.', 'Unused.', [{ label: 'Child', prompt }])).toThrow('nonempty child assignment')
+    expect(() => codewhaleWorkflowToolCall('run', 'Read.', 'Unused.', [
+      { label: 'Child', prompt },
+    ])).toThrow('nonempty child assignment')
   })
 })
 
@@ -929,7 +1305,9 @@ describe('grokWorkflowToolCall', () => {
     expect(grokWorkflowToolCall('run', 'let meta = #{};')).toEqual({
       id: 'run',
       name: 'workflow',
-      arguments: { source: { type: 'script', script: 'let meta = #{};' } },
+      arguments: {
+        source: { type: 'script', script: 'let meta = #{};' },
+      },
     })
   })
 })
@@ -959,30 +1337,110 @@ const PROVIDERS = (Object.values(AgentProvider) as unknown[])
   .filter((value): value is AgentProvider => typeof value === 'number' && value !== AgentProvider.UNSPECIFIED)
 
 /** Each status that the to-do sidebar draws. */
-const ALL_TODO_STATUSES: readonly TodoStatus[] = ['pending', 'in_progress', 'completed', 'cancelled', 'deleted', 'abandoned', 'blocked']
+const ALL_TODO_STATUSES: readonly TodoStatus[] = [
+  'pending',
+  'in_progress',
+  'completed',
+  'cancelled',
+  'deleted',
+  'abandoned',
+  'blocked',
+]
 
 /**
  * Each operation, paired with a call that exercises it. The pair is what lets
  * one table drive both directions of the `hasToolFor` contract below.
  */
 const OPERATIONS = [
-  { operation: 'bash', call: (p: AgentProvider) => bashToolCall(p, 'call-1', 'echo hi') },
-  { operation: 'edit', call: (p: AgentProvider) => editToolCall(p, 'call-1', { path: '/tmp/a.txt', before: 'a', after: 'b' }) },
-  { operation: 'write', call: (p: AgentProvider) => writeToolCall(p, 'call-1', { path: '/tmp/a.txt', content: 'x\ny' }) },
-  { operation: 'read', call: (p: AgentProvider) => readToolCall(p, 'call-1', '/tmp/a.txt') },
-  { operation: 'enterPlanMode', call: (p: AgentProvider) => enterPlanModeToolCall(p, 'call-1') },
-  { operation: 'exitPlanMode', call: (p: AgentProvider) => exitPlanModeToolCall(p, 'call-1', 'The plan.') },
-  { operation: 'exitPlanModeFromFile', call: (p: AgentProvider) => exitPlanModeFromFileToolCall(p, 'call-1', [{ label: 'A', description: 'The first' }, { label: 'B', description: 'The second' }]) },
-  { operation: 'askUserQuestion', call: (p: AgentProvider) => askUserQuestionToolCall(p, 'call-1', [{ question: 'Which?', header: 'Choice', options: [{ label: 'A', description: 'The first' }, { label: 'B', description: 'The second' }] }]) },
-  { operation: 'spawnSubagent', call: (p: AgentProvider) => spawnSubagentToolCall(p, 'call-1', { description: 'Probe the subagent path', prompt: 'Reply with PONG.' }) },
-  { operation: 'spawnSubagentBatch', call: (p: AgentProvider) => spawnSubagentBatchToolCall(p, 'call-1', [{ description: 'First child', prompt: 'Reply with ONE.' }, { description: 'Second child', prompt: 'Reply with TWO.' }]) },
-  { operation: 'backgroundBash', call: (p: AgentProvider) => backgroundBashToolCall(p, 'call-1', 'sleep 60') },
-  { operation: 'updateTodos', call: (p: AgentProvider) => updateTodosToolCall(p, 'call-1', [{ step: 'First', status: 'pending' }]) },
-  { operation: 'createGoal', call: (p: AgentProvider) => createGoalToolCall(p, 'call-1', 'Ship the feature.') },
-  { operation: 'completeGoal', call: (p: AgentProvider) => completeGoalToolCall(p, 'call-1') },
-  { operation: 'blockGoal', call: (p: AgentProvider) => blockGoalToolCall(p, 'call-1', 'Blocked here.') },
-  { operation: 'mcpTool', call: (p: AgentProvider) => mcpToolCall(p, 'call-1', { server: 'form_probe', tool: 'echo', input: { text: 'hi' } }) },
-  { operation: 'codeExecution', call: (p: AgentProvider) => codeExecutionToolCall(p, 'call-1', 'return 40 + 2;') },
+  {
+    operation: 'bash',
+    call: (p: AgentProvider) => bashToolCall(p, 'call-1', 'echo hi'),
+  },
+  {
+    operation: 'edit',
+    call: (p: AgentProvider) => editToolCall(p, 'call-1', { path: '/tmp/a.txt', before: 'a', after: 'b' }),
+  },
+  {
+    operation: 'write',
+    call: (p: AgentProvider) => writeToolCall(p, 'call-1', { path: '/tmp/a.txt', content: 'x\ny' }),
+  },
+  {
+    operation: 'read',
+    call: (p: AgentProvider) => readToolCall(p, 'call-1', '/tmp/a.txt'),
+  },
+  {
+    operation: 'enterPlanMode',
+    call: (p: AgentProvider) => enterPlanModeToolCall(p, 'call-1'),
+  },
+  {
+    operation: 'exitPlanMode',
+    call: (p: AgentProvider) => exitPlanModeToolCall(p, 'call-1', 'The plan.'),
+  },
+  {
+    operation: 'exitPlanModeFromFile',
+    call: (p: AgentProvider) => exitPlanModeFromFileToolCall(p, 'call-1', [
+      { label: 'A', description: 'The first' },
+      { label: 'B', description: 'The second' },
+    ]),
+  },
+  {
+    operation: 'askUserQuestion',
+    call: (p: AgentProvider) => askUserQuestionToolCall(p, 'call-1', [
+      {
+        question: 'Which?',
+        header: 'Choice',
+        options: [
+          { label: 'A', description: 'The first' },
+          { label: 'B', description: 'The second' },
+        ],
+      },
+    ]),
+  },
+  {
+    operation: 'spawnSubagent',
+    call: (p: AgentProvider) => spawnSubagentToolCall(p, 'call-1', { description: 'Probe the subagent path', prompt: 'Reply with PONG.' }),
+  },
+  {
+    operation: 'spawnSubagentBatch',
+    call: (p: AgentProvider) => spawnSubagentBatchToolCall(p, 'call-1', [
+      { description: 'First child', prompt: 'Reply with ONE.' },
+      { description: 'Second child', prompt: 'Reply with TWO.' },
+    ]),
+  },
+  {
+    operation: 'backgroundBash',
+    call: (p: AgentProvider) => backgroundBashToolCall(p, 'call-1', 'sleep 60'),
+  },
+  {
+    operation: 'updateTodos',
+    call: (p: AgentProvider) => updateTodosToolCall(p, 'call-1', [
+      { step: 'First', status: 'pending' },
+    ]),
+  },
+  {
+    operation: 'createGoal',
+    call: (p: AgentProvider) => createGoalToolCall(p, 'call-1', 'Ship the feature.'),
+  },
+  {
+    operation: 'completeGoal',
+    call: (p: AgentProvider) => completeGoalToolCall(p, 'call-1'),
+  },
+  {
+    operation: 'blockGoal',
+    call: (p: AgentProvider) => blockGoalToolCall(p, 'call-1', 'Blocked here.'),
+  },
+  {
+    operation: 'mcpTool',
+    call: (p: AgentProvider) => mcpToolCall(p, 'call-1', {
+      server: 'form_probe',
+      tool: 'echo',
+      input: { text: 'hi' },
+    }),
+  },
+  {
+    operation: 'codeExecution',
+    call: (p: AgentProvider) => codeExecutionToolCall(p, 'call-1', 'return 40 + 2;'),
+  },
 ] as const
 
 describe('TOOL_VOCABULARY', () => {
@@ -1026,7 +1484,9 @@ describe('bashToolCall', () => {
   it('carries the native id and a nonempty tool name for every provider', () => {
     for (const provider of PROVIDERS.filter(p => hasToolFor(p, 'bash'))) {
       const call = bashToolCall(provider, 'call-42', 'echo hi')
-      expect(call.id, `provider ${provider}`).toBe(provider === AgentProvider.DROID ? 'call_call-42' : 'call-42')
+      expect(call.id, `provider ${provider}`).toBe(provider === AgentProvider.DROID
+        ? 'call_call-42'
+        : 'call-42')
       expect(call.name.length, `provider ${provider}`).toBeGreaterThan(0)
       // Exactly one payload form. A call with neither says nothing, and a call
       // with both leaves the protocol to pick, which differs per protocol.
@@ -1067,7 +1527,11 @@ describe('backgroundBashToolCall for Codewhale', () => {
   it('starts the job through task_shell_start, which is the one tool that takes it', () => {
     // `bash` refuses a `background` argument, so the flag form Claude uses would
     // fail the call and open no shell row.
-    expect(backgroundBashToolCall(AgentProvider.CODEWHALE, 'call-1', 'sleep 60')).toEqual({ id: 'call-1', name: 'task_shell_start', arguments: { command: 'sleep 60' } })
+    expect(backgroundBashToolCall(AgentProvider.CODEWHALE, 'call-1', 'sleep 60')).toEqual({
+      id: 'call-1',
+      name: 'task_shell_start',
+      arguments: { command: 'sleep 60' },
+    })
   })
 })
 
@@ -1079,7 +1543,14 @@ describe('spawnSubagentToolCall', () => {
     expect(call).toEqual({
       id: 'call-1',
       name: 'actor',
-      arguments: { operation: { action: 'run', subagent_type: 'general', description: 'Probe it', prompt: 'Go.' } },
+      arguments: {
+        operation: {
+          action: 'run',
+          subagent_type: 'general',
+          description: 'Probe it',
+          prompt: 'Go.',
+        },
+      },
     })
   })
 
@@ -1111,7 +1582,13 @@ describe('spawnSubagentToolCall', () => {
     // for a roster or a status, and no child runs.
     const call = spawnSubagentToolCall(AgentProvider.CODEWHALE, 'call-1', { description: 'Probe it', prompt: 'Go.' })
     expect(call.name).toBe('agent')
-    expect(call.arguments).toEqual({ action: 'start', name: 'probe_it', type: 'explore', prompt: 'Go.', detached: false })
+    expect(call.arguments).toEqual({
+      action: 'start',
+      name: 'probe_it',
+      type: 'explore',
+      prompt: 'Go.',
+      detached: false,
+    })
   })
 
   it('falls back to a usable name when the description reduces to nothing', () => {
@@ -1132,22 +1609,36 @@ describe('spawnSubagentToolCall', () => {
 
 describe('askUserQuestionToolCall', () => {
   it('uses the native Deepseek model field for multiple selection', () => {
-    const call = askUserQuestionToolCall(AgentProvider.DEEPSEEK_HARNESS, 'question', [{
-      question: 'Which colors?',
-      header: 'Colors',
-      multiSelect: true,
-      options: [{ label: 'Blue', description: 'Use blue.' }, { label: 'Green', description: 'Use green.' }],
-    }])
-    expect(call.arguments).toMatchObject({ questions: [{ multi_select: true }] })
+    const call = askUserQuestionToolCall(AgentProvider.DEEPSEEK_HARNESS, 'question', [
+      {
+        question: 'Which colors?',
+        header: 'Colors',
+        multiSelect: true,
+        options: [
+          { label: 'Blue', description: 'Use blue.' },
+          { label: 'Green', description: 'Use green.' },
+        ],
+      },
+    ])
+    expect(call.arguments).toMatchObject({
+      questions: [
+        { multi_select: true },
+      ],
+    })
     expect(JSON.stringify(call.arguments)).not.toContain('multiSelect')
   })
   it('uses the native Reasonix ask tool and preserves each question and selection mode', () => {
-    const questions = [{
-      header: 'Database',
-      question: 'Which database?',
-      options: [{ label: 'Postgres', description: 'Use Postgres.' }, { label: 'SQLite', description: 'Use SQLite.' }],
-      multiSelect: false,
-    }]
+    const questions = [
+      {
+        header: 'Database',
+        question: 'Which database?',
+        options: [
+          { label: 'Postgres', description: 'Use Postgres.' },
+          { label: 'SQLite', description: 'Use SQLite.' },
+        ],
+        multiSelect: false,
+      },
+    ]
     expect(askUserQuestionToolCall(AgentProvider.REASONIX, 'reasonix-ask', questions)).toEqual({
       id: 'reasonix-ask',
       name: 'ask',
@@ -1156,18 +1647,44 @@ describe('askUserQuestionToolCall', () => {
   })
 
   it.each([0, 4])('rejects %i Reasonix questions before starting a native turn', (count) => {
-    const question = { header: 'Choice', question: 'Which?', options: [{ label: 'A', description: 'First' }, { label: 'B', description: 'Second' }] }
+    const question = {
+      header: 'Choice',
+      question: 'Which?',
+      options: [
+        { label: 'A', description: 'First' },
+        { label: 'B', description: 'Second' },
+      ],
+    }
     expect(() => askUserQuestionToolCall(AgentProvider.REASONIX, 'invalid-ask', Array.from<typeof question>({ length: count }).fill(question))).toThrow('one to three questions')
   })
 
   it('states multiSelect rather than omitting it, which Claude\'s schema requires', () => {
-    const questions = [{ question: 'Which?', header: 'Choice', options: [{ label: 'A', description: 'The first' }] }]
+    const questions = [
+      {
+        question: 'Which?',
+        header: 'Choice',
+        options: [
+          { label: 'A', description: 'The first' },
+        ],
+      },
+    ]
     const call = askUserQuestionToolCall(AgentProvider.CLAUDE_CODE, 'call-1', questions)
-    expect(call.arguments?.questions).toEqual([{ ...questions[0], multiSelect: false }])
+    expect(call.arguments?.questions).toEqual([
+      { ...questions[0], multiSelect: false },
+    ])
   })
 
   it('keeps an explicit multiSelect', () => {
-    const questions = [{ question: 'Which?', header: 'Choice', multiSelect: true, options: [{ label: 'A', description: 'The first' }] }]
+    const questions = [
+      {
+        question: 'Which?',
+        header: 'Choice',
+        multiSelect: true,
+        options: [
+          { label: 'A', description: 'The first' },
+        ],
+      },
+    ]
     const call = askUserQuestionToolCall(AgentProvider.CLAUDE_CODE, 'call-1', questions)
     expect(call.arguments?.questions).toEqual([questions[0]])
   })
@@ -1175,47 +1692,114 @@ describe('askUserQuestionToolCall', () => {
   // MiMo's schema spells a multi-select question `multiple` and takes no option
   // field beyond the label and the description.
   it('spells the MiMo Code question in MiMo\'s own fields', () => {
-    const questions = [{ question: 'Which?', header: 'Choice', multiSelect: true, options: [{ label: 'A', description: 'The first', preview: '```\nA\n```' }] }]
+    const questions = [
+      {
+        question: 'Which?',
+        header: 'Choice',
+        multiSelect: true,
+        options: [
+          { label: 'A', description: 'The first', preview: '```\nA\n```' },
+        ],
+      },
+    ]
     const call = askUserQuestionToolCall(AgentProvider.MIMO_CODE, 'call-1', questions)
     expect(call.name).toBe('question')
-    expect(call.arguments?.questions).toEqual([{ question: 'Which?', header: 'Choice', options: [{ label: 'A', description: 'The first' }], multiple: true }])
-    const single = [{ question: 'Which?', header: 'Choice', options: [{ label: 'A', description: 'The first' }] }]
+    expect(call.arguments?.questions).toEqual([
+      {
+        question: 'Which?',
+        header: 'Choice',
+        options: [
+          { label: 'A', description: 'The first' },
+        ],
+        multiple: true,
+      },
+    ])
+    const single = [
+      {
+        question: 'Which?',
+        header: 'Choice',
+        options: [
+          { label: 'A', description: 'The first' },
+        ],
+      },
+    ]
     expect(askUserQuestionToolCall(AgentProvider.MIMO_CODE, 'call-1', single).arguments?.questions)
-      .toMatchObject([{ multiple: false }])
+      .toMatchObject([
+        { multiple: false },
+      ])
   })
   it('gives each Codewhale question its own id and the runtime\'s field names', () => {
     // The answer repeats the question's id, so two questions must never share
     // one. An option's preview is not in the runtime's schema, so it stays out.
     const questions = [
-      { question: 'Which?', header: 'Choice', options: [{ label: 'A', description: 'The first', preview: 'x' }] },
-      { question: 'Which size?', header: 'Choice', multiSelect: true, options: [{ label: 'S', description: 'Small' }] },
+      {
+        question: 'Which?',
+        header: 'Choice',
+        options: [
+          { label: 'A', description: 'The first', preview: 'x' },
+        ],
+      },
+      {
+        question: 'Which size?',
+        header: 'Choice',
+        multiSelect: true,
+        options: [
+          { label: 'S', description: 'Small' },
+        ],
+      },
     ]
     const call = askUserQuestionToolCall(AgentProvider.CODEWHALE, 'call-1', questions)
     expect(call.name).toBe('request_user_input')
     expect(call.arguments?.questions).toEqual([
-      { id: 'question_1', header: 'Choice', question: 'Which?', options: [{ label: 'A', description: 'The first' }], allow_free_text: false, multi_select: false },
-      { id: 'question_2', header: 'Choice', question: 'Which size?', options: [{ label: 'S', description: 'Small' }], allow_free_text: false, multi_select: true },
+      {
+        id: 'question_1',
+        header: 'Choice',
+        question: 'Which?',
+        options: [
+          { label: 'A', description: 'The first' },
+        ],
+        allow_free_text: false,
+        multi_select: false,
+      },
+      {
+        id: 'question_2',
+        header: 'Choice',
+        question: 'Which size?',
+        options: [
+          { label: 'S', description: 'Small' },
+        ],
+        allow_free_text: false,
+        multi_select: true,
+      },
     ])
   })
   it('uses Codex question ids and omits fields outside its native schema', () => {
     const call = askUserQuestionToolCall(AgentProvider.CODEX, 'codex-question', [
-      { question: 'Which color?', header: 'Color', options: [
-        { label: 'Blue (Recommended)', description: 'Use blue.', preview: 'ignored' },
-        { label: 'Red', description: 'Use red.' },
-      ] },
+      {
+        question: 'Which color?',
+        header: 'Color',
+        options: [
+          { label: 'Blue (Recommended)', description: 'Use blue.', preview: 'ignored' },
+          { label: 'Red', description: 'Use red.' },
+        ],
+      },
     ])
     expect(call).toMatchObject({
       id: 'codex-question',
       name: 'request_user_input',
-      arguments: { questions: [{
-        id: 'question_1',
-        header: 'Color',
-        question: 'Which color?',
-        options: [
-          { label: 'Blue (Recommended)', description: 'Use blue.' },
-          { label: 'Red', description: 'Use red.' },
+      arguments: {
+        questions: [
+          {
+            id: 'question_1',
+            header: 'Color',
+            question: 'Which color?',
+            options: [
+              { label: 'Blue (Recommended)', description: 'Use blue.' },
+              { label: 'Red', description: 'Use red.' },
+            ],
+          },
         ],
-      }] },
+      },
     })
   })
 
@@ -1229,10 +1813,19 @@ describe('askUserQuestionToolCall', () => {
       ],
     }
     expect(askUserQuestionToolCall(AgentProvider.GITHUB_COPILOT, 'copilot-question', [question]))
-      .toEqual({ id: 'copilot-question', name: 'ask_user', arguments: { question: 'Which color?', choices: ['Blue', 'Green'] } })
+      .toEqual({
+        id: 'copilot-question',
+        name: 'ask_user',
+        arguments: {
+          question: 'Which color?',
+          choices: ['Blue', 'Green'],
+        },
+      })
     expect(() => askUserQuestionToolCall(AgentProvider.GITHUB_COPILOT, 'none', [])).toThrow('exactly one')
     expect(() => askUserQuestionToolCall(AgentProvider.GITHUB_COPILOT, 'two', [question, question])).toThrow('exactly one')
-    expect(() => askUserQuestionToolCall(AgentProvider.GITHUB_COPILOT, 'multi', [{ ...question, multiSelect: true }])).toThrow('single-choice')
+    expect(() => askUserQuestionToolCall(AgentProvider.GITHUB_COPILOT, 'multi', [
+      { ...question, multiSelect: true },
+    ])).toThrow('single-choice')
   })
 })
 
@@ -1251,9 +1844,13 @@ describe('mimoTaskToolCall', () => {
     expect(mimoTaskToolCall('call-1', { action: 'create', summary: 'Write the parser' })).toEqual({
       id: 'call-1',
       name: 'task',
-      arguments: { operation: { action: 'create', summary: 'Write the parser' } },
+      arguments: {
+        operation: { action: 'create', summary: 'Write the parser' },
+      },
     })
-    expect(mimoTaskToolCall('call-2', { action: 'done', id: 'T1' }).arguments).toEqual({ operation: { action: 'done', id: 'T1' } })
+    expect(mimoTaskToolCall('call-2', { action: 'done', id: 'T1' }).arguments).toEqual({
+      operation: { action: 'done', id: 'T1' },
+    })
   })
 })
 
@@ -1262,10 +1859,14 @@ describe('mimoActorCancelToolCall', () => {
     expect(mimoActorCancelToolCall('cancel-1', 'general-7')).toEqual({
       id: 'cancel-1',
       name: 'actor',
-      arguments: { operation: { action: 'cancel', actor_id: 'general-7' } },
+      arguments: {
+        operation: { action: 'cancel', actor_id: 'general-7' },
+      },
     })
     expect(mimoActorCancelToolCall('cancel-2', ' actor-8 ').arguments)
-      .toEqual({ operation: { action: 'cancel', actor_id: ' actor-8 ' } })
+      .toEqual({
+        operation: { action: 'cancel', actor_id: ' actor-8 ' },
+      })
   })
 
   it.each(['', ' ', '\n\t'])('rejects an empty actor ID %j', (actorId) => {
@@ -1279,7 +1880,13 @@ describe('codebuddyTeammateToolCall', () => {
     expect(codebuddyTeammateToolCall('mate-call', { teammateName: 'native-mate', description: 'Native teammate task', prompt: 'Perform the actual child task.' })).toEqual({
       id: 'mate-call',
       name: 'Agent',
-      arguments: { description: 'Native teammate task', prompt: 'Perform the actual child task.', subagent_type: 'general-purpose', run_in_background: true, name: 'native-mate' },
+      arguments: {
+        description: 'Native teammate task',
+        prompt: 'Perform the actual child task.',
+        subagent_type: 'general-purpose',
+        run_in_background: true,
+        name: 'native-mate',
+      },
     })
   })
 
@@ -1290,11 +1897,24 @@ describe('codebuddyTeammateToolCall', () => {
 
 describe('native CodeBuddy background task calls', () => {
   it('reads a native task without requesting a blocking wait', () => {
-    expect(codebuddyTaskOutputToolCall('output-call', 'agent-native')).toEqual({ id: 'output-call', name: 'TaskOutput', arguments: { task_id: 'agent-native', block: false } })
-    expect(codebuddyTaskStopToolCall('stop-call', 'agent-native')).toEqual({ id: 'stop-call', name: 'TaskStop', arguments: { task_id: 'agent-native' } })
+    expect(codebuddyTaskOutputToolCall('output-call', 'agent-native')).toEqual({
+      id: 'output-call',
+      name: 'TaskOutput',
+      arguments: { task_id: 'agent-native', block: false },
+    })
+    expect(codebuddyTaskStopToolCall('stop-call', 'agent-native')).toEqual({
+      id: 'stop-call',
+      name: 'TaskStop',
+      arguments: { task_id: 'agent-native' },
+    })
   })
 
-  it.each([['', 'agent-native'], ['call', ''], [' ', 'agent-native'], ['call', ' ']])('refuses an empty task identity: %j', (id, taskId) => {
+  it.each([
+    ['', 'agent-native'],
+    ['call', ''],
+    [' ', 'agent-native'],
+    ['call', ' '],
+  ])('refuses an empty task identity: %j', (id, taskId) => {
     expect(() => codebuddyTaskOutputToolCall(id!, taskId!)).toThrow('requires a call ID and a task ID')
     expect(() => codebuddyTaskStopToolCall(id!, taskId!)).toThrow('requires a call ID and a task ID')
   })
@@ -1303,10 +1923,19 @@ describe('native CodeBuddy background task calls', () => {
 describe('fastAgentNativeBashToolCall', () => {
   it('keeps the exact command and uses the native local shell', () => {
     const command = 'printf \'native %s\\n\' computed'
-    expect(fastAgentNativeBashToolCall('native-call', command)).toEqual({ id: 'native-call', name: 'bash', arguments: { command } })
+    expect(fastAgentNativeBashToolCall('native-call', command)).toEqual({
+      id: 'native-call',
+      name: 'bash',
+      arguments: { command },
+    })
   })
 
-  it.each([['', 'pwd'], ['call', ''], [' ', 'pwd'], ['call', ' ']])('refuses an empty call ID or command: %j', (id, command) => {
+  it.each([
+    ['', 'pwd'],
+    ['call', ''],
+    [' ', 'pwd'],
+    ['call', ' '],
+  ])('refuses an empty call ID or command: %j', (id, command) => {
     expect(() => fastAgentNativeBashToolCall(id!, command!)).toThrow('requires a call ID and a command')
   })
 })
@@ -1315,18 +1944,34 @@ describe('mcpToolCall', () => {
   // Each agent gives a Model Context Protocol tool a name of its own, built from the
   // server and the tool.
   it('keeps native Pi arguments direct and preserves zero, false, and empty values', () => {
-    expect(mcpToolCall(AgentProvider.PI, 'native-direct', { server: 'probe', tool: 'echo', input: { count: 0, enabled: false, text: '' } }))
-      .toEqual({ id: 'native-direct', name: 'mcp__probe__echo', arguments: { count: 0, enabled: false, text: '' } })
+    expect(mcpToolCall(AgentProvider.PI, 'native-direct', {
+      server: 'probe',
+      tool: 'echo',
+      input: { count: 0, enabled: false, text: '' },
+    }))
+      .toEqual({
+        id: 'native-direct',
+        name: 'mcp__probe__echo',
+        arguments: { count: 0, enabled: false, text: '' },
+      })
   })
 
   it('uses installed Pi sanitation and the native hash suffix for long names', () => {
     expect(mcpToolCall(AgentProvider.PI, 'native-sanitize', { server: 'probe-one', tool: 'echo.출력', input: {} }).name).toBe('mcp__probe-one__echo___')
-    expect(mcpToolCall(AgentProvider.PI, 'native-long', { server: 'probe', tool: 'x'.repeat(80), input: {} }).name)
+    expect(mcpToolCall(AgentProvider.PI, 'native-long', {
+      server: 'probe',
+      tool: 'x'.repeat(80),
+      input: {},
+    }).name)
       .toBe('mcp__probe__xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx_2012d930')
   })
 
   it('calls a Model Context Protocol tool in the agent\'s own shape', () => {
-    const request = { server: 'form_probe', tool: 'echo', input: { text: 'hi' } }
+    const request = {
+      server: 'form_probe',
+      tool: 'echo',
+      input: { text: 'hi' },
+    }
     expect(mcpToolCall(AgentProvider.CLAUDE_CODE, 'claude-call', request)).toEqual({
       id: 'claude-call',
       name: 'mcp__form_probe__echo',
@@ -1341,7 +1986,11 @@ describe('mcpToolCall', () => {
     expect(mcpToolCall(AgentProvider.CURSOR, 'cursor-call', request)).toEqual({
       id: 'cursor-call',
       name: 'cursorMcp',
-      arguments: { server: 'form_probe', tool: 'echo', input: { text: 'hi' } },
+      arguments: {
+        server: 'form_probe',
+        tool: 'echo',
+        input: { text: 'hi' },
+      },
     })
     expect(mcpToolCall(AgentProvider.CODEBUDDY, 'codebuddy-call', request)).toEqual({
       id: 'codebuddy-call',
@@ -1351,7 +2000,10 @@ describe('mcpToolCall', () => {
     expect(mcpToolCall(AgentProvider.GROK_BUILD, 'call-1', request)).toEqual({
       id: 'call-1',
       name: 'use_tool',
-      arguments: { tool_name: 'form_probe__echo', tool_input: { text: 'hi' } },
+      arguments: {
+        tool_name: 'form_probe__echo',
+        tool_input: { text: 'hi' },
+      },
     })
     expect(mcpToolCall(AgentProvider.PI, 'call-2', request)).toEqual({
       id: 'call-2',
@@ -1391,17 +2043,32 @@ describe('mcpToolCall', () => {
 describe('codebuddyWaitForMcpServersToolCall', () => {
   it('waits for the project server before the model calls its tool', () => {
     expect(codebuddyWaitForMcpServersToolCall('wait-call', ['form_probe']))
-      .toEqual({ id: 'wait-call', name: 'WaitForMcpServers', arguments: { servers: ['form_probe'] } })
+      .toEqual({
+        id: 'wait-call',
+        name: 'WaitForMcpServers',
+        arguments: {
+          servers: ['form_probe'],
+        },
+      })
   })
 })
 
 describe('CodeBuddy Workflow tool calls', () => {
   it('discovers and executes the deferred Workflow tool', () => {
-    expect(codebuddyFindWorkflowToolCall('find')).toEqual({ id: 'find', name: 'ToolSearch', arguments: { tool_names: ['Workflow'] } })
+    expect(codebuddyFindWorkflowToolCall('find')).toEqual({
+      id: 'find',
+      name: 'ToolSearch',
+      arguments: {
+        tool_names: ['Workflow'],
+      },
+    })
     expect(codebuddyWorkflowToolCall('run', 'return 1')).toEqual({
       id: 'run',
       name: 'DeferExecuteTool',
-      arguments: { toolName: 'Workflow', params: { script: 'return 1' } },
+      arguments: {
+        toolName: 'Workflow',
+        params: { script: 'return 1' },
+      },
     })
   })
 })
@@ -1458,7 +2125,12 @@ describe('updateTodosToolCall', () => {
       { step: 'Second', status: 'in_progress' },
     ])
     expect(call.name).toBe('todo_write')
-    expect(call.arguments).toEqual({ todos: [{ content: 'First', status: 'completed' }, { content: 'Second', status: 'in_progress' }] })
+    expect(call.arguments).toEqual({
+      todos: [
+        { content: 'First', status: 'completed' },
+        { content: 'Second', status: 'in_progress' },
+      ],
+    })
   })
 
   // Claude, ZCode and Reasonix state the whole list as `todos` with
@@ -1481,8 +2153,12 @@ describe('updateTodosToolCall', () => {
   })
 
   it('writes the ZCode and Reasonix lists in their own tool names', () => {
-    expect(updateTodosToolCall(AgentProvider.ZCODE, 'call-1', [{ step: 'One', status: 'pending' }]).name).toBe('TodoWrite')
-    expect(updateTodosToolCall(AgentProvider.REASONIX, 'call-1', [{ step: 'One', status: 'pending' }]).name).toBe('todo_write')
+    expect(updateTodosToolCall(AgentProvider.ZCODE, 'call-1', [
+      { step: 'One', status: 'pending' },
+    ]).name).toBe('TodoWrite')
+    expect(updateTodosToolCall(AgentProvider.REASONIX, 'call-1', [
+      { step: 'One', status: 'pending' },
+    ]).name).toBe('todo_write')
   })
 
   it('writes the Goose checklist and the Copilot SQL snapshot', () => {
@@ -1499,7 +2175,10 @@ describe('updateTodosToolCall', () => {
     expect(updateTodosToolCall(AgentProvider.GITHUB_COPILOT, 'call-1', steps)).toEqual({
       id: 'call-1',
       name: 'sql',
-      arguments: { description: 'Replace session to-dos', query: expect.stringContaining('INSERT INTO todos') },
+      arguments: {
+        description: 'Replace session to-dos',
+        query: expect.stringContaining('INSERT INTO todos'),
+      },
     })
   })
 
@@ -1511,22 +2190,33 @@ describe('updateTodosToolCall', () => {
         const call = updateTodosToolCall(AgentProvider.GITHUB_COPILOT, 'sql-todos', steps)
         const query = call.arguments?.query
         if (typeof query !== 'string')
-          throw new Error('The Copilot to-do call must supply SQL.')
+          throw new TypeError('The Copilot to-do call must supply SQL.')
         database.exec(query)
       }
-      execute([{ step: 'O\'Reilly\'); DROP TABLE todos; --', status: 'completed' }, { step: 'Current', status: 'in_progress' }, { step: 'Blocked', status: 'blocked' }])
+      execute([
+        { step: 'O\'Reilly\'); DROP TABLE todos; --', status: 'completed' },
+        { step: 'Current', status: 'in_progress' },
+        { step: 'Blocked', status: 'blocked' },
+      ])
       expect(database.prepare('SELECT title, status FROM todos ORDER BY id').all().map(row => ({ ...row }))).toEqual([
         { title: 'O\'Reilly\'); DROP TABLE todos; --', status: 'done' },
         { title: 'Current', status: 'in_progress' },
         { title: 'Blocked', status: 'blocked' },
       ])
-      execute([{ step: 'Replacement', status: 'pending' }])
+      execute([
+        { step: 'Replacement', status: 'pending' },
+      ])
       expect(database.prepare('SELECT title FROM todos').all().map(row => row.title)).toEqual(['Replacement'])
       execute([])
       expect(database.prepare('SELECT * FROM todos').all()).toEqual([])
-      expect(() => execute([{ step: 'Invalid', status: 'cancelled' }])).toThrow('accepts no status')
-      for (const step of ['', ' ', 'null\0byte'])
-        expect(() => execute([{ step, status: 'pending' }])).toThrow('nonblank and contain no null byte')
+      expect(() => execute([
+        { step: 'Invalid', status: 'cancelled' },
+      ])).toThrow('accepts no status')
+      for (const step of ['', ' ', 'null\0byte']) {
+        expect(() => execute([
+          { step, status: 'pending' },
+        ])).toThrow('nonblank and contain no null byte')
+      }
     }
     finally {
       database.close()
@@ -1537,10 +2227,21 @@ describe('updateTodosToolCall', () => {
   // neutral statuses onto its own enum words.
   it('writes the OpenCode family list with priorities, and the Cursor list with enum statuses', () => {
     for (const provider of [AgentProvider.OPENCODE, AgentProvider.KILO]) {
-      expect(updateTodosToolCall(provider, 'call-1', [{ step: 'One', status: 'pending' }])).toEqual({
+      expect(updateTodosToolCall(provider, 'call-1', [
+        { step: 'One', status: 'pending' },
+      ])).toEqual({
         id: 'call-1',
         name: 'todowrite',
-        arguments: { todos: [{ content: 'One', status: 'pending', priority: 'medium', activeForm: 'One' }] },
+        arguments: {
+          todos: [
+            {
+              content: 'One',
+              status: 'pending',
+              priority: 'medium',
+              activeForm: 'One',
+            },
+          ],
+        },
       })
     }
     expect(updateTodosToolCall(AgentProvider.CURSOR, 'call-1', [
@@ -1565,14 +2266,31 @@ describe('updateTodosToolCall', () => {
 
   // The ZCode 3.14.4 TodoWrite parses each call with a schema that REQUIRES a priority and states no activeForm.
   it('states the priority that ZCode requires, and no activeForm', () => {
-    expect(updateTodosToolCall(AgentProvider.ZCODE, 'call-1', [{ step: 'One', status: 'in_progress' }]).arguments)
-      .toEqual({ todos: [{ content: 'One', status: 'in_progress', priority: 'medium' }] })
+    expect(updateTodosToolCall(AgentProvider.ZCODE, 'call-1', [
+      { step: 'One', status: 'in_progress' },
+    ]).arguments)
+      .toEqual({
+        todos: [
+          { content: 'One', status: 'in_progress', priority: 'medium' },
+        ],
+      })
   })
 
   it('writes Gemini\'s checklist through the shared vocabulary, with all of its statuses', () => {
-    const todos = [{ description: 'A', status: 'cancelled' as const }, { description: 'B', status: 'blocked' as const }]
-    expect(geminiTodoSnapshotToolCall('call-1', todos)).toEqual(updateTodosToolCall(AgentProvider.GEMINI_CLI, 'call-1', [{ step: 'A', status: 'cancelled' }, { step: 'B', status: 'blocked' }]))
-    expect(geminiTodoSnapshotToolCall('call-1', todos).arguments).toEqual({ todos: [{ description: 'A', status: 'cancelled' }, { description: 'B', status: 'blocked' }] })
+    const todos = [
+      { description: 'A', status: 'cancelled' as const },
+      { description: 'B', status: 'blocked' as const },
+    ]
+    expect(geminiTodoSnapshotToolCall('call-1', todos)).toEqual(updateTodosToolCall(AgentProvider.GEMINI_CLI, 'call-1', [
+      { step: 'A', status: 'cancelled' },
+      { step: 'B', status: 'blocked' },
+    ]))
+    expect(geminiTodoSnapshotToolCall('call-1', todos).arguments).toEqual({
+      todos: [
+        { description: 'A', status: 'cancelled' },
+        { description: 'B', status: 'blocked' },
+      ],
+    })
   })
 })
 
@@ -1591,13 +2309,71 @@ describe('copilotAsyncBashToolCall', () => {
  * init command take no status at all, so their builders read none and refuse none.
  */
 const TODO_STATUSES_BY_PROVIDER: ReadonlyMap<AgentProvider, readonly TodoStatus[]> = new Map([
-  [AgentProvider.GITHUB_COPILOT, ['pending', 'in_progress', 'completed', 'blocked']],
-  [AgentProvider.CURSOR, ['pending', 'in_progress', 'completed', 'cancelled']],
-  [AgentProvider.OPENCODE, ['pending', 'in_progress', 'completed', 'cancelled']],
-  [AgentProvider.KILO, ['pending', 'in_progress', 'completed', 'cancelled']],
-  [AgentProvider.QODER, ['pending', 'in_progress', 'completed', 'cancelled', 'blocked']],
-  [AgentProvider.GEMINI_CLI, ['pending', 'in_progress', 'completed', 'cancelled', 'blocked']],
-  [AgentProvider.MUSE_CODE, ['pending', 'in_progress', 'completed', 'cancelled']],
+  [
+    AgentProvider.GITHUB_COPILOT,
+    [
+      'pending',
+      'in_progress',
+      'completed',
+      'blocked',
+    ],
+  ],
+  [
+    AgentProvider.CURSOR,
+    [
+      'pending',
+      'in_progress',
+      'completed',
+      'cancelled',
+    ],
+  ],
+  [
+    AgentProvider.OPENCODE,
+    [
+      'pending',
+      'in_progress',
+      'completed',
+      'cancelled',
+    ],
+  ],
+  [
+    AgentProvider.KILO,
+    [
+      'pending',
+      'in_progress',
+      'completed',
+      'cancelled',
+    ],
+  ],
+  [
+    AgentProvider.QODER,
+    [
+      'pending',
+      'in_progress',
+      'completed',
+      'cancelled',
+      'blocked',
+    ],
+  ],
+  [
+    AgentProvider.GEMINI_CLI,
+    [
+      'pending',
+      'in_progress',
+      'completed',
+      'cancelled',
+      'blocked',
+    ],
+  ],
+  [
+    AgentProvider.MUSE_CODE,
+    [
+      'pending',
+      'in_progress',
+      'completed',
+      'cancelled',
+    ],
+  ],
   [AgentProvider.KIRO, ALL_TODO_STATUSES],
   [AgentProvider.OH_MY_PI, ALL_TODO_STATUSES],
 ])
@@ -1607,7 +2383,9 @@ describe('updateTodosToolCall statuses', () => {
     const accepted = TODO_STATUSES_BY_PROVIDER.get(provider) ?? ['pending', 'in_progress', 'completed']
     it(`builds each status that the native tool of provider ${provider} accepts, and refuses every other one`, () => {
       for (const status of ALL_TODO_STATUSES) {
-        const build = () => updateTodosToolCall(provider, 'call-1', [{ step: 'One', status }])
+        const build = () => updateTodosToolCall(provider, 'call-1', [
+          { step: 'One', status },
+        ])
         if (accepted.includes(status))
           expect(build, status).not.toThrow()
         else
@@ -1619,17 +2397,30 @@ describe('updateTodosToolCall statuses', () => {
 
 describe('cursorMergeTodosToolCall', () => {
   it('merges the items by their IDs into the list, with Cursor\'s own status words', () => {
-    expect(cursorMergeTodosToolCall('merge-1', [{ id: '2', content: 'Second', status: 'completed' }, { id: '9', content: 'New', status: 'cancelled' }])).toEqual({
+    expect(cursorMergeTodosToolCall('merge-1', [
+      { id: '2', content: 'Second', status: 'completed' },
+      { id: '9', content: 'New', status: 'cancelled' },
+    ])).toEqual({
       id: 'merge-1',
       name: 'updateTodos',
-      arguments: { todos: [{ id: '2', content: 'Second', status: 'TODO_STATUS_COMPLETED' }, { id: '9', content: 'New', status: 'TODO_STATUS_CANCELLED' }], merge: true },
+      arguments: {
+        todos: [
+          { id: '2', content: 'Second', status: 'TODO_STATUS_COMPLETED' },
+          { id: '9', content: 'New', status: 'TODO_STATUS_CANCELLED' },
+        ],
+        merge: true,
+      },
     })
   })
 
   it('refuses an empty merge, an item with no ID, and a status that Cursor lacks', () => {
     expect(() => cursorMergeTodosToolCall('merge-1', [])).toThrow('at least one item')
-    expect(() => cursorMergeTodosToolCall('merge-1', [{ id: '', content: 'x', status: 'pending' }])).toThrow('nonempty ID')
-    expect(() => cursorMergeTodosToolCall('merge-1', [{ id: '1', content: 'x', status: 'blocked' }])).toThrow('accepts no status blocked')
+    expect(() => cursorMergeTodosToolCall('merge-1', [
+      { id: '', content: 'x', status: 'pending' },
+    ])).toThrow('nonempty ID')
+    expect(() => cursorMergeTodosToolCall('merge-1', [
+      { id: '1', content: 'x', status: 'blocked' },
+    ])).toThrow('accepts no status blocked')
   })
 })
 
@@ -1657,7 +2448,11 @@ describe('kimi code vocabulary', () => {
   const kimi = AgentProvider.KIMI_CODE
 
   it('calls a registered MCP tool with its native qualified name', () => {
-    expect(mcpToolCall(kimi, 'kimi-mcp', { server: 'echo_probe', tool: 'echo', input: { value: 'kimi' } })).toEqual({
+    expect(mcpToolCall(kimi, 'kimi-mcp', {
+      server: 'echo_probe',
+      tool: 'echo',
+      input: { value: 'kimi' },
+    })).toEqual({
       id: 'kimi-mcp',
       name: 'mcp__echo_probe__echo',
       arguments: { value: 'kimi' },
@@ -1672,7 +2467,12 @@ describe('kimi code vocabulary', () => {
     ])).toEqual({
       id: 'call-1',
       name: 'ExitPlanMode',
-      arguments: { options: [{ label: 'Option A', description: 'Simple' }, { label: 'Option B', description: 'Robust' }] },
+      arguments: {
+        options: [
+          { label: 'Option A', description: 'Simple' },
+          { label: 'Option B', description: 'Robust' },
+        ],
+      },
     })
   })
 
@@ -1681,18 +2481,28 @@ describe('kimi code vocabulary', () => {
   })
 
   it('writes the question in snake case and drops the preview the schema refuses', () => {
-    const call = askUserQuestionToolCall(kimi, 'call-1', [{
-      question: 'Which?',
-      header: 'Choice',
-      options: [{ label: 'A', description: 'The first', preview: '```\nA\n```' }, { label: 'B', description: 'The second' }],
-    }])
-    expect(call.arguments).toEqual({
-      questions: [{
+    const call = askUserQuestionToolCall(kimi, 'call-1', [
+      {
         question: 'Which?',
         header: 'Choice',
-        options: [{ label: 'A', description: 'The first' }, { label: 'B', description: 'The second' }],
-        multi_select: false,
-      }],
+        options: [
+          { label: 'A', description: 'The first', preview: '```\nA\n```' },
+          { label: 'B', description: 'The second' },
+        ],
+      },
+    ])
+    expect(call.arguments).toEqual({
+      questions: [
+        {
+          question: 'Which?',
+          header: 'Choice',
+          options: [
+            { label: 'A', description: 'The first' },
+            { label: 'B', description: 'The second' },
+          ],
+          multi_select: false,
+        },
+      ],
     })
   })
 
@@ -1712,13 +2522,25 @@ describe('kimi code vocabulary', () => {
 
   it('states a description for a background command, which the schema then requires', () => {
     expect(backgroundBashToolCall(kimi, 'call-1', 'sleep 60').arguments)
-      .toMatchObject({ command: 'sleep 60', run_in_background: true, description: expect.any(String) })
+      .toMatchObject({
+        command: 'sleep 60',
+        run_in_background: true,
+        description: expect.any(String),
+      })
     expect(bashToolCall(kimi, 'call-1', 'echo hi').arguments).toEqual({ command: 'echo hi' })
   })
 
   it('creates a goal and marks it complete through the goal tools', () => {
-    expect(createGoalToolCall(kimi, 'call-1', 'Ship the feature.')).toEqual({ id: 'call-1', name: 'CreateGoal', arguments: { objective: 'Ship the feature.' } })
-    expect(completeGoalToolCall(kimi, 'call-2')).toEqual({ id: 'call-2', name: 'UpdateGoal', arguments: { status: 'complete' } })
+    expect(createGoalToolCall(kimi, 'call-1', 'Ship the feature.')).toEqual({
+      id: 'call-1',
+      name: 'CreateGoal',
+      arguments: { objective: 'Ship the feature.' },
+    })
+    expect(completeGoalToolCall(kimi, 'call-2')).toEqual({
+      id: 'call-2',
+      name: 'UpdateGoal',
+      arguments: { status: 'complete' },
+    })
   })
 
   it('addresses a file by path in the edit, write, and read tools', () => {
@@ -1782,14 +2604,28 @@ describe('spawnSubagentToolCall background flag', () => {
   })
 
   it('runs a MiMo Code child through spawn for the background and through run otherwise', () => {
-    const action = (background?: boolean) => (spawnSubagentToolCall(AgentProvider.MIMO_CODE, 'call-1', { ...request, ...(background === undefined ? {} : { background }) }).arguments?.operation as { action: string }).action
-    expect([action(), action(false), action(true)]).toEqual(['run', 'run', 'spawn'])
+    const action = (background?: boolean) => (spawnSubagentToolCall(AgentProvider.MIMO_CODE, 'call-1', {
+      ...request,
+      ...(background === undefined
+        ? {}
+        : { background }),
+    }).arguments?.operation as { action: string }).action
+    expect([
+      action(),
+      action(false),
+      action(true),
+    ]).toEqual(['run', 'run', 'spawn'])
   })
 
   it('refuses a foreground Letta Code child, because Letta runs each child in the background', () => {
     expect(() => spawnSubagentToolCall(AgentProvider.LETTA, 'call-1', { ...request, background: false })).toThrow('always runs a child in the background')
     for (const background of [undefined, true]) {
-      const call = spawnSubagentToolCall(AgentProvider.LETTA, 'call-1', { ...request, ...(background === undefined ? {} : { background }) })
+      const call = spawnSubagentToolCall(AgentProvider.LETTA, 'call-1', {
+        ...request,
+        ...(background === undefined
+          ? {}
+          : { background }),
+      })
       expect(call.arguments).toEqual({ description: request.description, prompt: request.prompt, subagent_type: 'general-purpose' })
     }
   })
@@ -1825,7 +2661,10 @@ describe('spawnSubagentBatchToolCall', () => {
       name: 'task',
       arguments: {
         context: 'Count the files\nList the files',
-        tasks: [{ name: 'count_the_files', agent: 'task', task: 'Count.' }, { name: 'list_the_files', agent: 'task', task: 'List.' }],
+        tasks: [
+          { name: 'count_the_files', agent: 'task', task: 'Count.' },
+          { name: 'list_the_files', agent: 'task', task: 'List.' },
+        ],
       },
     })
   })
@@ -1836,15 +2675,26 @@ describe('spawnSubagentBatchToolCall', () => {
 
   it('refuses an empty Oh My Pi batch, two tasks whose names reduce to one identifier, and a background choice', () => {
     expect(() => spawnSubagentBatchToolCall(AgentProvider.OH_MY_PI, 'call-1', [])).toThrow('at least one task')
-    expect(() => spawnSubagentBatchToolCall(AgentProvider.OH_MY_PI, 'call-1', [first, { ...second, description: 'COUNT the files!' }])).toThrow('must differ')
-    expect(() => spawnSubagentBatchToolCall(AgentProvider.OH_MY_PI, 'call-1', [first, { ...second, background: true }])).toThrow('carries no background choice')
+    expect(() => spawnSubagentBatchToolCall(AgentProvider.OH_MY_PI, 'call-1', [
+      first,
+      { ...second, description: 'COUNT the files!' },
+    ])).toThrow('must differ')
+    expect(() => spawnSubagentBatchToolCall(AgentProvider.OH_MY_PI, 'call-1', [
+      first,
+      { ...second, background: true },
+    ])).toThrow('carries no background choice')
   })
 
   it('puts each Dirac child in one use_subagents call', () => {
     expect(spawnSubagentBatchToolCall(AgentProvider.DIRAC, 'call-1', [first, second])).toEqual({
       id: 'call-1',
       name: 'use_subagents',
-      arguments: { subagents: [{ task_title: 'Count the files', prompt: 'Count.' }, { task_title: 'List the files', prompt: 'List.' }] },
+      arguments: {
+        subagents: [
+          { task_title: 'Count the files', prompt: 'Count.' },
+          { task_title: 'List the files', prompt: 'List.' },
+        ],
+      },
     })
     expect(spawnSubagentToolCall(AgentProvider.DIRAC, 'call-1', first)).toEqual(spawnSubagentBatchToolCall(AgentProvider.DIRAC, 'call-1', [first]))
     expect(() => spawnSubagentBatchToolCall(AgentProvider.DIRAC, 'call-1', [])).toThrow('at least one subagent')
@@ -1861,12 +2711,22 @@ describe('Droid Task tool call', () => {
     expect(spawnSubagentToolCall(AgentProvider.DROID, 'droid-task', request)).toEqual({
       id: 'call_droid-task',
       name: 'Task',
-      arguments: { subagent_type: 'explorer', description: 'Inspect the parser', prompt: 'Count the files.', await: true },
+      arguments: {
+        subagent_type: 'explorer',
+        description: 'Inspect the parser',
+        prompt: 'Count the files.',
+        await: true,
+      },
     })
     expect(spawnSubagentToolCall(AgentProvider.DROID, 'droid-task-bg', { ...request, background: true })).toEqual({
       id: 'call_droid-task-bg',
       name: 'Task',
-      arguments: { subagent_type: 'explorer', description: 'Inspect the parser', prompt: 'Count the files.', await: false },
+      arguments: {
+        subagent_type: 'explorer',
+        description: 'Inspect the parser',
+        prompt: 'Count the files.',
+        await: false,
+      },
     })
   })
 })
@@ -1874,16 +2734,56 @@ describe('Droid Task tool call', () => {
 describe('the Droid native call identity', () => {
   const originalId = 'shell-79bf521f8c664bea9b0e0467a2b6bba4-0'
   const builders: { operation: string, build: (id: string) => MockModelToolCall }[] = [
-    { operation: 'Execute', build: id => bashToolCall(AgentProvider.DROID, id, 'printf SHELL42') },
-    { operation: 'Edit', build: id => editToolCall(AgentProvider.DROID, id, { path: '/private/file.txt', before: 'OLD42', after: 'NEW42' }) },
-    { operation: 'Create', build: id => writeToolCall(AgentProvider.DROID, id, { path: '/private/file.txt', content: 'NEW42\n' }) },
-    { operation: 'Read', build: id => readToolCall(AgentProvider.DROID, id, '/private/file.txt') },
-    { operation: 'ExitSpecMode', build: id => exitPlanModeToolCall(AgentProvider.DROID, id, 'Run the actual plan.') },
-    { operation: 'AskUser', build: id => askUserQuestionToolCall(AgentProvider.DROID, id, [{ question: 'Select a color.', header: 'Color', options: [{ label: 'Red', description: 'Use red.' }] }]) },
-    { operation: 'Task', build: id => spawnSubagentToolCall(AgentProvider.DROID, id, { description: 'Native child', prompt: 'Return CHILD42.' }) },
-    { operation: 'TodoWrite', build: id => updateTodosToolCall(AgentProvider.DROID, id, [{ step: 'Read the native file.', status: 'pending' }]) },
-    { operation: 'MCP', build: id => mcpToolCall(AgentProvider.DROID, id, { server: 'form_probe', tool: 'ask', input: {} }) },
-    { operation: 'ToolSearch', build: id => droidToolSearchToolCall(id, 'form_probe ask') },
+    {
+      operation: 'Execute',
+      build: id => bashToolCall(AgentProvider.DROID, id, 'printf SHELL42'),
+    },
+    {
+      operation: 'Edit',
+      build: id => editToolCall(AgentProvider.DROID, id, { path: '/private/file.txt', before: 'OLD42', after: 'NEW42' }),
+    },
+    {
+      operation: 'Create',
+      build: id => writeToolCall(AgentProvider.DROID, id, { path: '/private/file.txt', content: 'NEW42\n' }),
+    },
+    {
+      operation: 'Read',
+      build: id => readToolCall(AgentProvider.DROID, id, '/private/file.txt'),
+    },
+    {
+      operation: 'ExitSpecMode',
+      build: id => exitPlanModeToolCall(AgentProvider.DROID, id, 'Run the actual plan.'),
+    },
+    {
+      operation: 'AskUser',
+      build: id => askUserQuestionToolCall(AgentProvider.DROID, id, [
+        {
+          question: 'Select a color.',
+          header: 'Color',
+          options: [
+            { label: 'Red', description: 'Use red.' },
+          ],
+        },
+      ]),
+    },
+    {
+      operation: 'Task',
+      build: id => spawnSubagentToolCall(AgentProvider.DROID, id, { description: 'Native child', prompt: 'Return CHILD42.' }),
+    },
+    {
+      operation: 'TodoWrite',
+      build: id => updateTodosToolCall(AgentProvider.DROID, id, [
+        { step: 'Read the native file.', status: 'pending' },
+      ]),
+    },
+    {
+      operation: 'MCP',
+      build: id => mcpToolCall(AgentProvider.DROID, id, { server: 'form_probe', tool: 'ask', input: {} }),
+    },
+    {
+      operation: 'ToolSearch',
+      build: id => droidToolSearchToolCall(id, 'form_probe ask'),
+    },
   ]
   it.each(builders)('preserves the full original ID in the native $operation call', ({ build }) => {
     expect(build(originalId).id).toBe(`call_${originalId}`)
@@ -1948,27 +2848,64 @@ describe('the Kiro tool vocabulary', () => {
   const kiro = AgentProvider.KIRO
 
   it('uses Kiro\'s own file tools and their argument names', () => {
-    expect(editToolCall(kiro, 'c', { path: '/w/a', before: 'A', after: 'B' })).toEqual({ id: 'c', name: 'str_replace', arguments: { path: '/w/a', oldStr: 'A', newStr: 'B' } })
-    expect(writeToolCall(kiro, 'c', { path: '/w/a', content: 'x' })).toEqual({ id: 'c', name: 'fs_write', arguments: { path: '/w/a', text: 'x' } })
-    expect(readToolCall(kiro, 'c', '/w/a')).toEqual({ id: 'c', name: 'read_file', arguments: { path: '/w/a' } })
+    expect(editToolCall(kiro, 'c', { path: '/w/a', before: 'A', after: 'B' })).toEqual({
+      id: 'c',
+      name: 'str_replace',
+      arguments: { path: '/w/a', oldStr: 'A', newStr: 'B' },
+    })
+    expect(writeToolCall(kiro, 'c', { path: '/w/a', content: 'x' })).toEqual({
+      id: 'c',
+      name: 'fs_write',
+      arguments: { path: '/w/a', text: 'x' },
+    })
+    expect(readToolCall(kiro, 'c', '/w/a')).toEqual({
+      id: 'c',
+      name: 'read_file',
+      arguments: { path: '/w/a' },
+    })
   })
 
   it('asks exactly one question, with titled options', () => {
-    const question = { question: 'Which DB?', header: 'DB', options: [{ label: 'Postgres', description: 'pg' }] }
-    expect(askUserQuestionToolCall(kiro, 'c', [question]).arguments).toEqual({ question: 'Which DB?', options: [{ title: 'Postgres', description: 'pg' }], reason: 'general-question' })
+    const question = {
+      question: 'Which DB?',
+      header: 'DB',
+      options: [
+        { label: 'Postgres', description: 'pg' },
+      ],
+    }
+    expect(askUserQuestionToolCall(kiro, 'c', [question]).arguments).toEqual({
+      question: 'Which DB?',
+      options: [
+        { title: 'Postgres', description: 'pg' },
+      ],
+      reason: 'general-question',
+    })
     expect(() => askUserQuestionToolCall(kiro, 'c', [question, question])).toThrow('exactly one question')
     expect(() => askUserQuestionToolCall(kiro, 'c', [])).toThrow('exactly one question')
   })
 
   it('refuses a multi-select question, which Kiro\'s user_input cannot ask', () => {
-    const question = { question: 'Which DBs?', header: 'DB', options: [{ label: 'Postgres', description: 'pg' }], multiSelect: true }
+    const question = {
+      question: 'Which DBs?',
+      header: 'DB',
+      options: [
+        { label: 'Postgres', description: 'pg' },
+      ],
+      multiSelect: true,
+    }
     expect(() => askUserQuestionToolCall(kiro, 'c', [question])).toThrow('multi-select')
-    expect(askUserQuestionToolCall(kiro, 'c', [{ ...question, multiSelect: false }]).name).toBe('user_input')
+    expect(askUserQuestionToolCall(kiro, 'c', [
+      { ...question, multiSelect: false },
+    ]).name).toBe('user_input')
   })
 
   it('calls a Model Context Protocol tool by the name that Kiro gives it', () => {
     expect(mcpToolCall(kiro, 'kiro-mcp', { server: 'probe', tool: 'ask', input: {} })).toEqual({ id: 'kiro-mcp', name: 'mcp_probe_ask', arguments: {} })
-    expect(mcpToolCall(kiro, 'c', { server: 'form_probe', tool: 'echo', input: { text: 'hi' } }).arguments).toEqual({ text: 'hi' })
+    expect(mcpToolCall(kiro, 'c', {
+      server: 'form_probe',
+      tool: 'echo',
+      input: { text: 'hi' },
+    }).arguments).toEqual({ text: 'hi' })
   })
 
   it('offers no background command, which no Kiro spec runs', () => {
@@ -1980,21 +2917,43 @@ describe('the Kiro tool vocabulary', () => {
   })
 
   it('creates the to-do list from the steps, and completes tasks by their ids', () => {
-    expect(updateTodosToolCall(kiro, 'c', [{ step: 'One', status: 'pending' }]).arguments).toMatchObject({ command: 'create', tasks: [{ task_description: 'One' }] })
-    expect(kiroCompleteTodosToolCall('c', ['1', '2']).arguments).toMatchObject({ command: 'complete', completed_task_ids: ['1', '2'] })
+    expect(updateTodosToolCall(kiro, 'c', [
+      { step: 'One', status: 'pending' },
+    ]).arguments).toMatchObject({
+      command: 'create',
+      tasks: [
+        { task_description: 'One' },
+      ],
+    })
+    expect(kiroCompleteTodosToolCall('c', ['1', '2']).arguments).toMatchObject({
+      command: 'complete',
+      completed_task_ids: ['1', '2'],
+    })
   })
 
   it('leaves the plan mode through its own switch, which is no plan approval', () => {
     expect(hasToolFor(kiro, 'exitPlanMode')).toBe(false)
-    expect(kiroSwitchToExecutionToolCall('c', '1. Do it')).toEqual({ id: 'c', name: 'switch_to_execution', arguments: { plan: '1. Do it' } })
+    expect(kiroSwitchToExecutionToolCall('c', '1. Do it')).toEqual({
+      id: 'c',
+      name: 'switch_to_execution',
+      arguments: { plan: '1. Do it' },
+    })
   })
 
   it('completes a goal step through send_message', () => {
-    expect(completeGoalToolCall(kiro, 'c')).toEqual({ id: 'c', name: 'send_message', arguments: { message: 'The goal is verified.', severity: 'success' } })
+    expect(completeGoalToolCall(kiro, 'c')).toEqual({
+      id: 'c',
+      name: 'send_message',
+      arguments: { message: 'The goal is verified.', severity: 'success' },
+    })
   })
 
   it('blocks a goal through an error that a step sends', () => {
-    expect(blockGoalToolCall(kiro, 'c', 'The repository is read-only.')).toEqual({ id: 'c', name: 'send_message', arguments: { message: 'The repository is read-only.', severity: 'error' } })
+    expect(blockGoalToolCall(kiro, 'c', 'The repository is read-only.')).toEqual({
+      id: 'c',
+      name: 'send_message',
+      arguments: { message: 'The repository is read-only.', severity: 'error' },
+    })
   })
 })
 
@@ -2006,13 +2965,41 @@ describe('the Grok Build tool vocabulary', () => {
   })
 
   it('spells the multi-select flag the way its schema does', () => {
-    const call = askUserQuestionToolCall(AgentProvider.GROK_BUILD, 'call-1', [{ question: 'Which?', header: 'Choice', options: [{ label: 'A', description: 'a' }], multiSelect: true }])
-    expect(call.arguments).toEqual({ questions: [{ question: 'Which?', options: [{ label: 'A', description: 'a' }], multi_select: true }] })
+    const call = askUserQuestionToolCall(AgentProvider.GROK_BUILD, 'call-1', [
+      {
+        question: 'Which?',
+        header: 'Choice',
+        options: [
+          { label: 'A', description: 'a' },
+        ],
+        multiSelect: true,
+      },
+    ])
+    expect(call.arguments).toEqual({
+      questions: [
+        {
+          question: 'Which?',
+          options: [
+            { label: 'A', description: 'a' },
+          ],
+          multi_select: true,
+        },
+      ],
+    })
   })
 
   it('replaces the whole to-do list, so the scripted steps are the list', () => {
-    const call = updateTodosToolCall(AgentProvider.GROK_BUILD, 'call-1', [{ step: 'First', status: 'pending' }, { step: 'Second', status: 'completed' }])
-    expect(call.arguments).toEqual({ merge: false, todos: [{ id: '1', content: 'First', status: 'pending' }, { id: '2', content: 'Second', status: 'completed' }] })
+    const call = updateTodosToolCall(AgentProvider.GROK_BUILD, 'call-1', [
+      { step: 'First', status: 'pending' },
+      { step: 'Second', status: 'completed' },
+    ])
+    expect(call.arguments).toEqual({
+      merge: false,
+      todos: [
+        { id: '1', content: 'First', status: 'pending' },
+        { id: '2', content: 'Second', status: 'completed' },
+      ],
+    })
   })
 
   it('states the description its shell tool requires', () => {
@@ -2023,8 +3010,14 @@ describe('the Grok Build tool vocabulary', () => {
 
 describe('the Qwen Code tool vocabulary', () => {
   it('uses its own file tools with an absolute path argument', () => {
-    expect(readToolCall(AgentProvider.QWEN_CODE, 'call-1', '/p/a.txt')).toMatchObject({ name: 'read_file', arguments: { file_path: '/p/a.txt' } })
-    expect(editToolCall(AgentProvider.QWEN_CODE, 'call-1', { path: '/p/a.txt', before: 'a', after: 'b' })).toMatchObject({ name: 'edit', arguments: { file_path: '/p/a.txt', old_string: 'a', new_string: 'b' } })
+    expect(readToolCall(AgentProvider.QWEN_CODE, 'call-1', '/p/a.txt')).toMatchObject({
+      name: 'read_file',
+      arguments: { file_path: '/p/a.txt' },
+    })
+    expect(editToolCall(AgentProvider.QWEN_CODE, 'call-1', { path: '/p/a.txt', before: 'a', after: 'b' })).toMatchObject({
+      name: 'edit',
+      arguments: { file_path: '/p/a.txt', old_string: 'a', new_string: 'b' },
+    })
     expect(writeToolCall(AgentProvider.QWEN_CODE, 'call-1', { path: '/p/a.txt', content: 'x' })).toMatchObject({ name: 'write_file' })
   })
 
@@ -2038,13 +3031,21 @@ describe('the Qwen Code tool vocabulary', () => {
 // CI runs no E2E, so these cases are the check that runs on every change.
 describe('the Oh My Pi tool vocabulary', () => {
   it('yields a subagent\'s report as `data`', () => {
-    expect(ohMyPiYieldToolCall('call-1', 'Done.')).toEqual({ id: 'call-1', name: 'yield', arguments: { data: 'Done.' } })
+    expect(ohMyPiYieldToolCall('call-1', 'Done.')).toEqual({
+      id: 'call-1',
+      name: 'yield',
+      arguments: { data: 'Done.' },
+    })
   })
 
   const omp = AgentProvider.OH_MY_PI
 
   it('uses the minted MCP tool name', () => {
-    expect(mcpToolCall(omp, 'omp-mcp', { server: 'echo_probe', tool: 'echo', input: { value: 'omp' } })).toEqual({
+    expect(mcpToolCall(omp, 'omp-mcp', {
+      server: 'echo_probe',
+      tool: 'echo',
+      input: { value: 'omp' },
+    })).toEqual({
       id: 'omp-mcp',
       name: 'mcp__echo_probe_echo',
       arguments: { value: 'omp' },
@@ -2052,27 +3053,71 @@ describe('the Oh My Pi tool vocabulary', () => {
   })
 
   it('addresses a file by path in the read, write and replace-mode edit tools', () => {
-    expect(bashToolCall(omp, 'call-1', 'ls')).toEqual({ id: 'call-1', name: 'bash', arguments: { command: 'ls' } })
-    expect(readToolCall(omp, 'call-1', 'notes.txt')).toEqual({ id: 'call-1', name: 'read', arguments: { path: 'notes.txt' } })
-    expect(writeToolCall(omp, 'call-1', { path: 'a.txt', content: 'x\n' })).toEqual({ id: 'call-1', name: 'write', arguments: { path: 'a.txt', content: 'x\n' } })
+    expect(bashToolCall(omp, 'call-1', 'ls')).toEqual({
+      id: 'call-1',
+      name: 'bash',
+      arguments: { command: 'ls' },
+    })
+    expect(readToolCall(omp, 'call-1', 'notes.txt')).toEqual({
+      id: 'call-1',
+      name: 'read',
+      arguments: { path: 'notes.txt' },
+    })
+    expect(writeToolCall(omp, 'call-1', { path: 'a.txt', content: 'x\n' })).toEqual({
+      id: 'call-1',
+      name: 'write',
+      arguments: { path: 'a.txt', content: 'x\n' },
+    })
     // The E2E profile sets `edit.mode: replace`. The default hashline edit addresses
     // lines by a hash of the file, which a scripted turn cannot compute.
-    expect(editToolCall(omp, 'call-1', { path: 'a.ts', before: 'a', after: 'b' })).toEqual({ id: 'call-1', name: 'edit', arguments: { path: 'a.ts', old_string: 'a', new_string: 'b' } })
+    expect(editToolCall(omp, 'call-1', { path: 'a.ts', before: 'a', after: 'b' })).toEqual({
+      id: 'call-1',
+      name: 'edit',
+      arguments: { path: 'a.ts', old_string: 'a', new_string: 'b' },
+    })
   })
 
   it('gives each question of an ask call its own id, and states multi for a multi-select alone', () => {
     // The question bridge matches each answer to its question by this id.
     const call = askUserQuestionToolCall(omp, 'call-1', [
-      { question: 'Which?', header: 'Choice', options: [{ label: 'A', description: 'The first' }] },
-      { question: 'Which sizes?', header: 'Sizes', multiSelect: true, options: [{ label: 'S', description: 'Small', preview: '```\nS\n```' }] },
+      {
+        question: 'Which?',
+        header: 'Choice',
+        options: [
+          { label: 'A', description: 'The first' },
+        ],
+      },
+      {
+        question: 'Which sizes?',
+        header: 'Sizes',
+        multiSelect: true,
+        options: [
+          { label: 'S', description: 'Small', preview: '```\nS\n```' },
+        ],
+      },
     ])
     expect(call).toEqual({
       id: 'call-1',
       name: 'ask',
       arguments: {
         questions: [
-          { id: 'q1', question: 'Which?', header: 'Choice', options: [{ label: 'A', description: 'The first' }] },
-          { id: 'q2', question: 'Which sizes?', header: 'Sizes', options: [{ label: 'S', description: 'Small', preview: '```\nS\n```' }], multi: true },
+          {
+            id: 'q1',
+            question: 'Which?',
+            header: 'Choice',
+            options: [
+              { label: 'A', description: 'The first' },
+            ],
+          },
+          {
+            id: 'q2',
+            question: 'Which sizes?',
+            header: 'Sizes',
+            options: [
+              { label: 'S', description: 'Small', preview: '```\nS\n```' },
+            ],
+            multi: true,
+          },
         ],
       },
     })
@@ -2085,20 +3130,38 @@ describe('the Oh My Pi tool vocabulary', () => {
     expect(spawnSubagentToolCall(omp, 'call-1', { description: 'Run the fruit task', prompt: 'List three fruits.' })).toEqual({
       id: 'call-1',
       name: 'task',
-      arguments: { context: 'Run the fruit task', tasks: [{ name: 'run_the_fruit_task', agent: 'task', task: 'List three fruits.' }] },
+      arguments: {
+        context: 'Run the fruit task',
+        tasks: [
+          { name: 'run_the_fruit_task', agent: 'task', task: 'List three fruits.' },
+        ],
+      },
     })
   })
 
   it('backgrounds a command through the async flag of bash', () => {
-    expect(backgroundBashToolCall(omp, 'call-1', 'sleep 60')).toEqual({ id: 'call-1', name: 'bash', arguments: { command: 'sleep 60', async: true } })
+    expect(backgroundBashToolCall(omp, 'call-1', 'sleep 60')).toEqual({
+      id: 'call-1',
+      name: 'bash',
+      arguments: { command: 'sleep 60', async: true },
+    })
     expect(bashToolCall(omp, 'call-1', 'sleep 60').arguments).not.toHaveProperty('async')
   })
 
   it('changes the status of one task by its verbatim text', () => {
-    for (const op of ['start', 'done', 'drop'] as const)
-      expect(ohMyPiTodoToolCall('call-1', { op, task: 'Write the parser' })).toEqual({ id: 'call-1', name: 'todo', arguments: { op, task: 'Write the parser' } })
+    for (const op of ['start', 'done', 'drop'] as const) {
+      expect(ohMyPiTodoToolCall('call-1', { op, task: 'Write the parser' })).toEqual({
+        id: 'call-1',
+        name: 'todo',
+        arguments: { op, task: 'Write the parser' },
+      })
+    }
     expect(ohMyPiTodoToolCall('call-2', { op: 'block', task: 'Write the parser', reason: 'The grammar is missing.' }))
-      .toEqual({ id: 'call-2', name: 'todo', arguments: { op: 'block', task: 'Write the parser', reason: 'The grammar is missing.' } })
+      .toEqual({
+        id: 'call-2',
+        name: 'todo',
+        arguments: { op: 'block', task: 'Write the parser', reason: 'The grammar is missing.' },
+      })
   })
 
   it('refuses a todo operation with no task text, and a block with no reason', () => {
@@ -2107,15 +3170,33 @@ describe('the Oh My Pi tool vocabulary', () => {
   })
 
   it('opens a to-do list with init, in one phase, and leaves each status to omp', () => {
-    expect(updateTodosToolCall(omp, 'call-1', [{ step: 'First', status: 'completed' }, { step: 'Second', status: 'pending' }])).toEqual({
+    expect(updateTodosToolCall(omp, 'call-1', [
+      { step: 'First', status: 'completed' },
+      { step: 'Second', status: 'pending' },
+    ])).toEqual({
       id: 'call-1',
       name: 'todo',
-      arguments: { op: 'init', list: [{ phase: 'Plan', items: ['First', 'Second'] }] },
+      arguments: {
+        op: 'init',
+        list: [
+          {
+            phase: 'Plan',
+            items: ['First', 'Second'],
+          },
+        ],
+      },
     })
   })
 
   it('offers no plan-mode or goal tool, which omp\'s RPC mode does not reach', () => {
-    for (const operation of ['enterPlanMode', 'exitPlanMode', 'exitPlanModeFromFile', 'createGoal', 'completeGoal', 'blockGoal'] as const)
+    for (const operation of [
+      'enterPlanMode',
+      'exitPlanMode',
+      'exitPlanModeFromFile',
+      'createGoal',
+      'completeGoal',
+      'blockGoal',
+    ] as const)
       expect(hasToolFor(omp, operation), operation).toBe(false)
   })
 })
@@ -2124,7 +3205,11 @@ describe('the Cline tool vocabulary', () => {
   const cline = AgentProvider.CLINE
 
   it('uses the SDK MCP server and tool separator', () => {
-    expect(mcpToolCall(cline, 'cline-mcp', { server: 'echo_probe', tool: 'echo', input: { value: 'cline' } })).toEqual({
+    expect(mcpToolCall(cline, 'cline-mcp', {
+      server: 'echo_probe',
+      tool: 'echo',
+      input: { value: 'cline' },
+    })).toEqual({
       id: 'cline-mcp',
       name: 'echo_probe__echo',
       arguments: { value: 'cline' },
@@ -2132,11 +3217,33 @@ describe('the Cline tool vocabulary', () => {
   })
 
   it('uses Cline\'s own tools and their argument names', () => {
-    expect(bashToolCall(cline, 'c', 'echo hi')).toEqual({ id: 'c', name: 'run_commands', arguments: { commands: ['echo hi'] } })
-    expect(editToolCall(cline, 'c', { path: '/w/a', before: 'A', after: 'B' })).toEqual({ id: 'c', name: 'editor', arguments: { path: '/w/a', old_text: 'A', new_text: 'B' } })
+    expect(bashToolCall(cline, 'c', 'echo hi')).toEqual({
+      id: 'c',
+      name: 'run_commands',
+      arguments: {
+        commands: ['echo hi'],
+      },
+    })
+    expect(editToolCall(cline, 'c', { path: '/w/a', before: 'A', after: 'B' })).toEqual({
+      id: 'c',
+      name: 'editor',
+      arguments: { path: '/w/a', old_text: 'A', new_text: 'B' },
+    })
     // A write is the same editor call with no old text, which creates the file.
-    expect(writeToolCall(cline, 'c', { path: '/w/a', content: 'x' })).toEqual({ id: 'c', name: 'editor', arguments: { path: '/w/a', new_text: 'x' } })
-    expect(readToolCall(cline, 'c', '/w/a')).toEqual({ id: 'c', name: 'read_files', arguments: { files: [{ path: '/w/a' }] } })
+    expect(writeToolCall(cline, 'c', { path: '/w/a', content: 'x' })).toEqual({
+      id: 'c',
+      name: 'editor',
+      arguments: { path: '/w/a', new_text: 'x' },
+    })
+    expect(readToolCall(cline, 'c', '/w/a')).toEqual({
+      id: 'c',
+      name: 'read_files',
+      arguments: {
+        files: [
+          { path: '/w/a' },
+        ],
+      },
+    })
   })
 
   it('leaves plan mode through the plan tool, which carries no plan', () => {
@@ -2146,19 +3253,46 @@ describe('the Cline tool vocabulary', () => {
 
   it('asks exactly one question with 2 to 5 bare options', () => {
     const option = (label: string) => ({ label, description: `The ${label}` })
-    const question = { question: 'Which DB?', header: 'DB', options: [option('Postgres'), option('SQLite')] }
-    expect(askUserQuestionToolCall(cline, 'c', [question]).arguments).toEqual({ question: 'Which DB?', options: ['Postgres', 'SQLite'] })
+    const question = {
+      question: 'Which DB?',
+      header: 'DB',
+      options: [
+        option('Postgres'),
+        option('SQLite'),
+      ],
+    }
+    expect(askUserQuestionToolCall(cline, 'c', [question]).arguments).toEqual({
+      question: 'Which DB?',
+      options: ['Postgres', 'SQLite'],
+    })
     expect(() => askUserQuestionToolCall(cline, 'c', [question, question])).toThrow('exactly one question')
     expect(() => askUserQuestionToolCall(cline, 'c', [])).toThrow('exactly one question')
-    expect(() => askUserQuestionToolCall(cline, 'c', [{ ...question, multiSelect: true }])).toThrow('no multi-select')
-    expect(() => askUserQuestionToolCall(cline, 'c', [{ ...question, options: [option('Postgres')] }])).toThrow('2 to 5 options')
-    expect(() => askUserQuestionToolCall(cline, 'c', [{ ...question, options: ['A', 'B', 'C', 'D', 'E', 'F'].map(option) }])).toThrow('2 to 5 options')
+    expect(() => askUserQuestionToolCall(cline, 'c', [
+      { ...question, multiSelect: true },
+    ])).toThrow('no multi-select')
+    expect(() => askUserQuestionToolCall(cline, 'c', [
+      {
+        ...question,
+        options: [
+          option('Postgres'),
+        ],
+      },
+    ])).toThrow('2 to 5 options')
+    expect(() => askUserQuestionToolCall(cline, 'c', [
+      {
+        ...question,
+        options: ['A', 'B', 'C', 'D', 'E', 'F'].map(option),
+      },
+    ])).toThrow('2 to 5 options')
   })
 
   it('leads the subagent task with its description, which titles the registry row', () => {
     const call = spawnSubagentToolCall(cline, 'c', { description: 'Probe the subagent path', prompt: 'Reply with PONG.', background: true })
     expect(call.name).toBe('spawn_agent')
-    expect(call.arguments).toEqual({ systemPrompt: expect.any(String), task: 'Probe the subagent path\n\nReply with PONG.' })
+    expect(call.arguments).toEqual({
+      systemPrompt: expect.any(String),
+      task: 'Probe the subagent path\n\nReply with PONG.',
+    })
   })
 })
 
@@ -2169,8 +3303,16 @@ describe('the Amp tool vocabulary', () => {
 
   it('runs a command through shell_command with Amp\'s largest wait, and backgrounds it with a one-second wait', () => {
     expect(AMP_SHELL_WAIT_LIMIT_MS).toBe(60_000)
-    expect(bashToolCall(amp, 'c', 'ls')).toEqual({ id: 'c', name: 'shell_command', arguments: { command: 'ls', timeout_ms: 60_000 } })
-    expect(backgroundBashToolCall(amp, 'c', 'sleep 60')).toEqual({ id: 'c', name: 'shell_command', arguments: { command: 'sleep 60', timeout_ms: 1_000 } })
+    expect(bashToolCall(amp, 'c', 'ls')).toEqual({
+      id: 'c',
+      name: 'shell_command',
+      arguments: { command: 'ls', timeout_ms: 60_000 },
+    })
+    expect(backgroundBashToolCall(amp, 'c', 'sleep 60')).toEqual({
+      id: 'c',
+      name: 'shell_command',
+      arguments: { command: 'sleep 60', timeout_ms: 1_000 },
+    })
   })
 
   it('edits and writes through one apply_patch text, and reads by path', () => {
@@ -2184,16 +3326,33 @@ describe('the Amp tool vocabulary', () => {
       name: 'apply_patch',
       arguments: { patchText: '*** Begin Patch\n*** Add File: /w/b.ts\n+x\n+y\n*** End Patch' },
     })
-    expect(readToolCall(amp, 'c', '/w/a.ts')).toEqual({ id: 'c', name: 'Read', arguments: { path: '/w/a.ts' } })
+    expect(readToolCall(amp, 'c', '/w/a.ts')).toEqual({
+      id: 'c',
+      name: 'Read',
+      arguments: { path: '/w/a.ts' },
+    })
   })
 
   it('spawns a subagent through Task, which Amp runs on its server', () => {
     expect(spawnSubagentToolCall(amp, 'c', { description: 'Probe it', prompt: 'Go.', background: true }))
-      .toEqual({ id: 'c', name: 'Task', arguments: { description: 'Probe it', prompt: 'Go.' } })
+      .toEqual({
+        id: 'c',
+        name: 'Task',
+        arguments: { description: 'Probe it', prompt: 'Go.' },
+      })
   })
 
   it('offers no plan mode, question, to-do, or goal tool', () => {
-    for (const operation of ['enterPlanMode', 'exitPlanMode', 'exitPlanModeFromFile', 'askUserQuestion', 'updateTodos', 'createGoal', 'completeGoal', 'blockGoal'] as const)
+    for (const operation of [
+      'enterPlanMode',
+      'exitPlanMode',
+      'exitPlanModeFromFile',
+      'askUserQuestion',
+      'updateTodos',
+      'createGoal',
+      'completeGoal',
+      'blockGoal',
+    ] as const)
       expect(hasToolFor(amp, operation), operation).toBe(false)
     expect(hasToolFor(amp, 'mcpTool')).toBe(true)
   })
@@ -2219,8 +3378,16 @@ describe('the Junie tool vocabulary', () => {
   const junie = AgentProvider.JUNIE
 
   it('runs a command through bash and reads through open_entire_file', () => {
-    expect(bashToolCall(junie, 'c', 'ls')).toEqual({ id: 'c', name: 'bash', arguments: { command: 'ls' } })
-    expect(readToolCall(junie, 'c', '/w/a.ts')).toEqual({ id: 'c', name: 'open_entire_file', arguments: { path: '/w/a.ts' } })
+    expect(bashToolCall(junie, 'c', 'ls')).toEqual({
+      id: 'c',
+      name: 'bash',
+      arguments: { command: 'ls' },
+    })
+    expect(readToolCall(junie, 'c', '/w/a.ts')).toEqual({
+      id: 'c',
+      name: 'open_entire_file',
+      arguments: { path: '/w/a.ts' },
+    })
     expect(writeToolCall(junie, 'c', { path: '/w/b.ts', content: 'x' })).toEqual({
       id: 'c',
       name: 'create',
@@ -2237,12 +3404,29 @@ describe('the Junie tool vocabulary', () => {
   })
 
   it('names every ask_user question and spawns a subagent by task', () => {
-    expect(askUserQuestionToolCall(junie, 'c', [{ question: 'Which?', header: 'Pick', options: [{ label: 'A', description: 'The first' }] }]))
+    expect(askUserQuestionToolCall(junie, 'c', [
+      {
+        question: 'Which?',
+        header: 'Pick',
+        options: [
+          { label: 'A', description: 'The first' },
+        ],
+      },
+    ]))
       .toEqual({
         id: 'c',
         name: 'ask_user',
         arguments: {
-          questions: [{ name: 'Pick', question: 'Which?', options: [{ title: 'A', description: 'The first' }], allowMultiple: false }],
+          questions: [
+            {
+              name: 'Pick',
+              question: 'Which?',
+              options: [
+                { title: 'A', description: 'The first' },
+              ],
+              allowMultiple: false,
+            },
+          ],
         },
       })
     expect(spawnSubagentToolCall(junie, 'c', { description: 'Probe it', prompt: 'Go.' })).toEqual({
@@ -2265,15 +3449,23 @@ describe('the Junie tool vocabulary', () => {
     expect(junieSubmitPlanToolCall(
       'p',
       'probe-plan',
-      [{ name: 'Requirements', content: 'Inspect the repository.' }],
-      [{ name: 'Inspect the repository', description: 'Read the relevant files.' }],
+      [
+        { name: 'Requirements', content: 'Inspect the repository.' },
+      ],
+      [
+        { name: 'Inspect the repository', description: 'Read the relevant files.' },
+      ],
     )).toEqual({
       id: 'p',
       name: 'submit',
       arguments: {
         name: 'probe-plan',
-        proposal: [{ name: 'Requirements', content: 'Inspect the repository.' }],
-        delivery_plan: [{ name: 'Inspect the repository', description: 'Read the relevant files.' }],
+        proposal: [
+          { name: 'Requirements', content: 'Inspect the repository.' },
+        ],
+        delivery_plan: [
+          { name: 'Inspect the repository', description: 'Read the relevant files.' },
+        ],
       },
     })
   })
@@ -2309,11 +3501,20 @@ describe('the Dirac tool vocabulary', () => {
   it('sends the schema fields alone, never the rawInput tool stamp', () => {
     // Dirac stamps `tool` into the rawInput it REPORTS; the model that sends it
     // gets "Unsupported response parameter: tool".
-    expect(bashToolCall(dirac, 'c', 'ls')).toEqual({ id: 'c', name: 'execute_command', arguments: { commands: ['ls'] } })
+    expect(bashToolCall(dirac, 'c', 'ls')).toEqual({
+      id: 'c',
+      name: 'execute_command',
+      arguments: {
+        commands: ['ls'],
+      },
+    })
     expect(readToolCall(dirac, 'c', '/w/a.ts')).toEqual({
       id: 'c',
       name: 'read_file',
-      arguments: { paths: ['/w/a.ts'], include_anchors: true },
+      arguments: {
+        paths: ['/w/a.ts'],
+        include_anchors: true,
+      },
     })
     expect(writeToolCall(dirac, 'c', { path: '/w/b.ts', content: 'x' })).toEqual({
       id: 'c',
@@ -2327,10 +3528,19 @@ describe('the Dirac tool vocabulary', () => {
       id: 'c',
       name: 'edit_file',
       arguments: {
-        files: [{
-          path: '/w/a.ts',
-          edits: [{ edit_type: 'replace', anchor: '{{editAnchor}}', end_anchor: '{{editAnchor}}', text: 'new' }],
-        }],
+        files: [
+          {
+            path: '/w/a.ts',
+            edits: [
+              {
+                edit_type: 'replace',
+                anchor: '{{editAnchor}}',
+                end_anchor: '{{editAnchor}}',
+                text: 'new',
+              },
+            ],
+          },
+        ],
       },
     })
     expect(diracEditAnchorCapture('old')).toEqual({ editAnchor: '([A-Z][a-zA-Z]*§old)' })
@@ -2348,7 +3558,11 @@ describe('the Dirac tool vocabulary', () => {
     expect(spawnSubagentToolCall(dirac, 'c', { description: 'Count files', prompt: 'Count the files.' })).toEqual({
       id: 'c',
       name: 'use_subagents',
-      arguments: { subagents: [{ task_title: 'Count files', prompt: 'Count the files.' }] },
+      arguments: {
+        subagents: [
+          { task_title: 'Count files', prompt: 'Count the files.' },
+        ],
+      },
     })
   })
 })
@@ -2375,10 +3589,26 @@ describe('the MiMo Code tool vocabulary', () => {
   const mimo = AgentProvider.MIMO_CODE
 
   it('addresses a file by file_path, and states the description that its shell tool requires', () => {
-    expect(bashToolCall(mimo, 'c', 'ls')).toEqual({ id: 'c', name: 'bash', arguments: { command: 'ls', description: 'Run the scripted command' } })
-    expect(editToolCall(mimo, 'c', { path: 'a.ts', before: 'a', after: 'b' })).toEqual({ id: 'c', name: 'edit', arguments: { file_path: 'a.ts', old_string: 'a', new_string: 'b' } })
-    expect(writeToolCall(mimo, 'c', { path: 'a.ts', content: 'x' })).toEqual({ id: 'c', name: 'write', arguments: { file_path: 'a.ts', content: 'x' } })
-    expect(readToolCall(mimo, 'c', 'a.ts')).toEqual({ id: 'c', name: 'read', arguments: { file_path: 'a.ts' } })
+    expect(bashToolCall(mimo, 'c', 'ls')).toEqual({
+      id: 'c',
+      name: 'bash',
+      arguments: { command: 'ls', description: 'Run the scripted command' },
+    })
+    expect(editToolCall(mimo, 'c', { path: 'a.ts', before: 'a', after: 'b' })).toEqual({
+      id: 'c',
+      name: 'edit',
+      arguments: { file_path: 'a.ts', old_string: 'a', new_string: 'b' },
+    })
+    expect(writeToolCall(mimo, 'c', { path: 'a.ts', content: 'x' })).toEqual({
+      id: 'c',
+      name: 'write',
+      arguments: { file_path: 'a.ts', content: 'x' },
+    })
+    expect(readToolCall(mimo, 'c', 'a.ts')).toEqual({
+      id: 'c',
+      name: 'read',
+      arguments: { file_path: 'a.ts' },
+    })
   })
 
   it('leaves plan mode through plan_exit, which carries no plan', () => {
@@ -2398,7 +3628,11 @@ describe('the MiMo Code tool vocabulary', () => {
 
 describe('mimoWorkflowToolCall', () => {
   it('runs the script through the workflow tool', () => {
-    expect(mimoWorkflowToolCall('c', 'await agent("Go.")')).toEqual({ id: 'c', name: 'workflow', arguments: { operation: 'run', script: 'await agent("Go.")' } })
+    expect(mimoWorkflowToolCall('c', 'await agent("Go.")')).toEqual({
+      id: 'c',
+      name: 'workflow',
+      arguments: { operation: 'run', script: 'await agent("Go.")' },
+    })
   })
 })
 
@@ -2406,14 +3640,40 @@ describe('the Codewhale tool vocabulary', () => {
   const codewhale = AgentProvider.CODEWHALE
 
   it('addresses a file by path, and edits through a list of replacements', () => {
-    expect(bashToolCall(codewhale, 'c', 'ls')).toEqual({ id: 'c', name: 'bash', arguments: { command: 'ls' } })
-    expect(editToolCall(codewhale, 'c', { path: 'a.ts', before: 'a', after: 'b' })).toEqual({ id: 'c', name: 'edit', arguments: { path: 'a.ts', edits: [{ oldText: 'a', newText: 'b' }] } })
-    expect(writeToolCall(codewhale, 'c', { path: 'a.ts', content: 'x' })).toEqual({ id: 'c', name: 'write', arguments: { path: 'a.ts', content: 'x' } })
-    expect(readToolCall(codewhale, 'c', 'a.ts')).toEqual({ id: 'c', name: 'read', arguments: { path: 'a.ts' } })
+    expect(bashToolCall(codewhale, 'c', 'ls')).toEqual({
+      id: 'c',
+      name: 'bash',
+      arguments: { command: 'ls' },
+    })
+    expect(editToolCall(codewhale, 'c', { path: 'a.ts', before: 'a', after: 'b' })).toEqual({
+      id: 'c',
+      name: 'edit',
+      arguments: {
+        path: 'a.ts',
+        edits: [
+          { oldText: 'a', newText: 'b' },
+        ],
+      },
+    })
+    expect(writeToolCall(codewhale, 'c', { path: 'a.ts', content: 'x' })).toEqual({
+      id: 'c',
+      name: 'write',
+      arguments: { path: 'a.ts', content: 'x' },
+    })
+    expect(readToolCall(codewhale, 'c', 'a.ts')).toEqual({
+      id: 'c',
+      name: 'read',
+      arguments: { path: 'a.ts' },
+    })
   })
 
   it('offers no plan-mode tool and no goal creation, which are thread settings', () => {
-    for (const operation of ['enterPlanMode', 'exitPlanMode', 'createGoal', 'completeGoal'] as const)
+    for (const operation of [
+      'enterPlanMode',
+      'exitPlanMode',
+      'createGoal',
+      'completeGoal',
+    ] as const)
       expect(hasToolFor(codewhale, operation), operation).toBe(false)
   })
 })
@@ -2428,13 +3688,34 @@ describe('the Fast Agent tool vocabulary', () => {
     expect(call).toEqual({
       id: 'native-input',
       name: '__human_input',
-      arguments: { message: 'Choose one answer.', schema: { type: 'object', properties: { answer: { type: 'string', enum: ['first', 'second'] } }, required: ['answer'] } },
+      arguments: {
+        message: 'Choose one answer.',
+        schema: {
+          type: 'object',
+          properties: {
+            answer: {
+              type: 'string',
+              enum: ['first', 'second'],
+            },
+          },
+          required: ['answer'],
+        },
+      },
     })
     expect(hasToolFor(fastAgent, 'askUserQuestion')).toBe(false)
   })
 
   it('preserves a valid empty message and empty string choice', () => {
-    expect(fastAgentHumanInputToolCall('native-empty', '', ['']).arguments).toMatchObject({ message: '', schema: { properties: { answer: { enum: [''] } } } })
+    expect(fastAgentHumanInputToolCall('native-empty', '', ['']).arguments).toMatchObject({
+      message: '',
+      schema: {
+        properties: {
+          answer: {
+            enum: [''],
+          },
+        },
+      },
+    })
   })
 
   it('refuses a human-input schema without an answer choice', () => {
@@ -2445,8 +3726,16 @@ describe('the Fast Agent tool vocabulary', () => {
     // The live `-x` runtime answers `bash` with "Tool 'bash' is not available.
     // Available tools: attach_media, edit_file, execute, read_text_file,
     // write_text_file." -- so the names below are the whole contract.
-    expect(bashToolCall(fastAgent, 'c', 'ls')).toEqual({ id: 'c', name: 'execute', arguments: { command: 'ls' } })
-    expect(readToolCall(fastAgent, 'c', '/w/a.ts')).toEqual({ id: 'c', name: 'read_text_file', arguments: { path: '/w/a.ts' } })
+    expect(bashToolCall(fastAgent, 'c', 'ls')).toEqual({
+      id: 'c',
+      name: 'execute',
+      arguments: { command: 'ls' },
+    })
+    expect(readToolCall(fastAgent, 'c', '/w/a.ts')).toEqual({
+      id: 'c',
+      name: 'read_text_file',
+      arguments: { path: '/w/a.ts' },
+    })
     expect(writeToolCall(fastAgent, 'c', { path: '/w/b.ts', content: 'x\ny' })).toEqual({
       id: 'c',
       name: 'write_text_file',
@@ -2473,7 +3762,17 @@ describe('the Fast Agent tool vocabulary', () => {
   it('offers no background shell, plan-mode, question, to-do, or goal tool', () => {
     // `execute`'s schema is command/args/env/cwd with additionalProperties
     // false, and no separate background tool is offered.
-    for (const operation of ['backgroundBash', 'enterPlanMode', 'exitPlanMode', 'exitPlanModeFromFile', 'askUserQuestion', 'updateTodos', 'createGoal', 'completeGoal', 'blockGoal'] as const)
+    for (const operation of [
+      'backgroundBash',
+      'enterPlanMode',
+      'exitPlanMode',
+      'exitPlanModeFromFile',
+      'askUserQuestion',
+      'updateTodos',
+      'createGoal',
+      'completeGoal',
+      'blockGoal',
+    ] as const)
       expect(hasToolFor(fastAgent, operation), operation).toBe(false)
     expect(hasToolFor(fastAgent, 'mcpTool')).toBe(true)
   })
@@ -2524,7 +3823,11 @@ describe('new native executor and child completion calls', () => {
     expect(call.name).toBe('write_todos')
     expect(call.arguments).toEqual({ todos })
     expect(call.arguments?.todos).not.toBe(todos)
-    expect(geminiTodoSnapshotToolCall('empty-checklist', [])).toEqual({ id: 'empty-checklist', name: 'write_todos', arguments: { todos: [] } })
+    expect(geminiTodoSnapshotToolCall('empty-checklist', [])).toEqual({
+      id: 'empty-checklist',
+      name: 'write_todos',
+      arguments: { todos: [] },
+    })
   })
 
   it('provides the installed Gemini Replace instruction and preserves the exact replacement text', () => {
@@ -2560,7 +3863,12 @@ describe('new native executor and child completion calls', () => {
     expect(deepseekHarnessEscalatedBashToolCall('native-permission', command, justification)).toEqual({
       id: 'native-permission',
       name: 'bash',
-      arguments: { command, description: 'Run the scripted command.', sandbox_permissions: 'danger-full-access', justification },
+      arguments: {
+        command,
+        description: 'Run the scripted command.',
+        sandbox_permissions: 'danger-full-access',
+        justification,
+      },
     })
   })
 
@@ -2569,7 +3877,10 @@ describe('new native executor and child completion calls', () => {
     expect(codeExecutionToolCall(AgentProvider.DEEPSEEK_HARNESS, 'native-exec', source)).toEqual({
       id: 'native-exec',
       name: 'workflow',
-      arguments: { script: source, meta: { name: 'native-code', description: 'Run the scripted native source.' } },
+      arguments: {
+        script: source,
+        meta: { name: 'native-code', description: 'Run the scripted native source.' },
+      },
     })
   })
 
@@ -2592,14 +3903,26 @@ describe('new native executor and child completion calls', () => {
 
   it('preserves Gemini child response bytes and an explicit empty result', () => {
     const response = '  Native response.\n실제 내용 🧪  '
-    expect(geminiCompleteTaskToolCall('native-complete', response)).toEqual({ id: 'native-complete', name: 'complete_task', arguments: { result: { response } } })
-    expect(geminiCompleteTaskToolCall('native-empty', '').arguments).toEqual({ result: { response: '' } })
+    expect(geminiCompleteTaskToolCall('native-complete', response)).toEqual({
+      id: 'native-complete',
+      name: 'complete_task',
+      arguments: {
+        result: { response },
+      },
+    })
+    expect(geminiCompleteTaskToolCall('native-empty', '').arguments).toEqual({
+      result: { response: '' },
+    })
   })
 })
 
 describe('ampShellCommandStatusToolCall', () => {
   it('reads a backgrounded command by its PID, with an optional wait', () => {
-    expect(ampShellCommandStatusToolCall('status-1', 4242)).toEqual({ id: 'status-1', name: 'shell_command_status', arguments: { pid: 4242 } })
+    expect(ampShellCommandStatusToolCall('status-1', 4242)).toEqual({
+      id: 'status-1',
+      name: 'shell_command_status',
+      arguments: { pid: 4242 },
+    })
     expect(ampShellCommandStatusToolCall('status-2', 4242, 0).arguments).toEqual({ pid: 4242, timeout_ms: 0 })
     expect(ampShellCommandStatusToolCall('status-3', 4242, AMP_SHELL_WAIT_LIMIT_MS).arguments).toEqual({ pid: 4242, timeout_ms: 60_000 })
   })
@@ -2623,7 +3946,11 @@ describe('goal tool calls', () => {
   })
 
   it('completes a Copilot goal through task_complete, and offers no blocked goal', () => {
-    expect(completeGoalToolCall(AgentProvider.GITHUB_COPILOT, 'goal-1')).toEqual({ id: 'goal-1', name: 'task_complete', arguments: { summary: 'The scripted goal is complete.' } })
+    expect(completeGoalToolCall(AgentProvider.GITHUB_COPILOT, 'goal-1')).toEqual({
+      id: 'goal-1',
+      name: 'task_complete',
+      arguments: { summary: 'The scripted goal is complete.' },
+    })
     expect(hasToolFor(AgentProvider.GITHUB_COPILOT, 'blockGoal')).toBe(false)
   })
 
@@ -2631,13 +3958,25 @@ describe('goal tool calls', () => {
     [AgentProvider.PI, 'Pi update_goal'],
     [AgentProvider.REASONIX, 'Reasonix update_goal'],
   ])('ends a goal of provider %s through update_goal, with the reason of a blocked goal', (provider, tool) => {
-    expect(completeGoalToolCall(provider, 'goal-1')).toEqual({ id: 'goal-1', name: 'update_goal', arguments: { status: 'complete' } })
-    expect(blockGoalToolCall(provider, 'goal-2', 'The repository is read-only.')).toEqual({ id: 'goal-2', name: 'update_goal', arguments: { status: 'blocked', reason: 'The repository is read-only.' } })
+    expect(completeGoalToolCall(provider, 'goal-1')).toEqual({
+      id: 'goal-1',
+      name: 'update_goal',
+      arguments: { status: 'complete' },
+    })
+    expect(blockGoalToolCall(provider, 'goal-2', 'The repository is read-only.')).toEqual({
+      id: 'goal-2',
+      name: 'update_goal',
+      arguments: { status: 'blocked', reason: 'The repository is read-only.' },
+    })
     expect(() => blockGoalToolCall(provider, 'goal-3', '  ')).toThrow(`${tool} call requires a nonempty reason`)
   })
 
   it('starts a Pi goal through create_goal', () => {
-    expect(createGoalToolCall(AgentProvider.PI, 'goal-1', 'Ship the feature.')).toEqual({ id: 'goal-1', name: 'create_goal', arguments: { objective: 'Ship the feature.' } })
+    expect(createGoalToolCall(AgentProvider.PI, 'goal-1', 'Ship the feature.')).toEqual({
+      id: 'goal-1',
+      name: 'create_goal',
+      arguments: { objective: 'Ship the feature.' },
+    })
   })
 
   // A separate verification request ends the goal of each of these providers, and no model tool does.
@@ -2649,52 +3988,127 @@ describe('goal tool calls', () => {
   it('ends a DeepSeek Harness goal through update_goal with its goal ID and revision', () => {
     expect(deepseekHarnessGetGoalToolCall('get-1')).toEqual({ id: 'get-1', name: 'get_goal', arguments: {} })
     expect(deepseekHarnessUpdateGoalToolCall('update-1', { goalId: '{{goalId}}', revision: 1 }, { action: 'complete' }))
-      .toEqual({ id: 'update-1', name: 'update_goal', arguments: { goal_id: '{{goalId}}', revision: 1, action: 'complete' } })
+      .toEqual({
+        id: 'update-1',
+        name: 'update_goal',
+        arguments: { goal_id: '{{goalId}}', revision: 1, action: 'complete' },
+      })
     expect(deepseekHarnessUpdateGoalToolCall('update-2', { goalId: 'goal-7', revision: 3 }, { action: 'blocked', reason: 'The build server is down.' }))
-      .toEqual({ id: 'update-2', name: 'update_goal', arguments: { goal_id: 'goal-7', revision: 3, action: 'blocked', blocked_reason: 'The build server is down.' } })
+      .toEqual({
+        id: 'update-2',
+        name: 'update_goal',
+        arguments: {
+          goal_id: 'goal-7',
+          revision: 3,
+          action: 'blocked',
+          blocked_reason: 'The build server is down.',
+        },
+      })
   })
 
   it('refuses a DeepSeek Harness update with no goal ID, a revision below 1, or a blocked goal with no reason', () => {
-    for (const goal of [{ goalId: '', revision: 1 }, { goalId: ' goal ', revision: 1 }, { goalId: 'goal', revision: 0 }, { goalId: 'goal', revision: 1.5 }])
+    for (const goal of [
+      { goalId: '', revision: 1 },
+      { goalId: ' goal ', revision: 1 },
+      { goalId: 'goal', revision: 0 },
+      { goalId: 'goal', revision: 1.5 },
+    ])
       expect(() => deepseekHarnessUpdateGoalToolCall('u', goal, { action: 'complete' }), JSON.stringify(goal)).toThrow('goal ID and a positive integer revision')
     expect(() => deepseekHarnessUpdateGoalToolCall('u', { goalId: 'goal', revision: 1 }, { action: 'blocked', reason: '' })).toThrow('nonempty reason')
   })
 
   it('captures the goal ID from the compact result text of get_goal', () => {
-    const result = JSON.stringify({ goal: { id: 'goal-01J8', revision: 2, objective: 'Ship it.', phase: 'active', roundsStarted: 1 }, activation: 'armed' })
-    expect([...result.matchAll(new RegExp(DEEPSEEK_HARNESS_GOAL_ID_CAPTURE, 'g'))].map(match => match[1])).toEqual(['goal-01J8'])
+    const result = JSON.stringify({
+      goal: {
+        id: 'goal-01J8',
+        revision: 2,
+        objective: 'Ship it.',
+        phase: 'active',
+        roundsStarted: 1,
+      },
+      activation: 'armed',
+    })
+    expect([
+      ...result.matchAll(new RegExp(DEEPSEEK_HARNESS_GOAL_ID_CAPTURE, 'g')),
+    ].map(match => match[1])).toEqual(['goal-01J8'])
     expect(new RegExp(DEEPSEEK_HARNESS_GOAL_ID_CAPTURE).test(JSON.stringify({ goal: null }))).toBe(false)
   })
 })
 
 describe('askUserQuestionToolCall free text', () => {
-  const question = { question: 'Which color?', header: 'Color', options: [{ label: 'Red', description: 'Use red.' }, { label: 'Blue', description: 'Use blue.' }] }
+  const question = {
+    question: 'Which color?',
+    header: 'Color',
+    options: [
+      { label: 'Red', description: 'Use red.' },
+      { label: 'Blue', description: 'Use blue.' },
+    ],
+  }
 
   it('states that a Codewhale question invites a typed answer', () => {
-    const questions = askUserQuestionToolCall(AgentProvider.CODEWHALE, 'call-1', [{ ...question, freeText: true }, question]).arguments?.questions as Record<string, unknown>[]
+    const questions = askUserQuestionToolCall(AgentProvider.CODEWHALE, 'call-1', [
+      { ...question, freeText: true },
+      question,
+    ]).arguments?.questions as Record<string, unknown>[]
     expect(questions.map(entry => entry.allow_free_text)).toEqual([true, false])
   })
 
-  it.each([AgentProvider.CLAUDE_CODE, AgentProvider.ZCODE, AgentProvider.QODER, AgentProvider.DEEPSEEK_HARNESS, AgentProvider.QWEN_CODE])('keeps the free-text field out of the native question of provider %s, whose schema has none', (provider) => {
-    const questions = askUserQuestionToolCall(provider, 'call-1', [{ ...question, freeText: true }]).arguments?.questions as Record<string, unknown>[]
+  it.each([
+    AgentProvider.CLAUDE_CODE,
+    AgentProvider.ZCODE,
+    AgentProvider.QODER,
+    AgentProvider.DEEPSEEK_HARNESS,
+    AgentProvider.QWEN_CODE,
+  ])('keeps the free-text field out of the native question of provider %s, whose schema has none', (provider) => {
+    const questions = askUserQuestionToolCall(provider, 'call-1', [
+      { ...question, freeText: true },
+    ]).arguments?.questions as Record<string, unknown>[]
     expect(questions[0]).not.toHaveProperty('freeText')
     expect(questions[0]).toMatchObject({ question: 'Which color?', header: 'Color' })
   })
 
   it('states the real header and option descriptions of a Letta question, and no preview', () => {
-    expect(askUserQuestionToolCall(AgentProvider.LETTA, 'call-1', [{ ...question, options: [{ label: 'Red', description: 'Use red.', preview: '```\nred\n```' }, { label: 'Blue', description: 'Use blue.' }] }])).toEqual({
+    expect(askUserQuestionToolCall(AgentProvider.LETTA, 'call-1', [
+      {
+        ...question,
+        options: [
+          { label: 'Red', description: 'Use red.', preview: '```\nred\n```' },
+          { label: 'Blue', description: 'Use blue.' },
+        ],
+      },
+    ])).toEqual({
       id: 'call-1',
       name: 'AskUserQuestion',
-      arguments: { questions: [{ question: 'Which color?', header: 'Color', options: [{ label: 'Red', description: 'Use red.' }, { label: 'Blue', description: 'Use blue.' }], multiSelect: false }] },
+      arguments: {
+        questions: [
+          {
+            question: 'Which color?',
+            header: 'Color',
+            options: [
+              { label: 'Red', description: 'Use red.' },
+              { label: 'Blue', description: 'Use blue.' },
+            ],
+            multiSelect: false,
+          },
+        ],
+      },
     })
   })
 })
 
 describe('the Task family tool calls', () => {
   it('creates and changes a Claude Code task with the native schema', () => {
-    expect(claudeTaskCreateToolCall('create', 'Inspect', 'Inspect the repository.')).toEqual({ id: 'create', name: 'TaskCreate', arguments: { subject: 'Inspect', description: 'Inspect the repository.' } })
+    expect(claudeTaskCreateToolCall('create', 'Inspect', 'Inspect the repository.')).toEqual({
+      id: 'create',
+      name: 'TaskCreate',
+      arguments: { subject: 'Inspect', description: 'Inspect the repository.' },
+    })
     expect(claudeTaskCreateToolCall('create', 'Inspect', 'Inspect the repository.', 'Inspecting').arguments).toEqual({ subject: 'Inspect', description: 'Inspect the repository.', activeForm: 'Inspecting' })
-    expect(claudeTaskUpdateToolCall('update', '1', 'deleted')).toEqual({ id: 'update', name: 'TaskUpdate', arguments: { taskId: '1', status: 'deleted' } })
+    expect(claudeTaskUpdateToolCall('update', '1', 'deleted')).toEqual({
+      id: 'update',
+      name: 'TaskUpdate',
+      arguments: { taskId: '1', status: 'deleted' },
+    })
   })
 
   it.each([
@@ -2711,7 +4125,11 @@ describe('the Task family tool calls', () => {
 
 describe('the ZCode background command', () => {
   it('backgrounds the command through the run_in_background flag of the same Bash tool', () => {
-    expect(backgroundBashToolCall(AgentProvider.ZCODE, 'call-1', 'sleep 60')).toEqual({ id: 'call-1', name: 'Bash', arguments: { command: 'sleep 60', description: 'Run the scripted command in the background', run_in_background: true } })
+    expect(backgroundBashToolCall(AgentProvider.ZCODE, 'call-1', 'sleep 60')).toEqual({
+      id: 'call-1',
+      name: 'Bash',
+      arguments: { command: 'sleep 60', description: 'Run the scripted command in the background', run_in_background: true },
+    })
     expect(bashToolCall(AgentProvider.ZCODE, 'call-1', 'sleep 60').arguments).not.toHaveProperty('run_in_background')
   })
 })
@@ -2726,25 +4144,39 @@ describe('Muse native tool builders', () => {
     })
   })
   it('uses the proved full MCP function ID', () => {
-    const tool = mcpToolCall(AgentProvider.MUSE_CODE, 'mcp-proof', { server: 'echo_probe', tool: 'echo', input: { value: 'proof' } })
+    const tool = mcpToolCall(AgentProvider.MUSE_CODE, 'mcp-proof', {
+      server: 'echo_probe',
+      tool: 'echo',
+      input: { value: 'proof' },
+    })
     expect(tool.name).toBe('mcp__echo_probe__echo')
     expect(tool.namespace).toBeUndefined()
   })
 
   it('supplies stable question IDs and native selection fields', () => {
-    const tool = askUserQuestionToolCall(AgentProvider.MUSE_CODE, 'question-proof', [{
-      header: 'Choice',
-      question: 'Choose the options',
-      multiSelect: true,
-      options: [{ label: 'One', description: 'First option' }, { label: 'Two', description: 'Second option' }],
-    }])
-    expect(tool.arguments?.questions).toEqual([{
-      id: 'question-1',
-      header: 'Choice',
-      question: 'Choose the options',
-      options: [{ label: 'One', description: 'First option' }, { label: 'Two', description: 'Second option' }],
-      selection: { mode: 'multiple', min_selections: 1, max_selections: 2 },
-    }])
+    const tool = askUserQuestionToolCall(AgentProvider.MUSE_CODE, 'question-proof', [
+      {
+        header: 'Choice',
+        question: 'Choose the options',
+        multiSelect: true,
+        options: [
+          { label: 'One', description: 'First option' },
+          { label: 'Two', description: 'Second option' },
+        ],
+      },
+    ])
+    expect(tool.arguments?.questions).toEqual([
+      {
+        id: 'question-1',
+        header: 'Choice',
+        question: 'Choose the options',
+        options: [
+          { label: 'One', description: 'First option' },
+          { label: 'Two', description: 'Second option' },
+        ],
+        selection: { mode: 'multiple', min_selections: 1, max_selections: 2 },
+      },
+    ])
   })
 })
 
@@ -2781,23 +4213,41 @@ describe('askUserQuestionToolCall selection limits', () => {
   const nativeQuestion = (minimumSelections?: number, maximumSelections?: number, multiSelect = true): QuestionRequest => ({
     header: 'Tools',
     question: 'Choose the tools',
-    options: [{ label: 'One', description: 'First', preview: 'Native preview 界' }, { label: 'Two', description: 'Second' }, { label: 'Three', description: 'Third' }],
+    options: [
+      { label: 'One', description: 'First', preview: 'Native preview 界' },
+      { label: 'Two', description: 'Second' },
+      { label: 'Three', description: 'Third' },
+    ],
     multiSelect,
-    ...(minimumSelections === undefined ? {} : { minimumSelections }),
-    ...(maximumSelections === undefined ? {} : { maximumSelections }),
+    ...(minimumSelections === undefined
+      ? {}
+      : { minimumSelections }),
+    ...(maximumSelections === undefined
+      ? {}
+      : { maximumSelections }),
   })
 
   it('maps explicit counts to the exact native model-tool fields', () => {
-    const questions = [nativeQuestion(2, 3)]
+    const questions = [
+      nativeQuestion(2, 3),
+    ]
     const original = structuredClone(questions)
     const tool = askUserQuestionToolCall(AgentProvider.MUSE_CODE, 'limited-question', questions)
-    expect(JSON.parse(JSON.stringify(tool.arguments))).toEqual({ questions: [{
-      id: 'question-1',
-      header: 'Tools',
-      question: 'Choose the tools',
-      options: [{ label: 'One', description: 'First' }, { label: 'Two', description: 'Second' }, { label: 'Three', description: 'Third' }],
-      selection: { mode: 'multiple', min_selections: 2, max_selections: 3 },
-    }] })
+    expect(JSON.parse(JSON.stringify(tool.arguments))).toEqual({
+      questions: [
+        {
+          id: 'question-1',
+          header: 'Tools',
+          question: 'Choose the tools',
+          options: [
+            { label: 'One', description: 'First' },
+            { label: 'Two', description: 'Second' },
+            { label: 'Three', description: 'Third' },
+          ],
+          selection: { mode: 'multiple', min_selections: 2, max_selections: 3 },
+        },
+      ],
+    })
     expect(questions).toEqual(original)
   })
 
@@ -2818,14 +4268,24 @@ describe('askUserQuestionToolCall selection limits', () => {
     { label: 'not-a-number maximum', minimum: 1, maximum: Number.NaN },
     { label: 'conflicting counts', minimum: 3, maximum: 2 },
   ])('refuses $label in the installed native model-tool domain', ({ minimum, maximum }) => {
-    const questions = [nativeQuestion(minimum, maximum)]
+    const questions = [
+      nativeQuestion(minimum, maximum),
+    ]
     const original = structuredClone(questions)
     expect(() => askUserQuestionToolCall(AgentProvider.MUSE_CODE, 'invalid-limit', questions)).toThrow(/native Muse selection (minimum|maximum)|below its minimum/)
     expect(questions).toEqual(original)
   })
 
   it('refuses a maximum above the supplied option count', () => {
-    const questions = [{ ...nativeQuestion(1, 3), options: [{ label: 'One', description: 'First' }, { label: 'Two', description: 'Second' }] }]
+    const questions = [
+      {
+        ...nativeQuestion(1, 3),
+        options: [
+          { label: 'One', description: 'First' },
+          { label: 'Two', description: 'Second' },
+        ],
+      },
+    ]
     const original = structuredClone(questions)
     expect(() => askUserQuestionToolCall(AgentProvider.MUSE_CODE, 'invalid-limit', questions)).toThrow(/native Muse selection (minimum|maximum)|below its minimum/)
     expect(questions).toEqual(original)
@@ -2839,7 +4299,12 @@ describe('askUserQuestionToolCall selection limits', () => {
   })
 
   it.each([0, 1, 4, 1000])('refuses %i options outside the native model array limits', (count) => {
-    const questions = [{ ...nativeQuestion(), options: Array.from({ length: count }, (_, index) => ({ label: `Option ${index}`, description: `Option ${index} description` })) }]
+    const questions = [
+      {
+        ...nativeQuestion(),
+        options: Array.from({ length: count }, (_, index) => ({ label: `Option ${index}`, description: `Option ${index} description` })),
+      },
+    ]
     const original = structuredClone(questions)
     expect(() => askUserQuestionToolCall(AgentProvider.MUSE_CODE, 'invalid-option-count', questions)).toThrow('The native Muse question tool takes two to three options per question.')
     expect(questions).toEqual(original)
@@ -2850,33 +4315,59 @@ describe('askUserQuestionToolCall selection limits', () => {
     { minimum: undefined, maximum: 2 },
     { minimum: 1, maximum: 2 },
   ])('refuses explicit numeric counts in single mode %j', ({ minimum, maximum }) => {
-    const questions = [nativeQuestion(minimum, maximum, false)]
+    const questions = [
+      nativeQuestion(minimum, maximum, false),
+    ]
     const original = structuredClone(questions)
     expect(() => askUserQuestionToolCall(AgentProvider.MUSE_CODE, 'single-limit', questions)).toThrow('The native Muse single-selection question states no counts.')
     expect(questions).toEqual(original)
   })
 
   it('keeps the existing omitted-count defaults without multiple-mode previews', () => {
-    const questions = [nativeQuestion()]
+    const questions = [
+      nativeQuestion(),
+    ]
     const original = structuredClone(questions)
     const tool = askUserQuestionToolCall(AgentProvider.MUSE_CODE, 'default-counts', questions)
-    expect(tool.arguments).toMatchObject({ questions: [{ selection: { mode: 'multiple', min_selections: 1, max_selections: 3 } }] })
+    expect(tool.arguments).toMatchObject({
+      questions: [
+        {
+          selection: { mode: 'multiple', min_selections: 1, max_selections: 3 },
+        },
+      ],
+    })
     expect(JSON.stringify(tool.arguments)).not.toContain('preview')
     expect(questions).toEqual(original)
   })
 
   it('preserves single-mode previews and leaves its numeric counts absent', () => {
-    const questions = [nativeQuestion(undefined, undefined, false)]
+    const questions = [
+      nativeQuestion(undefined, undefined, false),
+    ]
     const original = structuredClone(questions)
     const tool = askUserQuestionToolCall(AgentProvider.MUSE_CODE, 'single-preview', questions)
-    expect(tool.arguments).toMatchObject({ questions: [{ options: [{ preview: { format: 'markdown', content: 'Native preview 界' } }, { label: 'Two', description: 'Second' }, { label: 'Three', description: 'Third' }] }] })
+    expect(tool.arguments).toMatchObject({
+      questions: [
+        {
+          options: [
+            {
+              preview: { format: 'markdown', content: 'Native preview 界' },
+            },
+            { label: 'Two', description: 'Second' },
+            { label: 'Three', description: 'Third' },
+          ],
+        },
+      ],
+    })
     expect(JSON.stringify(tool.arguments)).not.toContain('min_selections')
     expect(JSON.stringify(tool.arguments)).not.toContain('max_selections')
     expect(questions).toEqual(original)
   })
 
   it.each(PROVIDERS.filter(provider => provider !== AgentProvider.MUSE_CODE && hasToolFor(provider, 'askUserQuestion')))('refuses explicit counts for the builder without this capability %j', (provider) => {
-    const questions = [nativeQuestion(1, 2)]
+    const questions = [
+      nativeQuestion(1, 2),
+    ]
     const original = structuredClone(questions)
     expect(() => askUserQuestionToolCall(provider, 'unsupported-counts', questions)).toThrow('question builder accepts no explicit selection counts')
     expect(questions).toEqual(original)
@@ -2884,24 +4375,44 @@ describe('askUserQuestionToolCall selection limits', () => {
 })
 
 describe('native question shape limits', () => {
-  const question: QuestionRequest = { question: 'Choose a color.', header: 'Color', options: [{ label: 'Blue', description: 'Use blue.' }, { label: 'Green', description: 'Use green.' }] }
+  const question: QuestionRequest = {
+    question: 'Choose a color.',
+    header: 'Color',
+    options: [
+      { label: 'Blue', description: 'Use blue.' },
+      { label: 'Green', description: 'Use green.' },
+    ],
+  }
 
   it.each([AgentProvider.CODEX, AgentProvider.DIRAC])('refuses multiple selection instead of dropping it for %s', (provider) => {
-    expect(() => askUserQuestionToolCall(provider, 'multiple', [{ ...question, multiSelect: true }])).toThrow('single-choice')
+    expect(() => askUserQuestionToolCall(provider, 'multiple', [
+      { ...question, multiSelect: true },
+    ])).toThrow('single-choice')
   })
 
   it('refuses multiple Dirac questions instead of discarding their option sets', () => {
-    expect(() => askUserQuestionToolCall(AgentProvider.DIRAC, 'pages', [question, { ...question, question: 'Choose another color.' }])).toThrow('one question')
+    expect(() => askUserQuestionToolCall(AgentProvider.DIRAC, 'pages', [
+      question,
+      { ...question, question: 'Choose another color.' },
+    ])).toThrow('one question')
   })
 })
 
 describe('codexWaitCellToolCall', () => {
   it('passes the exact native cell ID without replacing it with a guessed identifier', () => {
-    expect(codexWaitCellToolCall('await-cell', '42')).toEqual({ id: 'await-cell', name: 'wait', arguments: { cell_id: '42' } })
+    expect(codexWaitCellToolCall('await-cell', '42')).toEqual({
+      id: 'await-cell',
+      name: 'wait',
+      arguments: { cell_id: '42' },
+    })
     expect(codexWaitCellToolCall('await-captured-cell', '{{codeCell}}').arguments).toEqual({ cell_id: '{{codeCell}}' })
   })
 
-  it.each([['', '1'], ['wait', ''], ['wait', '  ']])('rejects an absent call or cell identity: %j', (id, cellId) => {
+  it.each([
+    ['', '1'],
+    ['wait', ''],
+    ['wait', '  '],
+  ])('rejects an absent call or cell identity: %j', (id, cellId) => {
     expect(() => codexWaitCellToolCall(id!, cellId!)).toThrow('requires a call ID and cell ID')
   })
 })

@@ -692,7 +692,7 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [@cfworker/json-schema 4.1.1 (MIT)](#cfworkerjson-schema-411-mit)
 - [@connectrpc/connect 2.1.2 (Apache-2.0)](#connectrpcconnect-212-apache-20)
 - [@connectrpc/connect-web 2.1.2 (Apache-2.0)](#connectrpcconnect-web-212-apache-20)
-- [@knadh/oat 0.7.2 (MIT)](#knadhoat-072-mit)
+- [@knadh/oat 1.0.0 (MIT)](#knadhoat-100-mit)
 - [@milkdown/core 7.22.1 (MIT)](#milkdowncore-7221-mit)
 - [@milkdown/ctx 7.22.1 (MIT)](#milkdownctx-7221-mit)
 - [@milkdown/plugin-clipboard 7.22.1 (MIT)](#milkdownplugin-clipboard-7221-mit)
@@ -707,9 +707,9 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [@noble/hashes 2.4.0 (MIT)](#noblehashes-240-mit)
 - [@noble/post-quantum 0.7.1 (MIT)](#noblepost-quantum-071-mit)
 - [@shikijs/rehype 4.4.3 (MIT)](#shikijsrehype-443-mit)
-- [@simplewebauthn/browser 13.3.0 (MIT)](#simplewebauthnbrowser-1330-mit)
+- [@simplewebauthn/browser 14.0.0 (MIT)](#simplewebauthnbrowser-1400-mit)
 - [@solidjs/router 1.0.0 (MIT)](#solidjsrouter-100-mit)
-- [@solidjs/start 1.3.2 (MIT)](#solidjsstart-132-mit)
+- [@solidjs/start 2.1.0 (MIT)](#solidjsstart-210-mit)
 - [@tauri-apps/api 2.11.1 (Apache-2.0 OR MIT)](#tauri-appsapi-2111-apache-20-or-mit)
 - [@tauri-apps/plugin-clipboard-manager 2.3.2 (MIT OR Apache-2.0)](#tauri-appsplugin-clipboard-manager-232-mit-or-apache-20)
 - [@tauri-apps/plugin-notification 2.4.0 (MIT OR Apache-2.0)](#tauri-appsplugin-notification-240-mit-or-apache-20)
@@ -738,7 +738,6 @@ For the latest version, see [NOTICE.md on GitHub](https://github.com/leapmux/lea
 - [source-map-js 1.2.1 (BSD-3-Clause)](#source-map-js-121-bsd-3-clause)
 - [tinykeys 4.0.0 (MIT)](#tinykeys-400-mit)
 - [unified 11.0.5 (MIT)](#unified-1105-mit)
-- [vinxi 0.5.11 (MIT)](#vinxi-0511-mit)
 
 ### Other Third-Party Notices
 
@@ -105915,7 +105914,7 @@ SOFTWARE.
    limitations under the License.
 ```
 
-### @knadh/oat 0.7.2 (MIT)
+### @knadh/oat 1.0.0 (MIT)
 
 ```
 The MIT License
@@ -106307,7 +106306,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### @simplewebauthn/browser 13.3.0 (MIT)
+### @simplewebauthn/browser 14.0.0 (MIT)
 
 ```
 MIT License
@@ -106356,7 +106355,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
-### @solidjs/start 1.3.2 (MIT)
+### @solidjs/start 2.1.0 (MIT)
 
 ```
 MIT License
@@ -107826,32 +107825,6 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
-```
-
-### vinxi 0.5.11 (MIT)
-
-```
-MIT License
-
-Copyright (c) 2024 Nikhil Saraf
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
 ```
 
 ---

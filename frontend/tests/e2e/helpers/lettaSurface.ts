@@ -20,7 +20,9 @@ export function createLettaSurface(host: Pick<MockModelScriptHost, 'hasScenario'
         return true
       if (request.method !== 'GET' || url.pathname !== LETTA_CHATGPT_USAGE_PATH)
         return false
-      const accountId = typeof request.headers['chatgpt-account-id'] === 'string' ? request.headers['chatgpt-account-id'] : undefined
+      const accountId = typeof request.headers['chatgpt-account-id'] === 'string'
+        ? request.headers['chatgpt-account-id']
+        : undefined
       const authorized = request.headers.authorization === `Bearer ${LETTA_CHATGPT_ACCESS_TOKEN}` && accountId === LETTA_CHATGPT_ACCOUNT_ID
       quota.answer(response, authorized, { accountId }, 'The request does not use the private ChatGPT account.')
       return true

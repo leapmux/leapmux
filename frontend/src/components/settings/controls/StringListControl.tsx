@@ -111,7 +111,10 @@ export const StringListControl: Component<StringListControlProps> = (props) => {
       setMessage(`Too many entries (max ${MAX_STRING_LIST_ITEMS})`)
       return
     }
-    write([...currentValue(), sanitized])
+    write([
+      ...currentValue(),
+      sanitized,
+    ])
     setNewName('')
     setMessage(null)
   }
@@ -126,7 +129,9 @@ export const StringListControl: Component<StringListControlProps> = (props) => {
    * so a mouse reorder and a keyboard reorder produce the same list.
    */
   const moveItem = (from: number, to: number) => {
-    const items = [...currentValue()]
+    const items = [
+      ...currentValue(),
+    ]
     if (from === to || from < 0 || to < 0 || from >= items.length || to >= items.length)
       return
     // The bound above puts `from` inside the list, so splice returns one entry; `?? ''` is the type-level guard alone.
@@ -214,7 +219,9 @@ export const StringListControl: Component<StringListControlProps> = (props) => {
     // repeated, which is the whole point of the keyboard path, so restore
     // focus once the move is applied.
     const el = e.currentTarget
-    moveItem(index, e.key === 'ArrowUp' ? index - 1 : index + 1)
+    moveItem(index, e.key === 'ArrowUp'
+      ? index - 1
+      : index + 1)
     queueMicrotask(() => el.focus())
   }
 

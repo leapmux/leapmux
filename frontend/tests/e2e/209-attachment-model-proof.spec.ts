@@ -14,7 +14,16 @@ function scriptedStatus(body: unknown, protocol: MockModelProtocol = 'openai-cha
     ruleMatches: {},
     pendingGates: [],
     unexpectedRequests: [],
-    requests: [{ protocol, path: protocol === 'aws-event-stream' ? '/' : '/v1/chat/completions', stepIndex: 0, body }],
+    requests: [
+      {
+        protocol,
+        path: protocol === 'aws-event-stream'
+          ? '/'
+          : '/v1/chat/completions',
+        stepIndex: 0,
+        body,
+      },
+    ],
   }
 }
 
@@ -52,7 +61,11 @@ test.describe('expectNativeAttachmentProof', () => {
   test('rejects a PDF marker without exact native PDF handoff', async ({ page }) => {
     await withProbePage(page, async (probe) => {
       const source = writeAttachmentFixture('pdf', 'marker-only.pdf')
-      const status = scriptedStatus({ messages: [{ role: 'user', content: 'LEAPMUX_PDF_PAGE_49' }] })
+      const status = scriptedStatus({
+        messages: [
+          { role: 'user', content: 'LEAPMUX_PDF_PAGE_49' },
+        ],
+      })
       await expect(expectNativeAttachmentProof(probe, status, 'pdf', source)).rejects.toThrow(NO_PDF_PART)
     })
   })
@@ -62,7 +75,19 @@ test.describe('expectNativeAttachmentProof', () => {
       const source = writeAttachmentFixture('pdf', 'image-only.pdf')
       const image = writeAttachmentFixture('image', 'unrelated-image.png')
       const raster = `data:image/png;base64,${readFileSync(image).toString('base64')}`
-      const status = scriptedStatus({ messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: raster } }] }] })
+      const status = scriptedStatus({
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'image_url',
+                image_url: { url: raster },
+              },
+            ],
+          },
+        ],
+      })
       await expect(expectNativeAttachmentProof(probe, status, 'pdf', source)).rejects.toThrow(NO_PDF_PART)
     })
   })
@@ -70,7 +95,14 @@ test.describe('expectNativeAttachmentProof', () => {
   test('rejects complete PDF bytes in plain text instead of a native PDF part', async ({ page }) => {
     await withProbePage(page, async (probe) => {
       const source = writeAttachmentFixture('pdf', 'plain-text-bytes.pdf')
-      const status = scriptedStatus({ messages: [{ role: 'user', content: readFileSync(source).toString('base64') }] })
+      const status = scriptedStatus({
+        messages: [
+          {
+            role: 'user',
+            content: readFileSync(source).toString('base64'),
+          },
+        ],
+      })
       await expect(expectNativeAttachmentProof(probe, status, 'pdf', source)).rejects.toThrow(NO_PDF_PART)
     })
   })
@@ -79,7 +111,19 @@ test.describe('expectNativeAttachmentProof', () => {
     await withProbePage(page, async (probe) => {
       const source = writeAttachmentFixture('image')
       const encoded = readFileSync(source).toString('base64')
-      const status = scriptedStatus({ messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: `data:image/png;base64,${encoded}` } }] }] })
+      const status = scriptedStatus({
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'image_url',
+                image_url: { url: `data:image/png;base64,${encoded}` },
+              },
+            ],
+          },
+        ],
+      })
       await expectNativeAttachmentProof(probe, status, 'image', source)
     })
   })
@@ -88,10 +132,20 @@ test.describe('expectNativeAttachmentProof', () => {
     await withProbePage(page, async (probe) => {
       const source = writeAttachmentFixture('image')
       const encoded = readFileSync(source).toString('base64')
-      const status = scriptedStatus({ messages: [
-        { role: 'system', content: encoded },
-        { role: 'user', content: [{ type: 'image_url', image_url: { url: 'data:image/png;base64,iVBORw0KGgo' } }] },
-      ] })
+      const status = scriptedStatus({
+        messages: [
+          { role: 'system', content: encoded },
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'image_url',
+                image_url: { url: 'data:image/png;base64,iVBORw0KGgo' },
+              },
+            ],
+          },
+        ],
+      })
       await expect(expectNativeAttachmentProof(probe, status, 'image', source)).rejects.toThrow('does not carry the complete image file')
     })
   })
@@ -100,7 +154,19 @@ test.describe('expectNativeAttachmentProof', () => {
     await withProbePage(page, async (probe) => {
       const source = writeAttachmentFixture('image')
       const webp = await webpFromFixture(probe, source)
-      const status = scriptedStatus({ messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: webp } }] }] })
+      const status = scriptedStatus({
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'image_url',
+                image_url: { url: webp },
+              },
+            ],
+          },
+        ],
+      })
       await expectNativeAttachmentProof(probe, status, 'image', source, { protocol: 'openai-chat-completions', transcodedImageType: 'image/webp' })
     })
   })
@@ -119,7 +185,19 @@ test.describe('expectNativeAttachmentProof', () => {
         context.fillRect(0, 0, 16, 16)
         return canvas.toDataURL('image/webp', 0.96)
       })
-      const status = scriptedStatus({ messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: white } }] }] })
+      const status = scriptedStatus({
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'image_url',
+                image_url: { url: white },
+              },
+            ],
+          },
+        ],
+      })
       await expect(expectNativeAttachmentProof(probe, status, 'image', source)).rejects.toThrow('does not carry the complete image file')
       // The allowance admits a WebP, so only the decoded colors reject this image.
       const wrongColors = expectNativeAttachmentProof(probe, status, 'image', source, { protocol: 'openai-chat-completions', transcodedImageType: 'image/webp' })
@@ -132,7 +210,19 @@ test.describe('expectNativeAttachmentProof', () => {
     await withProbePage(page, async (probe) => {
       const source = writeAttachmentFixture('image')
       const webp = await webpFromFixture(probe, source)
-      const status = scriptedStatus({ messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: webp } }] }] })
+      const status = scriptedStatus({
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'image_url',
+                image_url: { url: webp },
+              },
+            ],
+          },
+        ],
+      })
       await expect(expectNativeAttachmentProof(probe, status, 'image', source)).rejects.toThrow('does not carry the complete image file')
     })
   })
@@ -143,7 +233,19 @@ test.describe('expectNativeAttachmentProof', () => {
       const webp = await webpFromFixture(probe, source)
       const mislabeled = webp.replace(/^data:image\/webp;/, 'data:image/png;')
       expect(mislabeled).not.toBe(webp)
-      const status = scriptedStatus({ messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: mislabeled } }] }] })
+      const status = scriptedStatus({
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'image_url',
+                image_url: { url: mislabeled },
+              },
+            ],
+          },
+        ],
+      })
       await expect(expectNativeAttachmentProof(probe, status, 'image', source)).rejects.toThrow('does not carry the complete image file')
     })
   })
@@ -154,7 +256,19 @@ test.describe('expectNativeAttachmentProof', () => {
       const encoded = readFileSync(source).toString('base64')
       const unpadded = encoded.replace(/=+$/, '')
       expect(unpadded).not.toBe(encoded)
-      const status = scriptedStatus({ messages: [{ role: 'user', content: [{ type: 'image_url', image_url: { url: `data:image/png;base64,${unpadded}` } }] }] })
+      const status = scriptedStatus({
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'image_url',
+                image_url: { url: `data:image/png;base64,${unpadded}` },
+              },
+            ],
+          },
+        ],
+      })
       await expect(expectNativeAttachmentProof(probe, status, 'image', source)).rejects.toThrow('does not carry the complete image file')
     })
   })
@@ -163,7 +277,11 @@ test.describe('expectNativeAttachmentProof', () => {
     await withProbePage(page, async (probe) => {
       const source = writeAttachmentFixture('image')
       const webp = await webpFromFixture(probe, source)
-      const status = scriptedStatus({ messages: [{ role: 'user', content: `Inspect this image: ${webp}` }] })
+      const status = scriptedStatus({
+        messages: [
+          { role: 'user', content: `Inspect this image: ${webp}` },
+        ],
+      })
       await expect(expectNativeAttachmentProof(probe, status, 'image', source)).rejects.toThrow('does not carry the complete image file')
     })
   })
@@ -172,11 +290,21 @@ test.describe('expectNativeAttachmentProof', () => {
     await withProbePage(page, async (probe) => {
       const source = writeAttachmentFixture('image')
       const webp = await webpFromFixture(probe, source)
-      const status = scriptedStatus({ messages: [
-        { role: 'user', content: [{ type: 'image_url', image_url: { url: webp } }] },
-        { role: 'assistant', content: 'I read the image.' },
-        { role: 'user', content: 'Inspect the attached file.' },
-      ] })
+      const status = scriptedStatus({
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'image_url',
+                image_url: { url: webp },
+              },
+            ],
+          },
+          { role: 'assistant', content: 'I read the image.' },
+          { role: 'user', content: 'Inspect the attached file.' },
+        ],
+      })
       await expect(expectNativeAttachmentProof(probe, status, 'image', source)).rejects.toThrow('does not carry the complete image file')
     })
   })
@@ -186,11 +314,42 @@ test.describe('expectNativeAttachmentProof', () => {
       const source = writeAttachmentFixture('image')
       const webp = await webpFromFixture(probe, source)
       const data = webp.slice(webp.indexOf(',') + 1)
-      const status = scriptedStatus({ messages: [
-        { role: 'user', content: [{ type: 'text', text: 'Inspect the attached file.' }] },
-        { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_1', name: 'Read', input: {} }] },
-        { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: [{ type: 'image', source: { type: 'base64', media_type: 'image/webp', data } }] }] },
-      ] }, 'anthropic-messages')
+      const status = scriptedStatus({
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'Inspect the attached file.' },
+            ],
+          },
+          {
+            role: 'assistant',
+            content: [
+              {
+                type: 'tool_use',
+                id: 'toolu_1',
+                name: 'Read',
+                input: {},
+              },
+            ],
+          },
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'tool_result',
+                tool_use_id: 'toolu_1',
+                content: [
+                  {
+                    type: 'image',
+                    source: { type: 'base64', media_type: 'image/webp', data },
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      }, 'anthropic-messages')
       await expect(expectNativeAttachmentProof(probe, status, 'image', source)).rejects.toThrow('does not carry the complete image file')
     })
   })
@@ -199,10 +358,20 @@ test.describe('expectNativeAttachmentProof', () => {
     await withProbePage(page, async (probe) => {
       const source = writeAttachmentFixture('image')
       const webp = await webpFromFixture(probe, source)
-      const status = scriptedStatus({ messages: [
-        { role: 'user', content: 'Inspect the attached file.' },
-        { role: 'system', content: [{ type: 'image_url', image_url: { url: webp } }] },
-      ] })
+      const status = scriptedStatus({
+        messages: [
+          { role: 'user', content: 'Inspect the attached file.' },
+          {
+            role: 'system',
+            content: [
+              {
+                type: 'image_url',
+                image_url: { url: webp },
+              },
+            ],
+          },
+        ],
+      })
       await expect(expectNativeAttachmentProof(probe, status, 'image', source)).rejects.toThrow('does not carry the complete image file')
     })
   })
@@ -210,9 +379,17 @@ test.describe('expectNativeAttachmentProof', () => {
   test('rejects PDF page text and a PDF header alone', async ({ page }) => {
     await withProbePage(page, async (probe) => {
       const source = writeAttachmentFixture('pdf')
-      const pageText = expectNativeAttachmentProof(probe, scriptedStatus({ messages: [{ role: 'user', content: 'Page text: LEAPMUX_PDF_PAGE_49' }] }), 'pdf', source)
+      const pageText = expectNativeAttachmentProof(probe, scriptedStatus({
+        messages: [
+          { role: 'user', content: 'Page text: LEAPMUX_PDF_PAGE_49' },
+        ],
+      }), 'pdf', source)
       await expect(pageText).rejects.toThrow('carries no typed PDF part with the exact source bytes')
-      const headerOnly = expectNativeAttachmentProof(probe, scriptedStatus({ messages: [{ role: 'user', content: '%PDF-1.4 JVBERi0' }] }), 'pdf', source)
+      const headerOnly = expectNativeAttachmentProof(probe, scriptedStatus({
+        messages: [
+          { role: 'user', content: '%PDF-1.4 JVBERi0' },
+        ],
+      }), 'pdf', source)
       await expect(headerOnly).rejects.toThrow('carries no typed PDF part with the exact source bytes')
     })
   })
@@ -221,7 +398,19 @@ test.describe('expectNativeAttachmentProof', () => {
     await withProbePage(page, async (probe) => {
       const source = writeAttachmentFixture('pdf')
       const header = readFileSync(source).subarray(0, 8).toString('base64')
-      const status = scriptedStatus({ messages: [{ role: 'user', content: [{ type: 'file', file: { filename: 'doc.pdf', file_data: `data:application/pdf;base64,${header}` } }] }] })
+      const status = scriptedStatus({
+        messages: [
+          {
+            role: 'user',
+            content: [
+              {
+                type: 'file',
+                file: { filename: 'doc.pdf', file_data: `data:application/pdf;base64,${header}` },
+              },
+            ],
+          },
+        ],
+      })
       await expect(expectNativeAttachmentProof(probe, status, 'pdf', source, { protocol: 'openai-chat-completions' })).rejects.toThrow('has 8 bytes with SHA-256')
     })
   })
@@ -229,10 +418,24 @@ test.describe('expectNativeAttachmentProof', () => {
   test('accepts full PDF bytes in Kiro native user documents', async ({ page }) => {
     await withProbePage(page, async (probe) => {
       const source = writeAttachmentFixture('pdf')
-      const body = { conversationState: { currentMessage: { userInputMessage: {
-        content: 'Inspect the attached file.',
-        documents: [{ name: 'doc', format: 'pdf', source: { bytes: readFileSync(source).toString('base64') } }],
-      } } } }
+      const body = {
+        conversationState: {
+          currentMessage: {
+            userInputMessage: {
+              content: 'Inspect the attached file.',
+              documents: [
+                {
+                  name: 'doc',
+                  format: 'pdf',
+                  source: {
+                    bytes: readFileSync(source).toString('base64'),
+                  },
+                },
+              ],
+            },
+          },
+        },
+      }
       await expectNativeAttachmentProof(probe, scriptedStatus(body, 'aws-event-stream'), 'pdf', source, { protocol: 'aws-event-stream' })
     })
   })
@@ -241,10 +444,21 @@ test.describe('expectNativeAttachmentProof', () => {
     await withProbePage(page, async (probe) => {
       const source = writeAttachmentFixture('pdf')
       const fileData = `data:application/pdf;base64,${readFileSync(source).toString('base64')}`
-      const status = scriptedStatus({ messages: [
-        { role: 'system', content: 'You are a coding agent.' },
-        { role: 'user', content: [{ type: 'text', text: 'Inspect the attached file.' }, { type: 'file', file: { filename: 'doc.pdf', file_data: fileData } }] },
-      ] })
+      const status = scriptedStatus({
+        messages: [
+          { role: 'system', content: 'You are a coding agent.' },
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'Inspect the attached file.' },
+              {
+                type: 'file',
+                file: { filename: 'doc.pdf', file_data: fileData },
+              },
+            ],
+          },
+        ],
+      })
       await expectNativeAttachmentProof(probe, status, 'pdf', source, { protocol: 'openai-chat-completions' })
     })
   })
@@ -252,8 +466,25 @@ test.describe('expectNativeAttachmentProof', () => {
   test('accepts the complete PDF in a native Anthropic document block', async ({ page }) => {
     await withProbePage(page, async (probe) => {
       const source = writeAttachmentFixture('pdf')
-      const document = { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: readFileSync(source).toString('base64') } }
-      const status = scriptedStatus({ messages: [{ role: 'user', content: [{ type: 'text', text: 'Read the attached PDF.' }, document] }] }, 'anthropic-messages')
+      const document = {
+        type: 'document',
+        source: {
+          type: 'base64',
+          media_type: 'application/pdf',
+          data: readFileSync(source).toString('base64'),
+        },
+      }
+      const status = scriptedStatus({
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'Read the attached PDF.' },
+              document,
+            ],
+          },
+        ],
+      }, 'anthropic-messages')
       await expectNativeAttachmentProof(probe, status, 'pdf', source, { protocol: 'anthropic-messages' })
     })
   })
@@ -263,43 +494,87 @@ test.describe('expectNoRejectedContent', () => {
   test('accepts a clean prompt and rejects hidden bytes or a filename', async ({ page }) => {
     const source = writeAttachmentFixture('binary', 'refused.bin')
     const bytes = readFileSync(source).toString('base64')
-    await expectNoRejectedContent(page, scriptedStatus({ messages: [{ role: 'user', content: 'Reply once without attachments.' }] }), [source])
-    const hiddenBytes = expectNoRejectedContent(page, scriptedStatus({ messages: [{ role: 'user', content: `Reply once without attachments. ${bytes}` }] }), [source])
+    await expectNoRejectedContent(page, scriptedStatus({
+      messages: [
+        { role: 'user', content: 'Reply once without attachments.' },
+      ],
+    }), [source])
+    const hiddenBytes = expectNoRejectedContent(page, scriptedStatus({
+      messages: [
+        { role: 'user', content: `Reply once without attachments. ${bytes}` },
+      ],
+    }), [source])
     // Playwright's `expect` fails with the result of the matcher: `not.toContain` failed for the bytes, and then for
     // the file name.
-    await expect(hiddenBytes).rejects.toMatchObject({ matcherResult: { name: 'toContain', pass: true, message: expect.stringContaining(bytes) } })
-    const hiddenName = expectNoRejectedContent(page, scriptedStatus({ messages: [{ role: 'user', content: 'Reply once without attachments. refused.bin' }] }), [source])
-    await expect(hiddenName).rejects.toMatchObject({ matcherResult: { name: 'toContain', pass: true, message: expect.stringContaining('refused.bin') } })
+    await expect(hiddenBytes).rejects.toMatchObject({
+      matcherResult: {
+        name: 'toContain',
+        pass: true,
+        message: expect.stringContaining(bytes),
+      },
+    })
+    const hiddenName = expectNoRejectedContent(page, scriptedStatus({
+      messages: [
+        { role: 'user', content: 'Reply once without attachments. refused.bin' },
+      ],
+    }), [source])
+    await expect(hiddenName).rejects.toMatchObject({
+      matcherResult: {
+        name: 'toContain',
+        pass: true,
+        message: expect.stringContaining('refused.bin'),
+      },
+    })
   })
 
   test('rejects binary bytes hidden in the clean request system field', async ({ page }) => {
     const source = writeAttachmentFixture('binary', 'system-hidden.bin')
     const encoded = readFileSync(source).toString('base64')
-    const status = scriptedStatus({ messages: [
-      { role: 'system', content: `Hidden bytes: ${encoded}` },
-      { role: 'user', content: 'Reply once without attachments.' },
-    ] })
+    const status = scriptedStatus({
+      messages: [
+        { role: 'system', content: `Hidden bytes: ${encoded}` },
+        { role: 'user', content: 'Reply once without attachments.' },
+      ],
+    })
     await expect(expectNoRejectedContent(page, status, [source])).rejects.toThrow('AP8B/g==')
   })
 
   test('allows a filename in workspace context without the rejected bytes', async ({ page }) => {
     const source = writeAttachmentFixture('binary', 'workspace-file.bin')
-    const status = scriptedStatus({ messages: [
-      { role: 'system', content: 'Workspace files: workspace-file.bin' },
-      { role: 'user', content: 'Reply once without attachments.' },
-    ] })
+    const status = scriptedStatus({
+      messages: [
+        { role: 'system', content: 'Workspace files: workspace-file.bin' },
+        { role: 'user', content: 'Reply once without attachments.' },
+      ],
+    })
     await expectNoRejectedContent(page, status, [source])
   })
 
   test('checks the clean turn after an earlier scripted request', async ({ page }) => {
     const source = writeAttachmentFixture('binary', 'refused-after-prior.bin')
-    const previous = scriptedStatus({ messages: [{ role: 'user', content: `Reply once without attachments. ${readFileSync(source).toString('base64')}` }] })
-    const clean = { messages: [{ role: 'user', content: 'Reply once without attachments.' }] }
+    const previous = scriptedStatus({
+      messages: [
+        { role: 'user', content: `Reply once without attachments. ${readFileSync(source).toString('base64')}` },
+      ],
+    })
+    const clean = {
+      messages: [
+        { role: 'user', content: 'Reply once without attachments.' },
+      ],
+    }
     const status: MockModelScenarioStatus = {
       ...previous,
       nextStep: 2,
       stepCount: 2,
-      requests: [...previous.requests, { protocol: 'openai-chat-completions', path: '/v1/chat/completions', stepIndex: 1, body: clean }],
+      requests: [
+        ...previous.requests,
+        {
+          protocol: 'openai-chat-completions',
+          path: '/v1/chat/completions',
+          stepIndex: 1,
+          body: clean,
+        },
+      ],
     }
     await expectNoRejectedContent(page, status, [source])
   })
@@ -308,10 +583,20 @@ test.describe('expectNoRejectedContent', () => {
     await withProbePage(page, async (probe) => {
       const source = writeAttachmentFixture('image', 'refused.png')
       const webp = await webpFromFixture(probe, source)
-      const status = scriptedStatus({ messages: [{ role: 'user', content: [
-        { type: 'text', text: 'Reply once without attachments.' },
-        { type: 'image_url', image_url: { url: webp } },
-      ] }] })
+      const status = scriptedStatus({
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'Reply once without attachments.' },
+              {
+                type: 'image_url',
+                image_url: { url: webp },
+              },
+            ],
+          },
+        ],
+      })
       await expect(expectNoRejectedContent(probe, status, [source])).rejects.toThrow('rejected image')
     })
   })
@@ -320,10 +605,20 @@ test.describe('expectNoRejectedContent', () => {
     await withProbePage(page, async (probe) => {
       const source = writeAttachmentFixture('image', 'system-refused.png')
       const webp = await webpFromFixture(probe, source)
-      const status = scriptedStatus({ messages: [
-        { role: 'system', content: [{ type: 'image_url', image_url: { url: webp } }] },
-        { role: 'user', content: 'Reply once without attachments.' },
-      ] })
+      const status = scriptedStatus({
+        messages: [
+          {
+            role: 'system',
+            content: [
+              {
+                type: 'image_url',
+                image_url: { url: webp },
+              },
+            ],
+          },
+          { role: 'user', content: 'Reply once without attachments.' },
+        ],
+      })
       await expect(expectNoRejectedContent(probe, status, [source])).rejects.toThrow('rejected image')
     })
   })
@@ -333,10 +628,20 @@ test.describe('expectNoRejectedContent', () => {
       const source = writeAttachmentFixture('pdf', 'refused.pdf')
       const image = writeAttachmentFixture('image')
       const raster = `data:image/png;base64,${readFileSync(image).toString('base64')}`
-      const status = scriptedStatus({ messages: [{ role: 'user', content: [
-        { type: 'text', text: 'Reply once without attachments.' },
-        { type: 'image_url', image_url: { url: raster } },
-      ] }] })
+      const status = scriptedStatus({
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'Reply once without attachments.' },
+              {
+                type: 'image_url',
+                image_url: { url: raster },
+              },
+            ],
+          },
+        ],
+      })
       await expect(expectNoRejectedContent(probe, status, [source])).rejects.toThrow('rejected image')
     })
   })

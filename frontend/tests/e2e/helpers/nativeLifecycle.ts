@@ -146,7 +146,9 @@ export type InterruptTurnOptions = InterruptedModelTurnOptions | InterruptedTool
 export function interruptedToolTotals(toolUses: number): RegExp {
   if (!Number.isSafeInteger(toolUses) || toolUses < 1)
     throw new Error('An interrupted tool turn needs a positive safe integer for its tool count.')
-  return new RegExp(`^${toolUses} tool${toolUses === 1 ? '' : 's'}(?: · \\$\\d+\\.\\d{4})?$`)
+  return new RegExp(`^${toolUses} tool${toolUses === 1
+    ? ''
+    : 's'}(?: · \\$\\d+\\.\\d{4})?$`)
 }
 /** Verify native interruption and a usable next turn without changing the session. */
 export async function exerciseInterruptTurn(
@@ -177,14 +179,34 @@ export async function exerciseInterruptTurn(
   let toolPid = 0
   if (options.kind === 'tool') {
     const script = heldToolScript({ startedFile: toolStarted, releaseFile })
-    held = { ...(options.reasoning !== undefined ? { reasoning: options.reasoning } : {}), toolCalls: [bashToolCall(context.provider, 'held-native-tool', `${quotePosixShellArgument(process.execPath)} -e ${quotePosixShellArgument(script)}`)] }
+    held = {
+      ...(options.reasoning !== undefined
+        ? { reasoning: options.reasoning }
+        : {}),
+      toolCalls: [
+        bashToolCall(context.provider, 'held-native-tool', `${quotePosixShellArgument(process.execPath)} -e ${quotePosixShellArgument(script)}`),
+      ],
+    }
   }
   else if (options.holdModelTurn === 'after-first-chunk') {
     const text = `NEVERCOMPLETED${marker}`
-    held = { ...nativeTextStep(context, text), text, stream: { chunkChars: 16, delayMs: 0, gates: [{ afterChunk: 1, name: gate }] } }
+    held = {
+      ...nativeTextStep(context, text),
+      text,
+      stream: {
+        chunkChars: 16,
+        delayMs: 0,
+        gates: [
+          { afterChunk: 1, name: gate },
+        ],
+      },
+    }
   }
   else {
-    held = { ...nativeTextStep(context, `NEVERCOMPLETED${marker}`), gate }
+    held = {
+      ...nativeTextStep(context, `NEVERCOMPLETED${marker}`),
+      gate,
+    }
   }
   await withCleanup(async () => {
     const stepIndex = await context.modelScript.queue(held)
@@ -277,8 +299,22 @@ export async function exerciseInterruptedPartialAnswer(context: ManagedNativeSce
   const gate = `native-partial-answer-${marker}`
   try {
     const start = await context.modelScript.queue(
-      { ...nativeTextStep(context, text), text, stream: { chunkChars: head.length, delayMs: 0, gates: [{ afterChunk: 1, name: gate }] } },
-      ...(options.followUp ? [nativeTextStep(context, options.followUp.answer)] : []),
+      {
+        ...nativeTextStep(context, text),
+        text,
+        stream: {
+          chunkChars: head.length,
+          delayMs: 0,
+          gates: [
+            { afterChunk: 1, name: gate },
+          ],
+        },
+      },
+      ...(options.followUp
+        ? [
+            nativeTextStep(context, options.followUp.answer),
+          ]
+        : []),
     )
     context.modelScript.allowUnconsumed('The interrupt ends the streamed answer after its first chunk.')
     await sendMessage(context.page, context.modelScript.prompt('Stream the scripted answer.'))
@@ -340,7 +376,11 @@ export async function exerciseCloseAgent(
   const pidFile = join(agent.workingDir, `native-close-${marker}.pid`)
   // The close must stop this process. The release path stays absent throughout the test.
   const script = heldToolScript({ startedFile: pidFile, releaseFile: `${pidFile}.release` })
-  const stepIndex = await context.modelScript.queue({ toolCalls: [bashToolCall(context.provider, 'held-close-tool', `${quotePosixShellArgument(process.execPath)} -e ${quotePosixShellArgument(script)}`)] })
+  const stepIndex = await context.modelScript.queue({
+    toolCalls: [
+      bashToolCall(context.provider, 'held-close-tool', `${quotePosixShellArgument(process.execPath)} -e ${quotePosixShellArgument(script)}`),
+    ],
+  })
   // Some native runtimes request a cancellation continuation before their process exits.
   await context.modelScript.fallback(nativeTextStep(context, 'The native close continuation ended.'))
   await sendMessage(context.page, context.modelScript.prompt('Run the held native close probe.'))
@@ -359,7 +399,9 @@ export async function exerciseCloseAgent(
     const inspection = await inspectLastTabCloseViaAPI(server.hubUrl, server.adminToken, server.workerId, TabType.AGENT, agent.id)
     await tabById(context.page, agent.id).getByTestId('tab-close').click()
     const dialog = inspection.shouldPrompt
-      ? context.page.getByRole('dialog').filter({ has: context.page.getByRole('heading', { name: 'Close last tab', exact: true }) })
+      ? context.page.getByRole('dialog').filter({
+          has: context.page.getByRole('heading', { name: 'Close last tab', exact: true }),
+        })
       : context.page.getByTestId('busy-tab-close-dialog')
     await expect(dialog).toBeVisible()
     await dialog.getByRole('button', { name: 'Close anyway', exact: true }).click()
@@ -481,9 +523,19 @@ export async function exerciseAgentStartup(
   if (!prompt.trim() || !answer.trim())
     throw new Error('The controlled startup prompt and answer must contain text.')
   // A failed startup sends no model request, so only a successful startup queues an answer.
-  const stepIndex = options.failed ? undefined : await context.modelScript.queue(nativeTextStep(context, answer))
-  await withNativeStartupWorker(context, options.launch, { failRuntime: options.failed ?? false, ...(options.workerEnvironment ? { workerEnvironment: options.workerEnvironment } : {}) }, async (workerId, wrapper) => {
-    const privateContext = { ...context, leapmuxServer: { ...context.leapmuxServer, workerId } }
+  const stepIndex = options.failed
+    ? undefined
+    : await context.modelScript.queue(nativeTextStep(context, answer))
+  await withNativeStartupWorker(context, options.launch, {
+    failRuntime: options.failed ?? false,
+    ...(options.workerEnvironment
+      ? { workerEnvironment: options.workerEnvironment }
+      : {}),
+  }, async (workerId, wrapper) => {
+    const privateContext = {
+      ...context,
+      leapmuxServer: { ...context.leapmuxServer, workerId },
+    }
     const server = privateContext.leapmuxServer
     const agentId = await openAgentViaAPI(server, context.workspaceId, newNativeWorkingDir(context, 'native-startup-workspace-'), {
       ...agentOpenOptions(context.provider),
@@ -514,7 +566,9 @@ export async function exerciseAgentStartup(
         expect(
           queue.items.filter(item => item.text.includes(prompt)).map(item => ({ state: item.state, reserved: queue.activeTurn && !queue.activeTurnSteerable })),
           'the Worker reserves the queued prompt while native startup waits',
-        ).toEqual([{ state: AgentInputState.DISPATCHING, reserved: true }])
+        ).toEqual([
+          { state: AgentInputState.DISPATCHING, reserved: true },
+        ])
       })
       await expect(context.page.getByTestId('agent-input-queue')).toContainText(prompt)
     }

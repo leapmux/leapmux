@@ -23,14 +23,20 @@ ohMyPiTest.describe('Oh My Pi subagent registry', () => {
     await modelScript.rule({
       name: 'the subagent yields its report',
       when: ohMyPiChildTurn(),
-      respond: { toolCalls: [ohMyPiYieldToolCall('yield-report', REPORT)] },
+      respond: {
+        toolCalls: [
+          ohMyPiYieldToolCall('yield-report', REPORT),
+        ],
+      },
     })
     const start = await modelScript.queue(
       {
-        toolCalls: [spawnSubagentToolCall(native.provider, 'spawn-omp', {
-          description: 'Run the fruit task',
-          prompt: modelScript.prompt('List three fruits, then count to three, then report done.'),
-        })],
+        toolCalls: [
+          spawnSubagentToolCall(native.provider, 'spawn-omp', {
+            description: 'Run the fruit task',
+            prompt: modelScript.prompt('List three fruits, then count to three, then report done.'),
+          }),
+        ],
       },
       { text: 'The subagent listed three fruits and counted to three.' },
     )

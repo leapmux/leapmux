@@ -68,7 +68,9 @@ function nonEmptyPresetEntries(preset: ProviderPermissionPreset | undefined): [s
   if (!preset)
     return undefined
   const entries = Object.entries(preset.sets)
-  return entries.length > 0 ? entries : undefined
+  return entries.length > 0
+    ? entries
+    : undefined
 }
 
 /**

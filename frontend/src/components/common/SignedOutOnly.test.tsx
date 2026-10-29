@@ -76,7 +76,10 @@ function renderGate(path = '/login', whenSignedIn?: 'redirect' | 'explain') {
   history.listen(value => navigations.push(value))
 
   const Restricted = () => (
-    <SignedOutOnly {...(whenSignedIn !== undefined ? { whenSignedIn } : {})}>
+    <SignedOutOnly {...(whenSignedIn !== undefined
+      ? { whenSignedIn }
+      : {})}
+    >
       <div data-testid="credential-form" />
     </SignedOutOnly>
   )

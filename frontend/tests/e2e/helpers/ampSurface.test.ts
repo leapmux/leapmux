@@ -20,7 +20,9 @@ import { createBufferedModelStream } from './modelStream'
 const ID_PATTERN = { message: /^M-[0-9A-Z]{22}$/i, toolUse: /^TU-[0-9A-Z]{22}$/i }
 
 /** A guard for a test that checks no guidance file. */
-const IGNORED_GUIDANCE: InstructionFileGuard = { check: () => {} }
+const IGNORED_GUIDANCE: InstructionFileGuard = {
+  check: () => {},
+}
 
 /** A request with a complete body, for a call that goes to the surface with no server. */
 function bodyRequest(method: string, chunks: readonly Buffer[]): IncomingMessage {
@@ -56,7 +58,10 @@ async function startMock(answers: (MockModelStep | undefined | Promise<MockModel
         return hooks.answer(inference, signal)
       return answers.shift()
     },
-    checkGuidanceFiles: (inference, files) => guidance.push({ inference, files: [...files] }),
+    checkGuidanceFiles: (inference, files) => guidance.push({
+      inference,
+      files: [...files],
+    }),
   })
   const sockets: Duplex[] = []
   // The mock model server refuses a request or an upgrade that no surface claims, and so does this server.
@@ -78,7 +83,13 @@ async function startMock(answers: (MockModelStep | undefined | Promise<MockModel
     origin,
     inferences,
     guidance,
-    post: async (path: string, body: unknown, headers?: Record<string, string>) => (await fetch(`${origin}${path}`, { method: 'POST', body: JSON.stringify(body), ...(headers ? { headers } : {}) })).json() as Promise<Record<string, unknown>>,
+    post: async (path: string, body: unknown, headers?: Record<string, string>) => (await fetch(`${origin}${path}`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+      ...(headers
+        ? { headers }
+        : {}),
+    })).json() as Promise<Record<string, unknown>>,
     close: async () => {
       surface.close()
       for (const socket of sockets)
@@ -105,7 +116,9 @@ class CliSocket {
   private constructor(readonly socket: WebSocket) {
     socket.addEventListener('message', (event) => {
       const text = String(event.data)
-      this.frames.push(text === 'pong' ? 'pong' : JSON.parse(text))
+      this.frames.push(text === 'pong'
+        ? 'pong'
+        : JSON.parse(text))
     })
   }
 
@@ -154,18 +167,34 @@ async function openThread(current: Mock, headers?: Record<string, string>): Prom
   const threadID = String(created.threadId)
   const executor = await CliSocket.open(current.origin, threadID)
   executor.request('executor_connect', { clientId: 'amp-x-e2e' })
-  executor.request('executor_environment_snapshot', { environment: { trees: [{ displayName: 'work', uri: 'file:///work' }] } })
+  executor.request('executor_environment_snapshot', {
+    environment: {
+      trees: [
+        { displayName: 'work', uri: 'file:///work' },
+      ],
+    },
+  })
   const client = await CliSocket.open(current.origin, threadID)
   client.request('client_resume', {})
   await expect.poll(() => executor.notifications('executor_connected').length).toBe(1)
   return { threadID, client, executor }
 }
 
-const userMessage = (text: string, extra: Record<string, unknown> = {}) => ({ content: [{ type: 'text', text }], messageId: ampMessageID(), ...extra })
+function userMessage(text: string, extra: Record<string, unknown> = {}) {
+  return {
+    content: [
+      { type: 'text', text },
+    ],
+    messageId: ampMessageID(),
+    ...extra,
+  }
+}
 
 function seededMessages(count: number): Array<{ role: 'user' | 'assistant', text: string }> {
   return Array.from({ length: count }, (_, index) => ({
-    role: index % 2 === 0 ? 'user' : 'assistant',
+    role: index % 2 === 0
+      ? 'user'
+      : 'assistant',
     text: `Saved message ${index}.`,
   }))
 }
@@ -184,25 +213,68 @@ describe('amp ids', () => {
 })
 
 describe('createAmpSurface thread features', () => {
-  it.each([{ features: [] }, { features: ['fast'] }, { features: ['plaid'] }])('preserves creation features $features across native reads and continuation', async ({ features }) => {
-    mock = await startMock([{ text: 'Feature receipt.' }])
+  it.each([
+    { features: [] },
+    {
+      features: ['fast'],
+    },
+    {
+      features: ['plaid'],
+    },
+  ])('preserves creation features $features across native reads and continuation', async ({ features }) => {
+    mock = await startMock([
+      { text: 'Feature receipt.' },
+    ])
     const created = await mock.post('/api/thread-actors', { agentMode: 'high', features })
     const threadID = String(created.threadId)
-    await mock.post('/api/thread-actors', { threadId: threadID, agentMode: 'low', features: ['replacement'] })
+    await mock.post('/api/thread-actors', {
+      threadId: threadID,
+      agentMode: 'low',
+      features: ['replacement'],
+    })
     const threads = await (await fetch(`${mock.origin}${AMP_E2E_THREADS_PATH}`)).json()
-    expect(threads).toEqual([expect.objectContaining({ id: threadID, agentMode: 'high', features })])
-    const exported = await mock.post('/api/internal?getThreadTail', { params: { thread: threadID } })
-    expect(exported).toMatchObject({ result: { thread: { data: { agentMode: 'high', meta: { features } } } } })
+    expect(threads).toEqual([
+      expect.objectContaining({ id: threadID, agentMode: 'high', features }),
+    ])
+    const exported = await mock.post('/api/internal?getThreadTail', {
+      params: { thread: threadID },
+    })
+    expect(exported).toMatchObject({
+      result: {
+        thread: {
+          data: {
+            agentMode: 'high',
+            meta: { features },
+          },
+        },
+      },
+    })
     const client = await CliSocket.open(mock.origin, threadID)
     client.request('client_resume')
-    await expect.poll(() => client.frames.find(Array.isArray)).toEqual(expect.arrayContaining([{ type: 'thread_features', features }]))
+    await expect.poll(() => client.frames.find(Array.isArray)).toEqual(expect.arrayContaining([
+      { type: 'thread_features', features },
+    ]))
     client.request('client_append_user_msg', userMessage('Read the feature receipt.'))
-    await expect.poll(() => client.messages().find(message => message.role === 'assistant')).toMatchObject({ usage: { features } })
+    await expect.poll(() => client.messages().find(message => message.role === 'assistant')).toMatchObject({
+      usage: { features },
+    })
   })
 
-  it.each([{ features: null }, { features: 'fast' }, { features: [1] }, { features: ['fast', null] }])('rejects malformed creation features $features', async ({ features }) => {
+  it.each([
+    { features: null },
+    { features: 'fast' },
+    {
+      features: [1],
+    },
+    {
+      features: ['fast', null],
+    },
+  ])('rejects malformed creation features $features', async ({ features }) => {
     mock = await startMock([])
-    const response = await fetch(`${mock.origin}/api/thread-actors`, { method: 'POST', body: JSON.stringify({ features }) })
+    const response = await fetch(`${mock.origin}/api/thread-actors`, {
+      method: 'POST',
+      body: JSON.stringify({ features }),
+    })
     expect(response.status).toBe(400)
     expect(await (await fetch(`${mock.origin}${AMP_E2E_THREADS_PATH}`)).json()).toEqual([])
   })
@@ -210,15 +282,29 @@ describe('createAmpSurface thread features', () => {
 
 describe('the Amp surface claim', () => {
   it('claims Amp\'s REST routes, the actor gateway and the test route, and nothing of a model API', async () => {
-    const surface = createAmpSurface({ answer: async () => undefined, checkGuidanceFiles: () => {} })
+    const surface = createAmpSurface({
+      answer: async () => undefined,
+      checkGuidanceFiles: () => {},
+    })
     try {
-      for (const path of ['/api/internal?loadPlugins', '/api/thread-actors', '/api/unknown', '/actors/gateway/threadActor/websocket/', AMP_E2E_THREADS_PATH]) {
+      for (const path of [
+        '/api/internal?loadPlugins',
+        '/api/thread-actors',
+        '/api/unknown',
+        '/actors/gateway/threadActor/websocket/',
+        AMP_E2E_THREADS_PATH,
+      ]) {
         const response = new ServerResponse(bodyRequest('POST', []))
         const end = vi.spyOn(response, 'end').mockImplementation(() => response)
         expect(await surface.handleHttp(bodyRequest('POST', []), response, new URL(path, 'http://127.0.0.1')), path).toBe(true)
         expect(end, path).toHaveBeenCalledOnce()
       }
-      for (const path of ['/v1/messages', '/v1/chat/completions', '/copilot_internal/user', '/agent.v1.AgentService/Run']) {
+      for (const path of [
+        '/v1/messages',
+        '/v1/chat/completions',
+        '/copilot_internal/user',
+        '/agent.v1.AgentService/Run',
+      ]) {
         const response = new ServerResponse(bodyRequest('POST', []))
         expect(await surface.handleHttp(bodyRequest('POST', []), response, new URL(path, 'http://127.0.0.1')), path).toBe(false)
         expect(response.headersSent, path).toBe(false)
@@ -230,7 +316,10 @@ describe('the Amp surface claim', () => {
   })
 
   it('leaves an upgrade outside the actor gateway untouched, and refuses one with no thread key', () => {
-    const surface = createAmpSurface({ answer: async () => undefined, checkGuidanceFiles: () => {} })
+    const surface = createAmpSurface({
+      answer: async () => undefined,
+      checkGuidanceFiles: () => {},
+    })
     try {
       const outside = new PassThrough()
       const outsideEnd = vi.spyOn(outside, 'end')
@@ -253,7 +342,10 @@ describe('account MCP discovery', () => {
   it('returns the native empty server list that the combined CLI listing requires', async () => {
     mock = await startMock([])
     const response = await mock.post('/api/internal?mcpListAccountServers', { method: 'mcpListAccountServers', params: {} }, { Authorization: `Bearer ${MODEL_KEY}` })
-    expect(response).toEqual({ ok: true, result: { servers: [] } })
+    expect(response).toEqual({
+      ok: true,
+      result: { servers: [] },
+    })
     expect(mock.inferences).toEqual([])
   })
 })
@@ -261,20 +353,73 @@ describe('account MCP discovery', () => {
 describe('ampInferenceOf', () => {
   it('states the conversation as an Anthropic Messages body, with each run record as text', () => {
     const inference = ampInferenceOf([
-      { role: 'user', content: [{ type: 'text', text: 'LEAPMUXE2ESCENARIO:abc run ls' }] },
-      { role: 'assistant', content: [{ type: 'thinking', thinking: 'Plan.', blockState: 'complete' }, { type: 'tool_use', id: 'TU-1', name: 'shell_command', input: { command: 'ls' }, complete: true }] },
-      { role: 'user', content: [{ type: 'tool_result', toolUseID: 'TU-1', run: { status: 'done', result: { output: 'a', exitCode: 0 } } }] },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'LEAPMUXE2ESCENARIO:abc run ls' },
+        ],
+      },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: 'Plan.', blockState: 'complete' },
+          {
+            type: 'tool_use',
+            id: 'TU-1',
+            name: 'shell_command',
+            input: { command: 'ls' },
+            complete: true,
+          },
+        ],
+      },
+      {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            toolUseID: 'TU-1',
+            run: {
+              status: 'done',
+              result: { output: 'a', exitCode: 0 },
+            },
+          },
+        ],
+      },
     ])
     expect(inference.body.messages).toEqual([
-      { role: 'user', content: [{ type: 'text', text: 'LEAPMUXE2ESCENARIO:abc run ls' }] },
-      { role: 'assistant', content: [{ type: 'thinking', thinking: 'Plan.' }, { type: 'tool_use', id: 'TU-1', name: 'shell_command', input: { command: 'ls' } }] },
-      { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'TU-1', content: '{"status":"done","result":{"output":"a","exitCode":0}}' }] },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'LEAPMUXE2ESCENARIO:abc run ls' },
+        ],
+      },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: 'Plan.' },
+          {
+            type: 'tool_use',
+            id: 'TU-1',
+            name: 'shell_command',
+            input: { command: 'ls' },
+          },
+        ],
+      },
+      {
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 'TU-1', content: '{"status":"done","result":{"output":"a","exitCode":0}}' },
+        ],
+      },
     ])
     expect(inference.userText).toBe('{"status":"done","result":{"output":"a","exitCode":0}}')
   })
 
   it('states an empty conversation', () => {
-    expect(ampInferenceOf([])).toEqual({ body: { model: 'mock-model', system: '', messages: [] }, userText: '' })
+    expect(ampInferenceOf([])).toEqual({
+      body: { model: 'mock-model', system: '', messages: [] },
+      userText: '',
+    })
   })
 })
 
@@ -293,7 +438,10 @@ describe('the Amp REST surface', () => {
     mock = await startMock([])
     expect((await mock.post('/api/internal?getUserInfo', {})).ok).toBe(true)
     expect(await mock.post('/api/internal?loadPlugins', {})).toEqual({ ok: true, result: [] })
-    expect(await mock.post('/api/internal?loadSkills', {})).toEqual({ ok: true, result: { sources: [] } })
+    expect(await mock.post('/api/internal?loadSkills', {})).toEqual({
+      ok: true,
+      result: { sources: [] },
+    })
     expect(await mock.post('/api/internal?somethingNew', {})).toEqual({ ok: true, result: {} })
     expect(await mock.post('/api/telemetry', {})).toEqual({ ok: true })
     expect((await fetch(`${mock.origin}/api/unknown`, { method: 'POST', body: '{}' })).status).toBe(404)
@@ -301,24 +449,72 @@ describe('the Amp REST surface', () => {
 
   it('lists the threads with messages, newest first, and keeps an archived one out', async () => {
     mock = await startMock([])
-    await mock.post(AMP_E2E_THREADS_PATH, { id: 'T-old', title: 'Old', tree: 'file:///work', messages: seededMessages(2), updatedAt: 1000 })
-    await mock.post(AMP_E2E_THREADS_PATH, { id: 'T-new', title: 'New', tree: 'file:///work', messages: seededMessages(4), updatedAt: 2000 })
-    await mock.post(AMP_E2E_THREADS_PATH, { id: 'T-archived', title: 'Archived', tree: 'file:///work', messages: seededMessages(1), archived: true })
-    await mock.post(AMP_E2E_THREADS_PATH, { id: 'T-empty', title: 'Empty', tree: 'file:///work', messages: [] })
-    const listed = await mock.post('/api/internal?listThreads', { params: { limit: 10 } })
+    await mock.post(AMP_E2E_THREADS_PATH, {
+      id: 'T-old',
+      title: 'Old',
+      tree: 'file:///work',
+      messages: seededMessages(2),
+      updatedAt: 1000,
+    })
+    await mock.post(AMP_E2E_THREADS_PATH, {
+      id: 'T-new',
+      title: 'New',
+      tree: 'file:///work',
+      messages: seededMessages(4),
+      updatedAt: 2000,
+    })
+    await mock.post(AMP_E2E_THREADS_PATH, {
+      id: 'T-archived',
+      title: 'Archived',
+      tree: 'file:///work',
+      messages: seededMessages(1),
+      archived: true,
+    })
+    await mock.post(AMP_E2E_THREADS_PATH, {
+      id: 'T-empty',
+      title: 'Empty',
+      tree: 'file:///work',
+      messages: [],
+    })
+    const listed = await mock.post('/api/internal?listThreads', {
+      params: { limit: 10 },
+    })
     const threads = (listed.result as { threads: Record<string, unknown>[] }).threads
     expect(threads.map(thread => thread.id)).toEqual(['T-new', 'T-old'])
-    expect(threads[0]).toMatchObject({ title: 'New', messageCount: 4, userLastInteractedAt: 2000, env: { initial: { trees: [{ uri: 'file:///work' }] } } })
+    expect(threads[0]).toMatchObject({
+      title: 'New',
+      messageCount: 4,
+      userLastInteractedAt: 2000,
+      env: {
+        initial: {
+          trees: [
+            { uri: 'file:///work' },
+          ],
+        },
+      },
+    })
 
-    await mock.post('/api/internal?archiveThread', { params: { thread: 'T-new' } })
+    await mock.post('/api/internal?archiveThread', {
+      params: { thread: 'T-new' },
+    })
     const after = await mock.post('/api/internal?listThreads', { params: {} })
     expect((after.result as { threads: Record<string, unknown>[] }).threads.map(thread => thread.id)).toEqual(['T-old'])
   })
 
   it('answers the thread tail the CLI asks for before it connects', async () => {
     mock = await startMock([])
-    const tail = await mock.post('/api/internal?getThreadTail', { params: { thread: 'T-tail' } })
-    expect(tail).toMatchObject({ ok: true, result: { thread: { data: { id: 'T-tail' } }, messages: [] } })
+    const tail = await mock.post('/api/internal?getThreadTail', {
+      params: { thread: 'T-tail' },
+    })
+    expect(tail).toMatchObject({
+      ok: true,
+      result: {
+        thread: {
+          data: { id: 'T-tail' },
+        },
+        messages: [],
+      },
+    })
   })
 
   it('reads an empty body as a request with no parameters', async () => {
@@ -337,10 +533,17 @@ describe('the Amp REST surface', () => {
     const internal = await fetch(`${mock.origin}/api/internal?loadPlugins`, { method: 'POST', body: '{broken' })
     expect(internal.status).toBe(200)
     expect(await internal.json()).toEqual({ ok: true, result: [] })
-    const surface = createAmpSurface({ answer: async () => undefined, checkGuidanceFiles: () => {} })
+    const surface = createAmpSurface({
+      answer: async () => undefined,
+      checkGuidanceFiles: () => {},
+    })
     try {
-      const response = new ServerResponse(bodyRequest('POST', [Buffer.from('{broken')]))
-      await expect(surface.handleHttp(bodyRequest('POST', [Buffer.from('{broken')]), response, new URL('http://127.0.0.1/api/thread-actors')))
+      const response = new ServerResponse(bodyRequest('POST', [
+        Buffer.from('{broken'),
+      ]))
+      await expect(surface.handleHttp(bodyRequest('POST', [
+        Buffer.from('{broken'),
+      ]), response, new URL('http://127.0.0.1/api/thread-actors')))
         .rejects
         .toBeInstanceOf(SyntaxError)
       expect(response.headersSent).toBe(false)
@@ -351,11 +554,17 @@ describe('the Amp REST surface', () => {
   })
 
   it.each(['/api/thread-actors', '/api/internal?loadPlugins', AMP_E2E_THREADS_PATH])('fails a body over the size limit on %s, and writes no answer', async (path) => {
-    const surface = createAmpSurface({ answer: async () => undefined, checkGuidanceFiles: () => {} })
+    const surface = createAmpSurface({
+      answer: async () => undefined,
+      checkGuidanceFiles: () => {},
+    })
     try {
       const exact = Buffer.alloc(MAX_MOCK_REQUEST_BYTES, 32)
       const response = new ServerResponse(bodyRequest('POST', []))
-      await expect(surface.handleHttp(bodyRequest('POST', [exact, Buffer.from(' ')]), response, new URL(path, 'http://127.0.0.1')))
+      await expect(surface.handleHttp(bodyRequest('POST', [
+        exact,
+        Buffer.from(' '),
+      ]), response, new URL(path, 'http://127.0.0.1')))
         .rejects
         .toThrow(`The request body exceeds ${MAX_MOCK_REQUEST_BYTES} bytes.`)
       expect(response.headersSent).toBe(false)
@@ -368,9 +577,11 @@ describe('the Amp REST surface', () => {
 
 describe('the Amp actor', () => {
   it('reports a failed model callback through the native actor instead of an unhandled rejection', async () => {
-    mock = await startMock([], { answer: async () => {
-      throw new Error('The native model callback failed.')
-    } })
+    mock = await startMock([], {
+      answer: async () => {
+        throw new Error('The native model callback failed.')
+      },
+    })
     const { client } = await openThread(mock)
     client.request('client_append_user_msg', userMessage('Run the failing native model callback.'))
     await expect.poll(() => client.notifications('error_set').length).toBe(1)
@@ -384,14 +595,27 @@ describe('the Amp actor', () => {
     const held = new Promise<boolean>(resolve => release = resolve)
     let reached = false
     mock = await startMock([
-      { toolCalls: [{ id: 'held-native-child', name: 'Task', arguments: { description: 'Read the native child result', prompt: 'NATIVE_BUFFERED_CHILD' } }] },
-      { text: 'CHILD_REPORT_AFTER_GENERATION', stream: { chunkChars: 2, delayMs: 0 } },
+      {
+        toolCalls: [
+          {
+            id: 'held-native-child',
+            name: 'Task',
+            arguments: { description: 'Read the native child result', prompt: 'NATIVE_BUFFERED_CHILD' },
+          },
+        ],
+      },
+      {
+        text: 'CHILD_REPORT_AFTER_GENERATION',
+        stream: { chunkChars: 2, delayMs: 0 },
+      },
       { text: 'ROOT_AFTER_CHILD' },
-    ], { holdGeneration: async (inference) => {
-      expect(inference.userText).toBe('NATIVE_BUFFERED_CHILD')
-      reached = true
-      return held
-    } })
+    ], {
+      holdGeneration: async (inference) => {
+        expect(inference.userText).toBe('NATIVE_BUFFERED_CHILD')
+        reached = true
+        return held
+      },
+    })
     const { client } = await openThread(mock)
     try {
       client.request('client_append_user_msg', userMessage('Start one buffered native child.'))
@@ -400,7 +624,9 @@ describe('the Amp actor', () => {
       expect(client.notifications('agent_state').at(-1)?.state).toBe('running_tools')
       expect(JSON.stringify(client.messages())).not.toContain('CHILD_REPORT_AFTER_GENERATION')
       release(true)
-      await expect.poll(() => client.messages().at(-1)?.content).toEqual([{ type: 'text', text: 'ROOT_AFTER_CHILD', blockState: 'complete' }])
+      await expect.poll(() => client.messages().at(-1)?.content).toEqual([
+        { type: 'text', text: 'ROOT_AFTER_CHILD', blockState: 'complete' },
+      ])
       expect(JSON.stringify(client.messages())).toContain('CHILD_REPORT_AFTER_GENERATION')
     }
     finally {
@@ -411,10 +637,12 @@ describe('the Amp actor', () => {
   it('passes native cancellation to an inference that still waits for its answer', async () => {
     const held = heldAnswer()
     let signal: AbortSignal | undefined
-    mock = await startMock([], { answer: async (_inference, nativeSignal) => {
-      signal = nativeSignal
-      return held.promise
-    } })
+    mock = await startMock([], {
+      answer: async (_inference, nativeSignal) => {
+        signal = nativeSignal
+        return held.promise
+      },
+    })
     const { client } = await openThread(mock)
     try {
       client.request('client_append_user_msg', userMessage('Cancel the pending model inference.'))
@@ -430,7 +658,9 @@ describe('the Amp actor', () => {
   })
 
   it('retains a redacted credential from the actual thread creation request', async () => {
-    mock = await startMock([{ text: 'A private native actor answer.' }])
+    mock = await startMock([
+      { text: 'A private native actor answer.' },
+    ])
     const { client } = await openThread(mock, { authorization: `Bearer ${MODEL_KEY}` })
     client.request('client_append_user_msg', userMessage('NATIVE_CREDENTIAL_PROOF'))
     await expect.poll(() => client.notifications('agent_state').at(-1)?.state).toBe('idle')
@@ -439,7 +669,9 @@ describe('the Amp actor', () => {
   })
 
   it('checks the guidance files of each snapshot against the conversation of its thread, and acknowledges the frame', async () => {
-    mock = await startMock([{ text: 'Guidance answer.' }])
+    mock = await startMock([
+      { text: 'Guidance answer.' },
+    ])
     const { client, executor } = await openThread(mock)
     client.request('client_append_user_msg', userMessage('LEAPMUXE2ESCENARIO:guidance read the guidance'))
     await expect.poll(() => client.notifications('agent_state').at(-1)?.state).toBe('idle')
@@ -447,8 +679,18 @@ describe('the Amp actor', () => {
     const snapshot = executor.request('executor_guidance_snapshot', {
       snapshotId: 'snapshot-1',
       files: [
-        { uri: pathToFileURL(resolve('run-root/work/AGENTS.md')).href, content: 'PROJECT_GUIDANCE', lineCount: 1, hash: 'a' },
-        { uri: pathToFileURL(resolve('run-root/AGENTS.md')).href, content: 'LEAPMUXE2EANCESTORINSTRUCTIONS', lineCount: 1, hash: 'b' },
+        {
+          uri: pathToFileURL(resolve('run-root/work/AGENTS.md')).href,
+          content: 'PROJECT_GUIDANCE',
+          lineCount: 1,
+          hash: 'a',
+        },
+        {
+          uri: pathToFileURL(resolve('run-root/AGENTS.md')).href,
+          content: 'LEAPMUXE2EANCESTORINSTRUCTIONS',
+          lineCount: 1,
+          hash: 'b',
+        },
       ],
       isLast: true,
       userConfigDir: 'file:///run-root/home/.config',
@@ -456,18 +698,34 @@ describe('the Amp actor', () => {
     await expect.poll(() => executor.reply(snapshot)).toEqual({ ok: true })
     expect(mock.guidance).toHaveLength(1)
     expect(mock.guidance[0]?.files).toEqual([
-      { path: resolve('run-root/work/AGENTS.md'), content: 'PROJECT_GUIDANCE' },
-      { path: resolve('run-root/AGENTS.md'), content: 'LEAPMUXE2EANCESTORINSTRUCTIONS' },
+      {
+        path: resolve('run-root/work/AGENTS.md'),
+        content: 'PROJECT_GUIDANCE',
+      },
+      {
+        path: resolve('run-root/AGENTS.md'),
+        content: 'LEAPMUXE2EANCESTORINSTRUCTIONS',
+      },
     ])
     // The check reads the conversation that the frame joins, whose marker selects the scenario.
-    expect(mock.guidance[0]?.inference.body.messages.at(0)).toEqual({ role: 'user', content: [{ type: 'text', text: 'LEAPMUXE2ESCENARIO:guidance read the guidance' }] })
+    expect(mock.guidance[0]?.inference.body.messages.at(0)).toEqual({
+      role: 'user',
+      content: [
+        { type: 'text', text: 'LEAPMUXE2ESCENARIO:guidance read the guidance' },
+      ],
+    })
   })
 
   it('buffers native actor text until internal generation releases', async () => {
     let release!: (value: boolean) => void
     const held = new Promise<boolean>(resolve => release = resolve)
     let reached = false
-    mock = await startMock([{ text: 'BUFFERED_NATIVE_ANSWER', stream: { chunkChars: 2, delayMs: 0 } }], {
+    mock = await startMock([
+      {
+        text: 'BUFFERED_NATIVE_ANSWER',
+        stream: { chunkChars: 2, delayMs: 0 },
+      },
+    ], {
       holdGeneration: async () => {
         reached = true
         return held
@@ -480,14 +738,23 @@ describe('the Amp actor', () => {
     expect(client.notifications('agent_state').at(-1)?.state).toBe('working')
     release(true)
     await expect.poll(() => client.notifications('agent_state').at(-1)?.state).toBe('idle')
-    expect(client.messages().at(-1)).toMatchObject({ content: [{ type: 'text', text: 'BUFFERED_NATIVE_ANSWER' }] })
+    expect(client.messages().at(-1)).toMatchObject({
+      content: [
+        { type: 'text', text: 'BUFFERED_NATIVE_ANSWER' },
+      ],
+    })
   })
 
   it('discards native buffered output after cancellation even when its release resolves true', async () => {
     let release!: (value: boolean) => void
     const held = new Promise<boolean>(resolve => release = resolve)
     let signal: AbortSignal | undefined
-    mock = await startMock([{ text: 'NEVER_AFTER_CANCEL', stream: { chunkChars: 2, delayMs: 0 } }], {
+    mock = await startMock([
+      {
+        text: 'NEVER_AFTER_CANCEL',
+        stream: { chunkChars: 2, delayMs: 0 },
+      },
+    ], {
       holdGeneration: async (_inference, _step, generationSignal) => {
         signal = generationSignal
         return held
@@ -508,14 +775,20 @@ describe('the Amp actor', () => {
 
   it('reports the actual native error notification once after its scripted service failure', async () => {
     const sent: { code: string, message: string }[] = []
-    mock = await startMock([{ error: { status: 429, code: 'native_quota_exhausted', message: 'The native quota ended.' } }], {
+    mock = await startMock([
+      {
+        error: { status: 429, code: 'native_quota_exhausted', message: 'The native quota ended.' },
+      },
+    ], {
       errorSent: (_inference, error) => sent.push(error),
     })
     const { client } = await openThread(mock)
     client.request('client_append_user_msg', userMessage('Report the native actor error.'))
     await expect.poll(() => client.notifications('error_set').length).toBe(1)
     expect(client.notifications('error_set')[0]?.error).toEqual(sent[0])
-    expect(sent).toEqual([{ code: 'native_quota_exhausted', message: 'The native quota ended.' }])
+    expect(sent).toEqual([
+      { code: 'native_quota_exhausted', message: 'The native quota ended.' },
+    ])
     expect(client.messages().map(message => message.role)).toEqual(['user'])
   })
 
@@ -531,32 +804,63 @@ describe('the Amp actor', () => {
     mock = await startMock([])
     const socket = await CliSocket.open(mock.origin, 'T-batch')
     socket.socket.send(JSON.stringify([
-      { jsonrpc: '2.0', id: 'a', method: 'executor_skill_snapshot', params: {} },
-      { jsonrpc: '2.0', id: 'b', method: 'executor_tools_register', params: {} },
+      {
+        jsonrpc: '2.0',
+        id: 'a',
+        method: 'executor_skill_snapshot',
+        params: {},
+      },
+      {
+        jsonrpc: '2.0',
+        id: 'b',
+        method: 'executor_tools_register',
+        params: {},
+      },
     ]))
     await expect.poll(() => socket.frames.filter(frame => typeof frame === 'object').length).toBe(2)
     expect(socket.frames.slice(1)).toEqual([
-      { jsonrpc: '2.0', id: 'a', result: { ok: true } },
-      { jsonrpc: '2.0', id: 'b', result: { ok: true } },
+      {
+        jsonrpc: '2.0',
+        id: 'a',
+        result: { ok: true },
+      },
+      {
+        jsonrpc: '2.0',
+        id: 'b',
+        result: { ok: true },
+      },
     ])
   })
 
   it('runs a text turn, and broadcasts it to both sockets', async () => {
-    mock = await startMock([{ reasoning: 'Thinking.', text: 'Hello from the mock.' }])
+    mock = await startMock([
+      { reasoning: 'Thinking.', text: 'Hello from the mock.' },
+    ])
     const { client, executor } = await openThread(mock)
     client.request('client_append_user_msg', userMessage('LEAPMUXE2ESCENARIO:s1 hello'))
     await expect.poll(() => client.notifications('agent_state').at(-1)?.state).toBe('idle')
     for (const socket of [client, executor]) {
       const messages = socket.messages()
       expect(messages.map(message => message.role)).toEqual(['user', 'assistant'])
-      expect(messages[1]).toMatchObject({ state: { type: 'complete' }, content: [{ type: 'thinking', thinking: 'Thinking.' }, { type: 'text', text: 'Hello from the mock.' }] })
+      expect(messages[1]).toMatchObject({
+        state: { type: 'complete' },
+        content: [
+          { type: 'thinking', thinking: 'Thinking.' },
+          { type: 'text', text: 'Hello from the mock.' },
+        ],
+      })
       expect(String(messages[1]!.messageId)).toMatch(ID_PATTERN.message)
     }
     expect(mock.inferences[0]?.userText).toBe('LEAPMUXE2ESCENARIO:s1 hello')
   })
 
   it('reports the usage of the scripted answer', async () => {
-    mock = await startMock([{ text: 'Usage recorded.', usage: { inputTokens: 12_000, outputTokens: 40, contextWindow: 128_000 } }])
+    mock = await startMock([
+      {
+        text: 'Usage recorded.',
+        usage: { inputTokens: 12_000, outputTokens: 40, contextWindow: 128_000 },
+      },
+    ])
     const { client } = await openThread(mock)
     client.request('client_append_user_msg', userMessage('LEAPMUXE2ESCENARIO:usage report'))
     await expect.poll(() => client.notifications('agent_state').at(-1)?.state).toBe('idle')
@@ -570,7 +874,15 @@ describe('the Amp actor', () => {
 
   it('leases a local tool to the executor alone, under its executor name, and continues with the result', async () => {
     mock = await startMock([
-      { toolCalls: [{ id: 'call-1', name: 'shell_command', arguments: { command: 'ls' } }] },
+      {
+        toolCalls: [
+          {
+            id: 'call-1',
+            name: 'shell_command',
+            arguments: { command: 'ls' },
+          },
+        ],
+      },
       { text: 'Listed.' },
     ])
     const { threadID, client, executor } = await openThread(mock)
@@ -578,21 +890,63 @@ describe('the Amp actor', () => {
     await expect.poll(() => executor.notifications('tool_lease').length).toBe(1)
     expect(client.notifications('tool_lease')).toEqual([])
     const lease = executor.notifications('tool_lease')[0]!
-    expect(lease).toMatchObject({ toolCallId: ampToolUseID(threadID, 'call-1'), toolName: 'async_shell_command', args: { command: 'ls' } })
+    expect(lease).toMatchObject({
+      toolCallId: ampToolUseID(threadID, 'call-1'),
+      toolName: 'async_shell_command',
+      args: { command: 'ls' },
+    })
 
-    executor.request('executor_tool_result', { toolCallId: lease.toolCallId, run: { status: 'done', result: { output: 'a.ts\n', exitCode: 0 } } })
+    executor.request('executor_tool_result', {
+      toolCallId: lease.toolCallId,
+      run: {
+        status: 'done',
+        result: { output: 'a.ts\n', exitCode: 0 },
+      },
+    })
     await expect.poll(() => client.notifications('agent_state').at(-1)?.state).toBe('idle')
     const messages = client.messages()
-    expect(messages.map(message => message.role)).toEqual(['user', 'assistant', 'user', 'assistant'])
-    expect(messages[1]).toMatchObject({ content: [{ type: 'tool_use', id: lease.toolCallId, name: 'shell_command', input: { command: 'ls' } }] })
-    expect(messages[2]).toMatchObject({ content: [{ type: 'tool_result', toolUseID: lease.toolCallId, run: { status: 'done' } }] })
+    expect(messages.map(message => message.role)).toEqual([
+      'user',
+      'assistant',
+      'user',
+      'assistant',
+    ])
+    expect(messages[1]).toMatchObject({
+      content: [
+        {
+          type: 'tool_use',
+          id: lease.toolCallId,
+          name: 'shell_command',
+          input: { command: 'ls' },
+        },
+      ],
+    })
+    expect(messages[2]).toMatchObject({
+      content: [
+        {
+          type: 'tool_result',
+          toolUseID: lease.toolCallId,
+          run: { status: 'done' },
+        },
+      ],
+    })
     expect(mock.inferences[1]?.userText).toContain('a.ts')
-    expect(executor.notifications('executor_tool_result_ack')).toEqual([{ toolCallId: lease.toolCallId }])
+    expect(executor.notifications('executor_tool_result_ack')).toEqual([
+      { toolCallId: lease.toolCallId },
+    ])
   })
 
   it('runs a subagent tool as one more inference on the server', async () => {
     mock = await startMock([
-      { toolCalls: [{ id: 'task-1', name: 'Task', arguments: { description: 'Return pong', prompt: 'LEAPMUXE2ESCENARIO:s3 child: reply pong' } }] },
+      {
+        toolCalls: [
+          {
+            id: 'task-1',
+            name: 'Task',
+            arguments: { description: 'Return pong', prompt: 'LEAPMUXE2ESCENARIO:s3 child: reply pong' },
+          },
+        ],
+      },
       { text: 'pong' },
       { text: 'The child said pong.' },
     ])
@@ -601,28 +955,69 @@ describe('the Amp actor', () => {
     await expect.poll(() => client.notifications('agent_state').at(-1)?.state).toBe('idle')
     expect(mock.inferences[1]?.userText).toBe('LEAPMUXE2ESCENARIO:s3 child: reply pong')
     expect(executor.notifications('tool_lease')).toEqual([])
-    expect(client.messages()[2]).toMatchObject({ content: [{ type: 'tool_result', run: { status: 'done', result: 'pong' } }] })
+    expect(client.messages()[2]).toMatchObject({
+      content: [
+        {
+          type: 'tool_result',
+          run: { status: 'done', result: 'pong' },
+        },
+      ],
+    })
   })
 
   it.each([
-    { source: 'text(40 + 2)', result: { status: 'done', result: '42' } },
-    { source: 'throw new Error("PROBE" + (70 + 7))', result: { status: 'error', error: { message: 'Error: PROBE77' } } },
+    {
+      source: 'text(40 + 2)',
+      result: { status: 'done', result: '42' },
+    },
+    {
+      source: 'throw new Error("PROBE" + (70 + 7))',
+      result: {
+        status: 'error',
+        error: { message: 'Error: PROBE77' },
+      },
+    },
   ])('returns a remote code result without leasing it to the local executor: $source', async ({ source, result }) => {
     mock = await startMock([
-      { toolCalls: [{ id: 'remote-code', name: 'code_exec', arguments: { code: source } }] },
+      {
+        toolCalls: [
+          {
+            id: 'remote-code',
+            name: 'code_exec',
+            arguments: { code: source },
+          },
+        ],
+      },
       { text: 'The remote code ended.' },
     ])
     const { client, executor } = await openThread(mock)
     client.request('client_append_user_msg', userMessage('LEAPMUXE2ESCENARIO:remote-code run the script'))
-    await expect.poll(() => client.messages().at(-1)).toMatchObject({ role: 'assistant', content: [{ type: 'text', text: 'The remote code ended.' }] })
+    await expect.poll(() => client.messages().at(-1)).toMatchObject({
+      role: 'assistant',
+      content: [
+        { type: 'text', text: 'The remote code ended.' },
+      ],
+    })
     expect(executor.notifications('tool_lease')).toEqual([])
-    expect(client.messages()[2]).toMatchObject({ content: [{ type: 'tool_result', run: result }] })
+    expect(client.messages()[2]).toMatchObject({
+      content: [
+        { type: 'tool_result', run: result },
+      ],
+    })
     expect(mock.inferences[1]?.userText).toBe(JSON.stringify(result))
   })
 
   it('holds a steering line for the next interruption point of the turn', async () => {
     mock = await startMock([
-      { toolCalls: [{ id: 'call-1', name: 'shell_command', arguments: { command: 'sleep 5' } }] },
+      {
+        toolCalls: [
+          {
+            id: 'call-1',
+            name: 'shell_command',
+            arguments: { command: 'sleep 5' },
+          },
+        ],
+      },
       { text: 'finished steered' },
     ])
     const { client, executor } = await openThread(mock)
@@ -635,19 +1030,41 @@ describe('the Amp actor', () => {
     // The steer waits: the turn is still in its tool.
     expect(client.messages().map(message => message.role)).toEqual(['user', 'assistant'])
     const lease = executor.notifications('tool_lease')[0]!
-    executor.request('executor_tool_result', { toolCallId: lease.toolCallId, run: { status: 'done', result: { output: '', exitCode: 0 } } })
+    executor.request('executor_tool_result', {
+      toolCallId: lease.toolCallId,
+      run: {
+        status: 'done',
+        result: { output: '', exitCode: 0 },
+      },
+    })
     await expect.poll(() => client.notifications('agent_state').at(-1)?.state).toBe('idle')
     // The roles are the same in either order, so the content states that the steer
     // came AFTER the tool's result.
     const messages = client.messages()
-    expect(messages.map(message => message.role)).toEqual(['user', 'assistant', 'user', 'user', 'assistant'])
-    expect(messages[2]).toMatchObject({ content: [{ type: 'tool_result', toolUseID: lease.toolCallId }] })
-    expect(messages[3]).toMatchObject({ content: [{ type: 'text', text: 'Also say steered.' }] })
+    expect(messages.map(message => message.role)).toEqual([
+      'user',
+      'assistant',
+      'user',
+      'user',
+      'assistant',
+    ])
+    expect(messages[2]).toMatchObject({
+      content: [
+        { type: 'tool_result', toolUseID: lease.toolCallId },
+      ],
+    })
+    expect(messages[3]).toMatchObject({
+      content: [
+        { type: 'text', text: 'Also say steered.' },
+      ],
+    })
     expect(mock.inferences[1]?.userText).toBe('Also say steered.')
   })
 
   it('ends a turn that the CLI cancels during a delay', async () => {
-    mock = await startMock([{ text: 'late', delayMs: 60_000 }])
+    mock = await startMock([
+      { text: 'late', delayMs: 60_000 },
+    ])
     const first = await openThread(mock)
     first.client.request('client_append_user_msg', userMessage('LEAPMUXE2ESCENARIO:s5 wait'))
     await expect.poll(() => mock!.inferences.length).toBe(1)
@@ -658,7 +1075,15 @@ describe('the Amp actor', () => {
 
   it('ends a turn whose lease the CLI cancels, and runs the next turn', async () => {
     mock = await startMock([
-      { toolCalls: [{ id: 'call-1', name: 'shell_command', arguments: { command: 'sleep 40' } }] },
+      {
+        toolCalls: [
+          {
+            id: 'call-1',
+            name: 'shell_command',
+            arguments: { command: 'sleep 40' },
+          },
+        ],
+      },
       { text: 'next' },
     ])
     const { client, executor } = await openThread(mock)
@@ -670,29 +1095,49 @@ describe('the Amp actor', () => {
 
     client.request('client_append_user_msg', userMessage('LEAPMUXE2ESCENARIO:s6 again'))
     await expect.poll(() => client.messages().length).toBe(4)
-    expect(client.messages().at(-1)).toMatchObject({ content: [{ type: 'text', text: 'next' }] })
+    expect(client.messages().at(-1)).toMatchObject({
+      content: [
+        { type: 'text', text: 'next' },
+      ],
+    })
   })
 
   it('fails a turn that nothing scripted, and one whose step states an error', async () => {
-    mock = await startMock([undefined, { error: { status: 529, message: 'Model Provider Overloaded', code: 'overloaded' } }])
+    mock = await startMock([
+      undefined,
+      {
+        error: { status: 529, message: 'Model Provider Overloaded', code: 'overloaded' },
+      },
+    ])
     const { client } = await openThread(mock)
     client.request('client_append_user_msg', userMessage('LEAPMUXE2ESCENARIO:s7 one'))
     await expect.poll(() => client.notifications('error_set').length).toBe(1)
-    expect(client.notifications('error_set')[0]).toMatchObject({ error: { code: 'leapmux_e2e_unscripted' } })
+    expect(client.notifications('error_set')[0]).toMatchObject({
+      error: { code: 'leapmux_e2e_unscripted' },
+    })
     await expect.poll(() => client.notifications('agent_state').at(-1)?.state).toBe('idle')
 
     client.request('client_append_user_msg', userMessage('LEAPMUXE2ESCENARIO:s7 two'))
     await expect.poll(() => client.notifications('error_set').length).toBe(2)
-    expect(client.notifications('error_set')[1]).toMatchObject({ error: { message: 'Model Provider Overloaded', code: 'overloaded' } })
+    expect(client.notifications('error_set')[1]).toMatchObject({
+      error: { message: 'Model Provider Overloaded', code: 'overloaded' },
+    })
   })
 
   it('records the workspace tree and a title for the thread picker', async () => {
-    mock = await startMock([{ text: 'ok' }])
+    mock = await startMock([
+      { text: 'ok' },
+    ])
     const { threadID, client } = await openThread(mock)
     client.request('client_append_user_msg', userMessage('LEAPMUXE2ESCENARIO:s8 name this thread'))
     await expect.poll(() => client.notifications('agent_state').at(-1)?.state).toBe('idle')
     const views = await (await fetch(`${mock.origin}${AMP_E2E_THREADS_PATH}`)).json() as Record<string, unknown>[]
-    expect(views.find(view => view.id === threadID)).toMatchObject({ agentMode: 'high', tree: 'file:///work', title: 'LEAPMUXE2ESCENARIO:s8 name this thread', messageCount: 2 })
+    expect(views.find(view => view.id === threadID)).toMatchObject({
+      agentMode: 'high',
+      tree: 'file:///work',
+      title: 'LEAPMUXE2ESCENARIO:s8 name this thread',
+      messageCount: 2,
+    })
   })
 
   it('refuses an upgrade that states no thread, and one outside the actor gateway', async () => {
@@ -710,7 +1155,10 @@ describe('the Amp actor', () => {
   // while it ran continues the turn instead of waiting for a turn that never comes.
   it('continues the turn with a steering line that arrives during its last answer', async () => {
     const held = heldAnswer()
-    mock = await startMock([held.promise, { text: 'steered answer' }])
+    mock = await startMock([
+      held.promise,
+      { text: 'steered answer' },
+    ])
     const { client } = await openThread(mock)
     client.request('client_append_user_msg', userMessage('LEAPMUXE2ESCENARIO:s9 start'))
     await expect.poll(() => mock!.inferences.length).toBe(1)
@@ -720,7 +1168,12 @@ describe('the Amp actor', () => {
     held.settle({ text: 'first answer' })
     await expect.poll(() => client.messages().length).toBe(4)
     await expect.poll(() => client.notifications('agent_state').at(-1)?.state).toBe('idle')
-    expect(client.messages().map(message => message.role)).toEqual(['user', 'assistant', 'user', 'assistant'])
+    expect(client.messages().map(message => message.role)).toEqual([
+      'user',
+      'assistant',
+      'user',
+      'assistant',
+    ])
     expect(mock.inferences[1]?.userText).toBe('Also say steered.')
   })
 
@@ -729,7 +1182,10 @@ describe('the Amp actor', () => {
   // an inference that no test wrote.
   it('drops the steering line of a turn that fails', async () => {
     const held = heldAnswer()
-    mock = await startMock([held.promise, { text: 'second turn' }])
+    mock = await startMock([
+      held.promise,
+      { text: 'second turn' },
+    ])
     const { client } = await openThread(mock)
     client.request('client_append_user_msg', userMessage('LEAPMUXE2ESCENARIO:s10 first'))
     await expect.poll(() => mock!.inferences.length).toBe(1)
@@ -748,7 +1204,15 @@ describe('the Amp actor', () => {
 
   it('fails a local tool call when no executor is connected, and continues with the error', async () => {
     mock = await startMock([
-      { toolCalls: [{ id: 'call-1', name: 'shell_command', arguments: { command: 'ls' } }] },
+      {
+        toolCalls: [
+          {
+            id: 'call-1',
+            name: 'shell_command',
+            arguments: { command: 'ls' },
+          },
+        ],
+      },
       { text: 'No executor.' },
     ])
     const created = await mock.post('/api/thread-actors', {})
@@ -757,25 +1221,69 @@ describe('the Amp actor', () => {
     await expect.poll(() => client.messages().length).toBe(4)
     expect(client.notifications('tool_lease')).toEqual([])
     expect(client.messages()[2]).toMatchObject({
-      content: [{ type: 'tool_result', run: { status: 'error', error: { message: 'No executor is connected to the thread.' } } }],
+      content: [
+        {
+          type: 'tool_result',
+          run: {
+            status: 'error',
+            error: { message: 'No executor is connected to the thread.' },
+          },
+        },
+      ],
     })
   })
 
   it('reports a subagent that nothing scripted, or whose answer is an error, as a failed run', async () => {
     mock = await startMock([
-      { toolCalls: [{ id: 'task-1', name: 'Task', arguments: { prompt: 'LEAPMUXE2ESCENARIO:s12 child one' } }] },
+      {
+        toolCalls: [
+          {
+            id: 'task-1',
+            name: 'Task',
+            arguments: { prompt: 'LEAPMUXE2ESCENARIO:s12 child one' },
+          },
+        ],
+      },
       undefined,
-      { toolCalls: [{ id: 'task-2', name: 'Task', arguments: { prompt: 'LEAPMUXE2ESCENARIO:s12 child two' } }] },
-      { error: { status: 500, message: 'The child failed.' } },
+      {
+        toolCalls: [
+          {
+            id: 'task-2',
+            name: 'Task',
+            arguments: { prompt: 'LEAPMUXE2ESCENARIO:s12 child two' },
+          },
+        ],
+      },
+      {
+        error: { status: 500, message: 'The child failed.' },
+      },
       { text: 'Both children failed.' },
     ])
     const { client } = await openThread(mock)
     client.request('client_append_user_msg', userMessage('LEAPMUXE2ESCENARIO:s12 delegate'))
     await expect.poll(() => client.messages().length).toBe(6)
     expect(client.messages()[2]).toMatchObject({
-      content: [{ type: 'tool_result', run: { status: 'error', error: { message: 'The mock model has no scripted answer for this subagent.' } } }],
+      content: [
+        {
+          type: 'tool_result',
+          run: {
+            status: 'error',
+            error: { message: 'The mock model has no scripted answer for this subagent.' },
+          },
+        },
+      ],
     })
-    expect(client.messages()[4]).toMatchObject({ content: [{ type: 'tool_result', run: { status: 'error', error: { message: 'The child failed.' } } }] })
+    expect(client.messages()[4]).toMatchObject({
+      content: [
+        {
+          type: 'tool_result',
+          run: {
+            status: 'error',
+            error: { message: 'The child failed.' },
+          },
+        },
+      ],
+    })
     expect(client.notifications('error_set')).toEqual([])
   })
 
@@ -784,8 +1292,16 @@ describe('the Amp actor', () => {
     mock = await startMock([
       {
         toolCalls: [
-          { id: 'oracle-1', name: 'oracle', arguments: { task: 'Review the plan.', context: 'The plan is short.' } },
-          { id: 'librarian-1', name: 'librarian', arguments: { query: 'Find the parser.' } },
+          {
+            id: 'oracle-1',
+            name: 'oracle',
+            arguments: { task: 'Review the plan.', context: 'The plan is short.' },
+          },
+          {
+            id: 'librarian-1',
+            name: 'librarian',
+            arguments: { query: 'Find the parser.' },
+          },
         ],
       },
       { text: 'Reviewed.' },
@@ -797,7 +1313,16 @@ describe('the Amp actor', () => {
     await expect.poll(() => client.notifications('agent_state').at(-1)?.state).toBe('idle')
     expect(mock.inferences.slice(1, 3).map(inference => inference.userText)).toEqual(['Review the plan.\n\nThe plan is short.', 'Find the parser.'])
     expect(client.messages()[2]).toMatchObject({
-      content: [{ type: 'tool_result', run: { status: 'done', result: 'Reviewed.' } }, { type: 'tool_result', run: { status: 'done', result: 'Found.' } }],
+      content: [
+        {
+          type: 'tool_result',
+          run: { status: 'done', result: 'Reviewed.' },
+        },
+        {
+          type: 'tool_result',
+          run: { status: 'done', result: 'Found.' },
+        },
+      ],
     })
   })
 
@@ -822,15 +1347,30 @@ describe('the Amp actor', () => {
   it('acknowledges a tool result that no lease waits for, and changes nothing else', async () => {
     mock = await startMock([])
     const { client, executor } = await openThread(mock)
-    const result = executor.request('executor_tool_result', { toolCallId: 'TU-unknown', run: { status: 'done' } })
+    const result = executor.request('executor_tool_result', {
+      toolCallId: 'TU-unknown',
+      run: { status: 'done' },
+    })
     await expect.poll(() => executor.reply(result)).toEqual({ ok: true })
-    await expect.poll(() => client.notifications('executor_tool_result_ack')).toEqual([{ toolCallId: 'TU-unknown' }])
+    await expect.poll(() => client.notifications('executor_tool_result_ack')).toEqual([
+      { toolCallId: 'TU-unknown' },
+    ])
     expect(client.messages()).toEqual([])
     expect(client.notifications('agent_state')).toEqual([])
   })
 
   it('closes each socket and ends a turn that holds a lease when the surface closes', async () => {
-    mock = await startMock([{ toolCalls: [{ id: 'call-1', name: 'shell_command', arguments: { command: 'sleep 40' } }] }])
+    mock = await startMock([
+      {
+        toolCalls: [
+          {
+            id: 'call-1',
+            name: 'shell_command',
+            arguments: { command: 'sleep 40' },
+          },
+        ],
+      },
+    ])
     const { client, executor } = await openThread(mock)
     client.request('client_append_user_msg', userMessage('LEAPMUXE2ESCENARIO:s15 sleep'))
     await expect.poll(() => executor.notifications('tool_lease').length).toBe(1)
@@ -849,33 +1389,82 @@ describe('the Amp actor', () => {
 describe('the Amp thread list', () => {
   it('pages the list by offset and limit, newest first', async () => {
     mock = await startMock([])
-    for (const [id, updatedAt] of [['T-1', 1000], ['T-2', 2000], ['T-3', 3000]] as const)
-      await mock.post(AMP_E2E_THREADS_PATH, { id, title: id, tree: '', messages: seededMessages(1), updatedAt })
-    const page = await mock.post('/api/internal?listThreads', { params: { offset: 1, limit: 1 } })
+    for (const [id, updatedAt] of [
+      ['T-1', 1000],
+      ['T-2', 2000],
+      ['T-3', 3000],
+    ] as const) {
+      await mock.post(AMP_E2E_THREADS_PATH, {
+        id,
+        title: id,
+        tree: '',
+        messages: seededMessages(1),
+        updatedAt,
+      })
+    }
+    const page = await mock.post('/api/internal?listThreads', {
+      params: { offset: 1, limit: 1 },
+    })
     expect((page.result as { threads: Record<string, unknown>[] }).threads.map(thread => thread.id)).toEqual(['T-2'])
     // A thread with no tree states no tree rather than an empty one.
-    expect((page.result as { threads: Record<string, unknown>[] }).threads[0]).toMatchObject({ title: 'T-2', env: { initial: { trees: [] } } })
+    expect((page.result as { threads: Record<string, unknown>[] }).threads[0]).toMatchObject({
+      title: 'T-2',
+      env: {
+        initial: { trees: [] },
+      },
+    })
   })
 
   it('archives a thread that the request states under either key, and ignores an unknown one', async () => {
     mock = await startMock([])
-    for (const id of ['T-a', 'T-b', 'T-c'])
-      await mock.post(AMP_E2E_THREADS_PATH, { id, title: id, tree: '', messages: seededMessages(1) })
-    expect(await mock.post('/api/internal?archiveThread', { params: { threadID: 'T-a' } })).toEqual({ ok: true, result: {} })
-    expect(await mock.post('/api/internal?archiveThread', { params: { thread: 'T-b' } })).toEqual({ ok: true, result: {} })
-    expect(await mock.post('/api/internal?archiveThread', { params: { thread: 'T-unknown' } })).toEqual({ ok: true, result: {} })
+    for (const id of ['T-a', 'T-b', 'T-c']) {
+      await mock.post(AMP_E2E_THREADS_PATH, {
+        id,
+        title: id,
+        tree: '',
+        messages: seededMessages(1),
+      })
+    }
+    expect(await mock.post('/api/internal?archiveThread', {
+      params: { threadID: 'T-a' },
+    })).toEqual({ ok: true, result: {} })
+    expect(await mock.post('/api/internal?archiveThread', {
+      params: { thread: 'T-b' },
+    })).toEqual({ ok: true, result: {} })
+    expect(await mock.post('/api/internal?archiveThread', {
+      params: { thread: 'T-unknown' },
+    })).toEqual({ ok: true, result: {} })
     const views = await (await fetch(`${mock.origin}${AMP_E2E_THREADS_PATH}`)).json() as Record<string, unknown>[]
-    expect(views.map(view => [view.id, view.archived])).toEqual([['T-a', true], ['T-b', true], ['T-c', false]])
+    expect(views.map(view => [view.id, view.archived])).toEqual([
+      ['T-a', true],
+      ['T-b', true],
+      ['T-c', false],
+    ])
   })
 
   it('answers a seeded thread with its view', async () => {
     mock = await startMock([])
-    expect(await mock.post(AMP_E2E_THREADS_PATH, { id: 'T-seed', title: 'Seed', tree: 'file:///w', messages: seededMessages(3) }))
-      .toEqual({ id: 'T-seed', agentMode: 'medium', features: [], tree: 'file:///w', title: 'Seed', messageCount: 3, archived: false })
+    expect(await mock.post(AMP_E2E_THREADS_PATH, {
+      id: 'T-seed',
+      title: 'Seed',
+      tree: 'file:///w',
+      messages: seededMessages(3),
+    }))
+      .toEqual({
+        id: 'T-seed',
+        agentMode: 'medium',
+        features: [],
+        tree: 'file:///w',
+        title: 'Seed',
+        messageCount: 3,
+        archived: false,
+      })
   })
 
   it('includes seeded messages in the next inference after a thread resumes', async () => {
-    mock = await startMock([{ text: 'The resumed answer.' }])
+    mock = await startMock([
+      { text: 'The resumed answer.' },
+    ])
     await mock.post(AMP_E2E_THREADS_PATH, {
       id: 'T-seeded-context',
       title: 'Saved task',
@@ -890,9 +1479,24 @@ describe('the Amp thread list', () => {
     client.request('client_append_user_msg', userMessage('What was the saved answer?'))
     await expect.poll(() => mock!.inferences.length).toBe(1)
     expect(mock.inferences[0]?.body.messages).toMatchObject([
-      { role: 'user', content: [{ type: 'text', text: 'Remember AMP_PRIOR_CONTEXT_MARKER.' }] },
-      { role: 'assistant', content: [{ type: 'text', text: 'AMP_PRIOR_ANSWER_MARKER is the saved answer.' }] },
-      { role: 'user', content: [{ type: 'text', text: 'What was the saved answer?' }] },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'Remember AMP_PRIOR_CONTEXT_MARKER.' },
+        ],
+      },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'AMP_PRIOR_ANSWER_MARKER is the saved answer.' },
+        ],
+      },
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: 'What was the saved answer?' },
+        ],
+      },
     ])
     client.close()
   })
@@ -901,10 +1505,20 @@ describe('the Amp thread list', () => {
     mock = await startMock([])
     const response = await fetch(`${mock.origin}${AMP_E2E_THREADS_PATH}`, {
       method: 'POST',
-      body: JSON.stringify({ id: 'T-invalid', title: 'Invalid', tree: 'file:///work', messages: [{ role: 'system', text: 'Do not seed this.' }] }),
+      body: JSON.stringify({
+        id: 'T-invalid',
+        title: 'Invalid',
+        tree: 'file:///work',
+        messages: [
+          { role: 'system', text: 'Do not seed this.' },
+        ],
+      }),
     })
     expect(response.status).toBe(400)
-    expect(await mock.post('/api/internal?listThreads', { params: {} })).toMatchObject({ ok: true, result: { threads: [] } })
+    expect(await mock.post('/api/internal?listThreads', { params: {} })).toMatchObject({
+      ok: true,
+      result: { threads: [] },
+    })
   })
 })
 
@@ -926,21 +1540,31 @@ function selectedAmpAnswer(step: MockModelStep) {
 
 describe('guidanceFilesOf', () => {
   it('reads the path of each local file URI and the content of each file', () => {
-    expect(guidanceFilesOf({ files: [
-      { uri: pathToFileURL(resolve('run-root/work/AGENTS.md')).href, content: 'A' },
-      { uri: pathToFileURL(resolve('run-root/with space/AGENTS.md')).href, content: 'B' },
-    ] })).toEqual([
-      { path: resolve('run-root/work/AGENTS.md'), content: 'A' },
-      { path: resolve('run-root/with space/AGENTS.md'), content: 'B' },
+    expect(guidanceFilesOf({
+      files: [
+        { uri: pathToFileURL(resolve('run-root/work/AGENTS.md')).href, content: 'A' },
+        { uri: pathToFileURL(resolve('run-root/with space/AGENTS.md')).href, content: 'B' },
+      ],
+    })).toEqual([
+      {
+        path: resolve('run-root/work/AGENTS.md'),
+        content: 'A',
+      },
+      {
+        path: resolve('run-root/with space/AGENTS.md'),
+        content: 'B',
+      },
     ])
   })
 
   it('keeps the text of a URI that identifies no local file, which no run root holds', () => {
-    expect(guidanceFilesOf({ files: [
-      { uri: 'file://remote-host/share/AGENTS.md', content: 'remote' },
-      { uri: 'https://example.invalid/AGENTS.md', content: 'web' },
-      { content: 'no uri' },
-    ] })).toEqual([
+    expect(guidanceFilesOf({
+      files: [
+        { uri: 'file://remote-host/share/AGENTS.md', content: 'remote' },
+        { uri: 'https://example.invalid/AGENTS.md', content: 'web' },
+        { content: 'no uri' },
+      ],
+    })).toEqual([
       { path: 'file://remote-host/share/AGENTS.md', content: 'remote' },
       { path: 'https://example.invalid/AGENTS.md', content: 'web' },
       { path: '', content: 'no uri' },
@@ -948,7 +1572,9 @@ describe('guidanceFilesOf', () => {
   })
 
   it('keeps an invalid entry visible to the instruction guard', () => {
-    expect(guidanceFilesOf({ files: ['file:///b/AGENTS.md', null] })).toEqual([
+    expect(guidanceFilesOf({
+      files: ['file:///b/AGENTS.md', null],
+    })).toEqual([
       { path: '', content: '' },
       { path: '', content: '' },
     ])
@@ -956,7 +1582,13 @@ describe('guidanceFilesOf', () => {
 
   it('reads absent content as an empty file', () => {
     const path = resolve('run-root/work/AGENTS.md')
-    expect(guidanceFilesOf({ files: [{ uri: pathToFileURL(path).href }] })).toEqual([{ path, content: '' }])
+    expect(guidanceFilesOf({
+      files: [
+        { uri: pathToFileURL(path).href },
+      ],
+    })).toEqual([
+      { path, content: '' },
+    ])
   })
 
   it('reads no file from a frame with no file list', () => {
@@ -965,7 +1597,9 @@ describe('guidanceFilesOf', () => {
   })
 
   it('keeps an invalid file list visible to the instruction guard', () => {
-    expect(guidanceFilesOf({ files: 'file:///a/AGENTS.md' })).toEqual([{ path: '', content: '' }])
+    expect(guidanceFilesOf({ files: 'file:///a/AGENTS.md' })).toEqual([
+      { path: '', content: '' },
+    ])
   })
 })
 
@@ -973,9 +1607,18 @@ describe('ampScriptOptions', () => {
   it('projects the actual inference body and credential without an HTTP transport', async () => {
     const answer = selectedAmpAnswer({ text: 'Native actor answer.', gate: 'actor-answer' })
     const select = vi.fn((_context: ModelRequestContext) => answer)
-    const host: MockModelScriptHost = { hasScenario: () => true, select }
+    const host: MockModelScriptHost = {
+      hasScenario: () => true,
+      select,
+    }
     const inference: AmpInference = {
-      body: { model: 'native-model', system: 'Native system.', messages: [{ role: 'user', content: 'Native prompt.' }] },
+      body: {
+        model: 'native-model',
+        system: 'Native system.',
+        messages: [
+          { role: 'user', content: 'Native prompt.' },
+        ],
+      },
       userText: 'Native prompt.',
       mockCredential: { kind: 'service', accepted: true },
     }
@@ -996,54 +1639,105 @@ describe('ampScriptOptions', () => {
 
   it('checks the guidance files against the request of the inference, and refuses the sentinel files of the run root', () => {
     const checks: { context: ModelRequestContext, files: readonly NativeInstructionFile[], policy: RunRootSentinelPolicy }[] = []
-    const guard: InstructionFileGuard = { check: (context, files, policy) => checks.push({ context, files, policy }) }
-    const host: MockModelScriptHost = { hasScenario: () => true, select: () => ({ kind: 'missing', message: 'Unused.' }) }
+    const guard: InstructionFileGuard = {
+      check: (context, files, policy) => checks.push({ context, files, policy }),
+    }
+    const host: MockModelScriptHost = {
+      hasScenario: () => true,
+      select: () => ({ kind: 'missing', message: 'Unused.' }),
+    }
     const inference: AmpInference = {
-      body: { model: 'mock-model', system: '', messages: [{ role: 'user', content: [{ type: 'text', text: 'Native prompt.' }] }] },
+      body: {
+        model: 'mock-model',
+        system: '',
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: 'Native prompt.' },
+            ],
+          },
+        ],
+      },
       userText: 'Native prompt.',
       mockCredential: { kind: 'service', accepted: true },
     }
-    const files = [{ path: '/run-root/work/AGENTS.md', content: 'PROJECT_GUIDANCE' }]
+    const files = [
+      { path: '/run-root/work/AGENTS.md', content: 'PROJECT_GUIDANCE' },
+    ]
     ampScriptOptions(host, guard).checkGuidanceFiles(inference, files)
-    expect(checks).toEqual([{
-      context: { protocol: 'anthropic-messages', path: '/actors/', body: inference.body, systemText: '', userText: 'Native prompt.', mockCredential: { kind: 'service', accepted: true } },
-      files,
-      policy: 'refuse',
-    }])
+    expect(checks).toEqual([
+      {
+        context: {
+          protocol: 'anthropic-messages',
+          path: '/actors/',
+          body: inference.body,
+          systemText: '',
+          userText: 'Native prompt.',
+          mockCredential: { kind: 'service', accepted: true },
+        },
+        files,
+        policy: 'refuse',
+      },
+    ])
   })
 
   it('leaves an unscripted or cancelled inference unanswered', async () => {
-    const missing: MockModelScriptHost = { hasScenario: () => false, select: () => ({ kind: 'missing', message: 'No actual scenario.' }) }
-    const inference: AmpInference = { body: { model: '', system: '', messages: [] }, userText: '' }
+    const missing: MockModelScriptHost = {
+      hasScenario: () => false,
+      select: () => ({ kind: 'missing', message: 'No actual scenario.' }),
+    }
+    const inference: AmpInference = {
+      body: { model: '', system: '', messages: [] },
+      userText: '',
+    }
     const signal = new AbortController().signal
     expect(await ampScriptOptions(missing, IGNORED_GUIDANCE).answer(inference, signal)).toBeUndefined()
     const answer = selectedAmpAnswer({ text: 'Never deliver.', gate: 'cancelled-answer' })
     answer.holdGate.mockResolvedValue(false)
-    expect(await ampScriptOptions({ hasScenario: () => true, select: () => answer }, IGNORED_GUIDANCE).answer(inference, signal)).toBeUndefined()
+    expect(await ampScriptOptions({
+      hasScenario: () => true,
+      select: () => answer,
+    }, IGNORED_GUIDANCE).answer(inference, signal)).toBeUndefined()
   })
 
   it('keeps native error and buffered-generation receipts attached to their own inference', async () => {
     const first = selectedAmpAnswer({ text: 'First.' })
     const second = selectedAmpAnswer({ text: 'Second.' })
     const pending = [first, second]
-    const host: MockModelScriptHost = { hasScenario: () => true, select: () => {
-      const answer = pending.shift()
-      if (!answer)
-        throw new Error('The test supplied too few native answers.')
-      return answer
-    } }
+    const host: MockModelScriptHost = {
+      hasScenario: () => true,
+      select: () => {
+        const answer = pending.shift()
+        if (!answer)
+          throw new Error('The test supplied too few native answers.')
+        return answer
+      },
+    }
     const options = ampScriptOptions(host, IGNORED_GUIDANCE)
-    const one: AmpInference = { body: { model: '', system: '', messages: [] }, userText: 'One.' }
-    const two: AmpInference = { body: { model: '', system: '', messages: [] }, userText: 'Two.' }
+    const one: AmpInference = {
+      body: { model: '', system: '', messages: [] },
+      userText: 'One.',
+    }
+    const two: AmpInference = {
+      body: { model: '', system: '', messages: [] },
+      userText: 'Two.',
+    }
     const signal = new AbortController().signal
-    await Promise.all([options.answer(one, signal), options.answer(two, signal)])
+    await Promise.all([
+      options.answer(one, signal),
+      options.answer(two, signal),
+    ])
     options.errorSent?.(two, { code: 'quota', message: 'Actual native refusal.' })
     expect(second.recordServiceError).toHaveBeenCalledExactlyOnceWith({ kind: 'amp-error-set', code: 'quota', message: 'Actual native refusal.' })
     expect(first.recordServiceError).not.toHaveBeenCalled()
     expect(await options.holdGeneration?.(one, first.step, signal)).toBe(true)
     expect(first.bufferGeneration).toHaveBeenCalledExactlyOnceWith(signal)
     expect(second.bufferGeneration).not.toHaveBeenCalled()
-    const unknown: AmpInference = { body: { model: '', system: '', messages: [] }, userText: 'Unselected.' }
+    const unknown: AmpInference = {
+      body: { model: '', system: '', messages: [] },
+      userText: 'Unselected.',
+    }
     options.errorSent?.(unknown, { code: 'ignored', message: 'No matching record.' })
     await expect(options.holdGeneration?.(unknown, first.step, signal)).rejects.toThrow('no selected scenario')
   })

@@ -14,11 +14,23 @@ export const readRenderer: ToolKindRenderer<'read'> = {
     const path = call.request.path
     // A read whose only path is the WORKING DIRECTORY has no file to show, and
     // a row titled with it reads as a bare ".".
-    const readPath = path && relativizePath(path, context?.workingDir, context?.homeDir) === '.' ? '' : path
+    const readPath = path && relativizePath(path, context?.workingDir, context?.homeDir) === '.'
+      ? ''
+      : path
     return renderReadTitle(readPath, call.request.offset, call.request.limit, context?.workingDir, context?.homeDir) ?? call.title ?? 'Read'
   },
   result(call, view) {
-    return <ReadFileResultBody source={call.result} {...(call.request.path !== undefined ? { path: call.request.path } : {})} {...(view.context !== undefined ? { context: view.context } : {})} />
+    return (
+      <ReadFileResultBody
+        source={call.result}
+        {...(call.request.path !== undefined
+          ? { path: call.request.path }
+          : {})}
+        {...(view.context !== undefined
+          ? { context: view.context }
+          : {})}
+      />
+    )
   },
   resultMeta(call) {
     const lines = call.result.lines

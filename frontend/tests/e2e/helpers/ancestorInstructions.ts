@@ -182,7 +182,9 @@ const SENTINEL_SENTENCE = 'The E2E launcher wrote this file into the run root. A
 const SENTINEL_TEXT: Readonly<Record<AncestorInstructionForm, string>> = {
   document: `${ANCESTOR_INSTRUCTION_SENTINEL}\n\n${SENTINEL_SENTENCE}\n`,
   rule: `---\nalwaysApply: true\napplyTo: "**"\n---\n\n${ANCESTOR_INSTRUCTION_SENTINEL}\n\n${SENTINEL_SENTENCE}\n`,
-  constitution: `${JSON.stringify({ authority: [ANCESTOR_INSTRUCTION_SENTINEL, SENTINEL_SENTENCE] }, null, 2)}\n`,
+  constitution: `${JSON.stringify({
+    authority: [ANCESTOR_INSTRUCTION_SENTINEL, SENTINEL_SENTENCE],
+  }, null, 2)}\n`,
 }
 
 /** The text of a sentinel file of `form`, as {@link writeAncestorInstructionSentinels} writes it. */

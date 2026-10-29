@@ -41,8 +41,12 @@ for (const preset of ['smart', 'bypass'] as const) {
     }
     await applyPermissionPreset(native.page, preset)
     await exerciseWorkerRestart(native, separateHubWorker, 'worker')
-    const permissionMode = preset === 'smart' ? 'auto-review' : 'never'
-    const profile = preset === 'smart' ? ':workspace' : ':danger-full-access'
+    const permissionMode = preset === 'smart'
+      ? 'auto-review'
+      : 'never'
+    const profile = preset === 'smart'
+      ? ':workspace'
+      : ':danger-full-access'
     await expectSettingsOptionChosen(native.page, `permissionMode-${permissionMode}`)
     await expectSettingsOptionChosen(native.page, `permission_profile-${profile}`)
     await expectNativeOptionValue(native, 'permissionMode', permissionMode)

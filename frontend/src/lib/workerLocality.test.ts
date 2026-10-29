@@ -6,7 +6,10 @@ function worker(id: string, autoRegistered: boolean): Worker {
   return { id, autoRegistered } as Worker
 }
 
-const WORKERS = [worker('local', true), worker('remote', false)]
+const WORKERS = [
+  worker('local', true),
+  worker('remote', false),
+]
 
 describe('isLocalWorker', () => {
   it('accepts the auto-registered worker of a solo desktop', () => {

@@ -32,10 +32,12 @@ function fixture(expanded: boolean) {
       isVisible: async () => options?.name === 'Collapse' && state.expanded,
     }),
   })
-  const result = strictHandle<Locator>({ locator: (selector) => {
-    expect(selector).toBe('..')
-    return view
-  } })
+  const result = strictHandle<Locator>({
+    locator: (selector) => {
+      expect(selector).toBe('..')
+      return view
+    },
+  })
   return { result, state, events }
 }
 

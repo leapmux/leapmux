@@ -59,9 +59,18 @@ describe('parseWorkspaceSortOrder', () => {
     ['null', null],
     ['a string', 'name'],
     ['a number', 3],
-    ['an unknown key', { key: 'colour', direction: 'asc' }],
-    ['an unknown direction', { key: 'name', direction: 'sideways' }],
-    ['a missing direction', { key: 'name' }],
+    [
+      'an unknown key',
+      { key: 'colour', direction: 'asc' },
+    ],
+    [
+      'an unknown direction',
+      { key: 'name', direction: 'sideways' },
+    ],
+    [
+      'a missing direction',
+      { key: 'name' },
+    ],
   ])('falls back to the default for %s', (_label, raw) => {
     // An unrecognized key would otherwise reach the direction-label lookup,
     // which throws.
@@ -74,7 +83,11 @@ describe('parseWorkspaceSortOrder', () => {
 })
 
 describe('sortWorkspaces', () => {
-  const list = [ws('c', 'Charlie', '2026-03-01'), ws('a', 'alpha', '2026-01-01'), ws('b', 'Bravo', '2026-02-01')]
+  const list = [
+    ws('c', 'Charlie', '2026-03-01'),
+    ws('a', 'alpha', '2026-01-01'),
+    ws('b', 'Bravo', '2026-02-01'),
+  ]
 
   it('leaves the manual order untouched, in either direction', () => {
     // That order IS the lexorank the caller already assembled; re-deriving it
@@ -109,7 +122,9 @@ describe('sortWorkspaces', () => {
     // `mru` is a per-session counter, so "never activated this session" is a
     // real answer -- and it must not migrate to the top when the direction
     // flips.
-    const recency = (id: string) => (id === 'b' ? undefined : 1)
+    const recency = (id: string) => (id === 'b'
+      ? undefined
+      : 1)
     expect(ids(sortWorkspaces(list, order('recent'), recency)).at(-1)).toBe('b')
     expect(ids(sortWorkspaces(list, order('recent', 'desc'), recency)).at(-1)).toBe('b')
   })
@@ -120,29 +135,44 @@ describe('sortWorkspaces', () => {
   })
 
   it('breaks a creation tie by title', () => {
-    const tied = [ws('c', 'Charlie', '2026-01-01'), ws('a', 'alpha', '2026-01-01')]
+    const tied = [
+      ws('c', 'Charlie', '2026-01-01'),
+      ws('a', 'alpha', '2026-01-01'),
+    ]
     expect(ids(sortWorkspaces(tied, order('created'), NO_RECENCY))).toEqual(['a', 'c'])
   })
 
   it('pins a workspace with no creation time last', () => {
-    const partial = [ws('a', 'alpha'), ws('b', 'Bravo', '2026-01-01')]
+    const partial = [
+      ws('a', 'alpha'),
+      ws('b', 'Bravo', '2026-01-01'),
+    ]
     expect(ids(sortWorkspaces(partial, order('created'), NO_RECENCY))).toEqual(['b', 'a'])
     expect(ids(sortWorkspaces(partial, order('created', 'desc'), NO_RECENCY))).toEqual(['b', 'a'])
   })
 
   it('handles an empty list and a single entry', () => {
     expect(sortWorkspaces([], order('name'), NO_RECENCY)).toEqual([])
-    expect(ids(sortWorkspaces([ws('a', 'alpha')], order('recent'), NO_RECENCY))).toEqual(['a'])
+    expect(ids(sortWorkspaces([
+      ws('a', 'alpha'),
+    ], order('recent'), NO_RECENCY))).toEqual(['a'])
   })
 
   it('sorts an untitled workspace without throwing', () => {
-    const untitled = [ws('b', ''), ws('a', 'alpha')]
+    const untitled = [
+      ws('b', ''),
+      ws('a', 'alpha'),
+    ]
     expect(ids(sortWorkspaces(untitled, order('name'), NO_RECENCY))).toEqual(['b', 'a'])
   })
 })
 
 describe('filterWorkspaces', () => {
-  const list = [ws('a', 'gentle-amber-fox'), ws('b', 'Bold Blue Bear'), ws('c', 'amber tooling')]
+  const list = [
+    ws('a', 'gentle-amber-fox'),
+    ws('b', 'Bold Blue Bear'),
+    ws('c', 'amber tooling'),
+  ]
 
   it('keeps everything for an empty query', () => {
     expect(ids(filterWorkspaces(list, ''))).toEqual(['a', 'b', 'c'])
@@ -202,7 +232,10 @@ describe('canReorderWithin', () => {
 // functions are called for every section on every tick, and a fresh array
 // breaks reference equality for every memo downstream of them.
 describe('the identity paths return the input itself', () => {
-  const list = [ws('a', 'Alpha'), ws('b', 'Beta')]
+  const list = [
+    ws('a', 'Alpha'),
+    ws('b', 'Beta'),
+  ]
 
   it('sortWorkspaces returns the same array under the manual order', () => {
     expect(sortWorkspaces(list, { key: 'manual', direction: 'asc' }, () => undefined)).toBe(list)

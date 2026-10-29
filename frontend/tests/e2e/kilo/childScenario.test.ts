@@ -7,7 +7,12 @@ import { KILO_SPAWN_TASK, kiloSpawnChildRule } from './childScenario'
 const childPrompt = mockScenarioPrompt('kilo-spawn-transcript', KILO_SPAWN_TASK)
 
 function answers(userText: string): boolean {
-  return matchesRequest(kiloSpawnChildRule().when, { protocol: 'openai-chat-completions', systemText: '', userText, body: {} })
+  return matchesRequest(kiloSpawnChildRule().when, {
+    protocol: 'openai-chat-completions',
+    systemText: '',
+    userText,
+    body: {},
+  })
 }
 
 describe('kiloSpawnChildRule', () => {

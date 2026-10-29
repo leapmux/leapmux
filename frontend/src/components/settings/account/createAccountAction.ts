@@ -78,7 +78,10 @@ export function createAccountAction<T = true>(): AccountAction<T> {
         setMessage({ type: 'success', text: success })
     }
     catch (e) {
-      setMessage({ type: 'error', text: formatErrorMessage(e, options.fallback) })
+      setMessage({
+        type: 'error',
+        text: formatErrorMessage(e, options.fallback),
+      })
     }
     finally {
       setBusy(null)

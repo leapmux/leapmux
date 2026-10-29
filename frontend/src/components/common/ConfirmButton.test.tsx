@@ -243,7 +243,9 @@ describe('ConfirmButton', () => {
         </ConfirmButton>
       </>
     ))
-    const copies = [...container.querySelectorAll('*')].filter(el => el.textContent === 'held for review')
+    const copies = [
+      ...container.querySelectorAll('*'),
+    ].filter(el => el.textContent === 'held for review')
     expect(copies).toHaveLength(1)
     expect(copies[0]).toHaveAttribute('id', 'reason-2')
   })

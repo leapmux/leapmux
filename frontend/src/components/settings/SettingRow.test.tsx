@@ -47,11 +47,19 @@ describe('SettingRow control kinds', () => {
     const set = vi.fn()
     render(() => (
       <SettingRow
-        descriptor={descriptor({ control: { kind: 'enum', options: [
-          { value: 'dark', label: 'Dark' },
-          { value: 'light', label: 'Light' },
-        ] } })}
-        binding={binding({ value: () => 'dark', set })}
+        descriptor={descriptor({
+          control: {
+            kind: 'enum',
+            options: [
+              { value: 'dark', label: 'Dark' },
+              { value: 'light', label: 'Light' },
+            ],
+          },
+        })}
+        binding={binding({
+          value: () => 'dark',
+          set,
+        })}
       />
     ))
     fireEvent.click(screen.getByRole('radio', { name: 'Light' }))
@@ -61,14 +69,21 @@ describe('SettingRow control kinds', () => {
   it('renders a menu for wide enums', () => {
     render(() => (
       <SettingRow
-        descriptor={descriptor({ control: { kind: 'enum', options: [
-          { value: 'a', label: 'A' },
-          { value: 'b', label: 'B' },
-          { value: 'c', label: 'C' },
-          { value: 'd', label: 'D' },
-          { value: 'e', label: 'E' },
-        ] } })}
-        binding={binding({ value: () => 'a' })}
+        descriptor={descriptor({
+          control: {
+            kind: 'enum',
+            options: [
+              { value: 'a', label: 'A' },
+              { value: 'b', label: 'B' },
+              { value: 'c', label: 'C' },
+              { value: 'd', label: 'D' },
+              { value: 'e', label: 'E' },
+            ],
+          },
+        })}
+        binding={binding({
+          value: () => 'a',
+        })}
       />
     ))
     expect(screen.getByTestId('enum-control-menu')).toBeTruthy()
@@ -85,15 +100,30 @@ describe('SettingRow control kinds', () => {
     const set = vi.fn()
     render(() => (
       <SettingRow
-        descriptor={descriptor({ control: { kind: 'slider', min: 0, max: 100, step: 1, unit: '%' } })}
-        binding={binding({ value: () => 40, set })}
+        descriptor={descriptor({
+          control: {
+            kind: 'slider',
+            min: 0,
+            max: 100,
+            step: 1,
+            unit: '%',
+          },
+        })}
+        binding={binding({
+          value: () => 40,
+          set,
+        })}
       />
     ))
     const slider = screen.getByRole('slider', { name: 'Test row' }) as HTMLInputElement
     expect(slider.value).toBe('40')
     expect(screen.getByText('40%')).toBeTruthy()
-    fireEvent.input(slider, { target: { value: '60' } })
-    fireEvent.change(slider, { target: { value: '60' } })
+    fireEvent.input(slider, {
+      target: { value: '60' },
+    })
+    fireEvent.change(slider, {
+      target: { value: '60' },
+    })
     await vi.waitFor(() => expect(set).toHaveBeenCalledWith(60))
   })
 
@@ -101,7 +131,9 @@ describe('SettingRow control kinds', () => {
     const set = vi.fn()
     render(() => (
       <SettingRow
-        descriptor={descriptor({ control: { kind: 'action', label: 'Reset overrides', danger: true } })}
+        descriptor={descriptor({
+          control: { kind: 'action', label: 'Reset overrides', danger: true },
+        })}
         binding={binding({ set })}
       />
     ))
@@ -122,22 +154,38 @@ describe('SettingRow control kinds', () => {
     const set = vi.fn()
     render(() => (
       <SettingRow
-        descriptor={descriptor({ control: { kind: 'number', min: 300, step: 1, unit: 'seconds' } })}
-        binding={binding({ value: () => 604800, set })}
+        descriptor={descriptor({
+          control: {
+            kind: 'number',
+            min: 300,
+            step: 1,
+            unit: 'seconds',
+          },
+        })}
+        binding={binding({
+          value: () => 604800,
+          set,
+        })}
       />
     ))
     const input = screen.getByRole('spinbutton', { name: 'Test row' }) as HTMLInputElement
     expect(input.value).toBe('604800')
     expect(screen.getByText('seconds')).toBeTruthy()
-    fireEvent.change(input, { target: { value: '3600' } })
+    fireEvent.change(input, {
+      target: { value: '3600' },
+    })
     await vi.waitFor(() => expect(set).toHaveBeenCalledWith(3600))
   })
 
   it('keeps an unset number field empty instead of coercing to 0', () => {
     render(() => (
       <SettingRow
-        descriptor={descriptor({ control: { kind: 'number', unit: 'bytes' } })}
-        binding={binding({ value: () => undefined })}
+        descriptor={descriptor({
+          control: { kind: 'number', unit: 'bytes' },
+        })}
+        binding={binding({
+          value: () => undefined,
+        })}
       />
     ))
     const input = screen.getByRole('spinbutton', { name: 'Test row' }) as HTMLInputElement
@@ -152,12 +200,20 @@ describe('SettingRow control kinds', () => {
     const [value, setValue] = createSignal('starttls')
     render(() => (
       <SettingRow
-        descriptor={descriptor({ control: { kind: 'enum', options: [
-          { value: 'starttls', label: 'STARTTLS', help: 'Upgrade to TLS on port 587.' },
-          { value: 'implicit', label: 'Implicit TLS', help: 'Dial TLS directly on port 465.' },
-          { value: 'none', label: 'None' },
-        ] } })}
-        binding={binding({ value, set: (v) => { setValue(v as string) } })}
+        descriptor={descriptor({
+          control: {
+            kind: 'enum',
+            options: [
+              { value: 'starttls', label: 'STARTTLS', help: 'Upgrade to TLS on port 587.' },
+              { value: 'implicit', label: 'Implicit TLS', help: 'Dial TLS directly on port 465.' },
+              { value: 'none', label: 'None' },
+            ],
+          },
+        })}
+        binding={binding({
+          value,
+          set: (v) => { setValue(v as string) },
+        })}
       />
     ))
     expect(screen.getByText('Upgrade to TLS on port 587.')).toBeTruthy()
@@ -175,13 +231,20 @@ describe('SettingRow control kinds', () => {
     const set = vi.fn()
     render(() => (
       <SettingRow
-        descriptor={descriptor({ control: { kind: 'text', placeholder: 'e.g. vscode' } })}
-        binding={binding({ value: () => 'zed', set })}
+        descriptor={descriptor({
+          control: { kind: 'text', placeholder: 'e.g. vscode' },
+        })}
+        binding={binding({
+          value: () => 'zed',
+          set,
+        })}
       />
     ))
     const input = screen.getByRole('textbox', { name: 'Test row' }) as HTMLInputElement
     expect(input.placeholder).toBe('e.g. vscode')
-    fireEvent.change(input, { target: { value: 'vscode' } })
+    fireEvent.change(input, {
+      target: { value: 'vscode' },
+    })
     await vi.waitFor(() => expect(set).toHaveBeenCalledWith('vscode'))
   })
 
@@ -192,16 +255,29 @@ describe('SettingRow control kinds', () => {
     const set = vi.fn()
     render(() => (
       <SettingRow
-        descriptor={descriptor({ control: { kind: 'text' } })}
-        binding={binding({ value: () => '', set })}
+        descriptor={descriptor({
+          control: { kind: 'text' },
+        })}
+        binding={binding({
+          value: () => '',
+          set,
+        })}
       />
     ))
     const input = screen.getByRole('textbox', { name: 'Test row' }) as HTMLInputElement
-    fireEvent.input(input, { target: { value: 'h' } })
-    fireEvent.input(input, { target: { value: 'ht' } })
-    fireEvent.input(input, { target: { value: 'htt' } })
+    fireEvent.input(input, {
+      target: { value: 'h' },
+    })
+    fireEvent.input(input, {
+      target: { value: 'ht' },
+    })
+    fireEvent.input(input, {
+      target: { value: 'htt' },
+    })
     expect(set).not.toHaveBeenCalled()
-    fireEvent.change(input, { target: { value: 'https://hub.example.com' } })
+    fireEvent.change(input, {
+      target: { value: 'https://hub.example.com' },
+    })
     expect(set).toHaveBeenCalledTimes(1)
     expect(set).toHaveBeenCalledWith('https://hub.example.com')
   })
@@ -213,19 +289,28 @@ describe('SettingRow control kinds', () => {
     const set = vi.fn()
     render(() => (
       <SettingRow
-        descriptor={descriptor({ control: { kind: 'number', min: 0, max: 100 } })}
-        binding={binding({ value: () => 25, set })}
+        descriptor={descriptor({
+          control: { kind: 'number', min: 0, max: 100 },
+        })}
+        binding={binding({
+          value: () => 25,
+          set,
+        })}
       />
     ))
     const input = screen.getByRole('spinbutton', { name: 'Test row' }) as HTMLInputElement
-    fireEvent.change(input, { target: { value: '' } })
+    fireEvent.change(input, {
+      target: { value: '' },
+    })
     expect(set).not.toHaveBeenCalled()
     // And the field must not keep showing the blank it never committed.
     // Solid assigns `value` only when the tracked expression CHANGES, and
     // the stored value did not — so nothing else puts the number back, and
     // the row would show an empty box over a stored 25 with no error.
     expect(input.value).toBe('25')
-    fireEvent.change(input, { target: { value: '0' } })
+    fireEvent.change(input, {
+      target: { value: '0' },
+    })
     expect(set).toHaveBeenCalledTimes(1)
     expect(set).toHaveBeenCalledWith(0)
   })
@@ -234,7 +319,12 @@ describe('SettingRow control kinds', () => {
     const set = vi.fn(async () => {})
     render(() => (
       <SettingRow
-        descriptor={descriptor({ control: { kind: 'secret', isSet: () => false } })}
+        descriptor={descriptor({
+          control: {
+            kind: 'secret',
+            isSet: () => false,
+          },
+        })}
         binding={binding({ set })}
       />
     ))
@@ -242,7 +332,9 @@ describe('SettingRow control kinds', () => {
     const input = screen.getByLabelText('Test row') as HTMLInputElement
     expect(input.type).toBe('password')
     expect(input.autocomplete).toBe('new-password')
-    fireEvent.input(input, { target: { value: 'hunter2' } })
+    fireEvent.input(input, {
+      target: { value: 'hunter2' },
+    })
     fireEvent.click(screen.getByRole('button', { name: 'Set' }))
     await vi.waitFor(() => expect(set).toHaveBeenCalledWith('hunter2'))
   })
@@ -250,7 +342,12 @@ describe('SettingRow control kinds', () => {
   it('labels the secret button Replace when a value is already stored', () => {
     render(() => (
       <SettingRow
-        descriptor={descriptor({ control: { kind: 'secret', isSet: () => true } })}
+        descriptor={descriptor({
+          control: {
+            kind: 'secret',
+            isSet: () => true,
+          },
+        })}
         binding={binding()}
       />
     ))
@@ -261,13 +358,20 @@ describe('SettingRow control kinds', () => {
     const set = vi.fn()
     render(() => (
       <SettingRow
-        descriptor={descriptor({ control: { kind: 'stringList', addLabel: 'Add font' } })}
-        binding={binding({ value: () => ['Inter'], set })}
+        descriptor={descriptor({
+          control: { kind: 'stringList', addLabel: 'Add font' },
+        })}
+        binding={binding({
+          value: () => ['Inter'],
+          set,
+        })}
       />
     ))
     expect(screen.getByText('Inter')).toBeTruthy()
     const add = screen.getByRole('textbox', { name: 'Add font' })
-    fireEvent.input(add, { target: { value: 'Hack NF' } })
+    fireEvent.input(add, {
+      target: { value: 'Hack NF' },
+    })
     fireEvent.keyDown(add, { key: 'Enter' })
     await vi.waitFor(() => expect(set).toHaveBeenCalledWith(['Inter', 'Hack NF']))
   })
@@ -279,7 +383,10 @@ describe('SettingRow status area', () => {
     render(() => (
       <SettingRow
         descriptor={descriptor({ scope: 'hub' })}
-        binding={binding({ customized: () => true, reset })}
+        binding={binding({
+          customized: () => true,
+          reset,
+        })}
       />
     ))
     fireEvent.click(screen.getByTestId('setting-reset-test.row'))
@@ -310,7 +417,10 @@ describe('SettingRow status area', () => {
     render(() => (
       <SettingRow
         descriptor={descriptor()}
-        binding={binding({ value: () => true, effective: () => false })}
+        binding={binding({
+          value: () => true,
+          effective: () => false,
+        })}
       />
     ))
     expect(screen.getByRole<HTMLInputElement>('switch', { name: 'Test row' }).checked).toBe(true)
@@ -324,7 +434,10 @@ describe('SettingRow status area', () => {
     render(() => (
       <SettingRow
         descriptor={descriptor()}
-        binding={binding({ value: () => false, effective: () => true })}
+        binding={binding({
+          value: () => false,
+          effective: () => true,
+        })}
       />
     ))
     expect(screen.getByRole<HTMLInputElement>('switch', { name: 'Test row' }).checked).toBe(false)
@@ -337,11 +450,19 @@ describe('SettingRow status area', () => {
   it('notes an enforced enum by its option label', () => {
     render(() => (
       <SettingRow
-        descriptor={descriptor({ control: { kind: 'enum', options: [
-          { value: 'altcha', label: 'ALTCHA' },
-          { value: 'turnstile', label: 'Cloudflare Turnstile' },
-        ] } })}
-        binding={binding({ value: () => 'turnstile', effective: () => 'altcha' })}
+        descriptor={descriptor({
+          control: {
+            kind: 'enum',
+            options: [
+              { value: 'altcha', label: 'ALTCHA' },
+              { value: 'turnstile', label: 'Cloudflare Turnstile' },
+            ],
+          },
+        })}
+        binding={binding({
+          value: () => 'turnstile',
+          effective: () => 'altcha',
+        })}
       />
     ))
     expect(screen.getByRole('radio', { name: 'Cloudflare Turnstile' }).getAttribute('aria-checked')).toBe('true')
@@ -354,8 +475,13 @@ describe('SettingRow status area', () => {
   it('notes an enforced 0', () => {
     render(() => (
       <SettingRow
-        descriptor={descriptor({ control: { kind: 'number', min: 0 } })}
-        binding={binding({ value: () => 1024, effective: () => 0 })}
+        descriptor={descriptor({
+          control: { kind: 'number', min: 0 },
+        })}
+        binding={binding({
+          value: () => 1024,
+          effective: () => 0,
+        })}
       />
     ))
     expect(screen.getByText(/Currently in effect:\s*0/)).toBeTruthy()
@@ -368,8 +494,13 @@ describe('SettingRow status area', () => {
   it('notes an enforced byte count with the unit its control shows', () => {
     render(() => (
       <SettingRow
-        descriptor={descriptor({ control: { kind: 'number', min: 0, unit: 'bytes' } })}
-        binding={binding({ value: () => 0, effective: () => 268435456 })}
+        descriptor={descriptor({
+          control: { kind: 'number', min: 0, unit: 'bytes' },
+        })}
+        binding={binding({
+          value: () => 0,
+          effective: () => 268435456,
+        })}
       />
     ))
     expect(screen.getByText(/Currently in effect:\s*268435456 bytes/)).toBeTruthy()
@@ -379,8 +510,13 @@ describe('SettingRow status area', () => {
   it('keeps the unit on an enforced 0', () => {
     render(() => (
       <SettingRow
-        descriptor={descriptor({ control: { kind: 'number', min: 0, unit: 'bytes' } })}
-        binding={binding({ value: () => 1024, effective: () => 0 })}
+        descriptor={descriptor({
+          control: { kind: 'number', min: 0, unit: 'bytes' },
+        })}
+        binding={binding({
+          value: () => 1024,
+          effective: () => 0,
+        })}
       />
     ))
     expect(screen.getByText(/Currently in effect:\s*0 bytes/)).toBeTruthy()
@@ -391,8 +527,19 @@ describe('SettingRow status area', () => {
   it('notes an enforced percentage the way the slider readout writes it', () => {
     render(() => (
       <SettingRow
-        descriptor={descriptor({ control: { kind: 'slider', min: 0, max: 100, step: 1, unit: '%' } })}
-        binding={binding({ value: () => 20, effective: () => 50 })}
+        descriptor={descriptor({
+          control: {
+            kind: 'slider',
+            min: 0,
+            max: 100,
+            step: 1,
+            unit: '%',
+          },
+        })}
+        binding={binding({
+          value: () => 20,
+          effective: () => 50,
+        })}
       />
     ))
     expect(screen.getByText(/Currently in effect:\s*50%/)).toBeTruthy()
@@ -402,7 +549,10 @@ describe('SettingRow status area', () => {
     render(() => (
       <SettingRow
         descriptor={descriptor()}
-        binding={binding({ value: () => true, effective: () => undefined })}
+        binding={binding({
+          value: () => true,
+          effective: () => undefined,
+        })}
       />
     ))
     expect(screen.queryByText(/Currently in effect/)).toBeNull()
@@ -417,7 +567,9 @@ describe('SettingRow status area', () => {
     render(() => (
       <SettingRow
         descriptor={descriptor()}
-        binding={binding({ set: () => Promise.reject(new Error('write failed')) })}
+        binding={binding({
+          set: () => Promise.reject(new Error('write failed')),
+        })}
       />
     ))
     fireEvent.click(screen.getByRole('switch', { name: 'Test row' }))
@@ -446,7 +598,11 @@ describe('SettingRow scope chip', () => {
     render(() => (
       <SettingRow
         descriptor={descriptor({ scope: 'dual' })}
-        binding={binding({ overridden: () => false, clearOverride, beginOverride })}
+        binding={binding({
+          overridden: () => false,
+          clearOverride,
+          beginOverride,
+        })}
       />
     ))
     const chip = screen.getByTestId('scope-chip-test.row')
@@ -468,7 +624,9 @@ describe('SettingRow scope chip', () => {
     render(() => (
       <SettingRow
         descriptor={descriptor({ scope: 'dual' })}
-        binding={binding({ overridden: () => true })}
+        binding={binding({
+          overridden: () => true,
+        })}
       />
     ))
     const chip = screen.getByTestId('scope-chip-test.row')
@@ -506,8 +664,13 @@ describe('SettingRow write sequencing', () => {
 
     render(() => (
       <SettingRow
-        descriptor={descriptor({ control: { kind: 'toggle' } })}
-        binding={binding({ value: () => false, set })}
+        descriptor={descriptor({
+          control: { kind: 'toggle' },
+        })}
+        binding={binding({
+          value: () => false,
+          set,
+        })}
       />
     ))
     const toggle = screen.getByRole('switch', { name: 'Test row' })
@@ -534,12 +697,19 @@ describe('SettingRow write sequencing', () => {
     })
     render(() => (
       <SettingRow
-        descriptor={descriptor({ control: { kind: 'text' } })}
-        binding={binding({ value: () => 'https://hub.example.com', set })}
+        descriptor={descriptor({
+          control: { kind: 'text' },
+        })}
+        binding={binding({
+          value: () => 'https://hub.example.com',
+          set,
+        })}
       />
     ))
     const input = screen.getByRole('textbox', { name: 'Test row' }) as HTMLInputElement
-    fireEvent.change(input, { target: { value: 'not-a-url' } })
+    fireEvent.change(input, {
+      target: { value: 'not-a-url' },
+    })
 
     await waitFor(() => expect(screen.getByText('public base URL must be absolute')).toBeTruthy())
     expect(input.value).toBe('https://hub.example.com')
@@ -549,12 +719,19 @@ describe('SettingRow write sequencing', () => {
     const set = vi.fn(async () => {})
     render(() => (
       <SettingRow
-        descriptor={descriptor({ control: { kind: 'text' } })}
-        binding={binding({ value: () => 'https://hub.example.com', set })}
+        descriptor={descriptor({
+          control: { kind: 'text' },
+        })}
+        binding={binding({
+          value: () => 'https://hub.example.com',
+          set,
+        })}
       />
     ))
     const input = screen.getByRole('textbox', { name: 'Test row' }) as HTMLInputElement
-    fireEvent.change(input, { target: { value: 'https://other.example.com' } })
+    fireEvent.change(input, {
+      target: { value: 'https://other.example.com' },
+    })
     await waitFor(() => expect(set).toHaveBeenCalledWith('https://other.example.com'))
     expect(input.value).toBe('https://other.example.com')
   })
@@ -568,14 +745,22 @@ describe('SettingRow write sequencing', () => {
     })
     render(() => (
       <SettingRow
-        descriptor={descriptor({ control: { kind: 'enum', options: [
-          { value: 'none', label: 'None' },
-          { value: 'starttls', label: 'STARTTLS' },
-          { value: 'tls', label: 'TLS' },
-          { value: 'auto', label: 'Auto' },
-          { value: 'legacy', label: 'Legacy' },
-        ] } })}
-        binding={binding({ value: () => 'starttls', set })}
+        descriptor={descriptor({
+          control: {
+            kind: 'enum',
+            options: [
+              { value: 'none', label: 'None' },
+              { value: 'starttls', label: 'STARTTLS' },
+              { value: 'tls', label: 'TLS' },
+              { value: 'auto', label: 'Auto' },
+              { value: 'legacy', label: 'Legacy' },
+            ],
+          },
+        })}
+        binding={binding({
+          value: () => 'starttls',
+          set,
+        })}
       />
     ))
     pickMenuOption('enum-control-menu', 'Legacy')
@@ -603,8 +788,15 @@ describe('SettingRow write sequencing', () => {
 
     render(() => (
       <SettingRow
-        descriptor={descriptor({ control: { kind: 'toggle' } })}
-        binding={binding({ value: () => false, set, customized: () => true, reset })}
+        descriptor={descriptor({
+          control: { kind: 'toggle' },
+        })}
+        binding={binding({
+          value: () => false,
+          set,
+          customized: () => true,
+          reset,
+        })}
       />
     ))
 
@@ -631,8 +823,13 @@ describe('SettingRow write sequencing', () => {
     })
     render(() => (
       <SettingRow
-        descriptor={descriptor({ control: { kind: 'toggle' } })}
-        binding={binding({ value: () => false, set })}
+        descriptor={descriptor({
+          control: { kind: 'toggle' },
+        })}
+        binding={binding({
+          value: () => false,
+          set,
+        })}
       />
     ))
     fireEvent.click(screen.getByRole('switch', { name: 'Test row' }))
@@ -657,17 +854,25 @@ describe('formatEffectiveValue', () => {
   })
 
   it('reads an enum by the label its options carry', () => {
-    const control = { kind: 'enum' as const, options: [
-      { value: 'altcha', label: 'ALTCHA' },
-      { value: 'recaptcha_v3', label: 'Google reCAPTCHA v3' },
-    ] }
+    const control = {
+      kind: 'enum' as const,
+      options: [
+        { value: 'altcha', label: 'ALTCHA' },
+        { value: 'recaptcha_v3', label: 'Google reCAPTCHA v3' },
+      ],
+    }
     expect(formatEffectiveValue(control, 'recaptcha_v3')).toBe('Google reCAPTCHA v3')
   })
 
   // A newer hub can enforce a value this client has no option for. The raw
   // text is what is left to report, and an empty note reports nothing.
   it('keeps the raw text of an enum value that matches no option', () => {
-    expect(formatEffectiveValue({ kind: 'enum', options: [{ value: 'altcha', label: 'ALTCHA' }] }, 'hcaptcha'))
+    expect(formatEffectiveValue({
+      kind: 'enum',
+      options: [
+        { value: 'altcha', label: 'ALTCHA' },
+      ],
+    }, 'hcaptcha'))
       .toBe('hcaptcha')
   })
 
@@ -681,14 +886,26 @@ describe('formatEffectiveValue', () => {
   // SliderControl concatenates the unit onto its readout (`40%`), and `%`
   // is the only unit a slider carries.
   it('attaches a slider unit to the figure, as its readout does', () => {
-    expect(formatEffectiveValue({ kind: 'slider', min: 0, max: 100, step: 1, unit: '%' }, 40)).toBe('40%')
+    expect(formatEffectiveValue({
+      kind: 'slider',
+      min: 0,
+      max: 100,
+      step: 1,
+      unit: '%',
+    }, 40)).toBe('40%')
   })
 
   // The unit guard tests the UNIT, never the value. A queue budget of 0
   // auto-sizes, so 0 is a real enforced figure and keeps its unit.
   it('keeps the unit on a falsy 0', () => {
     expect(formatEffectiveValue({ kind: 'number', min: 0, unit: 'bytes' }, 0)).toBe('0 bytes')
-    expect(formatEffectiveValue({ kind: 'slider', min: 0, max: 100, step: 1, unit: '%' }, 0)).toBe('0%')
+    expect(formatEffectiveValue({
+      kind: 'slider',
+      min: 0,
+      max: 100,
+      step: 1,
+      unit: '%',
+    }, 0)).toBe('0%')
   })
 
   // Most number keys declare no unit at all. A missing one must leave no
@@ -696,7 +913,12 @@ describe('formatEffectiveValue', () => {
   it('adds no separator to a number that declares no unit', () => {
     expect(formatEffectiveValue({ kind: 'number', min: 0 }, 0)).toBe('0')
     expect(formatEffectiveValue({ kind: 'number' }, 42)).toBe('42')
-    expect(formatEffectiveValue({ kind: 'slider', min: 0, max: 100, step: 1 }, 40)).toBe('40')
+    expect(formatEffectiveValue({
+      kind: 'slider',
+      min: 0,
+      max: 100,
+      step: 1,
+    }, 40)).toBe('40')
   })
 
   // A string and a list read the same in the note as in the control, so
@@ -734,7 +956,10 @@ describe('SettingRow custom editors', () => {
     removeControllableIntersectionObserver()
   })
 
-  const customRow = () => descriptor({ id: 'user.theme', control: { kind: 'custom', id: 'keybindings' } })
+  const customRow = () => descriptor({
+    id: 'user.theme',
+    control: { kind: 'custom', id: 'keybindings' },
+  })
 
   it('does not mount the editor until the row is revealed', () => {
     render(() => <SettingRow descriptor={customRow()} binding={binding()} />)

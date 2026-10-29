@@ -6,13 +6,24 @@ function end(stopReason: string, extra: Record<string, unknown> = {}) {
   return {
     type: 'agent_end',
     isTerminal: true,
-    messages: [{ role: 'user', content: [] }, { role: 'assistant', content: [], stopReason, ...extra }],
+    messages: [
+      { role: 'user', content: [] },
+      {
+        role: 'assistant',
+        content: [],
+        stopReason,
+        ...extra,
+      },
+    ],
   }
 }
 
 describe('ohMyPiResultDivider', () => {
   it('reads a turn that ended', () => {
-    expect(ohMyPiResultDivider({ ...end('stop'), duration_ms: 2000 })).toEqual({ label: 'Turn ended (2.0s)' })
+    expect(ohMyPiResultDivider({
+      ...end('stop'),
+      duration_ms: 2000,
+    })).toEqual({ label: 'Turn ended (2.0s)' })
   })
 
   it('reads a turn that failed, with omp\'s reason', () => {
@@ -27,8 +38,15 @@ describe('ohMyPiResultDivider', () => {
   it('states that more work follows an end that omp continues, whatever the cause', () => {
     // A queued steer or follow-up, an agent message, a retry and a compaction each
     // continue the run, and the frame states none of them.
-    expect(ohMyPiResultDivider({ ...end('stop'), isTerminal: false, duration_ms: 4200 })).toEqual({ label: 'Turn ended (4.2s, more work follows)' })
-    expect(ohMyPiResultDivider({ ...end('error', { errorMessage: '429 rate limited' }), isTerminal: false })).toEqual({
+    expect(ohMyPiResultDivider({
+      ...end('stop'),
+      isTerminal: false,
+      duration_ms: 4200,
+    })).toEqual({ label: 'Turn ended (4.2s, more work follows)' })
+    expect(ohMyPiResultDivider({
+      ...end('error', { errorMessage: '429 rate limited' }),
+      isTerminal: false,
+    })).toEqual({
       label: 'Turn failed (more work follows) — 429 rate limited',
       isError: true,
     })
@@ -43,7 +61,10 @@ describe('ohMyPiResultDivider', () => {
 
   it('reads a stop the reader asked for, whatever the frame says', () => {
     expect(ohMyPiResultDivider(end('error', { errorMessage: 'aborted' }), MessageCompletion.INTERRUPTED)).toEqual({ label: 'Turn interrupted' })
-    expect(ohMyPiResultDivider({ ...end('stop'), duration_ms: 2000 }, MessageCompletion.INTERRUPTED)).toEqual({ label: 'Turn interrupted (2.0s)' })
+    expect(ohMyPiResultDivider({
+      ...end('stop'),
+      duration_ms: 2000,
+    }, MessageCompletion.INTERRUPTED)).toEqual({ label: 'Turn interrupted (2.0s)' })
   })
 
   it('reads the frame for a completion other than a stop the reader asked for', () => {
@@ -69,8 +90,14 @@ describe('ohMyPiResultDivider', () => {
 
   it('reads a failed turn with no reason, an interrupted turn and a length limit that more work follows', () => {
     expect(ohMyPiResultDivider(end('error'))).toEqual({ label: 'Turn failed', isError: true })
-    expect(ohMyPiResultDivider({ ...end('aborted'), isTerminal: false })).toEqual({ label: 'Turn interrupted (more work follows)' })
-    expect(ohMyPiResultDivider({ ...end('length'), isTerminal: false })).toEqual({ label: 'Turn ended (length limit, more work follows)' })
+    expect(ohMyPiResultDivider({
+      ...end('aborted'),
+      isTerminal: false,
+    })).toEqual({ label: 'Turn interrupted (more work follows)' })
+    expect(ohMyPiResultDivider({
+      ...end('length'),
+      isTerminal: false,
+    })).toEqual({ label: 'Turn ended (length limit, more work follows)' })
   })
 
   it('reads a run with no assistant message', () => {

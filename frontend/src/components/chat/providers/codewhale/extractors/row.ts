@@ -18,7 +18,12 @@ export function codewhaleExtractRow(input: RowExtractionInput): ChatRow | null {
       const message = codewhaleMessageText(payload)
       if (!message)
         return null
-      return { kind: message.kind === 'thinking' ? 'assistant-thinking' : 'assistant-text', text: message.text }
+      return {
+        kind: message.kind === 'thinking'
+          ? 'assistant-thinking'
+          : 'assistant-text',
+        text: message.text,
+      }
     }
     case 'tool_use':
     case 'tool_result':
@@ -46,8 +51,12 @@ function codewhaleToolSpanRow(input: RowExtractionInput): ChatRow | null {
     return null
   // LeapMux's own reading of how the row ended wins over the column the payload
   // carries, as it does for every row `extractChatRow` reads.
-  const parsed = input.completion !== undefined ? { ...resolved, completion: input.completion } : resolved
+  const parsed = input.completion !== undefined
+    ? { ...resolved, completion: input.completion }
+    : resolved
   const call = codewhaleToolCall(own, { request: span.request, result: span.result }, parsed, spanType)
-  const role: ToolSpanRowRole = codewhaleToolSpanRole(own, parsed) === 'result' ? 'result' : 'request'
+  const role: ToolSpanRowRole = codewhaleToolSpanRole(own, parsed) === 'result'
+    ? 'result'
+    : 'request'
   return toolCallRow(call, role, span.visibleRows)
 }

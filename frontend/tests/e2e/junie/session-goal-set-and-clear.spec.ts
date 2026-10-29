@@ -32,7 +32,10 @@ junieTest.describe('junie unsupported controls', () => {
 })
 
 junieTest('refuses only the unsupported native goal actions and preserves the supported actions', async ({ native }) => {
-  await expectUnsupportedGoalActions(native, { actions: [AgentGoalAction.SET], relatedProof: async () => {
-    await nativeGoalProbeTurn(native)
-  } })
+  await expectUnsupportedGoalActions(native, {
+    actions: [AgentGoalAction.SET],
+    relatedProof: async () => {
+      await nativeGoalProbeTurn(native)
+    },
+  })
 })

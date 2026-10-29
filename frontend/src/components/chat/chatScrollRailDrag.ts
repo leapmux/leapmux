@@ -179,8 +179,12 @@ export function createThumbDrag(deps: ThumbDragDeps): ThumbDragHandle {
   const insideWindow = (seqF: number): boolean => {
     const wf = deps.windowFirstSeq()
     const wl = deps.windowLastSeq()
-    const first = wf === undefined ? null : safeSeqNumber(wf)
-    const last = wl === undefined ? null : safeSeqNumber(wl)
+    const first = wf === undefined
+      ? null
+      : safeSeqNumber(wf)
+    const last = wl === undefined
+      ? null
+      : safeSeqNumber(wl)
     return first !== null && last !== null && seqF >= first && seqF <= last
   }
 

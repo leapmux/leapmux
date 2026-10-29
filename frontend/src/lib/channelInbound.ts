@@ -54,8 +54,12 @@ export class ChannelInbound<T extends InboundChannel = InboundChannel> {
     // frame (RPC response, stream chunk, tunnel data/credit), and the debug args --
     // a fresh object literal plus a bigint->string conversion -- are evaluated at the
     // call site regardless of whether debug logging is on (see Logger.debug).
-    if (log.isDebug())
-      log.debug('received channel message', { channel_id: channelId, correlation_id: String(msg.correlationId) })
+    if (log.isDebug()) {
+      log.debug('received channel message', {
+        channel_id: channelId,
+        correlation_id: String(msg.correlationId),
+      })
+    }
 
     // Close sentinel: CLOSE flag.
     if (msg.flags === ChannelMessageFlags.CLOSE) {
@@ -146,8 +150,12 @@ export class ChannelInbound<T extends InboundChannel = InboundChannel> {
         break
       case 'rekeyReject': {
         const raw = envelope.kind.value.retryAfterMs
-        const ms = typeof raw === 'bigint' ? Number(raw) : Number(raw ?? 0)
-        this.deps.session.handleRekeyOutcome(ch, false, Number.isFinite(ms) && ms > 0 ? ms : 0, correlationId)
+        const ms = typeof raw === 'bigint'
+          ? Number(raw)
+          : Number(raw ?? 0)
+        this.deps.session.handleRekeyOutcome(ch, false, Number.isFinite(ms) && ms > 0
+          ? ms
+          : 0, correlationId)
         break
       }
       case 'rekeyRequest':

@@ -28,7 +28,9 @@ test.describe('agent input queue', () => {
         match: 'Stop the report',
       })
     }, async () => {
-      await finishCleanup([modelScript.releaseGateIfHeld('claude-code-steer-mid-turn-hold-1')])
+      await finishCleanup([
+        modelScript.releaseGateIfHeld('claude-code-steer-mid-turn-hold-1'),
+      ])
     })
   })
 
@@ -91,7 +93,10 @@ claudeTest('keeps the turn active while a steer that waited at the turn end runs
     )
     await sendMessage(page, modelScript.prompt('Write the report.'))
     await modelScript.waitForGate(firstGate)
-    await steerQueuedInput(page, { message: modelScript.prompt('Reply STEERED'), match: 'Reply STEERED' })
+    await steerQueuedInput(page, {
+      message: modelScript.prompt('Reply STEERED'),
+      match: 'Reply STEERED',
+    })
     await modelScript.releaseGate(firstGate)
     await expect(assistantBubbles(page).filter({ hasText: 'A report.' })).toHaveCount(1)
     await expect(page.locator('[data-testid="result-divider"]:visible')).toHaveCount(1)
@@ -107,6 +112,9 @@ claudeTest('keeps the turn active while a steer that waited at the turn end runs
     await expect(assistantBubbles(page).filter({ hasText: 'THIRD_ANSWER' })).toHaveCount(1)
     await expect(queuedInputRow(page, 'Deliver the third prompt.')).toHaveCount(0)
   }, async () => {
-    await finishCleanup([modelScript.releaseGateIfHeld(firstGate), modelScript.releaseGateIfHeld(steerGate)])
+    await finishCleanup([
+      modelScript.releaseGateIfHeld(firstGate),
+      modelScript.releaseGateIfHeld(steerGate),
+    ])
   })
 })

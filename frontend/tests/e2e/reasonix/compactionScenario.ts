@@ -22,7 +22,13 @@ export async function prepareCompactionReasonix(runDirectory: string, mockModelU
     plainProviderID: REASONIX_PLAIN_PROVIDER_ID,
     plainModelID: MOCK_MODELS.zai,
   })
-  return { agentEnv: { ...environment.env, ...nativeEnv }, setup: undefined }
+  return {
+    agentEnv: {
+      ...environment.env,
+      ...nativeEnv,
+    },
+    setup: undefined,
+  }
 }
 
 /** Remove only the audited native host wrappers around one current user prompt. */
@@ -38,5 +44,7 @@ export function reasonixCompactionUserInput(request: MockModelRequestRecord, wor
 /** Prove that the exact command remains ordinary input inside Reasonix's native host wrappers. */
 export async function exerciseReasonixCompactAsModelText(context: ManagedNativeScenarioContext): Promise<void> {
   const { workingDir } = await currentNativeAgent(context)
-  await exerciseCompactAsModelText(context, { lastUserText: request => reasonixCompactionUserInput(request, workingDir) })
+  await exerciseCompactAsModelText(context, {
+    lastUserText: request => reasonixCompactionUserInput(request, workingDir),
+  })
 }

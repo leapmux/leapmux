@@ -57,7 +57,9 @@ export const CaptchaField: Component<CaptchaFieldProps> = (props) => {
   // `ref` forwards conditionally so an absent callback stays absent from the
   // child props; the fields treat a present-but-undefined ref as a ref that
   // exists under exactOptionalPropertyTypes.
-  const refProps = () => (props.ref !== undefined ? { ref: props.ref } : {})
+  const refProps = () => (props.ref !== undefined
+    ? { ref: props.ref }
+    : {})
   return (
     <Switch fallback={<AltchaField onPayload={props.onPayload} onUnavailable={props.onUnavailable} {...refProps()} />}>
       <Match when={getCaptchaProvider() === CaptchaProvider.TURNSTILE}>

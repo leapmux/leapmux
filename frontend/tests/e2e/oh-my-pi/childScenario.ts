@@ -25,8 +25,14 @@ export function ohMyPiChildTurn(user: MockModelPattern = OMP_ASSIGNMENT_OPENING)
 export function ohMyPiHeldChild(): HeldChildCase {
   return {
     rowTitle: HELD_CHILD_NAME,
-    heldAnswer: { toolCalls: [ohMyPiYieldToolCall('held-child-yield', HELD_CHILD_REPORT)] },
+    heldAnswer: {
+      toolCalls: [
+        ohMyPiYieldToolCall('held-child-yield', HELD_CHILD_REPORT),
+      ],
+    },
     childTurn: ohMyPiChildTurn(HELD_CHILD_TASK),
-    rootTurnsAfterSpawn: [{ text: 'The actual native child completed.' }],
+    rootTurnsAfterSpawn: [
+      { text: 'The actual native child completed.' },
+    ],
   }
 }

@@ -19,7 +19,14 @@ describe('chatOrderedReveal', () => {
       held = createOrderedTailReveal(ids, id => loading().has(id))
     })
     const setLoadingIds = (values: string[]) => setLoading(new Set(values))
-    return { held: () => [...held()].sort(), setIds, setLoadingIds, dispose }
+    return {
+      held: () => [
+        ...held(),
+      ].sort(),
+      setIds,
+      setLoadingIds,
+      dispose,
+    }
   }
 
   it('releases the measured tail only after an empty earlier row receives a valid measurement', () => {
@@ -29,11 +36,17 @@ describe('chatOrderedReveal', () => {
         const { virt } = setup(items)
         const held = createOrderedTailReveal(() => items.map(item => item.id), id => !virt.hasMeasuredHeight(id))
         virt.measure('answer', 40)
-        expect([...held()]).toEqual(['answer'])
+        expect([
+          ...held(),
+        ]).toEqual(['answer'])
         expect(virt.primeHeight('empty', 0, 'stale')).toBe(false)
-        expect([...held()]).toEqual(['answer'])
+        expect([
+          ...held(),
+        ]).toEqual(['answer'])
         expect(virt.primeHeight('empty', 0, 'live')).toBe(true)
-        expect([...held()]).toEqual([])
+        expect([
+          ...held(),
+        ]).toEqual([])
       }
       finally {
         dispose()

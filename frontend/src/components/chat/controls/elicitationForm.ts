@@ -29,27 +29,64 @@ export interface ElicitationForm {
 
 function enumOptions(schema: Record<string, unknown>): ElicitationOption[] {
   if (Array.isArray(schema.enum)) {
-    const labels = Array.isArray(schema.enumNames) ? schema.enumNames : []
-    return schema.enum.map((value, index) => ({ value: JSON.stringify(value), label: typeof labels[index] === 'string' ? labels[index] : String(value) }))
+    const labels = Array.isArray(schema.enumNames)
+      ? schema.enumNames
+      : []
+    return schema.enum.map((value, index) => ({
+      value: JSON.stringify(value),
+      label: typeof labels[index] === 'string'
+        ? labels[index]
+        : String(value),
+    }))
   }
-  const variants = Array.isArray(schema.oneOf) ? schema.oneOf : Array.isArray(schema.anyOf) ? schema.anyOf : []
+  const variants = Array.isArray(schema.oneOf)
+    ? schema.oneOf
+    : Array.isArray(schema.anyOf)
+      ? schema.anyOf
+      : []
   if (variants.length > 0 && variants.every(item => isObject(item) && Object.hasOwn(item, 'const'))) {
-    return variants.map(item => ({ value: JSON.stringify(item.const), label: pickString(item, 'title', String(item.const)) }))
+    return variants.map(item => ({
+      value: JSON.stringify(item.const),
+      label: pickString(item, 'title', String(item.const)),
+    }))
   }
   return []
 }
 
 function fieldFor(key: string, schema: unknown, required: boolean): ElicitationField {
-  const definition = isObject(schema) ? schema : {}
+  const definition = isObject(schema)
+    ? schema
+    : {}
   const multiple = definition.type === 'array' && isObject(definition.items)
   let options = enumOptions(multiple ? definition.items as Record<string, unknown> : definition)
-  if (definition.type === 'boolean')
-    options = [{ value: 'true', label: 'Yes' }, { value: 'false', label: 'No' }]
+  if (definition.type === 'boolean') {
+    options = [
+      { value: 'true', label: 'Yes' },
+      { value: 'false', label: 'No' },
+    ]
+  }
   const type = options.length > 0
     ? multiple ? 'multiple' : 'select'
-    : definition.type === 'string' ? 'text' : definition.type === 'number' || definition.type === 'integer' ? 'number' : 'json'
-  const initial = definition.default === undefined ? '' : type === 'text' ? String(definition.default) : JSON.stringify(definition.default)
-  return { key, label: pickString(definition, 'title', key), description: pickString(definition, 'description', ''), type, options, initial, hasDefault: Object.hasOwn(definition, 'default'), required }
+    : definition.type === 'string'
+      ? 'text'
+      : definition.type === 'number' || definition.type === 'integer'
+        ? 'number'
+        : 'json'
+  const initial = definition.default === undefined
+    ? ''
+    : type === 'text'
+      ? String(definition.default)
+      : JSON.stringify(definition.default)
+  return {
+    key,
+    label: pickString(definition, 'title', key),
+    description: pickString(definition, 'description', ''),
+    type,
+    options,
+    initial,
+    hasDefault: Object.hasOwn(definition, 'default'),
+    required,
+  }
 }
 
 /** Keep form state in the existing durable control-answer record. */
@@ -59,12 +96,20 @@ export function elicitationFieldKey(key: string): string {
 
 /** Build typed inputs while the validator retains the complete provider schema. */
 export function createElicitationForm(schema: unknown): ElicitationForm {
-  const definition = isObject(schema) ? schema : undefined
-  const properties = definition && isObject(definition.properties) ? definition.properties : undefined
-  const required = definition && Array.isArray(definition.required) ? definition.required : []
+  const definition = isObject(schema)
+    ? schema
+    : undefined
+  const properties = definition && isObject(definition.properties)
+    ? definition.properties
+    : undefined
+  const required = definition && Array.isArray(definition.required)
+    ? definition.required
+    : []
   const fields = properties
     ? Object.entries(properties).map(([key, value]) => fieldFor(key, value, required.includes(key)))
-    : [fieldFor('', {}, true)]
+    : [
+        fieldFor('', {}, true),
+      ]
   let validator: Validator | undefined
   let schemaError: string | undefined
   try {
@@ -105,12 +150,16 @@ export function createElicitationForm(schema: unknown): ElicitationForm {
             catch (error) {
               if (error instanceof RangeError)
                 return { error: `${field.label || 'Response'}: This number is too large to send without changing its value.` }
-              return { error: `${field.label || 'Response'}: Enter valid ${field.type === 'number' ? 'number' : 'JSON'}.` }
+              return { error: `${field.label || 'Response'}: Enter valid ${field.type === 'number'
+                ? 'number'
+                : 'JSON'}.` }
             }
           }
           entries.push([field.key, parsed])
         }
-        const content: unknown = properties ? Object.fromEntries(entries) : entries[0]?.[1]
+        const content: unknown = properties
+          ? Object.fromEntries(entries)
+          : entries[0]?.[1]
         if (!isObject(content))
           return { error: 'Enter a JSON object.' }
         for (const key of required) {
@@ -120,7 +169,13 @@ export function createElicitationForm(schema: unknown): ElicitationForm {
         const result = validator.validate(content)
         if (!result.valid) {
           const first = result.errors[0]
-          return { error: first ? `${first.instanceLocation === '#' ? 'Response' : first.instanceLocation}: ${first.error.replace(/^Instance /, 'The value ')}` : 'Check the form values.' }
+          return {
+            error: first
+              ? `${first.instanceLocation === '#'
+                ? 'Response'
+                : first.instanceLocation}: ${first.error.replace(/^Instance /, 'The value ')}`
+              : 'Check the form values.',
+          }
         }
         return { content }
       }
@@ -148,8 +203,12 @@ export function elicitationURL(value: string | undefined): string | undefined {
 export function buildElicitationResponse(requestId: string, action: McpElicitationAction, content?: Record<string, unknown>, metadata?: Record<string, unknown>): Record<string, unknown> {
   return buildControlResponseEnvelope(requestId, {
     action,
-    ...(action === MCP_ELICITATION_ACTION.Accept && content ? { content } : {}),
-    ...(action === MCP_ELICITATION_ACTION.Accept && metadata ? { _meta: metadata } : {}),
+    ...(action === MCP_ELICITATION_ACTION.Accept && content
+      ? { content }
+      : {}),
+    ...(action === MCP_ELICITATION_ACTION.Accept && metadata
+      ? { _meta: metadata }
+      : {}),
   })
 }
 

@@ -12,7 +12,9 @@ import { isFastAgentRefusalSentence } from '../protocol'
  */
 export const fastAgentToolCallAdapter: ACPToolCallAdapter = (facts, base): ToolCallSpec => {
   const spec = base()
-  return fastAgentRefused(facts) ? declinedToolCallSpec(spec, facts.text) : fastAgentCommandSpec(spec)
+  return fastAgentRefused(facts)
+    ? declinedToolCallSpec(spec, facts.text)
+    : fastAgentCommandSpec(spec)
 }
 
 /** The final native exit block follows two separator line breaks. */
@@ -23,12 +25,24 @@ function fastAgentCommandSpec(spec: ToolCallSpec): ToolCallSpec {
   if (spec.kind !== 'execute' || spec.result === undefined || !('commands' in spec.result) || spec.result.commands.length !== 1)
     return spec
   const command = spec.result.commands[0]
-  const exit = command === undefined ? undefined : fastAgentCommandExit(command.output)
+  const exit = command === undefined
+    ? undefined
+    : fastAgentCommandExit(command.output)
   if (command === undefined || exit === undefined)
     return spec
   const block = FAST_AGENT_EXIT_BLOCK.exec(command.output)
-  const output = block ? command.output.slice(0, block.index) : command.output
-  return { ...spec, result: { ...spec.result, commands: [withCommandExit({ ...command, output }, exit)] } }
+  const output = block
+    ? command.output.slice(0, block.index)
+    : command.output
+  return {
+    ...spec,
+    result: {
+      ...spec.result,
+      commands: [
+        withCommandExit({ ...command, output }, exit),
+      ],
+    },
+  }
 }
 
 /**
@@ -38,8 +52,12 @@ function fastAgentCommandSpec(spec: ToolCallSpec): ToolCallSpec {
  */
 export function fastAgentCommandExit(text: string): CommandExit | undefined {
   const block = FAST_AGENT_EXIT_BLOCK.exec(text)
-  const exitCode = block ? Number(block[1]) : Number.NaN
-  return Number.isSafeInteger(exitCode) ? { exitCode } : undefined
+  const exitCode = block
+    ? Number(block[1])
+    : Number.NaN
+  return Number.isSafeInteger(exitCode)
+    ? { exitCode }
+    : undefined
 }
 
 /**

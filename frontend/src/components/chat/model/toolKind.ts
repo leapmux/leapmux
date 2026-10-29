@@ -86,5 +86,7 @@ const KNOWN_TOOL_KINDS: ReadonlySet<string> = new Set(TOOL_KINDS)
 export function toolKind(value: string | undefined): ToolKind {
   if (value === undefined)
     return 'unspecified'
-  return KNOWN_TOOL_KINDS.has(value) ? value as ToolKind : 'other'
+  return KNOWN_TOOL_KINDS.has(value)
+    ? value as ToolKind
+    : 'other'
 }

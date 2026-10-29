@@ -39,7 +39,17 @@ function row(overrides: Partial<ClaudeToolRow> = {}): ClaudeToolRow {
 function failedFrame(content = REASON): Record<string, unknown> {
   return {
     type: 'user',
-    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'r1', content, is_error: true }] },
+    message: {
+      role: 'user',
+      content: [
+        {
+          type: 'tool_result',
+          tool_use_id: 'r1',
+          content,
+          is_error: true,
+        },
+      ],
+    },
   }
 }
 
@@ -50,7 +60,17 @@ function requestSide(name: string, args: Record<string, unknown>): ParsedMessage
     topLevel: null,
     parentObject: {
       type: 'assistant',
-      message: { role: 'assistant', content: [{ type: 'tool_use', id: 'r1', name, input: args }] },
+      message: {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'r1',
+            name,
+            input: args,
+          },
+        ],
+      },
     },
     rawText: '',
     supplementalContent: undefined,
@@ -75,20 +95,72 @@ function failedCall(name: string, args: Record<string, unknown>, content = REASO
  * failure rung leaves a hole here that a reader can see.
  */
 const CASES: { name: string, kind: ToolKind, args: Record<string, unknown> }[] = [
-  { name: CLAUDE_TOOL_NAMES.GREP, kind: 'grep', args: { pattern: 'needle' } },
-  { name: CLAUDE_TOOL_NAMES.GLOB, kind: 'glob', args: { pattern: '**/*.ts' } },
-  { name: CLAUDE_TOOL_NAMES.READ, kind: 'read', args: { file_path: '/p/a.ts' } },
-  { name: CLAUDE_TOOL_NAMES.WEB_FETCH, kind: 'fetch', args: { url: 'https://example.com' } },
-  { name: CLAUDE_TOOL_NAMES.WEB_SEARCH, kind: 'web_search', args: { query: 'q' } },
+  {
+    name: CLAUDE_TOOL_NAMES.GREP,
+    kind: 'grep',
+    args: { pattern: 'needle' },
+  },
+  {
+    name: CLAUDE_TOOL_NAMES.GLOB,
+    kind: 'glob',
+    args: { pattern: '**/*.ts' },
+  },
+  {
+    name: CLAUDE_TOOL_NAMES.READ,
+    kind: 'read',
+    args: { file_path: '/p/a.ts' },
+  },
+  {
+    name: CLAUDE_TOOL_NAMES.WEB_FETCH,
+    kind: 'fetch',
+    args: { url: 'https://example.com' },
+  },
+  {
+    name: CLAUDE_TOOL_NAMES.WEB_SEARCH,
+    kind: 'web_search',
+    args: { query: 'q' },
+  },
   { name: CLAUDE_TOOL_NAMES.LIST_AGENTS, kind: 'agents', args: {} },
-  { name: CLAUDE_TOOL_NAMES.SKILL, kind: 'skill', args: { skill: 'deep-review' } },
-  { name: CLAUDE_TOOL_NAMES.SLEEP, kind: 'wait', args: { durationMs: 1000 } },
-  { name: CLAUDE_TOOL_NAMES.STRUCTURED_OUTPUT, kind: 'report', args: { summary: 'done' } },
-  { name: CLAUDE_TOOL_NAMES.SEND_MESSAGE, kind: 'message', args: { to: 'agent-2', message: 'hi' } },
-  { name: CLAUDE_TOOL_NAMES.LIST_MCP_RESOURCES, kind: 'list', args: { server: 'files' } },
-  { name: CLAUDE_TOOL_NAMES.REMOTE_TRIGGER, kind: 'trigger', args: { action: 'create' } },
-  { name: CLAUDE_TOOL_NAMES.TASK_OUTPUT, kind: 'task', args: { task_id: 't-1' } },
-  { name: CLAUDE_TOOL_NAMES.TASK_STOP, kind: 'task', args: { task_id: 't-1' } },
+  {
+    name: CLAUDE_TOOL_NAMES.SKILL,
+    kind: 'skill',
+    args: { skill: 'deep-review' },
+  },
+  {
+    name: CLAUDE_TOOL_NAMES.SLEEP,
+    kind: 'wait',
+    args: { durationMs: 1000 },
+  },
+  {
+    name: CLAUDE_TOOL_NAMES.STRUCTURED_OUTPUT,
+    kind: 'report',
+    args: { summary: 'done' },
+  },
+  {
+    name: CLAUDE_TOOL_NAMES.SEND_MESSAGE,
+    kind: 'message',
+    args: { to: 'agent-2', message: 'hi' },
+  },
+  {
+    name: CLAUDE_TOOL_NAMES.LIST_MCP_RESOURCES,
+    kind: 'list',
+    args: { server: 'files' },
+  },
+  {
+    name: CLAUDE_TOOL_NAMES.REMOTE_TRIGGER,
+    kind: 'trigger',
+    args: { action: 'create' },
+  },
+  {
+    name: CLAUDE_TOOL_NAMES.TASK_OUTPUT,
+    kind: 'task',
+    args: { task_id: 't-1' },
+  },
+  {
+    name: CLAUDE_TOOL_NAMES.TASK_STOP,
+    kind: 'task',
+    args: { task_id: 't-1' },
+  },
 ]
 
 describe('claudeToolFailureResult', () => {

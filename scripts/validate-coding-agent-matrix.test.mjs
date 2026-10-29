@@ -23,12 +23,32 @@ function fixture() {
   writeFileSync(join(root, 'icons', 'agents', 'claude-code.svg'), '<svg/>')
   writeFileSync(join(root, spec), 'test')
   const features = {
-    groups: [{ id: 'attachments', label: 'Attachments' }],
-    features: [{ id: 'text-attachments', label: 'Text attachments', description: 'The file contents reach the agent.', showInMatrix: true, group: 'attachments' }],
+    groups: [
+      { id: 'attachments', label: 'Attachments' },
+    ],
+    features: [
+      {
+        id: 'text-attachments',
+        label: 'Text attachments',
+        description: 'The file contents reach the agent.',
+        showInMatrix: true,
+        group: 'attachments',
+      },
+    ],
   }
   const checklist = {
     supportStates: structuredClone(SUPPORT_STATES),
-    providerGroups: [[{ id: 'claude-code', label: 'Claude Code', icon: '/icons/agents/claude-code.svg', userNote: '', detailNote: '' }]],
+    providerGroups: [
+      [
+        {
+          id: 'claude-code',
+          label: 'Claude Code',
+          icon: '/icons/agents/claude-code.svg',
+          userNote: '',
+          detailNote: '',
+        },
+      ],
+    ],
     cells: {
       'text-attachments': {
         'claude-code': {
@@ -43,8 +63,19 @@ function fixture() {
       },
     },
   }
-  const providerContract = { providers: { AGENT_PROVIDER_CLAUDE_CODE: { displayName: 'Claude Code' } } }
-  return { root, features, checklist, providerContract, spec, cell: checklist.cells['text-attachments']['claude-code'] }
+  const providerContract = {
+    providers: {
+      AGENT_PROVIDER_CLAUDE_CODE: { displayName: 'Claude Code' },
+    },
+  }
+  return {
+    root,
+    features,
+    checklist,
+    providerContract,
+    spec,
+    cell: checklist.cells['text-attachments']['claude-code'],
+  }
 }
 
 afterEach(() => {
@@ -81,10 +112,20 @@ describe('validateCodingAgentMatrix', () => {
 
   it('keeps the output path display label independent from its feature ID and spec path', () => {
     const { root, features, checklist, providerContract, cell } = fixture()
-    features.features[0] = { id: 'output-file-paths', label: 'Output file paths after reload', description: 'LeapMux shows reported file paths beside the original preview after reload.', showInMatrix: true, group: 'attachments' }
+    features.features[0] = {
+      id: 'output-file-paths',
+      label: 'Output file paths after reload',
+      description: 'LeapMux shows reported file paths beside the original preview after reload.',
+      showInMatrix: true,
+      group: 'attachments',
+    }
     const spec = 'frontend/tests/e2e/claude-code/output-file-paths.spec.ts'
     writeFileSync(join(root, spec), 'test')
-    checklist.cells = { 'output-file-paths': { 'claude-code': { ...cell, spec } } }
+    checklist.cells = {
+      'output-file-paths': {
+        'claude-code': { ...cell, spec },
+      },
+    }
     expect(validateCodingAgentMatrix(features, checklist, providerContract, { root, requireCellSpecs: true })).toEqual([])
   })
 
@@ -131,8 +172,21 @@ describe('validateCodingAgentMatrix', () => {
 
   it('rejects duplicate feature and provider IDs', () => {
     const { root, features, checklist, providerContract } = fixture()
-    features.features.push({ id: 'text-attachments', label: 'Text attachments', description: 'Duplicate.', showInMatrix: true })
-    checklist.providerGroups.push([{ id: 'claude-code', label: 'Claude Code', icon: '/icons/agents/claude-code.svg', userNote: '', detailNote: '' }])
+    features.features.push({
+      id: 'text-attachments',
+      label: 'Text attachments',
+      description: 'Duplicate.',
+      showInMatrix: true,
+    })
+    checklist.providerGroups.push([
+      {
+        id: 'claude-code',
+        label: 'Claude Code',
+        icon: '/icons/agents/claude-code.svg',
+        userNote: '',
+        detailNote: '',
+      },
+    ])
     const errors = validateCodingAgentMatrix(features, checklist, providerContract, { root })
     expect(errors).toContain('feature ID occurs twice: text-attachments')
     expect(errors).toContain('provider ID occurs twice: claude-code')
@@ -196,7 +250,12 @@ describe('validateCodingAgentMatrix', () => {
       expect(cell.detailNote).toContain('updatedInput')
       expect(cell.detailNote).toContain('independent multiline editor request')
     })
-    const hiddenFeature = { id: 'basic-chat', label: 'Basic chat', description: 'Receives a prompt and answers.', showInMatrix: false }
+    const hiddenFeature = {
+      id: 'basic-chat',
+      label: 'Basic chat',
+      description: 'Receives a prompt and answers.',
+      showInMatrix: false,
+    }
 
     it('accepts a limited published cell that holds both notes', () => {
       const { root, features, checklist, providerContract, cell } = fixture()
@@ -209,9 +268,19 @@ describe('validateCodingAgentMatrix', () => {
 
     it.each([
       [[]],
-      [SUPPORT_STATES.slice(0, 2)],
-      [[SUPPORT_STATES[1], SUPPORT_STATES[0], SUPPORT_STATES[2]]],
-      [[SUPPORT_STATES[0], SUPPORT_STATES[1], { ...SUPPORT_STATES[2], id: 'other' }]],
+      [
+        SUPPORT_STATES.slice(0, 2),
+      ],
+      [
+        [SUPPORT_STATES[1], SUPPORT_STATES[0], SUPPORT_STATES[2]],
+      ],
+      [
+        [
+          SUPPORT_STATES[0],
+          SUPPORT_STATES[1],
+          { ...SUPPORT_STATES[2], id: 'other' },
+        ],
+      ],
     ])('rejects support states that differ from the three fixed ids in order: %j', (states) => {
       const { root, features, checklist, providerContract } = fixture()
       checklist.supportStates = states
@@ -269,7 +338,9 @@ describe('validateCodingAgentMatrix', () => {
     it('rejects a user note on a hidden feature, because nothing publishes it', () => {
       const { root, features, checklist, providerContract, cell } = fixture()
       features.features.push(hiddenFeature)
-      checklist.cells['basic-chat'] = { 'claude-code': { ...cell, userNote: 'Never shown.' } }
+      checklist.cells['basic-chat'] = {
+        'claude-code': { ...cell, userNote: 'Never shown.' },
+      }
       expect(validateCodingAgentMatrix(features, checklist, providerContract, { root }))
         .toContain('cell claude-code/basic-chat belongs to a hidden feature and must have no user note')
     })
@@ -277,7 +348,14 @@ describe('validateCodingAgentMatrix', () => {
     it('accepts a detail note on a hidden feature', () => {
       const { root, features, checklist, providerContract, cell } = fixture()
       features.features.push(hiddenFeature)
-      checklist.cells['basic-chat'] = { 'claude-code': { ...cell, support: 'agent-limit', audit: 'covered-negative', detailNote: 'Evidence only.' } }
+      checklist.cells['basic-chat'] = {
+        'claude-code': {
+          ...cell,
+          support: 'agent-limit',
+          audit: 'covered-negative',
+          detailNote: 'Evidence only.',
+        },
+      }
       expect(validateCodingAgentMatrix(features, checklist, providerContract, { root })).toEqual([])
     })
 
@@ -409,12 +487,24 @@ describe('validateCodingAgentMatrix', () => {
     it('rejects a whitespace-only user note on a hidden feature', () => {
       const { root, features, checklist, providerContract, cell } = fixture()
       features.features.push(hiddenFeature)
-      checklist.cells['basic-chat'] = { 'claude-code': { ...cell, userNote: '  ' } }
+      checklist.cells['basic-chat'] = {
+        'claude-code': { ...cell, userNote: '  ' },
+      }
       expect(validateCodingAgentMatrix(features, checklist, providerContract, { root }))
         .toContain('user note of cell claude-code/basic-chat holds only whitespace; leave it empty')
     })
 
-    it.each([[5], [null], [undefined], [['note']], [{ text: 'note' }]])('reports a user note that is not a string, and does not throw: %j', (note) => {
+    it.each([
+      [5],
+      [null],
+      [undefined],
+      [
+        ['note'],
+      ],
+      [
+        { text: 'note' },
+      ],
+    ])('reports a user note that is not a string, and does not throw: %j', (note) => {
       const { root, features, checklist, providerContract, cell } = fixture()
       cell.userNote = note
       expect(validateCodingAgentMatrix(features, checklist, providerContract, { root }))
@@ -426,7 +516,17 @@ describe('validateCodingAgentMatrix', () => {
         .toContain('user note of cell claude-code/text-attachments is not a string')
     })
 
-    it.each([[5], [null], [undefined], [['note']], [{ text: 'note' }]])('reports a detail note that is not a string, and does not throw: %j', (note) => {
+    it.each([
+      [5],
+      [null],
+      [undefined],
+      [
+        ['note'],
+      ],
+      [
+        { text: 'note' },
+      ],
+    ])('reports a detail note that is not a string, and does not throw: %j', (note) => {
       const { root, features, checklist, providerContract, cell } = fixture()
       cell.detailNote = note
       expect(validateCodingAgentMatrix(features, checklist, providerContract, { root }))
@@ -1007,7 +1107,13 @@ describe('validateCodingAgentMatrix', () => {
           verified: true,
           spec: 'frontend/tests/e2e/muse-code/send-to-a-subagent.spec.ts',
         },
-        ['Muse 1.4.13', 'subagent/sendMessage', 'subagent_state_ineligible', 'subagent/readResult', 'paused input queue'],
+        [
+          'Muse 1.4.13',
+          'subagent/sendMessage',
+          'subagent_state_ineligible',
+          'subagent/readResult',
+          'paused input queue',
+        ],
       ],
       [
         'records native Muse interrupt-a-subagent support',
@@ -1107,7 +1213,9 @@ describe('validateCodingAgentMatrix', () => {
       const cell = checklist.cells['audio-attachments']?.[provider]
       expect(cell).toMatchObject({
         support,
-        audit: support === 'supported' ? 'source-verified' : 'unsupported',
+        audit: support === 'supported'
+          ? 'source-verified'
+          : 'unsupported',
         verified: true,
         testStatus: 'passed',
         spec: `frontend/tests/e2e/${provider}/audio-attachments.spec.ts`,
@@ -1126,13 +1234,25 @@ describe('validateCodingAgentMatrix', () => {
       const providerIDs = checklist.providerGroups.flat().map(provider => provider.id)
       expect(Object.keys(checklist.cells['audio-attachments'] ?? {})).toEqual(providerIDs)
       expect(features.features.filter(feature => feature.group === 'attachments').map(feature => feature.id))
-        .toEqual(['text-attachments', 'image-attachments', 'pdf-attachments', 'audio-attachments', 'other-binary-attachments'])
+        .toEqual([
+          'text-attachments',
+          'image-attachments',
+          'pdf-attachments',
+          'audio-attachments',
+          'other-binary-attachments',
+        ])
     })
 
     it('records the native Codex refusal of non-audio binary input', () => {
       const { checklist } = readCodingAgentMatrix()
       const cell = checklist.cells['other-binary-attachments'].codex
-      expect(cell).toMatchObject({ support: 'agent-limit', audit: 'unsupported', verified: true, testStatus: 'passed', spec: 'frontend/tests/e2e/codex/other-binary-attachments.spec.ts' })
+      expect(cell).toMatchObject({
+        support: 'agent-limit',
+        audit: 'unsupported',
+        verified: true,
+        testStatus: 'passed',
+        spec: 'frontend/tests/e2e/codex/other-binary-attachments.spec.ts',
+      })
       expect(cell.detailNote).toContain('0.164.0')
       expect(cell.detailNote).toContain('-32600')
       expect(cell.detailNote).toContain('run-CtskPt')
@@ -1142,7 +1262,12 @@ describe('validateCodingAgentMatrix', () => {
     it('records an independent native Gemini video attachment proof', () => {
       const { checklist } = readCodingAgentMatrix()
       const cell = checklist.cells['other-binary-attachments']['gemini-cli']
-      expect(cell).toMatchObject({ support: 'supported', audit: 'source-verified', verified: true, testStatus: 'passed' })
+      expect(cell).toMatchObject({
+        support: 'supported',
+        audit: 'source-verified',
+        verified: true,
+        testStatus: 'passed',
+      })
       expect(cell.detailNote).toContain('MP4')
       expect(cell.detailNote).toContain('0.65.0')
       expect(cell.userNote).toContain('video')
@@ -1250,7 +1375,14 @@ describe('validateCodingAgentMatrix', () => {
           spec: `frontend/tests/e2e/cursor/${feature}.spec.ts`,
         })
       }
-      for (const feature of ['session-goal-set-and-clear', 'session-goal-pause-and-resume', 'send-to-a-subagent', 'interrupt-a-subagent', 'output-style', 'fast-mode']) {
+      for (const feature of [
+        'session-goal-set-and-clear',
+        'session-goal-pause-and-resume',
+        'send-to-a-subagent',
+        'interrupt-a-subagent',
+        'output-style',
+        'fast-mode',
+      ]) {
         expect(checklist.cells[feature]['oh-my-pi']).toMatchObject({
           support: 'supported',
           audit: 'source-verified',
@@ -1290,7 +1422,15 @@ describe('validateCodingAgentMatrix', () => {
         expect(cell).toMatchObject({ verified: true, testStatus: 'passed', spec: `frontend/tests/e2e/reasonix/${feature}.spec.ts` })
         expect(cell.detailNote).toContain('Reasonix v2.53.1')
       }
-      for (const feature of ['image-attachments', 'pdf-attachments', 'other-binary-attachments', 'images-in-tool-results', 'session-goal-pause-and-resume', 'code-execution', 'output-file-paths'])
+      for (const feature of [
+        'image-attachments',
+        'pdf-attachments',
+        'other-binary-attachments',
+        'images-in-tool-results',
+        'session-goal-pause-and-resume',
+        'code-execution',
+        'output-file-paths',
+      ])
         expect(checklist.cells[feature].reasonix).toMatchObject({ support: 'supported', audit: 'source-verified' })
       expect(cells.filter(([, cell]) => cell.support === 'supported')).toHaveLength(41)
       expect(cells.filter(([, cell]) => cell.support === 'leapmux-limit')).toEqual([])
@@ -1339,7 +1479,12 @@ describe('validateCodingAgentMatrix', () => {
 
   it('requires every provider cell in a test-only row', () => {
     const { root, features, checklist, providerContract } = fixture()
-    features.features.push({ id: 'basic-chat', label: 'Basic chat', description: 'Receives a prompt and answers.', showInMatrix: false })
+    features.features.push({
+      id: 'basic-chat',
+      label: 'Basic chat',
+      description: 'Receives a prompt and answers.',
+      showInMatrix: false,
+    })
     checklist.cells['basic-chat'] = {}
     expect(validateCodingAgentMatrix(features, checklist, providerContract, { root }))
       .toContain('feature basic-chat provider cells is missing claude-code')
@@ -1347,17 +1492,33 @@ describe('validateCodingAgentMatrix', () => {
 
   it('rejects a path shared by published and test-only cells in final mode', () => {
     const { root, features, checklist, providerContract, cell } = fixture()
-    features.features.push({ id: 'basic-chat', label: 'Basic chat', description: 'Receives a prompt and answers.', showInMatrix: false })
-    checklist.cells['basic-chat'] = { 'claude-code': { ...cell } }
+    features.features.push({
+      id: 'basic-chat',
+      label: 'Basic chat',
+      description: 'Receives a prompt and answers.',
+      showInMatrix: false,
+    })
+    checklist.cells['basic-chat'] = {
+      'claude-code': { ...cell },
+    }
     expect(validateCodingAgentMatrix(features, checklist, providerContract, { root, requireCellSpecs: true }))
       .toContain(`spec path serves more than one cell: ${cell.spec}`)
   })
 
   describe('feature groups', () => {
     const twoGroups = (features) => {
-      features.groups = [{ id: 'attachments', label: 'Attachments' }, { id: 'tools', label: 'Tools' }]
+      features.groups = [
+        { id: 'attachments', label: 'Attachments' },
+        { id: 'tools', label: 'Tools' },
+      ]
     }
-    const published = (id, group) => ({ id, label: id, description: `The ${id} feature.`, showInMatrix: true, group })
+    const published = (id, group) => ({
+      id,
+      label: id,
+      description: `The ${id} feature.`,
+      showInMatrix: true,
+      group,
+    })
 
     it('requires every published feature to name a known group', () => {
       const { root, features, checklist, providerContract } = fixture()
@@ -1371,16 +1532,31 @@ describe('validateCodingAgentMatrix', () => {
 
     it('rejects a group on a hidden feature, because nothing displays it', () => {
       const { root, features, checklist, providerContract, cell } = fixture()
-      features.features.push({ id: 'basic-chat', label: 'Basic chat', description: 'Receives a prompt and answers.', showInMatrix: false, group: 'attachments' })
-      checklist.cells['basic-chat'] = { 'claude-code': { ...cell } }
+      features.features.push({
+        id: 'basic-chat',
+        label: 'Basic chat',
+        description: 'Receives a prompt and answers.',
+        showInMatrix: false,
+        group: 'attachments',
+      })
+      checklist.cells['basic-chat'] = {
+        'claude-code': { ...cell },
+      }
       expect(validateCodingAgentMatrix(features, checklist, providerContract, { root }))
         .toContain('hidden feature basic-chat must not have a group')
     })
 
     it('accepts a hidden feature without a group', () => {
       const { root, features, checklist, providerContract, cell } = fixture()
-      features.features.push({ id: 'basic-chat', label: 'Basic chat', description: 'Receives a prompt and answers.', showInMatrix: false })
-      checklist.cells['basic-chat'] = { 'claude-code': { ...cell, spec: 'frontend/tests/e2e/claude-code/text-attachments.spec.ts' } }
+      features.features.push({
+        id: 'basic-chat',
+        label: 'Basic chat',
+        description: 'Receives a prompt and answers.',
+        showInMatrix: false,
+      })
+      checklist.cells['basic-chat'] = {
+        'claude-code': { ...cell, spec: 'frontend/tests/e2e/claude-code/text-attachments.spec.ts' },
+      }
       expect(validateCodingAgentMatrix(features, checklist, providerContract, { root })).toEqual([])
     })
 
@@ -1410,7 +1586,9 @@ describe('validateCodingAgentMatrix', () => {
       const { root, features, checklist, providerContract, cell } = fixture()
       twoGroups(features)
       features.features.unshift(published('code-execution', 'tools'))
-      checklist.cells['code-execution'] = { 'claude-code': { ...cell } }
+      checklist.cells['code-execution'] = {
+        'claude-code': { ...cell },
+      }
       expect(validateCodingAgentMatrix(features, checklist, providerContract, { root }))
         .toContain('feature text-attachments (group attachments) follows a feature of a later group; order the published features by group')
     })
@@ -1419,8 +1597,11 @@ describe('validateCodingAgentMatrix', () => {
       const { root, features, checklist, providerContract, cell } = fixture()
       twoGroups(features)
       features.features.push(published('code-execution', 'tools'), published('pdf-attachments', 'attachments'))
-      for (const id of ['code-execution', 'pdf-attachments'])
-        checklist.cells[id] = { 'claude-code': { ...cell } }
+      for (const id of ['code-execution', 'pdf-attachments']) {
+        checklist.cells[id] = {
+          'claude-code': { ...cell },
+        }
+      }
       expect(validateCodingAgentMatrix(features, checklist, providerContract, { root }))
         .toContain('feature pdf-attachments (group attachments) follows a feature of a later group; order the published features by group')
     })
@@ -1428,11 +1609,19 @@ describe('validateCodingAgentMatrix', () => {
     it('lets a hidden feature sit inside a group without splitting it', () => {
       const { root, features, checklist, providerContract, cell } = fixture()
       features.features.push(
-        { id: 'basic-chat', label: 'Basic chat', description: 'Receives a prompt and answers.', showInMatrix: false },
+        {
+          id: 'basic-chat',
+          label: 'Basic chat',
+          description: 'Receives a prompt and answers.',
+          showInMatrix: false,
+        },
         published('pdf-attachments', 'attachments'),
       )
-      for (const id of ['basic-chat', 'pdf-attachments'])
-        checklist.cells[id] = { 'claude-code': { ...cell } }
+      for (const id of ['basic-chat', 'pdf-attachments']) {
+        checklist.cells[id] = {
+          'claude-code': { ...cell },
+        }
+      }
       const errors = validateCodingAgentMatrix(features, checklist, providerContract, { root })
       expect(errors.filter(error => error.includes('group'))).toEqual([])
     })
@@ -1497,9 +1686,26 @@ describe('validateCodingAgentMatrix', () => {
 describe('features.schema.json', () => {
   const schema = JSON.parse(readFileSync(join(ROOT, 'frontend/tests/e2e/feature-matrix/features.schema.json'), 'utf8'))
   const validate = buildAjv().compile(schema)
-  const published = { id: 'pdf-attachments', label: 'PDF attachments', description: 'The agent reads a PDF.', showInMatrix: true, group: 'attachments' }
-  const hidden = { id: 'basic-chat', label: 'Basic chat', description: 'The agent answers.', showInMatrix: false }
-  const document = features => ({ _readme: 'Feature definitions.', groups: [{ id: 'attachments', label: 'Attachments' }], features })
+  const published = {
+    id: 'pdf-attachments',
+    label: 'PDF attachments',
+    description: 'The agent reads a PDF.',
+    showInMatrix: true,
+    group: 'attachments',
+  }
+  const hidden = {
+    id: 'basic-chat',
+    label: 'Basic chat',
+    description: 'The agent answers.',
+    showInMatrix: false,
+  }
+  const document = features => ({
+    _readme: 'Feature definitions.',
+    groups: [
+      { id: 'attachments', label: 'Attachments' },
+    ],
+    features,
+  })
   /** Each failure as `keyword path detail`, so a test identifies the rule that rejects. */
   const failures = (data) => {
     validate(data)
@@ -1516,31 +1722,80 @@ describe('features.schema.json', () => {
   })
 
   it('forbids a group on a hidden feature', () => {
-    expect(failures(document([{ ...hidden, group: 'attachments' }]))).toContain('false schema /features/0/group')
+    expect(failures(document([
+      { ...hidden, group: 'attachments' },
+    ]))).toContain('false schema /features/0/group')
   })
 
   it('requires the groups array and each group label', () => {
-    expect(failures({ _readme: 'x', features: [hidden] })).toContain('required  groups')
-    expect(failures({ ...document([published]), groups: [{ id: 'attachments', label: '' }] })).toContain('minLength /groups/0/label')
-    expect(failures({ ...document([published]), groups: [] })).toContain('minItems /groups')
+    expect(failures({
+      _readme: 'x',
+      features: [hidden],
+    })).toContain('required  groups')
+    expect(failures({
+      ...document([published]),
+      groups: [
+        { id: 'attachments', label: '' },
+      ],
+    })).toContain('minLength /groups/0/label')
+    expect(failures({
+      ...document([published]),
+      groups: [],
+    })).toContain('minItems /groups')
   })
 
   it('rejects a group ID that is not kebab-case', () => {
-    expect(failures({ ...document([published]), groups: [{ id: 'Not Kebab', label: 'x' }] })).toContain('pattern /groups/0/id')
-    expect(failures(document([{ ...published, group: 'Not Kebab' }]))).toContain('pattern /features/0/group')
+    expect(failures({
+      ...document([published]),
+      groups: [
+        { id: 'Not Kebab', label: 'x' },
+      ],
+    })).toContain('pattern /groups/0/id')
+    expect(failures(document([
+      { ...published, group: 'Not Kebab' },
+    ]))).toContain('pattern /features/0/group')
   })
 })
 
 describe('checklist.schema.json', () => {
   const schema = JSON.parse(readFileSync(join(ROOT, 'frontend/tests/e2e/feature-matrix/checklist.schema.json'), 'utf8'))
   const validate = buildAjv().compile(schema)
-  const provider = { id: 'claude-code', label: 'Claude Code', url: 'https://claude.com/', icon: '/icons/agents/claude-code.svg', userNote: '', detailNote: '' }
-  const cell = { support: 'supported', userNote: '', detailNote: '', spec: '', audit: 'covered', verified: true, testStatus: 'pending' }
+  const provider = {
+    id: 'claude-code',
+    label: 'Claude Code',
+    url: 'https://claude.com/',
+    icon: '/icons/agents/claude-code.svg',
+    userNote: '',
+    detailNote: '',
+  }
+  const cell = {
+    support: 'supported',
+    userNote: '',
+    detailNote: '',
+    spec: '',
+    audit: 'covered',
+    verified: true,
+    testStatus: 'pending',
+  }
   const document = (overrides = {}, cellOverrides = {}, providerOverrides = {}) => ({
     _readme: 'The checklist.',
     supportStates: SUPPORT_STATES,
-    providerGroups: [[{ ...provider, ...providerOverrides }]],
-    cells: { 'text-attachments': { 'claude-code': { ...cell, ...cellOverrides } } },
+    providerGroups: [
+      [
+        {
+          ...provider,
+          ...providerOverrides,
+        },
+      ],
+    ],
+    cells: {
+      'text-attachments': {
+        'claude-code': {
+          ...cell,
+          ...cellOverrides,
+        },
+      },
+    },
     ...overrides,
   })
   /** Each failure as `keyword path detail`, so a test identifies the rule that rejects. */
@@ -1557,23 +1812,45 @@ describe('checklist.schema.json', () => {
   })
 
   it.each([
-    ['a boolean support value', { support: true }, `enum ${cellPath}/support`],
-    ['an unknown support value', { support: 'unsupported' }, `enum ${cellPath}/support`],
+    [
+      'a boolean support value',
+      { support: true },
+      `enum ${cellPath}/support`,
+    ],
+    [
+      'an unknown support value',
+      { support: 'unsupported' },
+      `enum ${cellPath}/support`,
+    ],
   ])('rejects %s', (_name, overrides, expected) => {
     expect(failures(document({}, overrides))).toContain(expected)
   })
 
   it.each([
-    ['supported', { supported: true }],
-    ['notes', { notes: '' }],
-    ['noteRefs', { noteRefs: [] }],
+    [
+      'supported',
+      { supported: true },
+    ],
+    [
+      'notes',
+      { notes: '' },
+    ],
+    [
+      'noteRefs',
+      { noteRefs: [] },
+    ],
   ])('rejects the legacy cell field %s', (field, overrides) => {
     expect(failures(document({}, overrides))).toContain(`additionalProperties ${cellPath} ${field}`)
   })
 
   it('requires the support state and both notes on a cell', () => {
     const { support, userNote, detailNote, ...rest } = cell
-    const errors = failures({ ...document(), cells: { 'text-attachments': { 'claude-code': rest } } })
+    const errors = failures({
+      ...document(),
+      cells: {
+        'text-attachments': { 'claude-code': rest },
+      },
+    })
     expect(errors).toEqual(expect.arrayContaining([`required ${cellPath} support`, `required ${cellPath} userNote`, `required ${cellPath} detailNote`]))
   })
 
@@ -1584,8 +1861,12 @@ describe('checklist.schema.json', () => {
   })
 
   it('limits a user note to one paragraph of 400 characters', () => {
-    expect(failures(document({}, { userNote: 'x'.repeat(400) }))).toEqual([])
-    expect(failures(document({}, { userNote: 'x'.repeat(401) }))).toContain(`maxLength ${cellPath}/userNote`)
+    expect(failures(document({}, {
+      userNote: 'x'.repeat(400),
+    }))).toEqual([])
+    expect(failures(document({}, {
+      userNote: 'x'.repeat(401),
+    }))).toContain(`maxLength ${cellPath}/userNote`)
     expect(failures(document({}, { userNote: 'one\ntwo' }))).toContain(`pattern ${cellPath}/userNote`)
     expect(failures(document({}, {}, { userNote: 'one\ntwo' }))).toContain('pattern /providerGroups/0/0/userNote')
   })
@@ -1595,19 +1876,40 @@ describe('checklist.schema.json', () => {
   })
 
   it('requires the three support states and rejects the legacy shared notes', () => {
-    expect(failures(document({ supportStates: SUPPORT_STATES.slice(0, 2) }))).toContain('minItems /supportStates')
-    expect(failures(document({ supportStates: [...SUPPORT_STATES, SUPPORT_STATES[0]] }))).toContain('maxItems /supportStates')
-    expect(failures(document({ supportStates: [{ id: 'nope', symbol: 'x', label: 'x' }, SUPPORT_STATES[1], SUPPORT_STATES[2]] }))).toContain('enum /supportStates/0/id')
+    expect(failures(document({
+      supportStates: SUPPORT_STATES.slice(0, 2),
+    }))).toContain('minItems /supportStates')
+    expect(failures(document({
+      supportStates: [...SUPPORT_STATES, SUPPORT_STATES[0]],
+    }))).toContain('maxItems /supportStates')
+    expect(failures(document({
+      supportStates: [
+        { id: 'nope', symbol: 'x', label: 'x' },
+        SUPPORT_STATES[1],
+        SUPPORT_STATES[2],
+      ],
+    }))).toContain('enum /supportStates/0/id')
     const { supportStates, ...withoutStates } = document()
     expect(failures(withoutStates)).toContain('required  supportStates')
-    expect(failures(document({ sharedNotes: [{ id: 1, text: 'x' }] }))).toContain('additionalProperties  sharedNotes')
+    expect(failures(document({
+      sharedNotes: [
+        { id: 1, text: 'x' },
+      ],
+    }))).toContain('additionalProperties  sharedNotes')
   })
 
   it('requires both notes on a provider and rejects its legacy note references', () => {
     const { userNote, detailNote, ...bare } = provider
-    const errors = failures({ ...document(), providerGroups: [[bare]] })
+    const errors = failures({
+      ...document(),
+      providerGroups: [
+        [bare],
+      ],
+    })
     expect(errors).toEqual(expect.arrayContaining(['required /providerGroups/0/0 userNote', 'required /providerGroups/0/0 detailNote']))
-    expect(failures(document({}, {}, { noteRefs: [1] }))).toContain('additionalProperties /providerGroups/0/0 noteRefs')
+    expect(failures(document({}, {}, {
+      noteRefs: [1],
+    }))).toContain('additionalProperties /providerGroups/0/0 noteRefs')
     expect(failures(document({}, {}, { notes: '' }))).toContain('additionalProperties /providerGroups/0/0 notes')
   })
 })

@@ -9,15 +9,21 @@ const providers = Object.values(AgentProvider).filter((value): value is AgentPro
 
 describe('PROVIDER_PERMISSION_PRESETS', () => {
   it('exposes the native Fast Agent launch policy without browser plugins', () => {
-    expect(permissionPresetsFor(AgentProvider.FAST_AGENT)?.bypass).toEqual({ sets: { bypassPermissions: 'true' } })
+    expect(permissionPresetsFor(AgentProvider.FAST_AGENT)?.bypass).toEqual({
+      sets: { bypassPermissions: 'true' },
+    })
   })
 
   it('exposes the native Dirac bypass choice to callers without browser plugins', () => {
-    expect(permissionPresetsFor(AgentProvider.DIRAC)?.bypass).toEqual({ sets: { yolo: 'true' } })
+    expect(permissionPresetsFor(AgentProvider.DIRAC)?.bypass).toEqual({
+      sets: { yolo: 'true' },
+    })
   })
 
   it('exposes the native Cursor bypass choice to callers that do not load browser plugins', () => {
-    expect(permissionPresetsFor(AgentProvider.CURSOR)?.bypass).toEqual({ sets: { bypassPermissions: 'true' } })
+    expect(permissionPresetsFor(AgentProvider.CURSOR)?.bypass).toEqual({
+      sets: { bypassPermissions: 'true' },
+    })
   })
 
   it('lists every proto provider explicitly, including UNSPECIFIED', () => {
@@ -33,7 +39,9 @@ describe('PROVIDER_PERMISSION_PRESETS', () => {
 
   it('exposes the Auto-approve option of the OpenCode family as its bypass for both members', () => {
     for (const provider of [AgentProvider.OPENCODE, AgentProvider.KILO]) {
-      expect(permissionPresetsFor(provider)?.bypass).toEqual({ sets: { [OPENCODE_OPTION.AutoApprove]: 'true' } })
+      expect(permissionPresetsFor(provider)?.bypass).toEqual({
+        sets: { [OPENCODE_OPTION.AutoApprove]: 'true' },
+      })
       expect(permissionPresetsFor(provider)?.smart).toBeUndefined()
     }
   })
@@ -55,7 +63,7 @@ describe('PROVIDER_PERMISSION_PRESETS', () => {
           expect(groupId.trim()).not.toBe('')
           expect(typeof value).toBe('string')
           if (typeof value !== 'string')
-            throw new Error('The provider permission value must be a string.')
+            throw new TypeError('The provider permission value must be a string.')
           expect(value.trim()).not.toBe('')
         }
       }

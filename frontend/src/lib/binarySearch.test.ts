@@ -45,7 +45,12 @@ describe('binarySearch', () => {
   })
 
   describe('lowerBoundBySeq', () => {
-    const items = [{ seq: 2n }, { seq: 5n }, { seq: 5n }, { seq: 9n }] as const
+    const items = [
+      { seq: 2n },
+      { seq: 5n },
+      { seq: 5n },
+      { seq: 9n },
+    ] as const
 
     it('finds the first index whose seq is >= target (membership + gap)', () => {
       expect(lowerBoundBySeq(items, 5n)).toBe(1) // first of the duplicate 5s
@@ -64,7 +69,13 @@ describe('binarySearch', () => {
     })
 
     it('matches a linear lower-bound scan across the range', () => {
-      const asc: { seq: bigint }[] = [{ seq: 0n }, { seq: 3n }, { seq: 3n }, { seq: 8n }, { seq: 100n }]
+      const asc: { seq: bigint }[] = [
+        { seq: 0n },
+        { seq: 3n },
+        { seq: 3n },
+        { seq: 8n },
+        { seq: 100n },
+      ]
       for (let t = -2n; t <= 102n; t += 1n) {
         let expected = asc.length
         for (let i = 0; i < asc.length; i++) {

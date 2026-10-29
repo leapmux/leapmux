@@ -86,7 +86,9 @@ function harness(opts: {
         // newerBelow (every prepend sits above, every append below, any captured row), so
         // the token's identity is irrelevant. `unanchorable` models an empty window where
         // no ref can be captured (anchorAt returns null).
-        captureAnchor: () => unanchorable ? null : ({ id: 'ref', offsetWithinRow: 0 }),
+        captureAnchor: () => unanchorable
+          ? null
+          : ({ id: 'ref', offsetWithinRow: 0 }),
         contentAbove: () => refTrimmed ? null : olderAbove,
         contentBelow: () => refTrimmed ? null : newerBelow,
       }),

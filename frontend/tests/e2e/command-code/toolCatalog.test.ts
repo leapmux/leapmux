@@ -3,7 +3,21 @@ import { describe, expect, it } from 'vitest'
 import { commandCodeLoadedToolNames, commandCodeToolCatalog } from './toolCatalog'
 
 function request(system: string): MockModelRequestRecord {
-  return { protocol: 'openai-chat-completions', path: '/v1/chat/completions', body: { tools: [{ type: 'function', function: { name: 'shell_command' } }], messages: [{ role: 'system', content: system }] } }
+  return {
+    protocol: 'openai-chat-completions',
+    path: '/v1/chat/completions',
+    body: {
+      tools: [
+        {
+          type: 'function',
+          function: { name: 'shell_command' },
+        },
+      ],
+      messages: [
+        { role: 'system', content: system },
+      ],
+    },
+  }
 }
 
 describe('commandCodeToolCatalog', () => {
@@ -52,8 +66,14 @@ describe('commandCodeLoadedToolNames', () => {
   // count that differs from that number is a result that this reader cannot read.
   it.each([
     ['a header form that changed', 'Loaded 1 tool schema(s).\n\n## REPL\nA description.'],
-    ['fewer names than the stated count', `${loaded('sleep')}\n`.replace('Loaded 1', 'Loaded 2')],
-    ['more names than the stated count', loaded('sleep', 'task_create').replace('Loaded 2', 'Loaded 1')],
+    [
+      'fewer names than the stated count',
+      `${loaded('sleep')}\n`.replace('Loaded 1', 'Loaded 2'),
+    ],
+    [
+      'more names than the stated count',
+      loaded('sleep', 'task_create').replace('Loaded 2', 'Loaded 1'),
+    ],
     ['a header with no stated count', '### sleep\nA description.'],
     ['a lookup that matched nothing and still lists a name', 'No deferred tool matched "select:REPL".\n\n### sleep\nA description.'],
   ])('refuses a result with %s', (_name, result) => {

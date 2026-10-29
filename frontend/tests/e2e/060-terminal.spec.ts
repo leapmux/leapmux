@@ -36,7 +36,9 @@ test.describe('Terminal', () => {
         'InspectTerminalProcesses',
         InspectTerminalProcessesRequestSchema,
         InspectTerminalProcessesResponseSchema,
-        { terminalIds: [terminalId] },
+        {
+          terminalIds: [terminalId],
+        },
       )
       const process = response.terminals
         .find(entry => entry.terminalId === terminalId)

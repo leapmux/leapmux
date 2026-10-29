@@ -19,7 +19,9 @@ const options = () => ({ homeDir, baseURL: 'http://127.0.0.1:4567/v1', defaultMo
 describe('createCodexEnvironment', () => {
   it('writes a provider for the given base URL and the form server that the configuration starts', () => {
     const env = createCodexEnvironment(options())
-    expect(env).toEqual({ CODEX_HOME: join(homeDir, '.codex') })
+    expect(env).toEqual({
+      CODEX_HOME: join(homeDir, '.codex'),
+    })
     const config = readFileSync(join(env.CODEX_HOME!, 'config.toml'), 'utf8')
     expect(config).toContain('[model_providers.leapmux-e2e]\nname = "LeapMux E2E"\nbase_url = "http://127.0.0.1:4567/v1"')
     expect(config).toContain('env_key = "LEAPMUX_E2E_MODEL_API_KEY"')

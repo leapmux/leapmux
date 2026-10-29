@@ -52,23 +52,35 @@ const REASONIX_EXIT_STATUS_LINE = /^error: command exited: exit status (\d+)\n/
 function reasonixShellCommand(command: CommandResult, saved: Record<string, unknown> | undefined, nativeFailed: boolean): CommandResult {
   const statedCode = pickObject(saved, REASONIX_TOOL_EXECUTION)?.exitCode
   const failureLine = REASONIX_EXIT_STATUS_LINE.exec(command.output)
-  const failureCode = failureLine ? Number(failureLine[1]) : Number.NaN
-  const validFailureLine = Number.isSafeInteger(failureCode) ? failureLine : null
-  const structuredCode = typeof statedCode === 'number' && Number.isSafeInteger(statedCode) ? statedCode : undefined
+  const failureCode = failureLine
+    ? Number(failureLine[1])
+    : Number.NaN
+  const validFailureLine = Number.isSafeInteger(failureCode)
+    ? failureLine
+    : null
+  const structuredCode = typeof statedCode === 'number' && Number.isSafeInteger(statedCode)
+    ? statedCode
+    : undefined
   const hostFailureLine = validFailureLine !== null && (structuredCode !== undefined
     ? structuredCode !== 0 && structuredCode === failureCode
     : statedCode === undefined && nativeFailed)
   const exitCode = structuredCode ?? (hostFailureLine ? failureCode : undefined)
-  const output = (hostFailureLine && validFailureLine ? command.output.slice(validFailureLine[0].length) : command.output).replace(/\n\[receipt r_[\da-z_]+\]$/u, '')
+  const output = (hostFailureLine && validFailureLine
+    ? command.output.slice(validFailureLine[0].length)
+    : command.output).replace(/\n\[receipt r_[\da-z_]+\]$/u, '')
   const trimmed = { ...command, output }
-  return exitCode === undefined || !Number.isSafeInteger(exitCode) ? trimmed : withCommandExit(trimmed, { exitCode })
+  return exitCode === undefined || !Number.isSafeInteger(exitCode)
+    ? trimmed
+    : withCommandExit(trimmed, { exitCode })
 }
 
 /** The search result one completed glob or grep states, from the words it printed. */
 function reasonixSearchResult(name: Extract<SearchToolKind, 'glob' | 'grep'>, output: string) {
   const trimmed = output.trim()
   const empty = trimmed === '(no matches)' || trimmed === ''
-  const lines = empty ? [] : trimmed.split('\n')
+  const lines = empty
+    ? []
+    : trimmed.split('\n')
   const truncated = lines.some(line => /^\.\.\. \((?:truncated|timed out)/.test(line))
   if (name === 'glob') {
     const filenames = lines.filter(line => line !== '' && !/^\.\.\. \(/.test(line))
@@ -89,7 +101,9 @@ function reasonixSearchResult(name: Extract<SearchToolKind, 'glob' | 'grep'>, ou
     content: output,
     numFiles: matches.numFiles,
     numLines: matches.lines.length,
-    ...(matchCount !== undefined ? { matchCount } : {}),
+    ...(matchCount !== undefined
+      ? { matchCount }
+      : {}),
     truncated,
     fallbackContent: empty ? '' : output,
     empty,
@@ -104,7 +118,9 @@ export const reasonixToolCallAdapter: ACPToolCallAdapter = (facts, _base) => {
   // A Go struct tag takes a literal, so TestReasonixToolRecordTagsMatchTheContract
   // pins the worker's tags to the same table.
   const stored = pickObject(acpSupplementRawOutput(facts.extra), REASONIX_TOOL_RECORD.Envelope)
-  const saved = stored?.[REASONIX_TOOL_RECORD.RoleField] === REASONIX_TOOL_RECORD.ToolRole && stored[REASONIX_TOOL_RECORD.ToolCallIDField] === tool.toolCallId ? stored : undefined
+  const saved = stored?.[REASONIX_TOOL_RECORD.RoleField] === REASONIX_TOOL_RECORD.ToolRole && stored[REASONIX_TOOL_RECORD.ToolCallIDField] === tool.toolCallId
+    ? stored
+    : undefined
   const storedText = pickString(saved, REASONIX_TOOL_RECORD.RawContentField, undefined) || pickString(saved, REASONIX_TOOL_RECORD.ContentField, undefined)
   const nativeName = pickString(tool, 'name') || pickString(tool, 'title')
   const savedName = pickString(saved, REASONIX_TOOL_RECORD.NameField)
@@ -119,9 +135,18 @@ export const reasonixToolCallAdapter: ACPToolCallAdapter = (facts, _base) => {
   const savedPath = pickString(pickObject(readResult, 'source'), 'canonical_path')
   const content = savedText === undefined
     ? facts.content
-    : [{ type: 'text', text: savedText }, ...facts.content.filter(block => block.type !== 'text')]
+    : [
+        { type: 'text', text: savedText },
+        ...facts.content.filter(block => block.type !== 'text'),
+      ]
   const resolvedTool = savedText !== undefined || imageContent.length > 0
-    ? { ...tool, content: [...content, ...imageContent] }
+    ? {
+        ...tool,
+        content: [
+          ...content,
+          ...imageContent,
+        ],
+      }
     : tool
   const output = savedText ?? facts.text
   let name = pickString(tool, 'title')
@@ -160,7 +185,15 @@ export const reasonixToolCallAdapter: ACPToolCallAdapter = (facts, _base) => {
     return {
       ...mcpToolCallRequest(mcp.server, mcp.tool, input),
       name,
-      ...(facts.finished ? { result: unanswered ? failedResult(output) : { content: flattenAcpContent(resolvedTool.content).map(parseMcpContentItem) } } : {}),
+      ...(facts.finished
+        ? {
+            result: unanswered
+              ? failedResult(output)
+              : {
+                  content: flattenAcpContent(resolvedTool.content).map(parseMcpContentItem),
+                },
+          }
+        : {}),
     }
   }
   name ||= pickString(saved, REASONIX_TOOL_RECORD.NameField)
@@ -186,20 +219,31 @@ export const reasonixToolCallAdapter: ACPToolCallAdapter = (facts, _base) => {
       // FAILED saved nothing, so the reason it gave is the answer. A call the reader
       // STOPPED keeps the list it collected, which the row marks as partial from its
       // own status.
-      ...(facts.finished ? { result: facts.status === 'failed' ? failedResult(output) : { items } } : {}),
+      ...(facts.finished
+        ? {
+            result: facts.status === 'failed'
+              ? failedResult(output)
+              : { items },
+          }
+        : {}),
     }
   }
   if (name === REASONIX_TOOL_NAME.ReadFile && savedPath)
     input = { ...input, path: savedPath }
   // The unwrapped call, under Reasonix's OWN tool name rather than the capability
   // wrapper's: `use_capability` is the envelope, and `name` is what ran inside it.
-  const kind = isReasonixTool(name) ? REASONIX_TOOL_KINDS[name] : facts.wireKind
+  const kind = isReasonixTool(name)
+    ? REASONIX_TOOL_KINDS[name]
+    : facts.wireKind
   // RE-DERIVED, not cloned. A hand-written `{...facts, tool, args}` kept every fact
   // the shared build reads from the KIND or from the CONTENT at its pre-remap value:
   // the text stayed the text of the original frame, so a completed `read_file` whose
   // wire content is empty and whose recovered content is not cat-n fell back to that
   // stale empty string and drew no result body at all.
-  const remapFacts = acpRemapFacts(facts, { tool: { ...resolvedTool, title: name, [ACP_SUPPLEMENT_REQUEST.RawInput]: input }, kind })
+  const remapFacts = acpRemapFacts(facts, {
+    tool: { ...resolvedTool, title: name, [ACP_SUPPLEMENT_REQUEST.RawInput]: input },
+    kind,
+  })
   // Each branch below asks for the payload at the kind the TABLE states for the name
   // it already matched, so the pair is checked rather than asserted: the shared build
   // at `REASONIX_TOOL_KINDS.glob` is a glob's payload, and a search result overrides its result
@@ -211,28 +255,71 @@ export const reasonixToolCallAdapter: ACPToolCallAdapter = (facts, _base) => {
     return {
       kind: 'agent',
       name,
-      request: { description: pickString(input, 'description'), agentType: pickString(input, 'profile'), prompt: pickString(input, 'prompt') },
+      request: {
+        description: pickString(input, 'description'),
+        agentType: pickString(input, 'profile'),
+        prompt: pickString(input, 'prompt'),
+      },
       // `facts.finished`, never `acpToolFinished(tool)`: the frame alone cannot see
       // the turn's own outcome, so a retained subagent row dropped its report.
       ...(facts.finished
-        ? { result: { agents: [reasonixAgentResult({ toolName: name, input, output, originalOutput: facts.text, status: tool.status })] } }
+        ? {
+            result: {
+              agents: [
+                reasonixAgentResult({
+                  toolName: name,
+                  input,
+                  output,
+                  originalOutput: facts.text,
+                  status: tool.status,
+                }),
+              ],
+            },
+          }
         : {}),
     }
   }
   if (name === REASONIX_TOOL_NAME.Bash) {
     const base = acpSpecFor(remapFacts, REASONIX_TOOL_KINDS[name])
-    const commands = base.result !== undefined && 'commands' in base.result ? base.result : undefined
-    const only = commands?.commands.length === 1 ? commands.commands[0] : undefined
-    const shell = commands && only ? { result: { ...commands, commands: [reasonixShellCommand(only, saved, facts.lifecycle.frameStatus === 'failed')] } } : {}
-    return { ...base, name, title: pickString(input, 'description') || base.title, ...shell }
+    const commands = base.result !== undefined && 'commands' in base.result
+      ? base.result
+      : undefined
+    const only = commands?.commands.length === 1
+      ? commands.commands[0]
+      : undefined
+    const shell = commands && only
+      ? {
+          result: {
+            ...commands,
+            commands: [
+              reasonixShellCommand(only, saved, facts.lifecycle.frameStatus === 'failed'),
+            ],
+          },
+        }
+      : {}
+    return {
+      ...base,
+      name,
+      title: pickString(input, 'description') || base.title,
+      ...shell,
+    }
   }
   if (name === REASONIX_TOOL_NAME.Ls) {
     // ONE branch for the two states, and no request of its own: the table already
     // states this tool's kind, so the shared build reads the path out of the same
     // arguments -- under `filePath` and `file_path` as well, which a hand-written
     // `input.path` missed. A second branch spelled the label a second time.
-    const list = { ...acpSpecFor(remapFacts, REASONIX_TOOL_KINDS[name]), name, label: 'List Files' }
-    return tool.status === 'completed' ? { ...list, result: reasonixDirectoryOutput(output) } : list
+    const list = {
+      ...acpSpecFor(remapFacts, REASONIX_TOOL_KINDS[name]),
+      name,
+      label: 'List Files',
+    }
+    return tool.status === 'completed'
+      ? {
+          ...list,
+          result: reasonixDirectoryOutput(output),
+        }
+      : list
   }
   if (tool.status === 'completed' && (name === REASONIX_TOOL_NAME.DeleteRange || name === REASONIX_TOOL_NAME.DeleteSymbol)) {
     const patch = parseUnifiedDiffCached(output)
@@ -241,8 +328,17 @@ export const reasonixToolCallAdapter: ACPToolCallAdapter = (facts, _base) => {
     // list here takes the file out of the header and leaves the word "Delete" alone.
     // `RequestedChangesBody` already keeps the two bodies apart, because it draws
     // nothing once a result exists.
-    if (patch)
-      return { ...acpSpecFor(remapFacts, REASONIX_TOOL_KINDS[name]), name, result: { changes: [fileEditDiffFromHunks(pickString(input, 'path'), patch.hunks)] } }
+    if (patch) {
+      return {
+        ...acpSpecFor(remapFacts, REASONIX_TOOL_KINDS[name]),
+        name,
+        result: {
+          changes: [
+            fileEditDiffFromHunks(pickString(input, 'path'), patch.hunks),
+          ],
+        },
+      }
+    }
   }
   if (tool.status === 'completed' && (name === REASONIX_TOOL_NAME.EditFile || name === REASONIX_TOOL_NAME.MultiEdit)) {
     const path = pickString(input, 'path')
@@ -252,23 +348,58 @@ export const reasonixToolCallAdapter: ACPToolCallAdapter = (facts, _base) => {
       // An empty receipt says the daemon reported what it DID without a diff: the
       // words stay, drawn as the answer rather than a change.
       return receipt.length
-        ? { ...edit, name, result: { changes: receipt } }
-        : { ...edit, name, result: unparsedResult(output) }
+        ? {
+            ...edit,
+            name,
+            result: { changes: receipt },
+          }
+        : {
+            ...edit,
+            name,
+            result: unparsedResult(output),
+          }
     }
     if (name === REASONIX_TOOL_NAME.MultiEdit && Array.isArray(input.edits)) {
       const changes = input.edits.flatMap(edit => isObject(edit) && typeof edit.old_string === 'string' && typeof edit.new_string === 'string'
-        ? [{ filePath: path, structuredPatch: null, oldStr: edit.old_string, newStr: edit.new_string, showLineNumbers: false }]
+        ? [
+            {
+              filePath: path,
+              structuredPatch: null,
+              oldStr: edit.old_string,
+              newStr: edit.new_string,
+              showLineNumbers: false,
+            },
+          ]
         : []).filter(fileEditHasDiff)
-      if (changes.length)
-        return { ...edit, name, request: { changes }, result: unparsedResult(output) }
+      if (changes.length) {
+        return {
+          ...edit,
+          name,
+          request: { changes },
+          result: unparsedResult(output),
+        }
+      }
     }
   }
   if (name === REASONIX_TOOL_NAME.Glob || name === REASONIX_TOOL_NAME.Grep) {
     // The shared build's request stands: it reads the same `pattern` and, for the
     // paths, the whole alias list plus a native `paths` array. The narrower copy that
     // replaced it dropped every one of those.
-    const search = { ...acpSpecFor(remapFacts, REASONIX_TOOL_KINDS[name]), name }
-    return tool.status === 'completed' ? { ...search, result: reasonixSearchResult(name, output) } : search
+    const search = {
+      ...acpSpecFor(remapFacts, REASONIX_TOOL_KINDS[name]),
+      name,
+    }
+    return tool.status === 'completed'
+      ? {
+          ...search,
+          result: reasonixSearchResult(name, output),
+        }
+      : search
   }
-  return { ...remapped, ...(name ? { name } : {}) }
+  return {
+    ...remapped,
+    ...(name
+      ? { name }
+      : {}),
+  }
 }

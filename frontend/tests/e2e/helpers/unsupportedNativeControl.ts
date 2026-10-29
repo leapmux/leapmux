@@ -51,7 +51,9 @@ export async function exerciseUnsupportedNativeControl(
     }
     await expect(context.page.locator('[data-testid="dialog-editor"]:visible')).toHaveCount(0)
   }
-  const surfaces = options.purpose === 'question' ? ['control-question-group', 'elicitation-form'] : ['dialog-editor']
+  const surfaces = options.purpose === 'question'
+    ? ['control-question-group', 'elicitation-form']
+    : ['dialog-editor']
   let observe = nativeProof
   for (const testId of surfaces) {
     const inner = observe
@@ -99,7 +101,9 @@ export async function exerciseUnsupportedControlThroughPermission(
   await exerciseUnsupportedNativeControl(context, {
     purpose: options.purpose,
     classify: options.classify,
-    ...(options.isQuestionRequest ? { isQuestionRequest: options.isQuestionRequest } : {}),
+    ...(options.isQuestionRequest
+      ? { isQuestionRequest: options.isQuestionRequest }
+      : {}),
     relatedProof: allowNativeOperation(context, operation, options.nativeProof),
   })
 }

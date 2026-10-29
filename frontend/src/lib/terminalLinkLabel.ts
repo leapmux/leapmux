@@ -50,5 +50,12 @@ export function readTerminalLinkLabel(terminal: Terminal, range: IBufferRange): 
 
   const label = clicked.translateToString(false, range.start.x - 1, range.end.x)
   const labelStart = rowStart + clicked.translateToString(false, 0, range.start.x - 1).length
-  return { label, logicalLine, labelStart, labelEnd: labelStart + label.length, rowStart, rowEnd }
+  return {
+    label,
+    logicalLine,
+    labelStart,
+    labelEnd: labelStart + label.length,
+    rowStart,
+    rowEnd,
+  }
 }

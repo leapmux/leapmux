@@ -32,10 +32,18 @@ piTest('shows one decoded native MCP image and resource image after reload', asy
   const directory = newProviderWorkingDir(PI_AGENT, 'pi-native-mcp-images-')
   const imageName = writeToolImage(directory, 'native-pi-mcp')
   const image = writeMcpImageServer(directory, imageName)
-  const resource = writeMcpResultServer(directory, { receiptLog: join(directory, 'resource-receipt.json'), imagePath: join(directory, imageName) })
+  const resource = writeMcpResultServer(directory, {
+    receiptLog: join(directory, 'resource-receipt.json'),
+    imagePath: join(directory, imageName),
+  })
   writePiMcpConfiguration(directory, getGlobalState().tmpDir, { [image.name]: image, [resource.name]: resource })
   await withMockPiModel(directory, leapmuxServer, async (settings) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
     await openAgentViaAPI(leapmuxServer, context.workspaceId, directory, { agentProvider: AgentProvider.PI, ...settings })
     await openWorkspace(page, context.workspaceId)
     const calls = [
@@ -46,15 +54,30 @@ piTest('shows one decoded native MCP image and resource image after reload', asy
     const resourceResult = toolCallRow(page, 'native-pi-resource-image')
     const images = chatScrollContainer(page).locator('button[aria-label="Open image"]:visible img:visible')
     for (const call of calls) {
-      await runNativeToolTurn(context, { toolCalls: [call], prompt: `Read the native image ${call.id}.`, answer: `The native image ${call.id} reached the model.` })
+      await runNativeToolTurn(context, {
+        toolCalls: [call],
+        prompt: `Read the native image ${call.id}.`,
+        answer: `The native image ${call.id} reached the model.`,
+      })
       const native = await readPiMcpResult(context, call.id, call.name)
       expect(native.failed).toBe(false)
       if (call.id === 'native-pi-mcp-image') {
-        expect(native.result.structuredContent).toEqual({ content: [{ type: 'text', text: `MCP image ${imageName}` }, { type: 'image', mimeType: 'image/png', data: imageData }] })
+        expect(native.result.structuredContent).toEqual({
+          content: [
+            { type: 'text', text: `MCP image ${imageName}` },
+            { type: 'image', mimeType: 'image/png', data: imageData },
+          ],
+        })
         await expectMcpToolImage(page, imageName, call.id)
       }
       else {
-        expect(native.result.structuredContent).toEqual({ server: resource.name, uri: 'probe://image', contents: [{ uri: 'probe://image', mimeType: 'image/png', blob: imageData }] })
+        expect(native.result.structuredContent).toEqual({
+          server: resource.name,
+          uri: 'probe://image',
+          contents: [
+            { uri: 'probe://image', mimeType: 'image/png', blob: imageData },
+          ],
+        })
         await expect(resourceResult).toHaveCount(1)
         await expectDecodedImageInBubble(resourceResult)
       }

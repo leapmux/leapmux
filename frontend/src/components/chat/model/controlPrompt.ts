@@ -23,7 +23,12 @@ export const KIND_ALLOW_ALWAYS = 'allow_always'
 export const KIND_REJECT_ONCE = 'reject_once'
 export const KIND_REJECT_ALWAYS = 'reject_always'
 
-export const CANONICAL_KINDS = [ACP_PERMISSION_KIND.AllowOnce, KIND_ALLOW_ALWAYS, KIND_REJECT_ONCE, KIND_REJECT_ALWAYS]
+export const CANONICAL_KINDS = [
+  ACP_PERMISSION_KIND.AllowOnce,
+  KIND_ALLOW_ALWAYS,
+  KIND_REJECT_ONCE,
+  KIND_REJECT_ALWAYS,
+]
 
 export function isRejectPermissionKind(kind: string): boolean {
   return kind === KIND_REJECT_ONCE || kind === KIND_REJECT_ALWAYS

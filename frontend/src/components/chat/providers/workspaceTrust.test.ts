@@ -10,7 +10,11 @@ import {
   workspaceTrustQuestion,
 } from './workspaceTrust'
 
-const QUESTION = { type: WORKSPACE_TRUST_CONTROL_TYPE.Question, path: '/work/project', configuration: ['MCP servers'] }
+const QUESTION = {
+  type: WORKSPACE_TRUST_CONTROL_TYPE.Question,
+  path: '/work/project',
+  configuration: ['MCP servers'],
+}
 
 /** The bytes one sender call sent, decoded. */
 function sentResponse(onRespond: ReturnType<typeof vi.fn>): unknown {
@@ -24,17 +28,29 @@ function savedAnswer(request: Record<string, unknown>, decision: string): Persis
     requestId: 'workspace-trust:session-1',
     claimToken: '',
     request,
-    response: { type: 'control_response', response: { request_id: 'workspace-trust:session-1', response: { decision } } },
+    response: {
+      type: 'control_response',
+      response: {
+        request_id: 'workspace-trust:session-1',
+        response: { decision },
+      },
+    },
   }
 }
 
 describe('workspaceTrustQuestion', () => {
   it('reads the folder and what the trust controls', () => {
-    expect(workspaceTrustQuestion(QUESTION)).toEqual({ path: '/work/project', configuration: ['MCP servers'] })
+    expect(workspaceTrustQuestion(QUESTION)).toEqual({
+      path: '/work/project',
+      configuration: ['MCP servers'],
+    })
   })
 
   it('drops an empty and a non-string configuration word', () => {
-    expect(workspaceTrustQuestion({ ...QUESTION, configuration: ['MCP servers', '', 7, null] })?.configuration).toEqual(['MCP servers'])
+    expect(workspaceTrustQuestion({
+      ...QUESTION,
+      configuration: ['MCP servers', '', 7, null],
+    })?.configuration).toEqual(['MCP servers'])
     expect(workspaceTrustQuestion({ ...QUESTION, configuration: 'MCP servers' })?.configuration).toEqual([])
   })
 
@@ -47,7 +63,10 @@ describe('workspaceTrustQuestion', () => {
 
 describe('workspaceTrustPermission', () => {
   it('states the folder, the agent and what the trust controls', () => {
-    expect(workspaceTrustPermission({ path: '/work/project', configuration: ['MCP servers'] }, 'GitHub Copilot')).toEqual({
+    expect(workspaceTrustPermission({
+      path: '/work/project',
+      configuration: ['MCP servers'],
+    }, 'GitHub Copilot')).toEqual({
       kind: 'permission',
       permission: {
         title: 'Trust the folder /work/project',
@@ -62,22 +81,36 @@ describe('workspaceTrustPermission', () => {
 
   it.each([
     [[], 'the configuration'],
-    [['MCP servers', 'hooks'], 'the MCP servers and hooks'],
-    [['MCP servers', 'hooks', 'agents'], 'the MCP servers, hooks and agents'],
+    [
+      ['MCP servers', 'hooks'],
+      'the MCP servers and hooks',
+    ],
+    [
+      ['MCP servers', 'hooks', 'agents'],
+      'the MCP servers, hooks and agents',
+    ],
   ])('joins the configuration words %j', (configuration, phrase) => {
     const permission = workspaceTrustPermission({ path: '/work/project', configuration }, 'Kimi Code')
-    expect(permission.kind === 'permission' ? permission.permission.reason : '').toBe(`Kimi Code loads ${phrase} of a project only from a folder that you trust, and it keeps your answer for the folder.`)
+    expect(permission.kind === 'permission'
+      ? permission.permission.reason
+      : '').toBe(`Kimi Code loads ${phrase} of a project only from a folder that you trust, and it keeps your answer for the folder.`)
   })
 
   it('titles a question without a folder', () => {
     const permission = workspaceTrustPermission({ path: '', configuration: [] }, 'GitHub Copilot')
-    expect(permission.kind === 'permission' ? permission.permission.title : '').toBe('Trust this folder')
+    expect(permission.kind === 'permission'
+      ? permission.permission.title
+      : '').toBe('Trust this folder')
   })
 
   it('draws the options that an agent states for its own trust request', () => {
-    const options = [{ optionId: 'trust', kind: 'allow_once', name: 'Trust this folder' }]
+    const options = [
+      { optionId: 'trust', kind: 'allow_once', name: 'Trust this folder' },
+    ]
     const permission = workspaceTrustPermission({ path: '/work', configuration: [] }, 'Grok Build', options)
-    expect(permission.kind === 'permission' ? permission.permission.options : []).toEqual(options)
+    expect(permission.kind === 'permission'
+      ? permission.permission.options
+      : []).toEqual(options)
   })
 })
 
@@ -85,9 +118,14 @@ describe('withWorkspaceTrustControl', () => {
   it('draws the question, and hands every other payload to the plugin', () => {
     const extract = vi.fn(() => ({ kind: 'plan' as const, text: 'the plan' }))
     const wrapped = withWorkspaceTrustControl(extract, 'GitHub Copilot')
-    expect(wrapped({ payload: QUESTION })).toMatchObject({ kind: 'permission', permission: { title: 'Trust the folder /work/project' } })
+    expect(wrapped({ payload: QUESTION })).toMatchObject({
+      kind: 'permission',
+      permission: { title: 'Trust the folder /work/project' },
+    })
     expect(extract).not.toHaveBeenCalled()
-    expect(wrapped({ payload: { method: 'session.event' } })).toEqual({ kind: 'plan', text: 'the plan' })
+    expect(wrapped({
+      payload: { method: 'session.event' },
+    })).toEqual({ kind: 'plan', text: 'the plan' })
     expect(extract).toHaveBeenCalledTimes(1)
   })
 })
@@ -97,7 +135,14 @@ describe('withWorkspaceTrustOptions', () => {
     const send = vi.fn(async () => {})
     const onRespond = vi.fn(async () => {})
     await withWorkspaceTrustOptions(send)(onRespond, 'workspace-trust:session-1', WORKSPACE_TRUST_OPTION.Trust)
-    expect(sentResponse(onRespond)).toEqual({ type: 'control_response', response: { subtype: 'success', request_id: 'workspace-trust:session-1', response: { behavior: 'allow' } } })
+    expect(sentResponse(onRespond)).toEqual({
+      type: 'control_response',
+      response: {
+        subtype: 'success',
+        request_id: 'workspace-trust:session-1',
+        response: { behavior: 'allow' },
+      },
+    })
     expect(send).not.toHaveBeenCalled()
   })
 
@@ -105,7 +150,14 @@ describe('withWorkspaceTrustOptions', () => {
     const send = vi.fn(async () => {})
     const onRespond = vi.fn(async () => {})
     await withWorkspaceTrustOptions(send)(onRespond, 'workspace-trust:session-1', WORKSPACE_TRUST_OPTION.Reject)
-    expect(sentResponse(onRespond)).toEqual({ type: 'control_response', response: { subtype: 'success', request_id: 'workspace-trust:session-1', response: { behavior: 'deny' } } })
+    expect(sentResponse(onRespond)).toEqual({
+      type: 'control_response',
+      response: {
+        subtype: 'success',
+        request_id: 'workspace-trust:session-1',
+        response: { behavior: 'deny' },
+      },
+    })
     expect(send).not.toHaveBeenCalled()
   })
 
@@ -129,7 +181,10 @@ describe('withWorkspaceTrustResponse', () => {
 
   it('reads no label from an answer without a known decision', () => {
     expect(wrapped(savedAnswer(QUESTION, 'maybe'))).toBeNull()
-    expect(wrapped({ ...savedAnswer(QUESTION, ''), response: undefined })).toBeNull()
+    expect(wrapped({
+      ...savedAnswer(QUESTION, ''),
+      response: undefined,
+    })).toBeNull()
   })
 
   it('hands the answer to another request to the plugin', () => {

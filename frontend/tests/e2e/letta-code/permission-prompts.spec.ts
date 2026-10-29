@@ -10,7 +10,12 @@ import { nativeContext } from './scenarios'
 
 lettaTest.describe('Letta Code control requests', () => {
   lettaTest('runs a command after the reader allows it', async ({ askingLettaWorkspace, page, modelScript, leapmuxServer }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingLettaWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: askingLettaWorkspace.workspaceId,
+    })
     await exerciseNativePermissionDecision(context, {
       toolCall: bashToolCall(context.provider, 'allow-call', 'echo "letta-$((40 + 2))"'),
       decision: 'allow',
@@ -27,7 +32,12 @@ lettaTest.describe('Letta Code control requests', () => {
   })
 
   lettaTest('keeps the command from running after the reader denies it', async ({ askingLettaWorkspace, page, modelScript, leapmuxServer }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingLettaWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: askingLettaWorkspace.workspaceId,
+    })
     const output = join(askingLettaWorkspace.workingDir, 'letta-deny-out.txt')
     await exerciseNativePermissionDecision(context, {
       // `tee` writes a file, so Letta does not treat the call as a READ-ONLY
@@ -59,7 +69,12 @@ lettaTest.describe('Letta Code control requests', () => {
 
   // The reason rides in the `message` of Letta's own approval_response, and Letta hands it to the model.
   lettaTest('a typed refusal reason reaches the model with the denial', async ({ askingLettaWorkspace, page, modelScript, leapmuxServer }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingLettaWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: askingLettaWorkspace.workspaceId,
+    })
     const output = join(askingLettaWorkspace.workingDir, 'letta-reason-out.txt')
     await exerciseNativePermissionReason(context, {
       // `tee` writes a file, so Letta asks before the call, as for the denial above.

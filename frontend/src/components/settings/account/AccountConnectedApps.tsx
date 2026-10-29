@@ -86,15 +86,24 @@ export const AccountConnectedApps: Component = () => {
       // The shared every-page loop owns the runaway cap, the stalled-cursor
       // guard and the keyed dedupe this panel taught the codebase.
       const tokens = await fetchAllPages(
-        async cursor => await userClient.listMyAPITokens({ cursor, limit: BigInt(PAGE_SIZE) })
+        async cursor => await userClient.listMyAPITokens({
+          cursor,
+          limit: BigInt(PAGE_SIZE),
+        })
           .then(resp => ({ items: resp.tokens, nextCursor: resp.nextCursor ?? '' })),
-        { maxPages: MAX_PAGES, keyOf: token => token.id },
+        {
+          maxPages: MAX_PAGES,
+          keyOf: token => token.id,
+        },
       )
       setTokens(tokens)
     }
     catch (e) {
       setLoadFailed(true)
-      setMessage({ type: 'error', text: formatErrorMessage(e, 'Failed to load connected apps') })
+      setMessage({
+        type: 'error',
+        text: formatErrorMessage(e, 'Failed to load connected apps'),
+      })
     }
     finally {
       setLoading(false)
@@ -121,7 +130,10 @@ export const AccountConnectedApps: Component = () => {
       setMessage({ type: 'success', text: 'App disconnected.' })
     }
     catch (e) {
-      setMessage({ type: 'error', text: formatErrorMessage(e, 'Failed to disconnect the app') })
+      setMessage({
+        type: 'error',
+        text: formatErrorMessage(e, 'Failed to disconnect the app'),
+      })
     }
     finally {
       setBusy(false)
@@ -139,7 +151,10 @@ export const AccountConnectedApps: Component = () => {
       setMessage({ type: 'success', text: 'Credential revoked.' })
     }
     catch (e) {
-      setMessage({ type: 'error', text: formatErrorMessage(e, 'Failed to revoke the credential') })
+      setMessage({
+        type: 'error',
+        text: formatErrorMessage(e, 'Failed to revoke the credential'),
+      })
     }
     finally {
       setBusy(false)
@@ -219,13 +234,17 @@ export const AccountConnectedApps: Component = () => {
         installations: [token],
       })
     }
-    return [...byClient.values()].map((group) => {
+    return [
+      ...byClient.values(),
+    ].map((group) => {
       const prev = prevByClient.get(group.clientId)
       if (!prev)
         return group
       const prevIds = prev.installations.map(t => t.id).join('\u0000')
       const nextIds = group.installations.map(t => t.id).join('\u0000')
-      return prevIds === nextIds ? prev : group
+      return prevIds === nextIds
+        ? prev
+        : group
     })
   })
 
@@ -387,7 +406,9 @@ export const AccountConnectedApps: Component = () => {
           >
             <p>
               {token().clientName || 'This app'}
-              {token().installationName ? ` on ${token().installationName}` : ''}
+              {token().installationName
+                ? ` on ${token().installationName}`
+                : ''}
               {' '}
               will stop working immediately. The app stays connected on every other machine; use
               {' '}

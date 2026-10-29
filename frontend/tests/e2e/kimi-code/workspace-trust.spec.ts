@@ -36,14 +36,25 @@ for (const decision of ['allow', 'deny'] as const) {
         const receiptLog = join(workingDir, 'trust-mcp-receipt.json')
         const echo = writeMcpEchoServer(workingDir, { receiptLog })
         writeFileSync(join(workingDir, '.mcp.json'), JSON.stringify({
-          mcpServers: { [PROJECT_MCP_SERVER_NAME]: { transport: 'stdio', command: echo.command, args: [...echo.args] } },
+          mcpServers: {
+            [PROJECT_MCP_SERVER_NAME]: {
+              transport: 'stdio',
+              command: echo.command,
+              args: [...echo.args],
+            },
+          },
         }))
         await openProviderAgent(server, workspaceId, KIMI_AGENT, { workingDir })
         await openWorkspace(page, workspaceId)
         const banner = await waitForControlBanner(page)
         await expect(banner).toContainText(`Trust the folder ${workingDir}`)
         await expect(banner).toContainText('Kimi Code loads the MCP servers, skills and instructions of a project only from a folder that you trust')
-        const context = await nativeContext({ page, modelScript, leapmuxServer: server, workspaceId })
+        const context = await nativeContext({
+          page,
+          modelScript,
+          leapmuxServer: server,
+          workspaceId,
+        })
         const before = await currentNativeAgent(context)
 
         await answerControl(page, decision)

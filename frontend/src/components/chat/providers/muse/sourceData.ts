@@ -51,7 +51,9 @@ export function museNativeResult(payload: unknown, supplemental: unknown): MuseN
   if (matches.length !== 1 || !match || match.call.name !== item.tool || match.call.args !== item.args)
     return undefined
   // SourceRange.Last ends the item's fold. The model result batch can follow it.
-  const batches = [...unique.values()].filter((record) => {
+  const batches = [
+    ...unique.values(),
+  ].filter((record) => {
     const result = pickObject(pickObject(record, 'payload'), 'event')
     return result?.kind === MUSE_LOG_EVENT.ToolResultBatchCommitted && result.batch_id === event.message_id
   })
@@ -76,7 +78,9 @@ export function museNativeResult(payload: unknown, supplemental: unknown): MuseN
   let structured: Record<string, unknown> | undefined
   try {
     const parsed: unknown = JSON.parse(text)
-    structured = isObject(parsed) ? parsed : undefined
+    structured = isObject(parsed)
+      ? parsed
+      : undefined
   }
   catch {
     structured = undefined

@@ -18,14 +18,26 @@ vi.mock('./ui', () => ({
   // empty paragraph as `<br />`. So a typed blank line reaches the model as `<br />`, as in the browser.
   sendMessage: async (_page: Page, keys: string) => {
     agent.sent.push(keys)
-    agent.send(keys.split('\n').map(paragraph => paragraph === '' ? '<br />' : paragraph).join('\n\n'))
+    agent.send(keys.split('\n').map(paragraph => paragraph === ''
+      ? '<br />'
+      : paragraph).join('\n\n'))
   },
   waitForAgentIdle: async () => {},
-  assistantBubbles: () => ({ filter: ({ hasText }: { hasText: string }) => ({ first: () => ({ fakeText: hasText }) }) }),
-  userBubbles: () => ({ filter: ({ hasText }: { hasText: string }) => ({ first: () => ({ fakeText: hasText }) }) }),
+  assistantBubbles: () => ({
+    filter: ({ hasText }: { hasText: string }) => ({
+      first: () => ({ fakeText: hasText }),
+    }),
+  }),
+  userBubbles: () => ({
+    filter: ({ hasText }: { hasText: string }) => ({
+      first: () => ({ fakeText: hasText }),
+    }),
+  }),
 }))
 
-vi.mock('./compaction', () => ({ compactionNoticeRow: () => ({ fakeNotice: true }) }))
+vi.mock('./compaction', () => ({
+  compactionNoticeRow: () => ({ fakeNotice: true }),
+}))
 
 vi.mock('@playwright/test', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@playwright/test')>()
@@ -34,10 +46,15 @@ vi.mock('@playwright/test', async (importOriginal) => {
     expect: (value: unknown, message?: string) => {
       if (typeof value === 'object' && value !== null && 'fakeText' in value && typeof value.fakeText === 'string') {
         const text = value.fakeText
-        return { toBeVisible: async () => expect(agent.transcript.join('\n'), `the transcript shows ${text}`).toContain(text) }
+        return {
+          toBeVisible: async () => expect(agent.transcript.join('\n'), `the transcript shows ${text}`).toContain(text),
+        }
       }
-      if (typeof value === 'object' && value !== null && 'fakeNotice' in value)
-        return { toHaveCount: async (count: number) => expect(agent.notice ? 1 : 0, 'the compaction notice rows').toBe(count) }
+      if (typeof value === 'object' && value !== null && 'fakeNotice' in value) {
+        return {
+          toHaveCount: async (count: number) => expect(agent.notice ? 1 : 0, 'the compaction notice rows').toBe(count),
+        }
+      }
       return expect(value, message)
     },
   }
@@ -68,9 +85,17 @@ function simulatedAgent(options: SimulatedAgentOptions = {}): ModelScript {
       history = []
     const userText = options.nativeCommand && text.startsWith('/compact')
       ? 'Summarize the conversation.'
-      : options.wrapsCommand && text.startsWith('/compact') ? `<task>\n${text}\n</task>` : text
+      : options.wrapsCommand && text.startsWith('/compact')
+        ? `<task>\n${text}\n</task>`
+        : text
     history.push({ role: 'user', content: userText })
-    requests.push({ stepIndex: nextStep, protocol: 'openai-chat-completions', body: { messages: [...history] } } as unknown as MockModelRequestRecord)
+    requests.push({
+      stepIndex: nextStep,
+      protocol: 'openai-chat-completions',
+      body: {
+        messages: [...history],
+      },
+    } as unknown as MockModelRequestRecord)
     const reply = steps[nextStep++]?.text ?? ''
     history.push({ role: 'assistant', content: reply })
     agent.transcript.push(reply)

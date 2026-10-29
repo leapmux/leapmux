@@ -36,12 +36,16 @@ geminiTest('recovers the actual native image bytes into the exact tool result af
     await expect(image).toHaveAttribute('src', `data:image/png;base64,${bytes}`)
     expect(await readAttached(image, 'the decoded native image dimensions', (elements) => {
       const attached = elements.find((element): element is HTMLImageElement => element.isConnected && element instanceof HTMLImageElement)
-      return attached ? [attached.naturalWidth, attached.naturalHeight] : null
+      return attached
+        ? [attached.naturalWidth, attached.naturalHeight]
+        : null
     })).toEqual([64, 64])
     const snapshot = await readNativeMessageSnapshot(native, agent.id)
     const records = snapshot.messages.filter(message => message.spanId === nativeCallId).map(readGeminiStoredToolRecord).filter(isObject)
     expect(records).toHaveLength(1)
-    expect(geminiResultImages(records[0]!)).toEqual([{ mimeType: 'image/png', data: bytes }])
+    expect(geminiResultImages(records[0]!)).toEqual([
+      { mimeType: 'image/png', data: bytes },
+    ])
   }
   await proveImage()
   await native.page.reload()

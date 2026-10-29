@@ -29,8 +29,16 @@ zcodeTest('keeps a native workflow output path and exact inline preview after re
   const launchId = `native-output-path-launch-${randomUUID()}`
   await native.modelScript.fallback({ text: 'The native output file workflow notification arrived.' })
   const launchStart = await native.modelScript.queue(
-    { toolCalls: [zcodeWorkflowSkillToolCall('full-output-workflow-skill')] },
-    { toolCalls: [zcodeCreateWorkflowToolCall(launchId, 'native-output-path', source)] },
+    {
+      toolCalls: [
+        zcodeWorkflowSkillToolCall('full-output-workflow-skill'),
+      ],
+    },
+    {
+      toolCalls: [
+        zcodeCreateWorkflowToolCall(launchId, 'native-output-path', source),
+      ],
+    },
     { text: 'The native output file workflow launched.' },
   )
   await sendMessage(native.page, native.modelScript.prompt('Run the native large-output workflow once.'))
@@ -43,7 +51,9 @@ zcodeTest('keeps a native workflow output path and exact inline preview after re
   })
   const callId = `native-output-path-read-${randomUUID()}`
   const { resultRequest } = await runNativeToolTurn(native, {
-    toolCalls: [zcodeGetWorkflowRunToolCall(callId, launch.runId)],
+    toolCalls: [
+      zcodeGetWorkflowRunToolCall(callId, launch.runId),
+    ],
     prompt: 'Read the exact completed workflow once.',
     answer: 'The native output file read returned.',
   })
@@ -53,7 +63,13 @@ zcodeTest('keeps a native workflow output path and exact inline preview after re
   // private run directory, so the path stays inside both.
   assertPrivateNativePath(storageRoot, getGlobalState().tmpDir)
   await proveNativeOutputReceipt(
-    { context: native, agent, snapshot: await readNativeMessageSnapshot(native, agent.id), nativeCallId: callId, output },
+    {
+      context: native,
+      agent,
+      snapshot: await readNativeMessageSnapshot(native, agent.id),
+      nativeCallId: callId,
+      output,
+    },
     testInfo,
     (snapshot, id) => readZcodeNativeOutput(snapshot, id, 'GetWorkflowRun'),
     {

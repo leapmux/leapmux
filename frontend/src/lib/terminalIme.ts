@@ -145,7 +145,9 @@ function createCompositionPreview(
     preview.style.lineHeight = textarea.style.height
     const options = terminal.options
     preview.style.fontFamily = options.fontFamily ?? ''
-    preview.style.fontSize = options.fontSize != null ? `${options.fontSize}px` : ''
+    preview.style.fontSize = options.fontSize != null
+      ? `${options.fontSize}px`
+      : ''
     // Invert the terminal's own colors so the pending text reads as a marked
     // region rather than as text the shell already echoed.
     preview.style.backgroundColor = options.theme?.foreground ?? ''
@@ -348,7 +350,9 @@ export function attachTerminalIme(terminal: Terminal, send: (text: string) => vo
    * selection, which still covers the replaced range in every recorded trace.
    */
   const replacedCharacterCount = (event: InputEvent): number => {
-    const ranges = typeof event.getTargetRanges === 'function' ? event.getTargetRanges() : []
+    const ranges = typeof event.getTargetRanges === 'function'
+      ? event.getTargetRanges()
+      : []
     if (ranges.length === 0)
       return selectedCharacterCount()
     let total = 0

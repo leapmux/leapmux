@@ -101,7 +101,9 @@ function copyWithTemporaryTextArea(text: string): boolean {
     return false
 
   const activeElement = document.activeElement
-  const selection = typeof window === 'undefined' ? null : window.getSelection()
+  const selection = typeof window === 'undefined'
+    ? null
+    : window.getSelection()
   const savedRanges = saveSelectionRanges(selection)
 
   const holder = document.createElement('textarea')

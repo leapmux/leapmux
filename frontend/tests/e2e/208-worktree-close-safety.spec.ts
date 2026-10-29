@@ -19,7 +19,12 @@ function checkout(dataDir: string, name: string) {
   commitFile(repo, 'frontend/src/committed.txt', 'preserve me\n', 'Add committed contents')
   const branch = `${name}-branch`
   const worktree = addWorktree(repo, dataDir, `${name}-checkout`, branch)
-  return { repo, worktree, branch, nested: join(worktree, 'frontend', 'src') }
+  return {
+    repo,
+    worktree,
+    branch,
+    nested: join(worktree, 'frontend', 'src'),
+  }
 }
 
 function expectPreserved(paths: ReturnType<typeof checkout>, content = 'preserve me\n') {
@@ -32,7 +37,9 @@ function expectPreserved(paths: ReturnType<typeof checkout>, content = 'preserve
 }
 
 function closeDialog(page: Page) {
-  return page.getByRole('dialog').filter({ has: page.getByRole('heading', { name: 'Close Last Tab' }) })
+  return page.getByRole('dialog').filter({
+    has: page.getByRole('heading', { name: 'Close Last Tab' }),
+  })
 }
 
 async function clickClose(page: Page, agentId: string) {
@@ -53,7 +60,15 @@ test.describe('worktree close safety', () => {
       tabId,
       payload: fileTabPayload(join(paths.nested, 'committed.txt'), paths.worktree),
     })
-    await seedTabIntoWorkspace({ hubUrl, cookie, workspaceId, workerId, tabId, tabType: TabType.FILE, userEvents })
+    await seedTabIntoWorkspace({
+      hubUrl,
+      cookie,
+      workspaceId,
+      workerId,
+      tabId,
+      tabType: TabType.FILE,
+      userEvents,
+    })
     await loginViaToken(page, cookie)
     await openWorkspace(page, workspaceId)
     await clickClose(page, tabId)

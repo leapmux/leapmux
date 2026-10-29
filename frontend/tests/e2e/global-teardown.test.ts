@@ -8,7 +8,11 @@ let scratch: string
 vi.mock('node:os', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:os')>()
   const tmpdir = () => scratch
-  return { ...actual, tmpdir, default: { ...actual, tmpdir } }
+  return {
+    ...actual,
+    tmpdir,
+    default: { ...actual, tmpdir },
+  }
 })
 
 beforeEach(() => {

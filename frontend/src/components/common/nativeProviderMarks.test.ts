@@ -60,15 +60,23 @@ describe('readNativeProviderMark', () => {
     expect(mark.viewBox).toBe('0 0 100 100')
     expect(mark.elements).toHaveLength(1)
     expect(mark.elements[0]?.attributes.d).toBe(/<path d="([^"]+)"/.exec(museCode)?.[1])
-    expect(mark.linearGradients).toEqual([{
-      id: 'paint0_linear_454_562',
-      attributes: { x1: '133.245', y1: '109.046', x2: '24.9203', y2: '-12.5565', gradientUnits: 'userSpaceOnUse' },
-      stops: [
-        { 'offset': '0.254808', 'stop-color': '#0082FB', 'style': 'stop-color:#0082FB;stop-color:color(display-p3 0.0000 0.5098 0.9843);stop-opacity:1;' },
-        { 'offset': '0.697115', 'stop-color': '#0064E0', 'style': 'stop-color:#0064E0;stop-color:color(display-p3 0.0000 0.3922 0.8784);stop-opacity:1;' },
-        { 'offset': '1', 'stop-color': '#0040DC', 'style': 'stop-color:#0040DC;stop-color:color(display-p3 0.0000 0.2510 0.8627);stop-opacity:1;' },
-      ],
-    }])
+    expect(mark.linearGradients).toEqual([
+      {
+        id: 'paint0_linear_454_562',
+        attributes: {
+          x1: '133.245',
+          y1: '109.046',
+          x2: '24.9203',
+          y2: '-12.5565',
+          gradientUnits: 'userSpaceOnUse',
+        },
+        stops: [
+          { 'offset': '0.254808', 'stop-color': '#0082FB', 'style': 'stop-color:#0082FB;stop-color:color(display-p3 0.0000 0.5098 0.9843);stop-opacity:1;' },
+          { 'offset': '0.697115', 'stop-color': '#0064E0', 'style': 'stop-color:#0064E0;stop-color:color(display-p3 0.0000 0.3922 0.8784);stop-opacity:1;' },
+          { 'offset': '1', 'stop-color': '#0040DC', 'style': 'stop-color:#0040DC;stop-color:color(display-p3 0.0000 0.2510 0.8627);stop-opacity:1;' },
+        ],
+      },
+    ])
   })
 
   it.each([
@@ -121,8 +129,14 @@ describe('readNativeProviderMark', () => {
     expect(mark).toMatchObject({
       fill: '#f00',
       elements: [
-        { type: 'path', attributes: { d: 'M0 0h12v24H0z' } },
-        { type: 'path', attributes: { d: 'M12 0h12v24H12z', fill: '#00f' } },
+        {
+          type: 'path',
+          attributes: { d: 'M0 0h12v24H0z' },
+        },
+        {
+          type: 'path',
+          attributes: { d: 'M12 0h12v24H12z', fill: '#00f' },
+        },
       ],
     })
   })
@@ -171,11 +185,27 @@ describe('readNativeProviderMark', () => {
 
   it('accepts an embedded PNG with positive dimensions', () => {
     expect(readNativeProviderMark(`<svg viewBox="0 0 24 24"><image href="${PNG_HREF}" width="24" height="24"/></svg>`))
-      .toEqual({ viewBox: '0 0 24 24', elements: [{ type: 'image', attributes: { href: PNG_HREF, width: '24', height: '24' } }] })
+      .toEqual({
+        viewBox: '0 0 24 24',
+        elements: [
+          {
+            type: 'image',
+            attributes: { href: PNG_HREF, width: '24', height: '24' },
+          },
+        ],
+      })
   })
 
   it('preserves zero coordinates and complete path attributes', () => {
     expect(readNativeProviderMark('<svg viewBox="0 0 24 24"><path d="M0 0h24v24H0z" fill="currentColor" fill-rule="evenodd"/></svg>'))
-      .toEqual({ viewBox: '0 0 24 24', elements: [{ type: 'path', attributes: { 'd': 'M0 0h24v24H0z', 'fill': 'currentColor', 'fill-rule': 'evenodd' } }] })
+      .toEqual({
+        viewBox: '0 0 24 24',
+        elements: [
+          {
+            type: 'path',
+            attributes: { 'd': 'M0 0h24v24H0z', 'fill': 'currentColor', 'fill-rule': 'evenodd' },
+          },
+        ],
+      })
   })
 })

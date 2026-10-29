@@ -27,10 +27,18 @@ codewhaleTest('applies native output styles and preserves the configured default
     workerName: 'Codewhale output style test',
     providerAgent: CODEWHALE_AGENT,
     // Reuse the suite's mock configuration. A nested private home exceeds the native Unix socket path limit.
-    prepare: () => ({ agentEnv: { ...leapmuxServer.agentEnv, CODEWHALE_VERBOSITY: 'concise' }, setup: undefined }),
+    prepare: () => ({
+      agentEnv: { ...leapmuxServer.agentEnv, CODEWHALE_VERBOSITY: 'concise' },
+      setup: undefined,
+    }),
     openAgent: (server, workspaceId, workingDir) => openAgentViaAPI(server, workspaceId, workingDir, agentOpenOptions(CODEWHALE_AGENT.provider)),
   }, async ({ server, workspaceId }) => {
-    const native = await nativeContext({ page, leapmuxServer: server, workspaceId, modelScript })
+    const native = await nativeContext({
+      page,
+      leapmuxServer: server,
+      workspaceId,
+      modelScript,
+    })
     const before = await currentNativeAgent(native)
     const group = nativeOptionGroup(before, 'outputStyle')
     expect(group?.mutable).toBe(true)

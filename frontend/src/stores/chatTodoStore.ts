@@ -20,12 +20,16 @@ export function protoTodoToItem(todo: ProtoTodoItem, index: number): TodoItem {
   const id = todo.id || undefined
   const description = todo.description || undefined
   return {
-    ...(id !== undefined ? { id } : {}),
+    ...(id !== undefined
+      ? { id }
+      : {}),
     rowKey: todoRowKey(id, index, todo.content),
     content: todo.content,
     status,
     activeForm: todo.activeForm,
-    ...(description !== undefined ? { description } : {}),
+    ...(description !== undefined
+      ? { description }
+      : {}),
   }
 }
 

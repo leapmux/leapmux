@@ -52,7 +52,10 @@ function kimiOutputFooter(lines: string[], marker: number, toolName: string): Ki
   const pathLine = lines[marker + 1]
   if (!pathLine?.startsWith(prefix) || pathLine.length === prefix.length)
     return null
-  return { path: pathLine.slice(prefix.length), toolName }
+  return {
+    path: pathLine.slice(prefix.length),
+    toolName,
+  }
 }
 
 function kimiOutputPointer(texts: string[], callId: string, toolName: string): KimiOutputPointer | null {

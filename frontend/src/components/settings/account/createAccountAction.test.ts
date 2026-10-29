@@ -18,7 +18,10 @@ describe('createAccountAction', () => {
   it('reports the success text the work returns', async () => {
     await createRoot(async (dispose) => {
       const action = createAccountAction()
-      await action.run({ fallback: 'Failed', work: async () => 'Profile updated.' })
+      await action.run({
+        fallback: 'Failed',
+        work: async () => 'Profile updated.',
+      })
       expect(action.message()).toEqual({ type: 'success', text: 'Profile updated.' })
       expect(action.running()).toBe(false)
       dispose()
@@ -30,7 +33,10 @@ describe('createAccountAction', () => {
   it('reports nothing when the work returns null', async () => {
     await createRoot(async (dispose) => {
       const action = createAccountAction()
-      await action.run({ fallback: 'Failed', work: async () => null })
+      await action.run({
+        fallback: 'Failed',
+        work: async () => null,
+      })
       expect(action.message()).toBeNull()
       dispose()
     })

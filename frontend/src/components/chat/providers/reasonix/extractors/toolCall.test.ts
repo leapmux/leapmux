@@ -7,9 +7,20 @@ import { acpToolCall } from '../../acp/extractors/toolCall'
 import { reasonixToolCallAdapter } from './toolCall'
 
 function call(tool: Record<string, unknown>, supplemental?: Record<string, unknown>): ToolCall {
-  const frame = { sessionUpdate: 'tool_call_update', toolCallId: 'reasonix-tool', status: 'completed', kind: 'other', ...tool }
+  const frame = {
+    sessionUpdate: 'tool_call_update',
+    toolCallId: 'reasonix-tool',
+    status: 'completed',
+    kind: 'other',
+    ...tool,
+  }
   const extra = supplemental
-    ? { sessionUpdate: frame.sessionUpdate, toolCallId: frame.toolCallId, status: frame.status, ...supplemental }
+    ? {
+        sessionUpdate: frame.sessionUpdate,
+        toolCallId: frame.toolCallId,
+        status: frame.status,
+        ...supplemental,
+      }
     : undefined
   return acpToolCall(frame, reasonixToolCallAdapter, extra)
 }
@@ -17,7 +28,11 @@ function call(tool: Record<string, unknown>, supplemental?: Record<string, unkno
 function capability(capabilityId: string): ToolCall {
   return call({
     title: REASONIX_TOOL.UseCapability,
-    rawInput: { action: REASONIX_CAPABILITY_ACTION.Call, capability_id: capabilityId, arguments: { query: 'needle' } },
+    rawInput: {
+      action: REASONIX_CAPABILITY_ACTION.Call,
+      capability_id: capabilityId,
+      arguments: { query: 'needle' },
+    },
   })
 }
 
@@ -35,7 +50,12 @@ describe('reasonix Model Context Protocol names', () => {
   })
 
   // An empty half labels the call with nothing, which states less than the raw name.
-  it.each(['mcp__server__', 'mcp____lookup', 'mcp__server', 'mcp__'])('refuses the name %s', (name) => {
+  it.each([
+    'mcp__server__',
+    'mcp____lookup',
+    'mcp__server',
+    'mcp__',
+  ])('refuses the name %s', (name) => {
     const named = call({ title: name })
     // Unsplit: the row keeps the raw name rather than heading itself with a
     // server / tool pair it could not read.
@@ -47,24 +67,48 @@ describe('reasonix Model Context Protocol names', () => {
     const named = capability('mcp-tool:server/lookup')
     expect(named.label).toBeUndefined()
     expect(named.title).toBe('server / lookup')
-    expect(named.kind === 'mcp' ? named.request.args : undefined).toEqual({ query: 'needle' })
+    expect(named.kind === 'mcp'
+      ? named.request.args
+      : undefined).toEqual({ query: 'needle' })
   })
 
-  it.each(['mcp-tool:server/', 'mcp-tool:/lookup', 'mcp-tool:lookup', 'mcp-tool:'])('refuses the capability identifier %s', (id) => {
+  it.each([
+    'mcp-tool:server/',
+    'mcp-tool:/lookup',
+    'mcp-tool:lookup',
+    'mcp-tool:',
+  ])('refuses the capability identifier %s', (id) => {
     expect(capability(id).title).not.toContain(' / ')
   })
 })
 
 describe('reasonix subagent launches', () => {
   it('asks with the description and reports the run', () => {
-    const launch = call({ title: REASONIX_TOOL.Task, rawInput: { description: 'Inspect sample', profile: 'explore', prompt: 'Read it' }, content: [{ type: 'content', content: { type: 'text', text: 'Found two' } }] })
+    const launch = call({
+      title: REASONIX_TOOL.Task,
+      rawInput: { description: 'Inspect sample', profile: 'explore', prompt: 'Read it' },
+      content: [
+        {
+          type: 'content',
+          content: { type: 'text', text: 'Found two' },
+        },
+      ],
+    })
     expect(launch.kind).toBe('agent')
-    expect(launch.kind === 'agent' ? launch.request : undefined).toEqual({ description: 'Inspect sample', agentType: 'explore', prompt: 'Read it' })
-    expect(launch.kind === 'agent' ? typedResult(launch)?.agents[0]?.body : undefined).toBe('Found two')
+    expect(launch.kind === 'agent'
+      ? launch.request
+      : undefined).toEqual({ description: 'Inspect sample', agentType: 'explore', prompt: 'Read it' })
+    expect(launch.kind === 'agent'
+      ? typedResult(launch)?.agents[0]?.body
+      : undefined).toBe('Found two')
   })
 
   it('falls back to the shared word when the launch describes nothing', () => {
-    const launch = call({ title: REASONIX_TOOL.ReadOnlyTask, rawInput: { prompt: 'Read it' }, status: 'pending' })
+    const launch = call({
+      title: REASONIX_TOOL.ReadOnlyTask,
+      rawInput: { prompt: 'Read it' },
+      status: 'pending',
+    })
     expect(launch.kind).toBe('agent')
     expect(launch.result).toBeUndefined()
   })
@@ -73,30 +117,62 @@ describe('reasonix subagent launches', () => {
 // The supplement echoes the call it answers, which is what the shared ACP resolver
 // matches it on before the plugin sees it.
 function withStoredBody(fields: Record<string, unknown>, record: Record<string, unknown>): ToolCall {
-  return call({ content: [{ type: 'content', content: { type: 'text', text: 'clipped…(4 more chars truncated)' } }], ...fields }, {
-    rawOutput: { reasonix: { role: 'tool', tool_call_id: 'reasonix-tool', ...record } },
+  return call({
+    content: [
+      {
+        type: 'content',
+        content: { type: 'text', text: 'clipped…(4 more chars truncated)' },
+      },
+    ],
+    ...fields,
+  }, {
+    rawOutput: {
+      reasonix: { role: 'tool', tool_call_id: 'reasonix-tool', ...record },
+    },
   })
 }
 
 describe('reasonix stored tool images', () => {
   it('recovers a stored image beside the native tool text', () => {
     const image = 'data:image/png;base64,iVBORw0KGgo='
-    const result = withStoredBody({ title: 'view_image', rawInput: { path: '/work/image.png' } }, {
+    const result = withStoredBody({
+      title: 'view_image',
+      rawInput: { path: '/work/image.png' },
+    }, {
       content: '[image: /work/image.png, image/png, 8 bytes shown]',
       images: [image],
     })
-    expect(result.images).toEqual([{ url: image, filePath: '/work/image.png' }])
+    expect(result.images).toEqual([
+      { url: image, filePath: '/work/image.png' },
+    ])
   })
 
   it('keeps a live image when a stored record also supplies image bytes', () => {
     const image = 'data:image/png;base64,iVBORw0KGgo='
-    const live = [{ type: 'content', content: { type: 'image', url: image } }]
-    const result = withStoredBody({ title: 'view_image', rawInput: { path: '/work/image.png' }, content: live }, { content: 'native text', images: [image] })
-    expect(result.images).toEqual([{ url: image, filePath: '/work/image.png' }])
+    const live = [
+      {
+        type: 'content',
+        content: { type: 'image', url: image },
+      },
+    ]
+    const result = withStoredBody({
+      title: 'view_image',
+      rawInput: { path: '/work/image.png' },
+      content: live,
+    }, {
+      content: 'native text',
+      images: [image],
+    })
+    expect(result.images).toEqual([
+      { url: image, filePath: '/work/image.png' },
+    ])
   })
 
   it('does not recover image bytes from another native tool call', () => {
-    const result = withStoredBody({ title: 'view_image', rawInput: { path: '/work/image.png' } }, {
+    const result = withStoredBody({
+      title: 'view_image',
+      rawInput: { path: '/work/image.png' },
+    }, {
       tool_call_id: 'other-call',
       content: 'another image',
       images: ['data:image/png;base64,iVBORw0KGgo='],
@@ -109,9 +185,21 @@ describe('reasonix shell records', () => {
   // Verbatim shape of a Reasonix 1.38.7 `bash` record: the host's tool result, and
   // `tool_execution` with the code of the command.
   function shell(status: 'completed' | 'failed', record: Record<string, unknown>) {
-    const built = call({ title: 'bash', kind: 'execute', status, rawInput: { command: 'printf x' } }, {
+    const built = call({
+      title: 'bash',
+      kind: 'execute',
       status,
-      rawOutput: { reasonix: { role: 'tool', tool_call_id: 'reasonix-tool', name: 'bash', ...record } },
+      rawInput: { command: 'printf x' },
+    }, {
+      status,
+      rawOutput: {
+        reasonix: {
+          role: 'tool',
+          tool_call_id: 'reasonix-tool',
+          name: 'bash',
+          ...record,
+        },
+      },
     })
     if (built.kind !== 'execute')
       throw new Error('The native shell record must draw an execute row.')
@@ -119,7 +207,10 @@ describe('reasonix shell records', () => {
   }
 
   it('reads the code of a failed command and drops the host failure line', () => {
-    expect(shell('failed', { content: 'error: command exited: exit status 7\nSHELLERR77\n', tool_execution: { kind: 'shell', state: 'failed', exitCode: 7 } }))
+    expect(shell('failed', {
+      content: 'error: command exited: exit status 7\nSHELLERR77\n',
+      tool_execution: { kind: 'shell', state: 'failed', exitCode: 7 },
+    }))
       .toMatchObject({ output: 'SHELLERR77\n', exitCode: 7 })
   })
 
@@ -128,17 +219,26 @@ describe('reasonix shell records', () => {
   })
 
   it('reads the zero code of a command that succeeded', () => {
-    expect(shell('completed', { content: 'SHELL42\n[receipt r_97da2502]', tool_execution: { kind: 'shell', state: 'completed', exitCode: 0 } }))
+    expect(shell('completed', {
+      content: 'SHELL42\n[receipt r_97da2502]',
+      tool_execution: { kind: 'shell', state: 'completed', exitCode: 0 },
+    }))
       .toMatchObject({ output: 'SHELL42', exitCode: 0 })
   })
 
   it('removes only the final host receipt and preserves an earlier printed receipt', () => {
-    expect(shell('completed', { content: '[receipt r_printed]\nSHELL42\n[receipt r_native]', tool_execution: { exitCode: 0 } }))
+    expect(shell('completed', {
+      content: '[receipt r_printed]\nSHELL42\n[receipt r_native]',
+      tool_execution: { exitCode: 0 },
+    }))
       .toMatchObject({ output: '[receipt r_printed]\nSHELL42', exitCode: 0 })
   })
 
   it('keeps a failure line of another cause, which states the reason', () => {
-    expect(shell('failed', { content: 'error: command exited: signal: killed\nout', tool_execution: { kind: 'shell', state: 'failed' } }))
+    expect(shell('failed', {
+      content: 'error: command exited: signal: killed\nout',
+      tool_execution: { kind: 'shell', state: 'failed' },
+    }))
       .toMatchObject({ output: 'error: command exited: signal: killed\nout' })
   })
 
@@ -151,13 +251,19 @@ describe('reasonix shell records', () => {
 
   it.each(['completed', 'failed'] as const)('keeps a printed failure line when the structured exit is zero and the frame is %s', (status) => {
     const text = 'error: command exited: exit status 7\nprinted output'
-    expect(shell(status, { content: text, tool_execution: { exitCode: 0 } }))
+    expect(shell(status, {
+      content: text,
+      tool_execution: { exitCode: 0 },
+    }))
       .toMatchObject({ output: text, exitCode: 0 })
   })
 
   it('keeps a printed failure line when the structured exit states another nonzero code', () => {
     const text = 'error: command exited: exit status 7\nprinted output'
-    expect(shell('failed', { content: text, tool_execution: { exitCode: 3 } }))
+    expect(shell('failed', {
+      content: text,
+      tool_execution: { exitCode: 3 },
+    }))
       .toMatchObject({ output: text, exitCode: 3 })
   })
 
@@ -167,7 +273,10 @@ describe('reasonix shell records', () => {
   })
 
   it('reads a matching structured failed exit even when the call frame completed', () => {
-    expect(shell('completed', { content: 'error: command exited: exit status 7\nactual output', tool_execution: { exitCode: 7 } }))
+    expect(shell('completed', {
+      content: 'error: command exited: exit status 7\nactual output',
+      tool_execution: { exitCode: 7 },
+    }))
       .toMatchObject({ output: 'actual output', exitCode: 7 })
   })
 })
@@ -194,13 +303,17 @@ describe('reasonix stored tool records', () => {
   it('refuses a record that answers another call', () => {
     const other = withStoredBody({}, { tool_call_id: 'another-call', name: 'bash', content: 'stored body' })
     expect(other.kind).not.toBe('execute')
-    expect(other.kind === 'mcp' && typedResult(other)?.content[0]?.type === 'text' ? other.kind === 'mcp' && (typedResult(other)!.content[0] as { text: string }).text : '').toContain('clipped')
+    expect(other.kind === 'mcp' && typedResult(other)?.content[0]?.type === 'text'
+      ? other.kind === 'mcp' && (typedResult(other)!.content[0] as { text: string }).text
+      : '').toContain('clipped')
   })
 
   it('refuses a record that is not a tool record', () => {
     const other = withStoredBody({}, { role: 'assistant', name: 'bash', content: 'stored body' })
     expect(other.kind).not.toBe('execute')
-    expect(other.kind === 'mcp' && typedResult(other)?.content[0]?.type === 'text' ? other.kind === 'mcp' && (typedResult(other)!.content[0] as { text: string }).text : '').toContain('clipped')
+    expect(other.kind === 'mcp' && typedResult(other)?.content[0]?.type === 'text'
+      ? other.kind === 'mcp' && (typedResult(other)!.content[0] as { text: string }).text
+      : '').toContain('clipped')
   })
 })
 
@@ -214,7 +327,11 @@ describe('reasonix stored tool records', () => {
  */
 describe('reasonix remapped facts', () => {
   it('reads a recovered file body that is not numbered', () => {
-    const read = withStoredBody({ title: 'read_file', rawInput: { path: '/p/a.ts' }, content: [] }, {
+    const read = withStoredBody({
+      title: 'read_file',
+      rawInput: { path: '/p/a.ts' },
+      content: [],
+    }, {
       name: 'read_file',
       content: 'plain body, no line numbers',
     })
@@ -227,7 +344,9 @@ describe('reasonix remapped facts', () => {
     const read = withStoredBody({ title: 'read_file', rawInput: {}, content: [] }, {
       name: 'read_file',
       content: '1\tconst a = 1\n',
-      read_result: { source: { canonical_path: '/p/recovered.ts' } },
+      read_result: {
+        source: { canonical_path: '/p/recovered.ts' },
+      },
     })
     expect(read.kind === 'read' && read.request.path).toBe('/p/recovered.ts')
   })
@@ -242,9 +361,21 @@ describe('reasonix remapped facts', () => {
  */
 describe('reasonix move_file', () => {
   const rawInput = { source_path: '/p/a.ts', destination_path: '/p/b.ts' }
-  const moved = { filePath: '/p/b.ts', previousPath: '/p/a.ts', operation: 'move', oldStr: '', newStr: '', structuredPatch: null }
+  const moved = {
+    filePath: '/p/b.ts',
+    previousPath: '/p/a.ts',
+    operation: 'move',
+    oldStr: '',
+    newStr: '',
+    structuredPatch: null,
+  }
 
-  it.each(['in_progress', 'failed', 'cancelled', 'completed'])('identifies both files while the call is %s', (status) => {
+  it.each([
+    'in_progress',
+    'failed',
+    'cancelled',
+    'completed',
+  ])('identifies both files while the call is %s', (status) => {
     const move = call({ title: 'move_file', status, rawInput })
     expect(move.kind).toBe('move')
     expect(move.kind === 'move' && move.request.changes).toEqual([moved])
@@ -254,7 +385,14 @@ describe('reasonix move_file', () => {
   // is the only thing that says the call ended.
   it('identifies both files on a retained row the frame never completed', () => {
     const move = acpToolCall(
-      { sessionUpdate: 'tool_call_update', toolCallId: 'reasonix-tool', status: 'in_progress', kind: 'other', title: 'move_file', rawInput },
+      {
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 'reasonix-tool',
+        status: 'in_progress',
+        kind: 'other',
+        title: 'move_file',
+        rawInput,
+      },
       reasonixToolCallAdapter,
       undefined,
       MessageCompletion.COMPLETE,
@@ -263,7 +401,16 @@ describe('reasonix move_file', () => {
   })
 
   it('states the daemon words beside the two files', () => {
-    const move = call({ title: 'move_file', rawInput, content: [{ type: 'content', content: { text: 'Moved a.ts to b.ts' } }] })
+    const move = call({
+      title: 'move_file',
+      rawInput,
+      content: [
+        {
+          type: 'content',
+          content: { text: 'Moved a.ts to b.ts' },
+        },
+      ],
+    })
     expect(isUnparsedToolResult(move.result) && move.result.text).toBe('Moved a.ts to b.ts')
   })
 })
@@ -281,12 +428,19 @@ describe('reasonixToolCallAdapter empty search results', () => {
     kind: name,
     title: name,
     rawInput: { pattern: 'x' },
-    content: [{ type: 'content', content: { text: output } }],
+    content: [
+      {
+        type: 'content',
+        content: { text: output },
+      },
+    ],
   })
 
   const emptyOf = (name: 'glob' | 'grep', output: string) => {
     const built = searchCall(name, output)
-    return built.kind === 'glob' || built.kind === 'grep' ? typedResult(built)?.empty : undefined
+    return built.kind === 'glob' || built.kind === 'grep'
+      ? typedResult(built)?.empty
+      : undefined
   }
 
   it('reads the wording Reasonix prints when it matched nothing', () => {
@@ -315,9 +469,16 @@ describe('reasonixToolCallAdapter grep counters', () => {
       kind: 'grep',
       title: 'grep',
       rawInput: { pattern: 'x' },
-      content: [{ type: 'content', content: { text: output } }],
+      content: [
+        {
+          type: 'content',
+          content: { text: output },
+        },
+      ],
     })
-    return built.kind === 'grep' ? typedResult(built) : undefined
+    return built.kind === 'grep'
+      ? typedResult(built)
+      : undefined
   }
 
   it('counts the files apart from the matches', () => {
@@ -358,21 +519,41 @@ describe('reasonixToolCallAdapter grep counters', () => {
  */
 describe('reasonixToolCallAdapter requests the shared table states', () => {
   it.each(['glob', 'grep'])('reads every path alias of a %s call', (name) => {
-    const aliased = call({ title: name, rawInput: { pattern: '*.ts', file_path: '/p/src' } })
+    const aliased = call({
+      title: name,
+      rawInput: { pattern: '*.ts', file_path: '/p/src' },
+    })
     expect(aliased.kind).toBe(name)
-    expect(aliased.kind === 'glob' || aliased.kind === 'grep' ? aliased.request : undefined)
-      .toEqual({ pattern: '*.ts', paths: ['/p/src'] })
+    expect(aliased.kind === 'glob' || aliased.kind === 'grep'
+      ? aliased.request
+      : undefined)
+      .toEqual({
+        pattern: '*.ts',
+        paths: ['/p/src'],
+      })
   })
 
   it.each(['glob', 'grep'])('reads a native paths array of a %s call', (name) => {
-    const many = call({ title: name, rawInput: { pattern: '*.ts', paths: ['/p/src', '/p/test'] } })
-    expect(many.kind === 'glob' || many.kind === 'grep' ? many.request.paths : undefined).toEqual(['/p/src', '/p/test'])
+    const many = call({
+      title: name,
+      rawInput: {
+        pattern: '*.ts',
+        paths: ['/p/src', '/p/test'],
+      },
+    })
+    expect(many.kind === 'glob' || many.kind === 'grep'
+      ? many.request.paths
+      : undefined).toEqual(['/p/src', '/p/test'])
   })
 
   // ONE branch answers both states of `ls`, so the label is spelled once and the
   // request reads the same keys whether or not the call finished.
   it.each(['in_progress', 'completed'])('reads every path alias of an ls call that is %s', (status) => {
-    const listed = call({ title: 'ls', status, rawInput: { filePath: '/p/src' } })
+    const listed = call({
+      title: 'ls',
+      status,
+      rawInput: { filePath: '/p/src' },
+    })
     expect(listed.kind).toBe('list')
     expect(listed.label).toBe('List Files')
     expect(listed.kind === 'list' && listed.request.path).toBe('/p/src')
@@ -384,8 +565,22 @@ describe('reasonixToolCallAdapter requests the shared table states', () => {
   })
 
   it('reads the directory listing a completed ls call printed', () => {
-    const listed = call({ title: 'ls', rawInput: { path: '/p/src' }, content: [{ type: 'content', content: { text: 'a.ts\nb.ts\n' } }] })
-    expect(listed.kind === 'list' ? typedResult(listed)?.entries : undefined).toEqual([{ path: 'a.ts' }, { path: 'b.ts' }])
+    const listed = call({
+      title: 'ls',
+      rawInput: { path: '/p/src' },
+      content: [
+        {
+          type: 'content',
+          content: { text: 'a.ts\nb.ts\n' },
+        },
+      ],
+    })
+    expect(listed.kind === 'list'
+      ? typedResult(listed)?.entries
+      : undefined).toEqual([
+      { path: 'a.ts' },
+      { path: 'b.ts' },
+    ])
   })
 })
 
@@ -400,7 +595,12 @@ describe('reasonixToolCallAdapter server calls', () => {
       title: 'mcp__server__lookup',
       status: 'failed',
       rawInput: { query: 'needle' },
-      content: [{ type: 'content', content: { text: 'the server is not reachable' } }],
+      content: [
+        {
+          type: 'content',
+          content: { text: 'the server is not reachable' },
+        },
+      ],
     })
     expect(errored.kind).toBe('mcp')
     expect(isToolFailureResult(errored.result) && errored.result.text).toBe('the server is not reachable')
@@ -414,21 +614,39 @@ describe('reasonixToolCallAdapter server calls', () => {
       title: 'mcp__server__lookup',
       status: 'cancelled',
       rawInput: { query: 'needle' },
-      content: [{ type: 'content', content: { type: 'text', text: 'one hit so far' } }],
+      content: [
+        {
+          type: 'content',
+          content: { type: 'text', text: 'one hit so far' },
+        },
+      ],
     })
     expect(stopped.kind).toBe('mcp')
     expect(isToolFailureResult(stopped.result)).toBe(false)
-    expect(stopped.result).toStrictEqual({ content: [{ type: 'text', text: 'one hit so far' }] })
+    expect(stopped.result).toStrictEqual({
+      content: [
+        { type: 'text', text: 'one hit so far' },
+      ],
+    })
   })
 
   it('draws the card of a server call that answered', () => {
     const answered = call({
       title: 'mcp__server__lookup',
       rawInput: { query: 'needle' },
-      content: [{ type: 'content', content: { type: 'text', text: 'two hits' } }],
+      content: [
+        {
+          type: 'content',
+          content: { type: 'text', text: 'two hits' },
+        },
+      ],
     })
     expect(answered.kind).toBe('mcp')
-    expect(answered.result).toMatchObject({ content: [{ type: 'text', text: 'two hits' }] })
+    expect(answered.result).toMatchObject({
+      content: [
+        { type: 'text', text: 'two hits' },
+      ],
+    })
   })
 
   it('answers nothing while the server call still runs', () => {
@@ -449,37 +667,79 @@ describe('reasonix todo_write', () => {
     title: 'todo_write',
     kind: 'edit',
     status,
-    rawInput: { todos: [{ content: 'Inspect code', status: 'in_progress' }, { content: 'Run checks', status: 'pending' }] },
+    rawInput: {
+      todos: [
+        { content: 'Inspect code', status: 'in_progress' },
+        { content: 'Run checks', status: 'pending' },
+      ],
+    },
     ...tool,
   })
 
   const saved = [
-    { rowKey: '0:Inspect code', content: 'Inspect code', status: 'in_progress', activeForm: '' },
-    { rowKey: '1:Run checks', content: 'Run checks', status: 'pending', activeForm: '' },
+    {
+      rowKey: '0:Inspect code',
+      content: 'Inspect code',
+      status: 'in_progress',
+      activeForm: '',
+    },
+    {
+      rowKey: '1:Run checks',
+      content: 'Run checks',
+      status: 'pending',
+      activeForm: '',
+    },
   ]
 
   it('answers a completed list with the tasks it saved', () => {
-    const written = todoCall('completed', { content: [{ type: 'content', content: { type: 'text', text: 'Todos updated' } }] })
+    const written = todoCall('completed', {
+      content: [
+        {
+          type: 'content',
+          content: { type: 'text', text: 'Todos updated' },
+        },
+      ],
+    })
     expect(written.kind).toBe('todo')
-    expect(written.kind === 'todo' ? typedResult(written)?.items : undefined).toStrictEqual(saved)
+    expect(written.kind === 'todo'
+      ? typedResult(written)?.items
+      : undefined).toStrictEqual(saved)
   })
 
   // The reason, under the checklist's OWN kind. A status test here dropped the row to
   // the wire kind, where it drew as an edit that states no file.
   it('states the reason a failed list gave', () => {
-    const errored = todoCall('failed', { content: [{ type: 'content', content: { text: 'the todo file is read only' } }] })
+    const errored = todoCall('failed', {
+      content: [
+        {
+          type: 'content',
+          content: { text: 'the todo file is read only' },
+        },
+      ],
+    })
     expect(errored.kind).toBe('todo')
-    expect(errored.kind === 'todo' ? errored.request.items : undefined).toStrictEqual(saved)
+    expect(errored.kind === 'todo'
+      ? errored.request.items
+      : undefined).toStrictEqual(saved)
     expect(isToolFailureResult(errored.result) && errored.result.text).toBe('the todo file is read only')
   })
 
   // A call the reader STOPPED keeps the list it collected. The row marks it partial
   // from its own status, so nothing here states that.
   it('keeps the list a cancelled call collected', () => {
-    const stopped = todoCall('cancelled', { content: [{ type: 'content', content: { text: 'stopped' } }] })
+    const stopped = todoCall('cancelled', {
+      content: [
+        {
+          type: 'content',
+          content: { text: 'stopped' },
+        },
+      ],
+    })
     expect(stopped.kind).toBe('todo')
     expect(isToolFailureResult(stopped.result)).toBe(false)
-    expect(stopped.kind === 'todo' ? typedResult(stopped)?.items : undefined).toStrictEqual(saved)
+    expect(stopped.kind === 'todo'
+      ? typedResult(stopped)?.items
+      : undefined).toStrictEqual(saved)
   })
 
   it('answers nothing while the list is still being written', () => {
@@ -504,16 +764,31 @@ describe('reasonix delete_range', () => {
     kind: 'delete',
     status,
     rawInput: { path: '/p/file.ts', start_anchor: 'delete', end_anchor: 'end' },
-    content: [{ type: 'content', content: { type: 'text', text: content } }],
+    content: [
+      {
+        type: 'content',
+        content: { type: 'text', text: content },
+      },
+    ],
   })
 
   it('states the file the removal asked for beside the diff it applied', () => {
     const removed = deleteCall('completed', DIFF)
     expect(removed.kind).toBe('delete')
-    expect(removed.kind === 'delete' ? removed.request.changes : undefined).toStrictEqual([
-      { filePath: '/p/file.ts', operation: 'delete', oldStr: '', newStr: '', structuredPatch: null },
+    expect(removed.kind === 'delete'
+      ? removed.request.changes
+      : undefined).toStrictEqual([
+      {
+        filePath: '/p/file.ts',
+        operation: 'delete',
+        oldStr: '',
+        newStr: '',
+        structuredPatch: null,
+      },
     ])
-    expect(removed.kind === 'delete' ? typedResult(removed)?.changes.map(change => change.filePath) : undefined).toStrictEqual(['/p/file.ts'])
+    expect(removed.kind === 'delete'
+      ? typedResult(removed)?.changes.map(change => change.filePath)
+      : undefined).toStrictEqual(['/p/file.ts'])
   })
 
   // The branch answers a completed call alone, and the request still states the file
@@ -521,6 +796,8 @@ describe('reasonix delete_range', () => {
   it.each(['in_progress', 'failed', 'cancelled'])('states the file while the call is %s', (status) => {
     const removed = deleteCall(status, 'the range could not be found')
     expect(removed.kind).toBe('delete')
-    expect(removed.kind === 'delete' ? removed.request.changes.map(change => change.filePath) : undefined).toStrictEqual(['/p/file.ts'])
+    expect(removed.kind === 'delete'
+      ? removed.request.changes.map(change => change.filePath)
+      : undefined).toStrictEqual(['/p/file.ts'])
   })
 })

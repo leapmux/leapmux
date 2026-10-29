@@ -10,7 +10,9 @@ vi.mock('~/lib/shikiWorkerClient', () => ({
   tokenizeAsync: vi.fn(),
 }))
 
-const pausedContext: MarkdownRenderContext = { syntaxHighlightingPaused: () => true }
+const pausedContext: MarkdownRenderContext = {
+  syntaxHighlightingPaused: () => true,
+}
 
 describe('json/bash async token highlighting', () => {
   beforeEach(async () => {
@@ -22,7 +24,11 @@ describe('json/bash async token highlighting', () => {
 
   it('dispatches eligible JSON to the worker and renders token spans', async () => {
     const { tokenizeAsync } = await import('~/lib/shikiWorkerClient')
-    vi.mocked(tokenizeAsync).mockResolvedValue([[{ content: '{', className: 'sk-json-test' }]])
+    vi.mocked(tokenizeAsync).mockResolvedValue([
+      [
+        { content: '{', className: 'sk-json-test' },
+      ],
+    ])
 
     const { container } = render(() => <JsonHighlightHtml code={'{"a":1}'} />)
 
@@ -36,7 +42,11 @@ describe('json/bash async token highlighting', () => {
 
   it('dispatches eligible Bash with the bash language', async () => {
     const { tokenizeAsync } = await import('~/lib/shikiWorkerClient')
-    vi.mocked(tokenizeAsync).mockResolvedValue([[{ content: 'echo', className: 'sk-bash-test' }]])
+    vi.mocked(tokenizeAsync).mockResolvedValue([
+      [
+        { content: 'echo', className: 'sk-bash-test' },
+      ],
+    ])
 
     render(() => <CommandHighlightHtml code="echo hi" />)
 
@@ -45,7 +55,14 @@ describe('json/bash async token highlighting', () => {
 
   it('serves cached tokens synchronously without dispatching to the worker', async () => {
     const { tokenizeAsync } = await import('~/lib/shikiWorkerClient')
-    const cached = toCachedTokens([[{ content: '{', htmlStyle: { color: 'rgb(4, 5, 6)' } }]])
+    const cached = toCachedTokens([
+      [
+        {
+          content: '{',
+          htmlStyle: { color: 'rgb(4, 5, 6)' },
+        },
+      ],
+    ])
 
     setCachedTokens('json', '{"a":1}', cached)
 
@@ -109,7 +126,11 @@ describe('JsonHighlightHtml output ownership', () => {
 
   it('keeps ownership on the same host when tokenized JSON arrives', async () => {
     const { tokenizeAsync } = await import('~/lib/shikiWorkerClient')
-    vi.mocked(tokenizeAsync).mockResolvedValue([[{ content: '{"count":0}', className: 'sk-owned-result' }]])
+    vi.mocked(tokenizeAsync).mockResolvedValue([
+      [
+        { content: '{"count":0}', className: 'sk-owned-result' },
+      ],
+    ])
     const { container } = render(() => <JsonHighlightHtml dataToolOutputPreview code={'{"count":0}'} />)
     const host = container.firstElementChild
     await waitFor(() => expect(container.querySelector('[data-shiki-token]')).not.toBeNull())
@@ -119,7 +140,15 @@ describe('JsonHighlightHtml output ownership', () => {
   })
 
   it.each([false, undefined])('leaves ordinary JSON unmarked for ownership %j', (dataToolOutputPreview) => {
-    const { container } = render(() => <JsonHighlightHtml {...(dataToolOutputPreview !== undefined ? { dataToolOutputPreview } : {})} code={'{"count":0}'} context={pausedContext} />)
+    const { container } = render(() => (
+      <JsonHighlightHtml
+        {...(dataToolOutputPreview !== undefined
+          ? { dataToolOutputPreview }
+          : {})}
+        code={'{"count":0}'}
+        context={pausedContext}
+      />
+    ))
     expect(container.querySelector('[data-tool-output-preview]')).toBeNull()
   })
 

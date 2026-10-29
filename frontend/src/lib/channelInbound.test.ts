@@ -67,13 +67,21 @@ function makeInbound(ch: InboundChannel, opts?: {
   const forgetClosedChannel = opts?.forgetClosedChannel ?? vi.fn()
   const closeChannel = opts?.closeChannel ?? vi.fn()
   const inbound = new ChannelInbound({
-    getChannel: id => id === ch.channelId ? ch : undefined,
+    getChannel: id => id === ch.channelId
+      ? ch
+      : undefined,
     session,
     rpc,
     closeChannel,
     forgetClosedChannel,
   })
-  return { inbound, session, rpc, forgetClosedChannel, closeChannel }
+  return {
+    inbound,
+    session,
+    rpc,
+    forgetClosedChannel,
+    closeChannel,
+  }
 }
 
 function encryptInner(ch: InboundChannel, plaintext: Uint8Array, correlationId: number, flags = ChannelMessageFlags.UNSPECIFIED) {
@@ -91,7 +99,11 @@ describe('channelInbound', () => {
   it('peer CLOSE flag drains and forgets the channel', () => {
     const ch = makeChannel()
     const onError = vi.fn()
-    ch.streamListeners.set(1, { onMessage: () => {}, onEnd: () => {}, onError })
+    ch.streamListeners.set(1, {
+      onMessage: () => {},
+      onEnd: () => {},
+      onError,
+    })
     const { inbound, forgetClosedChannel } = makeInbound(ch)
     inbound.handleMessage('ch-1', create(ChannelMessageSchema, {
       protocolVersion: 1,
@@ -116,7 +128,14 @@ describe('channelInbound', () => {
   it('closes the channel when decrypt fails', () => {
     const ch = makeChannel({
       session: {
-        send: { encrypt: () => new Uint8Array(), decrypt: () => new Uint8Array(), needsRekey: () => false, rekeyWithSecret: () => {}, clearPrev: () => {}, nonce: () => 0 },
+        send: {
+          encrypt: () => new Uint8Array(),
+          decrypt: () => new Uint8Array(),
+          needsRekey: () => false,
+          rekeyWithSecret: () => {},
+          clearPrev: () => {},
+          nonce: () => 0,
+        },
         receive: {
           encrypt: () => new Uint8Array(),
           decrypt: () => {
@@ -138,11 +157,17 @@ describe('channelInbound', () => {
     const ch = makeChannel()
     const { inbound, rpc } = makeInbound(ch)
     const resolve = vi.fn()
-    ch.pendingRequests.set(3, { resolve, reject: () => {} })
+    ch.pendingRequests.set(3, {
+      resolve,
+      reject: () => {},
+    })
     const envelope = create(InnerMessageSchema, {
       kind: {
         case: 'response',
-        value: create(InnerRpcResponseSchema, { isError: false, payload: new Uint8Array([7]) }),
+        value: create(InnerRpcResponseSchema, {
+          isError: false,
+          payload: new Uint8Array([7]),
+        }),
       },
     })
     inbound.handleMessage('ch-1', encryptInner(ch, toBinary(InnerMessageSchema, envelope), 3))
@@ -177,7 +202,10 @@ describe('channelInbound', () => {
     })
     const { inbound } = makeInbound(ch)
     const envelope = create(InnerMessageSchema, {
-      kind: { case: 'rekeyAck', value: create(RekeyAckSchema, { dhPub: eph.publicKey }) },
+      kind: {
+        case: 'rekeyAck',
+        value: create(RekeyAckSchema, { dhPub: eph.publicKey }),
+      },
     })
     inbound.handleMessage('ch-1', encryptInner(ch, toBinary(InnerMessageSchema, envelope), 9))
     expect(wait).toHaveBeenCalledWith(true, 0)
@@ -189,7 +217,12 @@ const NEVER_ALLOCATED_ID_MESSAGE = 'dropped a frame for a correlation id that th
 
 function responsePlaintext(): Uint8Array {
   return toBinary(InnerMessageSchema, create(InnerMessageSchema, {
-    kind: { case: 'response', value: create(InnerRpcResponseSchema, { payload: new Uint8Array([7]) }) },
+    kind: {
+      case: 'response',
+      value: create(InnerRpcResponseSchema, {
+        payload: new Uint8Array([7]),
+      }),
+    },
   }))
 }
 
@@ -250,7 +283,10 @@ describe('ChannelInbound frames with no handler', () => {
   it('logs nothing about dropping a frame that has a live handler', () => {
     const ch = makeChannel({ nextRequestId: 5 })
     const resolve = vi.fn()
-    ch.pendingRequests.set(4, { resolve, reject: () => {} })
+    ch.pendingRequests.set(4, {
+      resolve,
+      reject: () => {},
+    })
     const { inbound } = makeInbound(ch)
     inbound.handleMessage('ch-1', encryptInner(ch, responsePlaintext(), 4))
     expect(resolve).toHaveBeenCalledOnce()

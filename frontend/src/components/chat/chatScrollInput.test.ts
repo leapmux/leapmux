@@ -41,7 +41,14 @@ function setup() {
     hasOlderMessages: () => false,
     onJumpToOldest: undefined,
   }
-  return { ctx, el, extras, input: createScrollInput(ctx, extras), setAtBottom, writes }
+  return {
+    ctx,
+    el,
+    extras,
+    input: createScrollInput(ctx, extras),
+    setAtBottom,
+    writes,
+  }
 }
 
 describe('createScrollInput', () => {

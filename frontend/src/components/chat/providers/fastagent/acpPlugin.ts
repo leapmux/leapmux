@@ -8,5 +8,11 @@ export const fastAgentACPPlugin = createACPProvider({
   permissionPresets: fastAgentPermissionPresets,
   toolCallAdapter: fastAgentToolCallAdapter,
   defaultPermissionMode: FASTAGENT_MODE.Agent,
-  attachments: { text: true, image: true, pdf: true, audio: [...FASTAGENT_AUDIO_MIME], binary: false },
+  attachments: {
+    text: true,
+    image: true,
+    pdf: true,
+    audio: [...FASTAGENT_AUDIO_MIME],
+    binary: false,
+  },
 })

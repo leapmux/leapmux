@@ -3,9 +3,21 @@ import { codebuddyResultDivider } from './extractors/resultDivider'
 import { resolveCodebuddyMessage } from './resolveMessage'
 
 describe('resolveCodebuddyMessage', () => {
-  const frame = { type: 'result', is_error: true, _requestId: 'request-1', session_id: 'session-1', errors: ['The request failed.'] }
+  const frame = {
+    type: 'result',
+    is_error: true,
+    _requestId: 'request-1',
+    session_id: 'session-1',
+    errors: ['The request failed.'],
+  }
   const extra = { requestId: 'request-1', sessionId: 'session-1', repeatedError: 'The request failed.' }
-  const parsed = { parentObject: frame, topLevel: frame, rawText: '', wrapper: null, supplementalContent: extra }
+  const parsed = {
+    parentObject: frame,
+    topLevel: frame,
+    rawText: '',
+    wrapper: null,
+    supplementalContent: extra,
+  }
 
   it('keeps a failed divider without repeating the preceding diagnostic', () => {
     const resolved = resolveCodebuddyMessage(parsed)
@@ -15,7 +27,18 @@ describe('resolveCodebuddyMessage', () => {
   })
 
   it('keeps distinct errors in their original order', () => {
-    const resolved = resolveCodebuddyMessage({ ...parsed, parentObject: { ...frame, errors: [...frame.errors, ...frame.errors, 'Another error.', 'Last error.'] } })
+    const resolved = resolveCodebuddyMessage({
+      ...parsed,
+      parentObject: {
+        ...frame,
+        errors: [
+          ...frame.errors,
+          ...frame.errors,
+          'Another error.',
+          'Last error.',
+        ],
+      },
+    })
     expect(resolved?.errors).toEqual(['Another error.', 'Last error.'])
     expect(codebuddyResultDivider(resolved)).toEqual({ label: 'Turn failed — Another error.', isError: true })
   })
@@ -45,7 +68,10 @@ describe('resolveCodebuddyMessage', () => {
     { ...frame, errors: [] },
     { ...frame, errors: null },
     { ...frame, errors: 'The request failed.' },
-    { ...frame, errors: ['Another error.', 'The request failed.'] },
+    {
+      ...frame,
+      errors: ['Another error.', 'The request failed.'],
+    },
   ])('does not change another native outcome: %j', (parentObject) => {
     expect(resolveCodebuddyMessage({ ...parsed, parentObject })).toBeUndefined()
   })

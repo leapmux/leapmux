@@ -16,16 +16,26 @@ import { exerciseNativeFileEdit, exerciseNativeFileRead, exerciseNativeFileWrite
 clineTest.describe('Cline tool execution', () => {
   clineTest('draws the lines a read returns', async ({ authenticatedClineWorkspace, native }) => {
     // Cline numbers each line `<n> | ` for the model.
-    await exerciseNativeFileRead(native, { directory: createNativeToolDirectory(authenticatedClineWorkspace.workingDir), linePrefix: 'cline-read', numberedLine: (line, text) => `${line} | ${text}` })
+    await exerciseNativeFileRead(native, {
+      directory: createNativeToolDirectory(authenticatedClineWorkspace.workingDir),
+      linePrefix: 'cline-read',
+      numberedLine: (line, text) => `${line} | ${text}`,
+    })
   })
 
   clineTest('draws the diff of an edit', async ({ authenticatedClineWorkspace, native }) => {
-    await exerciseNativeFileEdit(native, { directory: createNativeToolDirectory(authenticatedClineWorkspace.workingDir) })
+    await exerciseNativeFileEdit(native, {
+      directory: createNativeToolDirectory(authenticatedClineWorkspace.workingDir),
+    })
   })
 
   clineTest('creates the file that a write call states', async ({ authenticatedClineWorkspace, native }) => {
     // No run has pinned whether Cline's editor ends a created file with a newline, so the pattern admits that one
     // difference and no other text.
-    await exerciseNativeFileWrite(native, { directory: createNativeToolDirectory(authenticatedClineWorkspace.workingDir), content: 'cline was here', stored: /^cline was here\n?$/ })
+    await exerciseNativeFileWrite(native, {
+      directory: createNativeToolDirectory(authenticatedClineWorkspace.workingDir),
+      content: 'cline was here',
+      stored: /^cline was here\n?$/,
+    })
   })
 })

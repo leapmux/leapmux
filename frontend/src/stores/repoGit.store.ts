@@ -168,7 +168,9 @@ export function createRepoGitStore() {
   const keysForWorker = (workerId: string): readonly RepoKey[] => {
     // Track epoch so Solid recomputes when the index changes.
     workerKeyEpoch()
-    return [...(workerKeys.get(workerId) ?? [])]
+    return [
+      ...(workerKeys.get(workerId) ?? []),
+    ]
   }
 
   const pruneCompletedIfIdle = (key: RepoKey) => {
@@ -248,7 +250,10 @@ export function createRepoGitStore() {
     const { files, ...rest } = patch
     setRepos(produce((map) => {
       const base = map[key] ?? emptyRepoState()
-      map[key] = { ...base, ...rest }
+      map[key] = {
+        ...base,
+        ...rest,
+      }
     }))
     touchOrder.delete(key)
     touchOrder.set(key, true)
@@ -272,7 +277,12 @@ export function createRepoGitStore() {
       pinKeys.add(hintKey)
     pinKeys.add(repoKey(workerId, path))
     const canonical = findCanonicalRepoKey(
-      { get: peek, peek, repos: () => repos as Readonly<Record<RepoKey, RepoGitState>>, keysForWorker },
+      {
+        get: peek,
+        peek,
+        repos: () => repos as Readonly<Record<RepoKey, RepoGitState>>,
+        keysForWorker,
+      },
       workerId,
       path,
     )
@@ -388,7 +398,9 @@ export function createRepoGitStore() {
   const refresh = async (workerId: string, path: string, opts?: RepoGitRefreshOpts): Promise<RepoKey | undefined> => {
     if (!workerId || !path)
       return undefined
-    const nonRepoKey = opts?.repoKey ?? (workerId && path ? repoKey(workerId, path) : undefined)
+    const nonRepoKey = opts?.repoKey ?? (workerId && path
+      ? repoKey(workerId, path)
+      : undefined)
     clock += 1
     const mine = clock
     const probeId = probeIdFor(workerId, path)
@@ -423,7 +435,12 @@ export function createRepoGitStore() {
       }
       const mapped = patchFromGetGitFileStatus(workerId, resp)
       if (!mapped) {
-        const lookup = { get: peek, peek, repos: () => repos as Readonly<Record<RepoKey, RepoGitState>>, keysForWorker }
+        const lookup = {
+          get: peek,
+          peek,
+          repos: () => repos as Readonly<Record<RepoKey, RepoGitState>>,
+          keysForWorker,
+        }
         if (nonRepoKey && !hasHealthyRepoForProbe(lookup, workerId, path, nonRepoKey)) {
           const nonRepo = patchFromNonRepoGetGitFileStatus(workerId, resp, nonRepoKey)
           if (canApplyToKey(nonRepo.key)) {
@@ -507,7 +524,9 @@ export function createRepoGitStore() {
     const rel = relativeUnder(absPath, root, flavor)
     if (rel === null)
       return null
-    return flavor === 'posix' ? rel : toPosixSeparators(rel)
+    return flavor === 'posix'
+      ? rel
+      : toPosixSeparators(rel)
   }
 
   const filesByPath = createMemo(() => {
@@ -609,10 +628,14 @@ export function createRepoGitStore() {
   const getNodeDiffStats = (absPath: string, isDir: boolean) => {
     if (isDir) {
       const relDir = relToRepo(absPath)
-      return relDir === null ? ZERO_DIFF_STATS : lookupDirStats(relDir)
+      return relDir === null
+        ? ZERO_DIFF_STATS
+        : lookupDirStats(relDir)
     }
     const entry = getFileStatus(absPath)
-    return entry ? fileEntryToDiffStats(entry) : ZERO_DIFF_STATS
+    return entry
+      ? fileEntryToDiffStats(entry)
+      : ZERO_DIFF_STATS
   }
 
   const hasChanges = (dirPath: string): boolean => {

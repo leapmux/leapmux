@@ -36,14 +36,24 @@ finish()
   }
 
   junieTest('runs a native background command without a false shell registry row', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, JUNIE_AGENT, { optionValues: { brave_mode: 'off' } })
+    const { workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, JUNIE_AGENT, {
+      optionValues: { brave_mode: 'off' },
+    })
     const release = join(workingDir, 'junie-background-release.signal')
     const done = join(workingDir, 'junie-background-done.txt')
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
 
     const start = await modelScript.queue(
-      { toolCalls: [backgroundBashToolCall(PROVIDER, 'junie-bg', nativeBackgroundCommand(release, done))] },
-      { toolCalls: [junieAnswerToolCall('junie-bg-answer', 'I started the command in the background.')] },
+      {
+        toolCalls: [
+          backgroundBashToolCall(PROVIDER, 'junie-bg', nativeBackgroundCommand(release, done)),
+        ],
+      },
+      {
+        toolCalls: [
+          junieAnswerToolCall('junie-bg-answer', 'I started the command in the background.'),
+        ],
+      },
     )
     await sendMessage(page, modelScript.prompt('Run the command in the background.'))
     await modelScript.waitForSteps(start + 1)

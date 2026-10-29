@@ -133,5 +133,10 @@ export function useResumableSessions(
     await fetcher.run(current)
   }
 
-  return { sessions, loading: fetcher.loading, settled, refresh }
+  return {
+    sessions,
+    loading: fetcher.loading,
+    settled,
+    refresh,
+  }
 }

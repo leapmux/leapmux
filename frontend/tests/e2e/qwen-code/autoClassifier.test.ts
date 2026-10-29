@@ -11,19 +11,41 @@ vi.mock('@playwright/test', async (importOriginal) => {
   return { ...actual, expect }
 })
 
-const toolCall: MockModelToolCall = { id: 'smart-protected-write', name: 'write_file', arguments: { file_path: '/project/package.json', content: '{}' } }
+const toolCall: MockModelToolCall = {
+  id: 'smart-protected-write',
+  name: 'write_file',
+  arguments: { file_path: '/project/package.json', content: '{}' },
+}
 
 /** A Worker snapshot whose one row stores `frame` in the span of the tool call. */
 function snapshot(frame: unknown, spanId = toolCall.id): NativeMessageSnapshot {
   return {
     agentId: 'qwen-agent',
     agentSessionId: 'native-session',
-    messages: [makeMessage({ id: 'row', seq: 1n, spanId, agentSessionId: 'native-session', content: rawContent(frame) })],
+    messages: [
+      makeMessage({
+        id: 'row',
+        seq: 1n,
+        spanId,
+        agentSessionId: 'native-session',
+        content: rawContent(frame),
+      }),
+    ],
   }
 }
 
 function canceled(text = `Tool "${toolCall.name}" was canceled by the user.`, status = 'failed') {
-  return { sessionUpdate: ACP_UPDATE.ToolCallUpdate, toolCallId: toolCall.id, status, content: [{ type: 'content', content: { type: 'text', text } }] }
+  return {
+    sessionUpdate: ACP_UPDATE.ToolCallUpdate,
+    toolCallId: toolCall.id,
+    status,
+    content: [
+      {
+        type: 'content',
+        content: { type: 'text', text },
+      },
+    ],
+  }
 }
 
 describe('qwenClassifierWithoutVerdict', () => {
@@ -36,9 +58,24 @@ describe('qwenClassifierWithoutVerdict', () => {
 
   it('matches the classifier request and no turn of the conversation', () => {
     const { when } = qwenClassifierWithoutVerdict('classifier')
-    const request = (body: unknown) => ({ protocol: 'openai-chat-completions' as const, systemText: systemText('openai-chat-completions', body), userText: '', body })
-    const classifier = { messages: [{ role: 'system', content: 'You are a security classifier for an AI coding agent operating in auto mode.' }, { role: 'user', content: '## Pending tool call to classify' }] }
-    const turn = { messages: [{ role: 'system', content: 'You are Qwen Code, an interactive CLI agent.' }, { role: 'user', content: 'Run the scripted permission probe.' }] }
+    const request = (body: unknown) => ({
+      protocol: 'openai-chat-completions' as const,
+      systemText: systemText('openai-chat-completions', body),
+      userText: '',
+      body,
+    })
+    const classifier = {
+      messages: [
+        { role: 'system', content: 'You are a security classifier for an AI coding agent operating in auto mode.' },
+        { role: 'user', content: '## Pending tool call to classify' },
+      ],
+    }
+    const turn = {
+      messages: [
+        { role: 'system', content: 'You are Qwen Code, an interactive CLI agent.' },
+        { role: 'user', content: 'Run the scripted permission probe.' },
+      ],
+    }
     expect(matchesRequest(when, request(classifier))).toBe(true)
     expect(matchesRequest(when, request(turn))).toBe(false)
   })
@@ -56,7 +93,14 @@ describe('expectQwenCanceledTool', () => {
   it('refuses a failed update with another text', () => {
     // The content check fails with the content that the update states.
     expect(() => expectQwenCanceledTool(snapshot(canceled('The write failed.')), toolCall))
-      .toThrow(expect.objectContaining({ actual: [{ type: 'content', content: { type: 'text', text: 'The write failed.' } }] }))
+      .toThrow(expect.objectContaining({
+        actual: [
+          {
+            type: 'content',
+            content: { type: 'text', text: 'The write failed.' },
+          },
+        ],
+      }))
   })
 
   it('refuses an update that completed the tool', () => {

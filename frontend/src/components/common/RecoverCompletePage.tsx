@@ -79,7 +79,9 @@ export const RecoverCompletePage: Component = () => {
   const canSubmit = () =>
     captcha.blocksSubmit()
       ? false
-      : effectiveMethod() === 'passkey' ? true : passwordCanSubmit(pwProps)
+      : effectiveMethod() === 'passkey'
+        ? true
+        : passwordCanSubmit(pwProps)
 
   return (
     <div class={styles.container}>
@@ -117,7 +119,9 @@ export const RecoverCompletePage: Component = () => {
                 <Show when={submitting()}><Spinner /></Show>
                 {submitting()
                   ? 'Recovering…'
-                  : effectiveMethod() === 'passkey' ? 'Recover with passkey' : 'Set new password'}
+                  : effectiveMethod() === 'passkey'
+                    ? 'Recover with passkey'
+                    : 'Set new password'}
               </button>
             </div>
           </form>

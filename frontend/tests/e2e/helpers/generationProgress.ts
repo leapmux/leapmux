@@ -105,18 +105,26 @@ export function parseGenerationCounters(text: string): GenerationCounters {
   const counters: GenerationCounters = {}
   const tokens = text.match(/(?<![\d.])(\d+(?:\.\d+)?)(?:\s*([km]))?\s+tokens?\b/i)
   if (tokens?.[1]) {
-    const scale = tokens[2]?.toLowerCase() === 'm' ? 1_000_000 : tokens[2]?.toLowerCase() === 'k' ? 1000 : 1
+    const scale = tokens[2]?.toLowerCase() === 'm'
+      ? 1_000_000
+      : tokens[2]?.toLowerCase() === 'k'
+        ? 1000
+        : 1
     counters.tokens = Number(tokens[1]) * scale
     if (!Number.isFinite(counters.tokens))
-      throw new Error('The generation token counter is invalid.')
+      throw new TypeError('The generation token counter is invalid.')
   }
   const bytes = text.match(/(\d+(?:\.\d+)?)\s*(B|KB|MB)\b/i)
   if (bytes?.[1]) {
     const unit = bytes[2]?.toUpperCase()
-    const scale = unit === 'MB' ? 1024 ** 2 : unit === 'KB' ? 1024 : 1
+    const scale = unit === 'MB'
+      ? 1024 ** 2
+      : unit === 'KB'
+        ? 1024
+        : 1
     counters.bytes = Number(bytes[1]) * scale
     if (!Number.isFinite(counters.bytes))
-      throw new Error('The generation byte counter is invalid.')
+      throw new TypeError('The generation byte counter is invalid.')
   }
   return counters
 }
@@ -140,7 +148,9 @@ export function installGenerationObservation(): void {
       const style = getComputedStyle(element)
       if (element.getClientRects().length === 0 || style.display === 'none' || style.visibility === 'hidden')
         continue
-      const text = [...element.querySelectorAll<HTMLElement>('[data-animated-count]')]
+      const text = [
+        ...element.querySelectorAll<HTMLElement>('[data-animated-count]'),
+      ]
         .map(count => count.firstElementChild?.textContent?.trim() ?? '')
         .join(' · ')
       if (samples.at(-1) !== text)
@@ -148,13 +158,23 @@ export function installGenerationObservation(): void {
     }
   }
   const observer = new MutationObserver(inspect)
-  observer.observe(document.documentElement, { childList: true, subtree: true, characterData: true, attributes: true })
-  window.__nativeGenerationProbe = { samples, stop: () => observer.disconnect() }
+  observer.observe(document.documentElement, {
+    childList: true,
+    subtree: true,
+    characterData: true,
+    attributes: true,
+  })
+  window.__nativeGenerationProbe = {
+    samples,
+    stop: () => observer.disconnect(),
+  }
   inspect()
 }
 
 async function generationReadings(context: ManagedNativeScenarioContext): Promise<GenerationCounters[]> {
-  return (await context.page.evaluate(() => [...(window.__nativeGenerationProbe?.samples ?? [])])).map(parseGenerationCounters)
+  return (await context.page.evaluate(() => [
+    ...(window.__nativeGenerationProbe?.samples ?? []),
+  ])).map(parseGenerationCounters)
 }
 
 export async function waitForIncreasingCounter(context: ManagedNativeScenarioContext, counter: 'tokens' | 'bytes', previous = 0): Promise<number> {
@@ -162,9 +182,13 @@ export async function waitForIncreasingCounter(context: ManagedNativeScenarioCon
   await expect.poll(async () => {
     const values = (await generationReadings(context)).flatMap((reading) => {
       const value = reading[counter]
-      return value === undefined ? [] : [value]
+      return value === undefined
+        ? []
+        : [value]
     })
-    current = values.length > 0 ? Math.max(...values) : 0
+    current = values.length > 0
+      ? Math.max(...values)
+      : 0
     return current
   }).toBeGreaterThan(previous)
   return current
@@ -199,7 +223,10 @@ async function exerciseProgressTurn(
   await context.page.evaluate(installGenerationObservation)
   const releases: ProgressRelease[] = []
   await withCleanup(async () => {
-    const completedText = await turn({ agent, onCleanup: release => releases.push(release) })
+    const completedText = await turn({
+      agent,
+      onCleanup: release => releases.push(release),
+    })
     await waitForIdleSoundReceipt(context.page, { agentId: agent.id, after })
     await waitForAgentIdle(context.page)
     if (!options.supported) {
@@ -208,7 +235,9 @@ async function exerciseProgressTurn(
       const observed = readings.some(reading => selectedOnly
         ? reading[counter] !== undefined
         : reading.tokens !== undefined || reading.bytes !== undefined)
-      const message = selectedOnly ? `the whole native turn exposes no live ${counter} counter` : 'the whole native turn exposes no live counter'
+      const message = selectedOnly
+        ? `the whole native turn exposes no live ${counter} counter`
+        : 'the whole native turn exposes no live counter'
       expect(observed, message).toBe(false)
     }
     await context.page.reload()
@@ -240,11 +269,20 @@ export async function exerciseTokenProgress(context: ManagedNativeScenarioContex
     const start = await context.modelScript.queue({
       ...step,
       text,
-      stream: { chunkChars: 24, delayMs: 0, gates: [{ afterChunk: 1, name: firstGate }, { afterChunk: 2, name: secondGate }] },
+      stream: {
+        chunkChars: 24,
+        delayMs: 0,
+        gates: [
+          { afterChunk: 1, name: firstGate },
+          { afterChunk: 2, name: secondGate },
+        ],
+      },
     })
     await sendMessage(context.page, context.modelScript.prompt('Stream the scripted answer, then complete the task.'))
     await context.modelScript.waitForGate(firstGate)
-    const first = options.supported ? await waitForIncreasingCounter(context, 'tokens') : 0
+    const first = options.supported
+      ? await waitForIncreasingCounter(context, 'tokens')
+      : 0
     await context.modelScript.releaseGate(firstGate)
     await context.modelScript.waitForGate(secondGate)
     if (options.supported)
@@ -272,7 +310,9 @@ export async function exerciseOutputByteProgress(context: ManagedNativeScenarioC
       await output.releaseFinalOutput()
     })
     const call = bashToolCall(context.provider, PROGRESS_OUTPUT_CALL_ID, output.command)
-    const start = await context.modelScript.queue({ toolCalls: [call] }, nativeTextStep(context, OUTPUT_PROGRESS_ANSWER))
+    const start = await context.modelScript.queue({
+      toolCalls: [call],
+    }, nativeTextStep(context, OUTPUT_PROGRESS_ANSWER))
     await sendMessage(context.page, context.modelScript.prompt('Run the controlled output command and then complete.'))
     if (options.approveTool) {
       await context.modelScript.waitForSteps(start + 1)
@@ -284,17 +324,31 @@ export async function exerciseOutputByteProgress(context: ManagedNativeScenarioC
       await output.releaseStartOutput()
     }
     await output.waitForFirstOutput()
-    const first = options.supported ? await waitForIncreasingCounter(context, 'bytes') : 0
-    await options.afterOutputBoundary?.({ ...outputBoundary(output), phase: 'first', count: first })
+    const first = options.supported
+      ? await waitForIncreasingCounter(context, 'bytes')
+      : 0
+    await options.afterOutputBoundary?.({
+      ...outputBoundary(output),
+      phase: 'first',
+      count: first,
+    })
     await output.releaseFirstOutput()
     await output.waitForSecondOutput()
-    const second = options.supported ? await waitForIncreasingCounter(context, 'bytes', first) : 0
-    await options.afterOutputBoundary?.({ ...outputBoundary(output), phase: 'second', count: second })
+    const second = options.supported
+      ? await waitForIncreasingCounter(context, 'bytes', first)
+      : 0
+    await options.afterOutputBoundary?.({
+      ...outputBoundary(output),
+      phase: 'second',
+      count: second,
+    })
     await output.releaseFinalOutput()
     await context.modelScript.waitForSteps(start + 2)
     await waitForAgentIdle(context.page)
     await verifyCompletedGenerationOutput(call.id, { first: output.firstMarker, second: output.secondMarker }, {
-      ...(options.prepareCompletedResultView ? { prepareView: options.prepareCompletedResultView } : {}),
+      ...(options.prepareCompletedResultView
+        ? { prepareView: options.prepareCompletedResultView }
+        : {}),
       assertVisible: async marker => expect(messageContents(context.page).filter({ hasText: marker }).first()).toBeVisible(),
     })
     return OUTPUT_PROGRESS_ANSWER

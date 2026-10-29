@@ -6,7 +6,10 @@ import { diracNotificationEntry } from './notification'
 import './plugin'
 
 function chunk(text: string): Record<string, unknown> {
-  return { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text } }
+  return {
+    sessionUpdate: 'agent_message_chunk',
+    content: { type: 'text', text },
+  }
 }
 
 describe('diracNotificationEntry', () => {
@@ -14,7 +17,9 @@ describe('diracNotificationEntry', () => {
 
   it('reads the retry notice as a status row', () => {
     const frame = chunk('Retrying API request...')
-    expect(plugin.transcript.notificationEntry?.(frame)).toEqual([{ kind: 'status', text: 'Retrying the model request' }])
+    expect(plugin.transcript.notificationEntry?.(frame)).toEqual([
+      { kind: 'status', text: 'Retrying the model request' },
+    ])
     expect(plugin.transcript.classify(input(frame, undefined, AgentProvider.DIRAC)).kind).toBe('notification')
   })
 

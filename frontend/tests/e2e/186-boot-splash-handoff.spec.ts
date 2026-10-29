@@ -166,7 +166,10 @@ test.describe('boot splash layout across the app stylesheet', () => {
       const round = (n: number) => Math.round(n * 100) / 100
       const box = (el: Element) => {
         const rect = el.getBoundingClientRect()
-        return { w: round(rect.width), h: round(rect.height) }
+        return {
+          w: round(rect.width),
+          h: round(rect.height),
+        }
       }
       const panel = document.querySelector('.boot-splash-error')!
       return {
@@ -252,7 +255,9 @@ test.describe('boot splash geometry under a safe-area inset', () => {
       'overlay': `<div style="position:relative;height:100%"><div style="position:absolute;inset:0">${markup}</div></div>`,
       'auto': `<div>${markup}</div>`,
     }
-    const vvh = opts.vvh ? `<style>html{--vvh:${opts.vvh}}</style>` : ''
+    const vvh = opts.vvh
+      ? `<style>html{--vvh:${opts.vvh}}</style>`
+      : ''
     await page.setContent(`<style>${bootSplashDocumentCss()}</style>${vvh}<div id="app">${wrappers[opts.wrapper]}</div>`)
     if (opts.withAppStylesheet)
       await page.addStyleTag({ content: oatCss })
@@ -362,10 +367,12 @@ test.describe('boot splash progress checklist', () => {
     + '</span>'
   const rowMarkup = (phase: { key: string, label: string }, shell: boolean) =>
     `<li class="boot-splash-progress-row boot-splash-row-${phase.key}`
-    + `${shell ? ` ${BOOT_SPLASH_SHELL_ROW_CLASS}` : ''}">`
-    + `<span class="boot-splash-progress-label">${phase.label}</span>`
-    + `<span class="boot-splash-progress-status">${check}${dots}</span>`
-    + '</li>'
+    + `${shell
+      ? ` ${BOOT_SPLASH_SHELL_ROW_CLASS}`
+      : ''}">`
+      + `<span class="boot-splash-progress-label">${phase.label}</span>`
+      + `<span class="boot-splash-progress-status">${check}${dots}</span>`
+      + '</li>'
   const rows = [
     ...BOOT_SPLASH_CORE_PHASES.map(phase => rowMarkup(phase, false)),
     ...BOOT_SPLASH_SHELL_PHASES.map(phase => rowMarkup(phase, true)),
@@ -400,7 +407,10 @@ test.describe('boot splash progress checklist', () => {
     // advances never grow the column — the same contract login/signup see.
     const baseline = await read()
     expect(baseline.gap).toBe(16)
-    for (const key of [...BOOT_SPLASH_PHASES.map(p => p.key), 'ready']) {
+    for (const key of [
+      ...BOOT_SPLASH_PHASES.map(p => p.key),
+      'ready',
+    ]) {
       await page.evaluate((phase) => {
         document.documentElement.setAttribute('data-boot-phase', phase)
       }, key)

@@ -2,7 +2,11 @@ import { describe, expect, it } from 'vitest'
 import { grokAgentTurnEnd } from './classification'
 
 function notification(update: Record<string, unknown>, method = '_x.ai/session_notification') {
-  return { jsonrpc: '2.0', method, params: { sessionId: 's', update } }
+  return {
+    jsonrpc: '2.0',
+    method,
+    params: { sessionId: 's', update },
+  }
 }
 
 describe('grokAgentTurnEnd', () => {

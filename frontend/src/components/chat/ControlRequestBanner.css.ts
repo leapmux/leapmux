@@ -203,15 +203,21 @@ export const controlFooterDecisions = style(actionGroup)
 // onto the options row and left the refusal and the approval on the next line
 // alone, which reads the menu as an option rather than a decision and leaves the
 // two most important buttons apart from their shortcuts.
-export const controlFooterPrimaryDecisions = style([actionGroup, {
-  flexWrap: 'nowrap',
-  flexShrink: 0,
-}])
+export const controlFooterPrimaryDecisions = style([
+  actionGroup,
+  {
+    flexWrap: 'nowrap',
+    flexShrink: 0,
+  },
+])
 
 // Scope choices keep their natural width. Wrapped rows share the decisions' right edge.
-export const controlRequestSwitches = style([actionGroup, {
-  flex: '1 0 auto',
-}])
+export const controlRequestSwitches = style([
+  actionGroup,
+  {
+    flex: '1 0 auto',
+  },
+])
 
 // Pill groups keep their natural width instead of compressing their options.
 export const controlRequestPill = style({

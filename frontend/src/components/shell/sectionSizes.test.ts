@@ -3,14 +3,20 @@ import { distributeSectionSizes } from './sectionSizes'
 
 /** The sum every result must reach, within floating-point noise. */
 function total(sizes: Map<string, number>): number {
-  return [...sizes.values()].reduce((sum, size) => sum + size, 0)
+  return [
+    ...sizes.values(),
+  ].reduce((sum, size) => sum + size, 0)
 }
 
 describe('distributeSectionSizes', () => {
   it('keeps a declared share when the declarations fit', () => {
     const sizes = distributeSectionSizes(
       ['files', 'todos', 'tasks'],
-      new Map([['files', 0.6], ['todos', 0.15], ['tasks', 0.25]]),
+      new Map([
+        ['files', 0.6],
+        ['todos', 0.15],
+        ['tasks', 0.25],
+      ]),
     )
     expect(sizes.get('files')).toBeCloseTo(0.6)
     expect(sizes.get('todos')).toBeCloseTo(0.15)
@@ -22,7 +28,9 @@ describe('distributeSectionSizes', () => {
   it('splits the remainder among the sections that declare nothing', () => {
     const sizes = distributeSectionSizes(
       ['workers', 'progress', 'archived'],
-      new Map([['workers', 0.15]]),
+      new Map([
+        ['workers', 0.15],
+      ]),
     )
     expect(sizes.get('workers')).toBeCloseTo(0.15)
     expect(sizes.get('progress')).toBeCloseTo(0.425)
@@ -39,7 +47,11 @@ describe('distributeSectionSizes', () => {
   it('gives every section a positive size when the declarations claim it all', () => {
     const sizes = distributeSectionSizes(
       ['files', 'todos', 'tasks', 'dropped'],
-      new Map([['files', 0.6], ['todos', 0.15], ['tasks', 0.25]]),
+      new Map([
+        ['files', 0.6],
+        ['todos', 0.15],
+        ['tasks', 0.25],
+      ]),
     )
     for (const [id, size] of sizes)
       expect(size, id).toBeGreaterThan(0)
@@ -50,8 +62,19 @@ describe('distributeSectionSizes', () => {
   // flex-grow that the browser discards.
   it('gives every section a positive size when the declarations exceed the sidebar', () => {
     const sizes = distributeSectionSizes(
-      ['files', 'todos', 'tasks', 'workers', 'dropped'],
-      new Map([['files', 0.6], ['todos', 0.15], ['tasks', 0.25], ['workers', 0.15]]),
+      [
+        'files',
+        'todos',
+        'tasks',
+        'workers',
+        'dropped',
+      ],
+      new Map([
+        ['files', 0.6],
+        ['todos', 0.15],
+        ['tasks', 0.25],
+        ['workers', 0.15],
+      ]),
     )
     for (const [id, size] of sizes)
       expect(size, id).toBeGreaterThan(0)
@@ -65,7 +88,10 @@ describe('distributeSectionSizes', () => {
   })
 
   it('normalizes declarations that do not sum to one', () => {
-    const sizes = distributeSectionSizes(['a', 'b'], new Map([['a', 0.2], ['b', 0.2]]))
+    const sizes = distributeSectionSizes(['a', 'b'], new Map([
+      ['a', 0.2],
+      ['b', 0.2],
+    ]))
     expect(sizes.get('a')).toBeCloseTo(0.5)
     expect(sizes.get('b')).toBeCloseTo(0.5)
     expect(total(sizes)).toBeCloseTo(1)
@@ -76,12 +102,17 @@ describe('distributeSectionSizes', () => {
   })
 
   it('gives a lone section the whole sidebar', () => {
-    expect(distributeSectionSizes(['only'], new Map([['only', 0.15]])).get('only')).toBeCloseTo(1)
+    expect(distributeSectionSizes(['only'], new Map([
+      ['only', 0.15],
+    ])).get('only')).toBeCloseTo(1)
   })
 
   // A zero declaration would otherwise divide by zero on the normalize.
   it('splits equally when every declaration is zero', () => {
-    const sizes = distributeSectionSizes(['a', 'b'], new Map([['a', 0], ['b', 0]]))
+    const sizes = distributeSectionSizes(['a', 'b'], new Map([
+      ['a', 0],
+      ['b', 0],
+    ]))
     expect(sizes.get('a')).toBeCloseTo(0.5)
     expect(sizes.get('b')).toBeCloseTo(0.5)
   })

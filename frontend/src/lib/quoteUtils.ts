@@ -2,7 +2,9 @@
  * Format a file quote with path, line range, and selected text in a fenced code block blockquote.
  */
 export function formatFileQuote(filePath: string, startLine: number, endLine: number, selectedText: string): string {
-  const lineRef = startLine === endLine ? `Line ${startLine}` : `Line ${startLine}-${endLine}`
+  const lineRef = startLine === endLine
+    ? `Line ${startLine}`
+    : `Line ${startLine}-${endLine}`
   const quotedLines = selectedText.split('\n').map(line => `> ${line}`)
   return `From @${filePath} (${lineRef}):\n\n> \`\`\`\n${quotedLines.join('\n')}\n> \`\`\``
 }
@@ -43,7 +45,9 @@ export function nodeToMarkdown(node: Node): string {
   if (!(node instanceof HTMLElement) && !(node instanceof DocumentFragment))
     return node.textContent ?? ''
 
-  const tag = node instanceof HTMLElement ? node.tagName.toLowerCase() : ''
+  const tag = node instanceof HTMLElement
+    ? node.tagName.toLowerCase()
+    : ''
   const childMd = () => Array.from(node.childNodes, nodeToMarkdown).join('')
 
   switch (tag) {
@@ -72,7 +76,9 @@ export function nodeToMarkdown(node: Node): string {
     }
     case 'a': {
       const href = (node as HTMLAnchorElement).getAttribute('href') ?? ''
-      return href ? `[${childMd()}](${href})` : childMd()
+      return href
+        ? `[${childMd()}](${href})`
+        : childMd()
     }
     case 'br':
       return '\n'
@@ -86,7 +92,9 @@ export function nodeToMarkdown(node: Node): string {
     case 'ol':
       return `${childMd()}\n`
     case 'li': {
-      const parent = node instanceof HTMLElement ? node.parentElement : null
+      const parent = node instanceof HTMLElement
+        ? node.parentElement
+        : null
       if (parent?.tagName.toLowerCase() === 'ol') {
         const idx = [...parent.children].indexOf(node as HTMLElement) + 1
         return `${idx}. ${childMd().trim()}\n`

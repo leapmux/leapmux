@@ -42,7 +42,15 @@ export function questionsFromWire(raw: unknown): ControlQuestion[] {
     if (typeof item !== 'object' || item === null)
       return []
     const source = item as Partial<ControlQuestion>
-    return [{ ...source, question: source.question ?? '', options: Array.isArray(source.options) ? source.options : [] }]
+    return [
+      {
+        ...source,
+        question: source.question ?? '',
+        options: Array.isArray(source.options)
+          ? source.options
+          : [],
+      },
+    ]
   })
 }
 
@@ -296,7 +304,9 @@ export function sendResponse(
   options?: ControlResponseOptions,
 ): Promise<void> {
   const bytes = new TextEncoder().encode(JSON.stringify(response))
-  return options ? onRespond(bytes, options) : onRespond(bytes)
+  return options
+    ? onRespond(bytes, options)
+    : onRespond(bytes)
 }
 
 /** Keep the worker request ID intact. The worker restores the native ID from the persisted request. */
@@ -323,5 +333,7 @@ export function sendSelectedOptionResponse(
   requestId: string,
   optionId: string,
 ): Promise<void> {
-  return sendJsonRpcResult(onRespond, requestId, { outcome: { outcome: ACP_PERMISSION_OUTCOME.Selected, optionId } })
+  return sendJsonRpcResult(onRespond, requestId, {
+    outcome: { outcome: ACP_PERMISSION_OUTCOME.Selected, optionId },
+  })
 }

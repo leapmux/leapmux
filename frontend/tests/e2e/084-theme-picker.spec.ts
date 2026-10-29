@@ -402,7 +402,12 @@ test.describe('Theme picker', () => {
     await page.keyboard.press('ArrowDown')
     const item = await page.evaluate(() => {
       const el = document.activeElement as HTMLElement | null
-      return el ? { role: el.getAttribute('role'), outline: getComputedStyle(el).outlineStyle } : null
+      return el
+        ? {
+            role: el.getAttribute('role'),
+            outline: getComputedStyle(el).outlineStyle,
+          }
+        : null
     })
     expect(item?.role, 'ArrowDown did not land on a menu item').toMatch(/^menuitem/)
     expect(item?.outline, 'the focused menu item draws no ring').not.toBe('none')
@@ -491,7 +496,9 @@ test.describe('color-scheme follows the app', () => {
       // Opaque, maximally separated values, so the branch is unambiguous.
       probe.style.color = 'light-dark(rgb(255, 255, 255), rgb(0, 0, 0))'
       document.body.append(probe)
-      const taken = getComputedStyle(probe).color === 'rgb(255, 255, 255)' ? 'light' : 'dark'
+      const taken = getComputedStyle(probe).color === 'rgb(255, 255, 255)'
+        ? 'light'
+        : 'dark'
       probe.remove()
       return taken
     })

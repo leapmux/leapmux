@@ -12,7 +12,9 @@ export function ControlJson(props: { value: unknown, hideEmpty?: boolean, maxLin
   const [columns, setColumns] = createSignal(DEFAULT_JSON_LINE_LENGTH)
   const text = createMemo(() => {
     try {
-      return props.hideEmpty ? prettifyArgsJson(props.value, columns()) : prettifyJson(props.value, columns())
+      return props.hideEmpty
+        ? prettifyArgsJson(props.value, columns())
+        : prettifyJson(props.value, columns())
     }
     catch {
       return '{}'
@@ -36,7 +38,13 @@ export function ControlJson(props: { value: unknown, hideEmpty?: boolean, maxLin
     onCleanup(() => observer?.disconnect())
   })
   return (
-    <div ref={root} class={styles.root} data-control-json={text() ? '' : undefined}>
+    <div
+      ref={root}
+      class={styles.root}
+      data-control-json={text()
+        ? ''
+        : undefined}
+    >
       <span ref={probe} class={styles.probe} aria-hidden="true" />
       <Show when={text()}>
         <CollapsibleText text={text()} maxLines={props.maxLines ?? 6} class={styles.json} bodyRef={element => body = element} />

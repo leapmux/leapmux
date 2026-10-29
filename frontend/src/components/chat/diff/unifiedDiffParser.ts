@@ -47,9 +47,13 @@ export function parseUnifiedDiff(diff: string): ParsedUnifiedDiff | null {
         // payload rather than a short hunk (`copilot/readResult.ts`). Deriving the
         // counts from `lines` makes that check compare a number with itself, and the
         // row then states a fraction of a file as the whole of it.
-        oldLines: oldCountText !== undefined ? Number.parseInt(oldCountText, 10) : 1,
+        oldLines: oldCountText !== undefined
+          ? Number.parseInt(oldCountText, 10)
+          : 1,
         newStart: Number.parseInt(newStartText, 10),
-        newLines: newCountText !== undefined ? Number.parseInt(newCountText, 10) : 1,
+        newLines: newCountText !== undefined
+          ? Number.parseInt(newCountText, 10)
+          : 1,
         lines: [],
       }
       hunks.push(current)

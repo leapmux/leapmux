@@ -36,7 +36,14 @@ describe('acp shared default request', () => {
 
     expect(call.kind).toBe('move')
     expect(call.kind === 'move' && call.request.changes).toEqual([
-      { filePath: 'new/name.ts', previousPath: 'old/name.ts', operation: 'move', oldStr: '', newStr: '', structuredPatch: null },
+      {
+        filePath: 'new/name.ts',
+        previousPath: 'old/name.ts',
+        operation: 'move',
+        oldStr: '',
+        newStr: '',
+        structuredPatch: null,
+      },
     ])
     const { container } = renderCall(call)
     expect(container.textContent).not.toContain('Failed to render message')
@@ -69,18 +76,66 @@ describe('acp shared default request', () => {
     // build draws (invariant I7): the row degrades to the uncategorized card, and the
     // case would then ask its question of a kind it never meant to reach.
     const shapes: Array<[string, Record<string, unknown>, (request: Record<string, unknown>) => boolean]> = [
-      ['delete', { path: '/p/gone.ts' }, request => Array.isArray(request.changes)],
-      ['move', { source_path: '/p/a.ts', destination_path: '/p/b.ts' }, request => Array.isArray(request.changes)],
-      ['glob', {}, request => Array.isArray(request.paths) && typeof request.pattern === 'string'],
-      ['grep', {}, request => Array.isArray(request.paths) && typeof request.pattern === 'string'],
-      ['todo', {}, request => Array.isArray(request.items)],
-      ['question', {}, request => Array.isArray(request.questions)],
-      ['think', {}, request => typeof request.text === 'string'],
-      ['list', {}, request => typeof request.path === 'string'],
-      ['web_search', {}, request => typeof request.query === 'string'],
-      ['message', {}, request => typeof request.text === 'string'],
-      ['chart', {}, request => typeof request.spec === 'string'],
-      ['trigger', {}, request => typeof request.action === 'string'],
+      [
+        'delete',
+        { path: '/p/gone.ts' },
+        request => Array.isArray(request.changes),
+      ],
+      [
+        'move',
+        { source_path: '/p/a.ts', destination_path: '/p/b.ts' },
+        request => Array.isArray(request.changes),
+      ],
+      [
+        'glob',
+        {},
+        request => Array.isArray(request.paths) && typeof request.pattern === 'string',
+      ],
+      [
+        'grep',
+        {},
+        request => Array.isArray(request.paths) && typeof request.pattern === 'string',
+      ],
+      [
+        'todo',
+        {},
+        request => Array.isArray(request.items),
+      ],
+      [
+        'question',
+        {},
+        request => Array.isArray(request.questions),
+      ],
+      [
+        'think',
+        {},
+        request => typeof request.text === 'string',
+      ],
+      [
+        'list',
+        {},
+        request => typeof request.path === 'string',
+      ],
+      [
+        'web_search',
+        {},
+        request => typeof request.query === 'string',
+      ],
+      [
+        'message',
+        {},
+        request => typeof request.text === 'string',
+      ],
+      [
+        'chart',
+        {},
+        request => typeof request.spec === 'string',
+      ],
+      [
+        'trigger',
+        {},
+        request => typeof request.action === 'string',
+      ],
     ]
     for (const [kind, rawInput, holds] of shapes) {
       const call = acpToolCall({

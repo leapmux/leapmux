@@ -5,14 +5,20 @@ import { captureClipboardText } from './clipboardCapture'
 
 vi.mock('@playwright/test', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@playwright/test')>()
-  return { ...actual, expect: actual.expect.configure({ timeout: 200 }) }
+  return {
+    ...actual,
+    expect: actual.expect.configure({ timeout: 200 }),
+  }
 })
 
 describe('captureClipboardText', () => {
   it.each([
     { scenario: 'ordinary text', text: 'copied text' },
     { scenario: 'empty text', text: '' },
-    { scenario: 'large Unicode text', text: '雪\n'.repeat(10000) },
+    {
+      scenario: 'large Unicode text',
+      text: '雪\n'.repeat(10000),
+    },
   ])('observes the successful native write and restores its method for $scenario', async ({ text }) => {
     const f = createClipboardPageFixture()
     const originalExec = f.document.execCommand

@@ -11,7 +11,13 @@ import { grokPermissionPresets } from './permissionPresets'
 import { grokQuestionHandling } from './pluginControls'
 
 registerACPProvider({
-  attachments: { text: true, image: true, pdf: true, audio: false, binary: true },
+  attachments: {
+    text: true,
+    image: true,
+    pdf: true,
+    audio: false,
+    binary: true,
+  },
   outputFilePaths: grokOutputFilePaths,
   provider: AgentProvider.GROK_BUILD,
   effortGroupKey: GROK_CONFIG.ReasoningEffort,

@@ -40,7 +40,11 @@ describe('withNativeConfigurationFile', () => {
     const parent = join(outside, 'must-not-exist')
     const use = vi.fn(async () => {})
     try {
-      await expect(withNativeConfigurationFile({ path: join(parent, 'config.json'), content: '{}', runDir }, use))
+      await expect(withNativeConfigurationFile({
+        path: join(parent, 'config.json'),
+        content: '{}',
+        runDir,
+      }, use))
         .rejects
         .toThrow('outside the E2E run')
       expect(existsSync(parent)).toBe(false)
@@ -58,7 +62,11 @@ describe('withNativeConfigurationFile', () => {
     const parent = join(outside, 'must-not-exist')
     const use = vi.fn(async () => {})
     try {
-      await expect(withNativeConfigurationFile({ path: join(linked, 'must-not-exist', 'config.json'), content: '{}', runDir }, use))
+      await expect(withNativeConfigurationFile({
+        path: join(linked, 'must-not-exist', 'config.json'),
+        content: '{}',
+        runDir,
+      }, use))
         .rejects
         .toThrow('outside the E2E run')
       expect(existsSync(parent)).toBe(false)
@@ -228,7 +236,13 @@ describe('assertPrivateNativeAncestor', () => {
     expect(assertPrivateNativeAncestor(existing, runDir, { refuseSymlink: true })).toBe(existing)
   })
 
-  it.each(['', 'relative/config.json', 'relative', '\0', '/absolute\0/config.json'])('refuses an absent, relative, or NUL path: %j', (path) => {
+  it.each([
+    '',
+    'relative/config.json',
+    'relative',
+    '\0',
+    '/absolute\0/config.json',
+  ])('refuses an absent, relative, or NUL path: %j', (path) => {
     expect(() => assertPrivateNativeAncestor(path, runDir)).toThrow('absolute path')
   })
 
@@ -250,7 +264,10 @@ describe('assertPrivateNativeAncestor', () => {
     }
     const path = `${linked}${sep}..${sep}settings.json`
     const escapes = readFileSync(`${linked}${sep}..${sep}owner.txt`, 'utf8') === 'outside'
-    for (const options of [{}, { refuseSymlink: true }]) {
+    for (const options of [
+      {},
+      { refuseSymlink: true },
+    ]) {
       if (escapes)
         expect(() => assertPrivateNativeAncestor(path, runDir, options)).toThrow('outside the E2E run')
       else

@@ -37,7 +37,9 @@ export function linkRangeAt(state: EditorState, pos: number): LinkRange | null {
   // empty space past it. `nodeAfter` is the containing node's remainder when the
   // position is mid-node and the next node at a boundary, so one expression
   // answers both, and it is null at the block end where there is no link.
-  const mark = $pos.nodeAfter ? linkType.isInSet($pos.nodeAfter.marks) : null
+  const mark = $pos.nodeAfter
+    ? linkType.isInSet($pos.nodeAfter.marks)
+    : null
   if (!mark)
     return null
 
@@ -64,7 +66,12 @@ export function linkRangeAt(state: EditorState, pos: number): LinkRange | null {
   for (let i = index + 1; i < runs.length && runs[i]!.from === to; i++)
     to = runs[i]!.to
 
-  return { from, to, href: String(mark.attrs.href ?? ''), attrs: mark.attrs }
+  return {
+    from,
+    to,
+    href: String(mark.attrs.href ?? ''),
+    attrs: mark.attrs,
+  }
 }
 
 /**
@@ -269,7 +276,9 @@ export function createLinkClickPlugin(handlers: LinkClickHandlers) {
       handleDOMEvents: {
         pointerdown(view, event) {
           const at = view.posAtCoords({ left: event.clientX, top: event.clientY })
-          const range = at ? linkRangeAt(view.state, at.pos) : null
+          const range = at
+            ? linkRangeAt(view.state, at.pos)
+            : null
           press.arm(pressClosesPopover(range, handlers.getLinkRange(), handlers.getLinkPopoverOpen()))
           return false
         },
@@ -282,7 +291,9 @@ export function createLinkClickPlugin(handlers: LinkClickHandlers) {
         },
         click(view, event) {
           const at = view.posAtCoords({ left: event.clientX, top: event.clientY })
-          const range = at ? linkRangeAt(view.state, at.pos) : null
+          const range = at
+            ? linkRangeAt(view.state, at.pos)
+            : null
           // Read and disarm in one step, BEFORE the branch: the press is spent
           // whichever way the click goes, and doing it once means neither exit
           // can forget.

@@ -88,8 +88,12 @@ export async function readAllAgentMessages(
   for (;;) {
     const response = await channel.callWorker(server.workerId, 'ListAgentMessages', ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema, {
       agentId,
-      anchor: cursor === undefined ? MessagePageAnchor.OLDEST : MessagePageAnchor.AFTER,
-      ...(cursor === undefined ? {} : { cursorSeq: cursor }),
+      anchor: cursor === undefined
+        ? MessagePageAnchor.OLDEST
+        : MessagePageAnchor.AFTER,
+      ...(cursor === undefined
+        ? {}
+        : { cursorSeq: cursor }),
       limit: MESSAGE_PAGE_LIMIT,
     })
     onPage?.(response.messages)
@@ -148,7 +152,10 @@ export function nativeMessageSupplement(message: AgentChatMessage): unknown {
 export function nativeMessagesHoldingText(messages: readonly AgentChatMessage[], text: string): AgentChatMessage[] {
   if (text.trim() === '')
     throw new Error('The native message search requires nonempty text.')
-  return messages.filter(message => [nativeMessageBody(message), nativeMessageSupplement(message)]
+  return messages.filter(message => [
+    nativeMessageBody(message),
+    nativeMessageSupplement(message),
+  ]
     .some(value => jsonStringValues(value).some(item => item.includes(text))))
 }
 
@@ -179,12 +186,18 @@ export function readNativeToolOutputRecord(snapshot: NativeMessageSnapshot, opti
     const frame = nativeMessageBody(message)
     if (!isObject(frame) || !options.accepts(frame))
       continue
-    const spanId = typeof options.spanId === 'string' ? options.spanId : options.spanId(frame)
+    const spanId = typeof options.spanId === 'string'
+      ? options.spanId
+      : options.spanId(frame)
     if (!spanId.trim())
       throw new Error('The native output record callback supplied an empty span owner.')
     if (message.spanId !== spanId)
       continue
-    records.push({ message, frame, supplement: nativeMessageSupplement(message) })
+    records.push({
+      message,
+      frame,
+      supplement: nativeMessageSupplement(message),
+    })
   }
   if (records.length !== 1 || !records[0])
     throw new Error('The native output requires exactly one accepted record in its Worker session and span.')

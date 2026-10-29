@@ -18,22 +18,54 @@ const CALL = 'call_e4a50b50ee'
  */
 function qwenUpdate(name: string, kind: string, title: string, args: Record<string, unknown>, frame: Record<string, unknown>): ToolResultFixture {
   return {
-    payload: { sessionUpdate: 'tool_call_update', toolCallId: CALL, status: 'completed', _meta: { toolName: name, provenance: 'builtin' }, ...frame },
+    payload: {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: CALL,
+      status: 'completed',
+      _meta: { toolName: name, provenance: 'builtin' },
+      ...frame,
+    },
     options: {
       spanType: 'tool_call_update',
-      request: input({ sessionUpdate: 'tool_call', toolCallId: CALL, status: 'in_progress', title, kind, rawInput: args, locations: [], _meta: { toolName: name, provenance: 'builtin' } }, null, AgentProvider.QWEN_CODE) as ParsedMessageContent,
+      request: input({
+        sessionUpdate: 'tool_call',
+        toolCallId: CALL,
+        status: 'in_progress',
+        title,
+        kind,
+        rawInput: args,
+        locations: [],
+        _meta: { toolName: name, provenance: 'builtin' },
+      }, null, AgentProvider.QWEN_CODE) as ParsedMessageContent,
     },
   }
 }
 
 function text(value: string) {
-  return [{ type: 'content', content: { type: 'text', text: value } }]
+  return [
+    {
+      type: 'content',
+      content: { type: 'text', text: value },
+    },
+  ]
 }
 
 const FIXTURES: Readonly<Record<string, ToolResultFixture>> = {
   [QWEN_TOOL.RunShellCommand]: qwenUpdate(QWEN_TOOL.RunShellCommand, 'execute', 'Shell: printf hello (Say hello)', { command: 'printf hello', description: 'Say hello' }, {
     content: text('Command: printf hello\nDirectory: (root)\nOutput: hello\nError: (none)\nExit Code: 0\nSignal: (none)\nProcess Group PGID: 7'),
-    rawOutput: { type: 'shell_result', version: 1, directory: '/p', exitCode: 0, signal: null, pid: 7, outcome: 'completed', output: 'hello', text: 'hello', error: null, truncated: false },
+    rawOutput: {
+      type: 'shell_result',
+      version: 1,
+      directory: '/p',
+      exitCode: 0,
+      signal: null,
+      pid: 7,
+      outcome: 'completed',
+      output: 'hello',
+      text: 'hello',
+      error: null,
+      truncated: false,
+    },
   }),
   [QWEN_TOOL_NAME.Monitor]: qwenUpdate(QWEN_TOOL_NAME.Monitor, 'execute', 'Monitor: tail -f app.log', { command: 'tail -f app.log', description: 'Watch the log' }, {
     content: text('Monitor started.'),
@@ -43,17 +75,53 @@ const FIXTURES: Readonly<Record<string, ToolResultFixture>> = {
     content: text('one\ntwo\n'),
     rawOutput: 'one\ntwo\n',
   }),
-  [QWEN_TOOL_NAME.ZoomImage]: qwenUpdate(QWEN_TOOL_NAME.ZoomImage, 'read', 'ZoomImage: shot.png', { file_path: '/p/shot.png', x1: 0, y1: 0, x2: 10, y2: 10 }, {
-    content: [{ type: 'content', content: { type: 'text', text: 'The region of /p/shot.png.' } }, { type: 'content', content: { type: 'image', data: 'aGk=', mimeType: 'image/png' } }],
+  [QWEN_TOOL_NAME.ZoomImage]: qwenUpdate(QWEN_TOOL_NAME.ZoomImage, 'read', 'ZoomImage: shot.png', {
+    file_path: '/p/shot.png',
+    x1: 0,
+    y1: 0,
+    x2: 10,
+    y2: 10,
+  }, {
+    content: [
+      {
+        type: 'content',
+        content: { type: 'text', text: 'The region of /p/shot.png.' },
+      },
+      {
+        type: 'content',
+        content: { type: 'image', data: 'aGk=', mimeType: 'image/png' },
+      },
+    ],
   }),
   [QWEN_TOOL_NAME.Edit]: qwenUpdate(QWEN_TOOL_NAME.Edit, 'edit', 'Edit: a.ts', { file_path: '/p/a.ts', old_string: 'before', new_string: 'after' }, {
-    content: [{ type: 'diff', path: '/p/a.ts', oldText: 'const a = before\n', newText: 'const a = after\n' }],
+    content: [
+      {
+        type: 'diff',
+        path: '/p/a.ts',
+        oldText: 'const a = before\n',
+        newText: 'const a = after\n',
+      },
+    ],
   }),
   [QWEN_TOOL_NAME.NotebookEdit]: qwenUpdate(QWEN_TOOL_NAME.NotebookEdit, 'edit', 'NotebookEdit: a.ipynb', { notebook_path: '/p/a.ipynb', new_source: 'x = 1' }, {
-    content: [{ type: 'diff', path: '/p/a.ipynb', oldText: '{"cells":[]}', newText: '{"cells":[{"source":"x = 1"}]}' }],
+    content: [
+      {
+        type: 'diff',
+        path: '/p/a.ipynb',
+        oldText: '{"cells":[]}',
+        newText: '{"cells":[{"source":"x = 1"}]}',
+      },
+    ],
   }),
   [QWEN_TOOL_NAME.WriteFile]: qwenUpdate(QWEN_TOOL_NAME.WriteFile, 'edit', 'WriteFile: n.ts', { file_path: '/p/n.ts', content: 'written()\n' }, {
-    content: [{ type: 'diff', path: '/p/n.ts', oldText: '', newText: 'written()\n' }],
+    content: [
+      {
+        type: 'diff',
+        path: '/p/n.ts',
+        oldText: '',
+        newText: 'written()\n',
+      },
+    ],
   }),
   [QWEN_TOOL_NAME.GrepSearch]: qwenUpdate(QWEN_TOOL_NAME.GrepSearch, 'search', 'Grep: needle', { pattern: 'needle', path: '/p' }, {
     content: text('Found 1 match for pattern "needle" in path "/p":\n---\nFile: a.ts\nL3: needle\n---\n'),
@@ -76,9 +144,27 @@ const FIXTURES: Readonly<Record<string, ToolResultFixture>> = {
   [QWEN_TOOL_NAME.WebSearch]: qwenUpdate(QWEN_TOOL_NAME.WebSearch, 'search', 'WebSearch: leapmux', { query: 'leapmux' }, {
     content: text('1. LeapMux -- https://example.com'),
   }),
-  [QWEN_TOOL.AskUserQuestion]: qwenUpdate(QWEN_TOOL.AskUserQuestion, 'think', 'AskUserQuestion: Ask user 1 question', { questions: [{ question: 'Which color do you want?', header: 'Color', options: [{ label: 'Red', description: 'r' }, { label: 'Blue', description: 'b' }], multiSelect: false }] }, {
+  [QWEN_TOOL.AskUserQuestion]: qwenUpdate(QWEN_TOOL.AskUserQuestion, 'think', 'AskUserQuestion: Ask user 1 question', {
+    questions: [
+      {
+        question: 'Which color do you want?',
+        header: 'Color',
+        options: [
+          { label: 'Red', description: 'r' },
+          { label: 'Blue', description: 'b' },
+        ],
+        multiSelect: false,
+      },
+    ],
+  }, {
     content: text('User has provided the following answers:\n\n**Color**: Blue'),
-    rawOutput: { type: 'ask_user_question_answers', text: 'User has provided the following answers:\n\n**Color**: Blue', answers: [{ question: 'Which color do you want?', answer: 'Blue' }] },
+    rawOutput: {
+      type: 'ask_user_question_answers',
+      text: 'User has provided the following answers:\n\n**Color**: Blue',
+      answers: [
+        { question: 'Which color do you want?', answer: 'Blue' },
+      ],
+    },
   }),
   [QWEN_TOOL.ExitPlanMode]: qwenUpdate(QWEN_TOOL.ExitPlanMode, 'switch_mode', 'ExitPlanMode: Plan:', { plan: '1. Do X' }, {
     content: text('User approved. You can now start coding.'),
@@ -93,15 +179,39 @@ const FIXTURES: Readonly<Record<string, ToolResultFixture>> = {
   [QWEN_TOOL_NAME.ExitWorktree]: qwenUpdate(QWEN_TOOL_NAME.ExitWorktree, 'other', 'ExitWorktree: feature', { name: 'feature', action: 'keep' }, {
     content: text('Left the worktree feature.'),
   }),
-  [QWEN_TOOL.Agent]: qwenUpdate(QWEN_TOOL.Agent, 'other', 'Agent: Child probe', { description: 'Child probe', prompt: 'List the files', subagent_type: 'general-purpose', run_in_background: false }, {
+  [QWEN_TOOL.Agent]: qwenUpdate(QWEN_TOOL.Agent, 'other', 'Agent: Child probe', {
+    description: 'Child probe',
+    prompt: 'List the files',
+    subagent_type: 'general-purpose',
+    run_in_background: false,
+  }, {
     content: text('Child done: listed.'),
-    rawOutput: { type: 'task_execution', subagentName: 'general-purpose', taskDescription: 'Child probe', taskPrompt: 'List the files', executionMode: 'foreground', status: 'completed', terminateReason: 'GOAL', result: 'Child done: listed.', executionSummary: { rounds: 2, totalDurationMs: 205, totalToolCalls: 1, totalTokens: 220 } },
+    rawOutput: {
+      type: 'task_execution',
+      subagentName: 'general-purpose',
+      taskDescription: 'Child probe',
+      taskPrompt: 'List the files',
+      executionMode: 'foreground',
+      status: 'completed',
+      terminateReason: 'GOAL',
+      result: 'Child done: listed.',
+      executionSummary: {
+        rounds: 2,
+        totalDurationMs: 205,
+        totalToolCalls: 1,
+        totalTokens: 220,
+      },
+    },
   }),
   [QWEN_TOOL.Workflow]: qwenUpdate(QWEN_TOOL.Workflow, 'other', 'Workflow', { script: 'await agent("x")' }, {
     content: text('Child done: listed.\n--- workflow run ---\nrunId: wf_1'),
     rawOutput: '```json\n{\n  "runId": "wf_1",\n  "phases": ["probe"],\n  "logs": [],\n  "result": "Child done: listed.",\n  "tokens": {"spent": 20, "total": null}\n}\n```',
   }),
-  [QWEN_TOOL.TodoWrite]: qwenUpdate(QWEN_TOOL.TodoWrite, 'think', 'TodoWrite', { todos: [{ id: '1', content: 'Inspect code', status: 'in_progress' }] }, {
+  [QWEN_TOOL.TodoWrite]: qwenUpdate(QWEN_TOOL.TodoWrite, 'think', 'TodoWrite', {
+    todos: [
+      { id: '1', content: 'Inspect code', status: 'in_progress' },
+    ],
+  }, {
     content: text('Todos have been modified successfully.'),
   }),
   [QWEN_TOOL_NAME.CronCreate]: qwenUpdate(QWEN_TOOL_NAME.CronCreate, 'other', 'CronCreate', { cron: '*/5 * * * *', prompt: 'Check the build', recurring: true }, {
@@ -119,12 +229,22 @@ const FIXTURES: Readonly<Record<string, ToolResultFixture>> = {
     content: text('The next turn starts in 60 seconds.'),
   }),
   [QWEN_TOOL_NAME.ImageGen]: qwenUpdate(QWEN_TOOL_NAME.ImageGen, 'other', 'ImageGen', { prompt: 'A red dot' }, {
-    content: [{ type: 'content', content: { type: 'image', data: 'aGk=', mimeType: 'image/png' } }],
+    content: [
+      {
+        type: 'content',
+        content: { type: 'image', data: 'aGk=', mimeType: 'image/png' },
+      },
+    ],
   }),
   [QWEN_TOOL_NAME.ListAgents]: qwenUpdate(QWEN_TOOL_NAME.ListAgents, 'other', 'ListAgents', {}, {
     content: text('general-purpose: A general agent.'),
   }),
-  [QWEN_TOOL_NAME.ReportFindings]: qwenUpdate(QWEN_TOOL_NAME.ReportFindings, 'other', 'ReportFindings', { severity: 'high', file: '/p/a.ts', summary: 'A bug', failureScenario: 'It fails' }, {
+  [QWEN_TOOL_NAME.ReportFindings]: qwenUpdate(QWEN_TOOL_NAME.ReportFindings, 'other', 'ReportFindings', {
+    severity: 'high',
+    file: '/p/a.ts',
+    summary: 'A bug',
+    failureScenario: 'It fails',
+  }, {
     content: text('Finding recorded.'),
   }),
   [QWEN_TOOL_NAME.SendMessage]: qwenUpdate(QWEN_TOOL_NAME.SendMessage, 'other', 'SendMessage', { message: 'Continue', task_id: 'general-purpose-call_1' }, {
@@ -145,8 +265,16 @@ const ERROR_TEXT = 'The tool reported an error.'
 function failed(kind: ToolKind, name: string, status: ToolFailureFixture['status'] = 'failed'): ToolFailureFixture {
   const fixture = FIXTURES[name]
   return {
-    payload: { sessionUpdate: 'tool_call_update', toolCallId: CALL, status: 'failed', content: text(ERROR_TEXT), _meta: { toolName: name } },
-    ...(fixture?.options !== undefined ? { options: fixture.options } : {}),
+    payload: {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: CALL,
+      status: 'failed',
+      content: text(ERROR_TEXT),
+      _meta: { toolName: name },
+    },
+    ...(fixture?.options !== undefined
+      ? { options: fixture.options }
+      : {}),
     kind,
     name,
     status,

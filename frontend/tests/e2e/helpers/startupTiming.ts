@@ -225,8 +225,12 @@ export async function collectStartupResources(
   const byUrl = new Map<string, TrackedResource>()
   for (const r of timed) {
     const fromPw = playwrightSizes.get(r.url) ?? 0
-    const transferSize = r.transferSize > 0 ? r.transferSize : fromPw
-    const encodedBodySize = r.encodedBodySize > 0 ? r.encodedBodySize : fromPw
+    const transferSize = r.transferSize > 0
+      ? r.transferSize
+      : fromPw
+    const encodedBodySize = r.encodedBodySize > 0
+      ? r.encodedBodySize
+      : fromPw
     const beforeShell = r.responseEnd > 0 && r.responseEnd <= shellVisibleMs
     const prev = byUrl.get(r.url)
     if (prev) {
@@ -262,7 +266,9 @@ export async function collectStartupResources(
     })
   }
 
-  return [...byUrl.values()]
+  return [
+    ...byUrl.values(),
+  ]
 }
 
 /** Sum transfer sizes for resources that finished before the shell. */
@@ -275,7 +281,9 @@ export function sumBytesBeforeShell(resources: TrackedResource[]): {
   for (const r of resources) {
     if (!r.beforeShell)
       continue
-    const size = r.transferSize > 0 ? r.transferSize : r.encodedBodySize
+    const size = r.transferSize > 0
+      ? r.transferSize
+      : r.encodedBodySize
     bytes[r.bucket] += size
     counts[r.bucket] += 1
   }
@@ -318,7 +326,9 @@ export function renderStartupReport(report: StartupReport): string {
   parts.push(`${'bucket'.padEnd(nameWidth)}  bytes      share   count`)
   parts.push(`${'-'.repeat(nameWidth)}  ---------  ------  -----`)
   for (const row of ranked) {
-    const share = total > 0 ? `${((100 * row.bytes) / total).toFixed(1)}%` : '-'
+    const share = total > 0
+      ? `${((100 * row.bytes) / total).toFixed(1)}%`
+      : '-'
     parts.push(
       `${row.bucket.padEnd(nameWidth)}  ${String(row.bytes).padStart(9)}  ${share.padStart(6)}  ${String(row.count).padStart(5)}`,
     )
@@ -330,7 +340,9 @@ export function renderStartupReport(report: StartupReport): string {
     .filter(r => r.beforeShell)
     .map(r => ({
       ...r,
-      size: r.transferSize > 0 ? r.transferSize : r.encodedBodySize,
+      size: r.transferSize > 0
+        ? r.transferSize
+        : r.encodedBodySize,
     }))
     .sort((a, b) => b.size - a.size)
     .slice(0, 15)
@@ -362,7 +374,9 @@ export function attachResponseSizeListener(page: Page): {
     try {
       const url = response.url()
       const cl = response.headers()['content-length']
-      const size = cl ? Number(cl) : 0
+      const size = cl
+        ? Number(cl)
+        : 0
       if (!Number.isFinite(size) || size <= 0)
         return
       sizes.set(url, Math.max(sizes.get(url) ?? 0, size))
@@ -402,7 +416,9 @@ export async function readStartupMarks(page: Page, shellVisibleMs: number): Prom
     const m = w.__startupMarks
     const nav = performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined
     return {
-      navStart: nav ? 0 : (m?.navStart ?? 0),
+      navStart: nav
+        ? 0
+        : (m?.navStart ?? 0),
       htmlDone: m?.htmlDone ?? (nav?.responseEnd ?? null),
       firstPaint: m?.firstPaint ?? null,
       firstContentfulPaint: m?.firstContentfulPaint ?? null,

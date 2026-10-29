@@ -45,7 +45,9 @@ export function parseRawGrepGlobResult(raw: string, toolName: string): {
   const summaryMatch = firstLine.match(RAW_RESULT_SUMMARY_RE)
 
   // Strip the leading summary (if any), then look at non-empty data lines.
-  const afterLeading = summaryMatch ? lines.slice(1) : lines
+  const afterLeading = summaryMatch
+    ? lines.slice(1)
+    : lines
   const nonEmpty = afterLeading.filter(l => l.trim())
 
   // The one wording the command line interface prints for a search that found
@@ -82,7 +84,9 @@ export function parseRawGrepGlobResult(raw: string, toolName: string): {
 
   // For Grep content mode (lines contain "file:line:match" or "line_num:text"),
   // we check the first few lines to classify the output format.
-  const sampleLines = nonEmpty.length > 5 ? nonEmpty.slice(0, 5) : nonEmpty
+  const sampleLines = nonEmpty.length > 5
+    ? nonEmpty.slice(0, 5)
+    : nonEmpty
   const looksLikeContent = toolName === CLAUDE_TOOL_NAMES.GREP
     && sampleLines.length > 0
     && sampleLines.every(l => GREP_CONTENT_LINE_RE.test(l))
@@ -143,7 +147,9 @@ export function claudeSearchFromToolResult(
     // it feeds runs `relativizePath` over every entry. That helper calls string methods,
     // so one non-string element throws and takes the whole transcript row with it as
     // soon as a working directory is in context.
-    const statedFilenames = Array.isArray(toolUseResult.filenames) ? toolUseResult.filenames : null
+    const statedFilenames = Array.isArray(toolUseResult.filenames)
+      ? toolUseResult.filenames
+      : null
     const filenames = stringArray(statedFilenames)
     if (variant === 'grep') {
       const content = pickString(toolUseResult, 'content')
@@ -163,9 +169,13 @@ export function claudeSearchFromToolResult(
         numFiles,
         numLines,
         // Each optional half rides only when the tool stated it.
-        ...(numMatches !== undefined ? { matchCount: numMatches } : {}),
+        ...(numMatches !== undefined
+          ? { matchCount: numMatches }
+          : {}),
         truncated: toolUseResult.appliedLimit != null,
-        ...(mode !== undefined ? { mode } : {}),
+        ...(mode !== undefined
+          ? { mode }
+          : {}),
         fallbackContent: resultContent,
         empty: counted && !content && filenames.length === 0 && numFiles === 0 && numLines === 0 && (numMatches ?? 0) === 0,
       }
@@ -177,7 +187,9 @@ export function claudeSearchFromToolResult(
       numFiles: filenames.length,
       numLines: 0,
       truncated: pickBool(toolUseResult, 'truncated'),
-      ...(durationMs !== undefined ? { durationMs } : {}),
+      ...(durationMs !== undefined
+        ? { durationMs }
+        : {}),
       fallbackContent: resultContent,
       // Glob's structured answer IS its file list, so a list the tool stated and left
       // empty is "no file matched". A result that stated no list did not answer. The
@@ -187,7 +199,9 @@ export function claudeSearchFromToolResult(
     }
   }
   // Subagent: parse raw resultContent.
-  const toolName = variant === 'grep' ? CLAUDE_TOOL_NAMES.GREP : CLAUDE_TOOL_NAMES.GLOB
+  const toolName = variant === 'grep'
+    ? CLAUDE_TOOL_NAMES.GREP
+    : CLAUDE_TOOL_NAMES.GLOB
   const raw = parseRawGrepGlobResult(resultContent, toolName)
   if (variant === 'grep') {
     return {
@@ -196,8 +210,12 @@ export function claudeSearchFromToolResult(
       numFiles: raw.numFiles,
       numLines: raw.numLines,
       // Each optional half rides only when the raw text stated it.
-      ...(raw.numMatches !== undefined ? { matchCount: raw.numMatches } : {}),
-      ...(raw.mode !== undefined ? { mode: raw.mode } : {}),
+      ...(raw.numMatches !== undefined
+        ? { matchCount: raw.numMatches }
+        : {}),
+      ...(raw.mode !== undefined
+        ? { mode: raw.mode }
+        : {}),
       truncated: false,
       fallbackContent: resultContent,
       empty: raw.empty,
@@ -229,7 +247,11 @@ export function claudeGrepSpec(request: GrepRequest, result: ClaudeToolRow | und
   const failure = claudeToolFailureResult(result)
   if (failure)
     return { kind: 'grep', request, result: failure }
-  return { kind: 'grep', request, result: claudeSearchFromToolResult('grep', result.toolUseResult, result.resultContent) }
+  return {
+    kind: 'grep',
+    request,
+    result: claudeSearchFromToolResult('grep', result.toolUseResult, result.resultContent),
+  }
 }
 
 /** The glob pair: the pattern and the paths it ran in. The failure rung leads, as above. */
@@ -239,5 +261,9 @@ export function claudeGlobSpec(request: GlobRequest, result: ClaudeToolRow | und
   const failure = claudeToolFailureResult(result)
   if (failure)
     return { kind: 'glob', request, result: failure }
-  return { kind: 'glob', request, result: claudeSearchFromToolResult('glob', result.toolUseResult, result.resultContent) }
+  return {
+    kind: 'glob',
+    request,
+    result: claudeSearchFromToolResult('glob', result.toolUseResult, result.resultContent),
+  }
 }

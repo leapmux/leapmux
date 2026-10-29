@@ -2,13 +2,27 @@ import { describe, expect, it } from 'vitest'
 import { isSystemRow, requestRows, requestSystemFields, requestToolDescriptors, rowContent, toolDescriptor, toolInputSchema } from './modelRequestBody'
 
 describe('requestRows', () => {
-  const rows = [{ role: 'user', content: 'ROW' }]
+  const rows = [
+    { role: 'user', content: 'ROW' },
+  ]
 
   it.each([
-    { protocol: 'openai-chat-completions', body: { messages: rows, input: 'OTHER', contents: 'OTHER' } },
-    { protocol: 'openai-responses', body: { input: rows, messages: 'OTHER', contents: 'OTHER' } },
-    { protocol: 'anthropic-messages', body: { messages: rows, input: 'OTHER', contents: 'OTHER' } },
-    { protocol: 'google-generative-language', body: { contents: rows, messages: 'OTHER', input: 'OTHER' } },
+    {
+      protocol: 'openai-chat-completions',
+      body: { messages: rows, input: 'OTHER', contents: 'OTHER' },
+    },
+    {
+      protocol: 'openai-responses',
+      body: { input: rows, messages: 'OTHER', contents: 'OTHER' },
+    },
+    {
+      protocol: 'anthropic-messages',
+      body: { messages: rows, input: 'OTHER', contents: 'OTHER' },
+    },
+    {
+      protocol: 'google-generative-language',
+      body: { contents: rows, messages: 'OTHER', input: 'OTHER' },
+    },
   ] as const)('reads the rows field of $protocol without a copy', ({ protocol, body }) => {
     expect(requestRows(protocol, body)).toBe(rows)
   })
@@ -28,10 +42,22 @@ describe('requestRows', () => {
 
 describe('rowContent', () => {
   it.each([
-    { protocol: 'openai-chat-completions', row: { content: 'ROW', parts: 'OTHER' } },
-    { protocol: 'openai-responses', row: { content: 'ROW', parts: 'OTHER' } },
-    { protocol: 'anthropic-messages', row: { content: 'ROW', parts: 'OTHER' } },
-    { protocol: 'google-generative-language', row: { parts: 'ROW', content: 'OTHER' } },
+    {
+      protocol: 'openai-chat-completions',
+      row: { content: 'ROW', parts: 'OTHER' },
+    },
+    {
+      protocol: 'openai-responses',
+      row: { content: 'ROW', parts: 'OTHER' },
+    },
+    {
+      protocol: 'anthropic-messages',
+      row: { content: 'ROW', parts: 'OTHER' },
+    },
+    {
+      protocol: 'google-generative-language',
+      row: { parts: 'ROW', content: 'OTHER' },
+    },
   ] as const)('reads the content field of a $protocol row', ({ protocol, row }) => {
     expect(rowContent(protocol, row)).toBe('ROW')
   })
@@ -66,14 +92,34 @@ describe('isSystemRow', () => {
 })
 
 describe('requestSystemFields', () => {
-  const blocks = [{ type: 'text', text: 'SYSTEM' }]
-  const parts = [{ text: 'SYSTEM' }]
-  const body = { instructions: 'INSTRUCTIONS', system: blocks, systemInstruction: { parts }, messages: [{ role: 'system', content: 'ROW' }] }
+  const blocks = [
+    { type: 'text', text: 'SYSTEM' },
+  ]
+  const parts = [
+    { text: 'SYSTEM' },
+  ]
+  const body = {
+    instructions: 'INSTRUCTIONS',
+    system: blocks,
+    systemInstruction: { parts },
+    messages: [
+      { role: 'system', content: 'ROW' },
+    ],
+  }
 
   it.each([
-    { protocol: 'openai-responses', expected: ['INSTRUCTIONS'] },
-    { protocol: 'anthropic-messages', expected: [blocks] },
-    { protocol: 'google-generative-language', expected: [parts] },
+    {
+      protocol: 'openai-responses',
+      expected: ['INSTRUCTIONS'],
+    },
+    {
+      protocol: 'anthropic-messages',
+      expected: [blocks],
+    },
+    {
+      protocol: 'google-generative-language',
+      expected: [parts],
+    },
     { protocol: 'openai-chat-completions', expected: [] },
     { protocol: 'aws-event-stream', expected: [] },
   ] as const)('reads only the system field of $protocol, unchanged', ({ protocol, expected }) => {
@@ -84,11 +130,26 @@ describe('requestSystemFields', () => {
   })
 
   it.each([
-    { protocol: 'openai-responses', body: { input: [] } },
-    { protocol: 'anthropic-messages', body: { messages: [] } },
-    { protocol: 'google-generative-language', body: { contents: [] } },
-    { protocol: 'google-generative-language', body: { systemInstruction: 'SYSTEM' } },
-    { protocol: 'google-generative-language', body: { systemInstruction: {} } },
+    {
+      protocol: 'openai-responses',
+      body: { input: [] },
+    },
+    {
+      protocol: 'anthropic-messages',
+      body: { messages: [] },
+    },
+    {
+      protocol: 'google-generative-language',
+      body: { contents: [] },
+    },
+    {
+      protocol: 'google-generative-language',
+      body: { systemInstruction: 'SYSTEM' },
+    },
+    {
+      protocol: 'google-generative-language',
+      body: { systemInstruction: {} },
+    },
   ] as const)('returns no field for a $protocol body that states none: %j', ({ protocol, body }) => {
     expect(requestSystemFields(protocol, body)).toEqual([])
   })
@@ -100,7 +161,10 @@ describe('requestSystemFields', () => {
 
 describe('toolDescriptor', () => {
   it('returns an entry that states its own name', () => {
-    const entry = { name: 'direct', function: { name: 'nested' } }
+    const entry = {
+      name: 'direct',
+      function: { name: 'nested' },
+    }
     expect(toolDescriptor(entry)).toBe(entry)
   })
 
@@ -115,10 +179,19 @@ describe('toolDescriptor', () => {
   })
 
   it.each([
-    { type: 'function', function: { name: null } },
+    {
+      type: 'function',
+      function: { name: null },
+    },
     { type: 'function', function: 'chat_tool' },
-    { type: 'other', custom: { name: 'apply_patch' } },
-    { type: 'custom', custom: { name: undefined } },
+    {
+      type: 'other',
+      custom: { name: 'apply_patch' },
+    },
+    {
+      type: 'custom',
+      custom: { name: undefined },
+    },
     {},
   ])('returns an entry that states no name unchanged: %j', (entry) => {
     expect(toolDescriptor(entry)).toBe(entry)
@@ -129,16 +202,35 @@ describe('requestToolDescriptors', () => {
   it('reads each descriptor out of its envelope in native order', () => {
     const fn = { name: 'chat_tool' }
     const direct = { name: 'anthropic_tool' }
-    expect(requestToolDescriptors('openai-chat-completions', { tools: [{ type: 'function', function: fn }, direct] })).toEqual([fn, direct])
+    expect(requestToolDescriptors('openai-chat-completions', {
+      tools: [
+        { type: 'function', function: fn },
+        direct,
+      ],
+    })).toEqual([fn, direct])
   })
 
   it('reads the Google function declarations of every tool entry', () => {
     const first = { name: 'read_file' }
     const second = { name: 'run_shell_command' }
-    expect(requestToolDescriptors('google-generative-language', { tools: [{ functionDeclarations: [first] }, { functionDeclarations: [second] }] })).toEqual([first, second])
+    expect(requestToolDescriptors('google-generative-language', {
+      tools: [
+        {
+          functionDeclarations: [first],
+        },
+        {
+          functionDeclarations: [second],
+        },
+      ],
+    })).toEqual([first, second])
   })
 
-  it.each([undefined, {}, { tools: null }, { tools: 'tool' }])('returns undefined for a body without a tools array: %j', (body) => {
+  it.each([
+    undefined,
+    {},
+    { tools: null },
+    { tools: 'tool' },
+  ])('returns undefined for a body without a tools array: %j', (body) => {
     expect(requestToolDescriptors('anthropic-messages', body)).toBeUndefined()
   })
 
@@ -147,11 +239,17 @@ describe('requestToolDescriptors', () => {
   })
 
   it('returns undefined for the AWS event stream', () => {
-    expect(requestToolDescriptors('aws-event-stream', { tools: [{ name: 'service_tool' }] })).toBeUndefined()
+    expect(requestToolDescriptors('aws-event-stream', {
+      tools: [
+        { name: 'service_tool' },
+      ],
+    })).toBeUndefined()
   })
 
   it.each([null, 'tool', [], 0])('refuses a catalog entry that is not an object: %j', (entry) => {
-    expect(() => requestToolDescriptors('openai-chat-completions', { tools: [entry] })).toThrow('The native model tool catalog contains an invalid entry.')
+    expect(() => requestToolDescriptors('openai-chat-completions', {
+      tools: [entry],
+    })).toThrow('The native model tool catalog contains an invalid entry.')
   })
 })
 
@@ -159,9 +257,18 @@ describe('toolInputSchema', () => {
   const schema = { type: 'object' }
 
   it.each([
-    { label: 'Google', descriptor: { parametersJsonSchema: schema, parameters: 'OTHER', input_schema: 'OTHER' } },
-    { label: 'OpenAI', descriptor: { parameters: schema, input_schema: 'OTHER' } },
-    { label: 'Anthropic', descriptor: { input_schema: schema } },
+    {
+      label: 'Google',
+      descriptor: { parametersJsonSchema: schema, parameters: 'OTHER', input_schema: 'OTHER' },
+    },
+    {
+      label: 'OpenAI',
+      descriptor: { parameters: schema, input_schema: 'OTHER' },
+    },
+    {
+      label: 'Anthropic',
+      descriptor: { input_schema: schema },
+    },
   ])('reads the $label schema first', ({ descriptor }) => {
     expect(toolInputSchema(descriptor)).toBe(schema)
   })

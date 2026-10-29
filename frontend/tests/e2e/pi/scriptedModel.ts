@@ -47,12 +47,30 @@ export async function withMockPiModel<T>(
     baseUrl: `${origin.origin}/v1`,
     apiKey: MODEL_KEY,
     api: 'openai-completions',
-    models: [{ id: 'probe', name: 'Protocol test', reasoning: false, input: ['text'], cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, contextWindow: 128000, maxTokens: 1000 }],
+    models: [
+      {
+        id: 'probe',
+        name: 'Protocol test',
+        reasoning: false,
+        input: ['text'],
+        cost: {
+          input: 0,
+          output: 0,
+          cacheRead: 0,
+          cacheWrite: 0,
+        },
+        contextWindow: 128000,
+        maxTokens: 1000,
+      },
+    ],
   }
   const extensions = join(directory, '.pi', 'extensions')
   mkdirSync(extensions, { recursive: true })
   writeFileSync(join(extensions, 'protocol-model.ts'), `export default function (pi) { pi.registerProvider(${JSON.stringify(provider)}, ${JSON.stringify(configuration)}); }`)
-  return withTrustedPiDirectory(directory, environment, () => run({ model: 'probe', optionValues: { pi_provider: provider, effort: 'off' } }))
+  return withTrustedPiDirectory(directory, environment, () => run({
+    model: 'probe',
+    optionValues: { pi_provider: provider, effort: 'off' },
+  }))
 }
 
 /** Pi loads project extensions only after trust. Restore this temporary directory's exact entry. */
@@ -79,7 +97,12 @@ export default function () {
   process.exit(0);
 }
 `)
-  await promisify(execFile)('pi', ['--mode', 'rpc', '--extension', operation], { cwd: directory, timeout: 30_000, env: environment })
+  await promisify(execFile)('pi', [
+    '--mode',
+    'rpc',
+    '--extension',
+    operation,
+  ], { cwd: directory, timeout: 30_000, env: environment })
   if (!existsSync(acknowledgement) || readFileSync(acknowledgement, 'utf8') !== 'ready')
     throw new Error('Pi did not update trust for the protocol test directory.')
 }

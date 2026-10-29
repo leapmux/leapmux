@@ -13,12 +13,29 @@ const SESSION = '1790258346189_zqp76'
 
 /** The `tool.started` row that states one call, as the worker persists it. */
 export function clineToolStartRow(name: string, input: Record<string, unknown>, id = CLINE_FIXTURE_CALL_ID): Record<string, unknown> {
-  return { version: 'v1', event: 'tool.started', sessionId: SESSION, payload: { toolCallId: id, toolName: name, input } }
+  return {
+    version: 'v1',
+    event: 'tool.started',
+    sessionId: SESSION,
+    payload: { toolCallId: id, toolName: name, input },
+  }
 }
 
 /** The `tool.finished` row that ends one call. */
 export function clineToolFinishRow(name: string, output: unknown, error?: string, id = CLINE_FIXTURE_CALL_ID): Record<string, unknown> {
-  return { version: 'v1', event: 'tool.finished', sessionId: SESSION, payload: { toolCallId: id, toolName: name, output, ...(error !== undefined ? { error } : {}) } }
+  return {
+    version: 'v1',
+    event: 'tool.finished',
+    sessionId: SESSION,
+    payload: {
+      toolCallId: id,
+      toolName: name,
+      output,
+      ...(error !== undefined
+        ? { error }
+        : {}),
+    },
+  }
 }
 
 /** A successful result row, paired with the row that states its call. */
@@ -55,25 +72,56 @@ const PATCH = '*** Begin Patch\n*** Update File: /work/a.ts\n@@\n-old\n+new\n***
  * question and a skill with a string.
  */
 const FIXTURES: Readonly<Record<string, ToolResultFixture>> = {
-  [CLINE_TOOL.RunCommands]: answered(CLINE_TOOL.RunCommands, [operation('echo probe-bash', 'probe-bash\n')], { commands: ['echo probe-bash'] }),
+  [CLINE_TOOL.RunCommands]: answered(CLINE_TOOL.RunCommands, [
+    operation('echo probe-bash', 'probe-bash\n'),
+  ], {
+    commands: ['echo probe-bash'],
+  }),
   [CLINE_TOOL.SpawnAgent]: answered(
     CLINE_TOOL.SpawnAgent,
-    { text: 'Subagent result: from-subagent.', iterations: 2, finishReason: 'completed', usage: { inputTokens: 2400, outputTokens: 68 } },
+    {
+      text: 'Subagent result: from-subagent.',
+      iterations: 2,
+      finishReason: 'completed',
+      usage: { inputTokens: 2400, outputTokens: 68 },
+    },
     { systemPrompt: 'You help.', task: 'Run one command and report.' },
   ),
-  [CLINE_TOOL.AskQuestion]: answered(CLINE_TOOL.AskQuestion, 'Blue', { question: 'Which color do you prefer?', options: ['Red', 'Blue'] }),
-  [CLINE_TOOL_NAME.AskFollowupQuestion]: answered(CLINE_TOOL_NAME.AskFollowupQuestion, 'Yes', { question: 'Go on?', options: ['Yes', 'No'] }),
+  [CLINE_TOOL.AskQuestion]: answered(CLINE_TOOL.AskQuestion, 'Blue', {
+    question: 'Which color do you prefer?',
+    options: ['Red', 'Blue'],
+  }),
+  [CLINE_TOOL_NAME.AskFollowupQuestion]: answered(CLINE_TOOL_NAME.AskFollowupQuestion, 'Yes', {
+    question: 'Go on?',
+    options: ['Yes', 'No'],
+  }),
   [CLINE_TOOL.SwitchToActMode]: answered(CLINE_TOOL.SwitchToActMode, 'You successfully switched to act mode, proceed with the plan.', {}),
-  [CLINE_TOOL_NAME.ReadFiles]: answered(CLINE_TOOL_NAME.ReadFiles, [operation('/work/notes.txt', '1 | alpha one\n2 | beta two')], { files: [{ path: '/work/notes.txt' }] }),
+  [CLINE_TOOL_NAME.ReadFiles]: answered(CLINE_TOOL_NAME.ReadFiles, [
+    operation('/work/notes.txt', '1 | alpha one\n2 | beta two'),
+  ], {
+    files: [
+      { path: '/work/notes.txt' },
+    ],
+  }),
   [CLINE_TOOL_NAME.SearchCodebase]: answered(
     CLINE_TOOL_NAME.SearchCodebase,
-    [operation('alpha', 'Found 1 result for pattern: alpha\n/work/a.ts:3:7')],
-    { queries: ['alpha'] },
+    [
+      operation('alpha', 'Found 1 result for pattern: alpha\n/work/a.ts:3:7'),
+    ],
+    {
+      queries: ['alpha'],
+    },
   ),
   [CLINE_TOOL_NAME.FetchWebContent]: answered(
     CLINE_TOOL_NAME.FetchWebContent,
-    [operation('https://example.com', 'URL: https://example.com\nContent-Type: text/html\n\n--- Content ---\nThe page.')],
-    { requests: [{ url: 'https://example.com', prompt: 'Summarize the page.' }] },
+    [
+      operation('https://example.com', 'URL: https://example.com\nContent-Type: text/html\n\n--- Content ---\nThe page.'),
+    ],
+    {
+      requests: [
+        { url: 'https://example.com', prompt: 'Summarize the page.' },
+      ],
+    },
   ),
   [CLINE_TOOL_NAME.Editor]: answered(
     CLINE_TOOL_NAME.Editor,
@@ -97,7 +145,9 @@ const FIXTURES: Readonly<Record<string, ToolResultFixture>> = {
   [CLINE_TOOL_NAME.TeamRunTask]: answered(CLINE_TOOL_NAME.TeamRunTask, 'Queued run run_1.', { agentId: 'researcher', task: 'Find the bug.' }),
   [CLINE_TOOL_NAME.TeamCancelRun]: answered(CLINE_TOOL_NAME.TeamCancelRun, 'Cancelled run_1.', { runId: 'run_1' }),
   [CLINE_TOOL_NAME.TeamListRuns]: answered(CLINE_TOOL_NAME.TeamListRuns, 'run_1: running', {}),
-  [CLINE_TOOL_NAME.TeamAwaitRuns]: answered(CLINE_TOOL_NAME.TeamAwaitRuns, 'run_1: completed', { runIds: ['run_1'] }),
+  [CLINE_TOOL_NAME.TeamAwaitRuns]: answered(CLINE_TOOL_NAME.TeamAwaitRuns, 'run_1: completed', {
+    runIds: ['run_1'],
+  }),
   [CLINE_TOOL_NAME.TeamSendMessage]: answered(CLINE_TOOL_NAME.TeamSendMessage, 'Sent.', { agentId: 'researcher', subject: 'Status', body: 'How far along are you?' }),
   [CLINE_TOOL_NAME.TeamBroadcast]: answered(CLINE_TOOL_NAME.TeamBroadcast, 'Sent to 2 teammates.', { subject: 'Plan', body: 'Split the work.' }),
   [CLINE_TOOL_NAME.TeamReadMailbox]: answered(CLINE_TOOL_NAME.TeamReadMailbox, 'No new messages.', {}),
@@ -120,7 +170,9 @@ function failed(kind: ToolKind, name: string, error = ERROR_TEXT, status: ToolFa
   const fixture = FIXTURES[name]
   return {
     payload: clineToolFinishRow(name, { error }, error),
-    ...(fixture?.options !== undefined ? { options: fixture.options } : {}),
+    ...(fixture?.options !== undefined
+      ? { options: fixture.options }
+      : {}),
     kind,
     name,
     status,

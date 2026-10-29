@@ -97,7 +97,12 @@ export function serializeState(
   childrenCache: Record<string, TreeNodeData[]>,
   truncatedDirs: Record<string, number>,
 ): DirectoryTreeStateJSON {
-  return { v: DIRECTORY_TREE_STATE_VERSION, expandedPaths, childrenCache, truncatedDirs }
+  return {
+    v: DIRECTORY_TREE_STATE_VERSION,
+    expandedPaths,
+    childrenCache,
+    truncatedDirs,
+  }
 }
 
 /**
@@ -175,7 +180,9 @@ export function formatTruncationNotice(shown: number, total: number, sortKey: Fi
   // The worker reports what the directory really held, so the notice gives the
   // size of what is hidden instead of only that something is. `total` is 0 for
   // a listing restored from a cache written before the worker sent it.
-  const count = total > shown ? `${shown} of ${total} entries` : `${shown}+ entries`
+  const count = total > shown
+    ? `${shown} of ${total} entries`
+    : `${shown}+ entries`
   return sortKey === 'name'
     ? `${count}, listing truncated`
     : `${count}, truncated by name before sorting`

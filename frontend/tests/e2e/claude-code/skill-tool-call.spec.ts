@@ -8,7 +8,11 @@ claudeTest('a skill that the model loads draws no user bubble', async ({ native 
   await chooseSettingsOption(page, 'permissionMode-bypassPermissions')
   await waitForSettingsIdle(page)
   const start = await modelScript.queue(
-    { toolCalls: [claudeSkillToolCall('skill-1', 'keybindings-help')] },
+    {
+      toolCalls: [
+        claudeSkillToolCall('skill-1', 'keybindings-help'),
+      ],
+    },
     { text: 'SKILL_LOADED' },
   )
   await sendMessage(page, modelScript.prompt('Load the keybindings-help skill and acknowledge it.'))

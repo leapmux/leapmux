@@ -23,13 +23,15 @@ export function acpPlanTodos(entries: unknown): TodoItem[] | null {
     if (!isObject(entry))
       return []
     const content = pickString(entry, 'content')
-    return [{
+    return [
+      {
       // ACP sends a whole plan with no ids, so position plus content is the
       // identity -- see TodoItem.rowKey.
-      rowKey: todoRowKey(undefined, index, content),
-      content,
-      status: normalizeTodoStatus(entry.status),
-      activeForm: '',
-    }]
+        rowKey: todoRowKey(undefined, index, content),
+        content,
+        status: normalizeTodoStatus(entry.status),
+        activeForm: '',
+      },
+    ]
   })
 }

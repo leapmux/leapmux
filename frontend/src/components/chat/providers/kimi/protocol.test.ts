@@ -21,7 +21,15 @@ describe('kimiEvent', () => {
   })
 
   it('reads no row that is not a Kimi event', () => {
-    for (const row of [null, 'text', [], {}, { type: 'assistant' }, { type: 'settings_changed' }, { content: 'hi' }])
+    for (const row of [
+      null,
+      'text',
+      [],
+      {},
+      { type: 'assistant' },
+      { type: 'settings_changed' },
+      { content: 'hi' },
+    ])
       expect(kimiEvent(row), JSON.stringify(row)).toBeNull()
   })
 })
@@ -38,8 +46,12 @@ describe('kimiEventData', () => {
 
 describe('kimiDisplay', () => {
   it('reads a call display and an approval display', () => {
-    expect(kimiDisplay({ display: { kind: 'command' } })).toStrictEqual({ kind: 'command' })
-    expect(kimiDisplay({ tool_input_display: { kind: 'plan_review' } }, 'tool_input_display')).toStrictEqual({ kind: 'plan_review' })
+    expect(kimiDisplay({
+      display: { kind: 'command' },
+    })).toStrictEqual({ kind: 'command' })
+    expect(kimiDisplay({
+      tool_input_display: { kind: 'plan_review' },
+    }, 'tool_input_display')).toStrictEqual({ kind: 'plan_review' })
     expect(kimiDisplay({ display: 'command' })).toBeUndefined()
     expect(kimiDisplay(null)).toBeUndefined()
   })

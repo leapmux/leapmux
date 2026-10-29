@@ -59,12 +59,21 @@ export function parsedFrame(frame: Record<string, unknown>): ClassificationInput
 
 /** A `session.status` frame. */
 export function statusFrame(statusType: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
-  return mimoFrame(MIMO_EVENT.SessionStatus, { sessionID: TEST_SESSION, status: { type: statusType, ...extra } })
+  return mimoFrame(MIMO_EVENT.SessionStatus, {
+    sessionID: TEST_SESSION,
+    status: { type: statusType, ...extra },
+  })
 }
 
 /** A `session.error` frame. */
 export function errorFrame(name: string, message: string): Record<string, unknown> {
-  return mimoFrame(MIMO_EVENT.SessionError, { sessionID: TEST_SESSION, error: { name, data: { message } } })
+  return mimoFrame(MIMO_EVENT.SessionError, {
+    sessionID: TEST_SESSION,
+    error: {
+      name,
+      data: { message },
+    },
+  })
 }
 
 /** A compaction part: the start carries no projection, and the end carries the summary. */
@@ -77,7 +86,11 @@ export function compactionFrame(ended: boolean, auto = false): Record<string, un
       sessionID: TEST_SESSION,
       type: MIMO_PART_TYPE.Compaction,
       auto,
-      ...(ended ? { projection: { summary: 'Earlier work, summarized.' } } : {}),
+      ...(ended
+        ? {
+            projection: { summary: 'Earlier work, summarized.' },
+          }
+        : {}),
     },
   })
 }

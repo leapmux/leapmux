@@ -131,7 +131,9 @@ export function buildMessageActions(
   if (caller?.onCopyContent) {
     actions.push({
       id: 'copy-content',
-      label: caller.contentCopied ? 'Copied' : (caller.copyContentLabel || 'Copy'),
+      label: caller.contentCopied
+        ? 'Copied'
+        : (caller.copyContentLabel || 'Copy'),
       icon: caller.contentCopied ? Check : Copy,
       run: caller.onCopyContent,
     })
@@ -160,7 +162,9 @@ export function buildMessageActions(
   if (layout?.onToggleExpand) {
     actions.push({
       id: 'expand',
-      label: layout.expanded ? 'Collapse' : (layout.expandLabel || 'Expand'),
+      label: layout.expanded
+        ? 'Collapse'
+        : (layout.expandLabel || 'Expand'),
       icon: layout.expanded ? FoldVertical : UnfoldVertical,
       stopPropagation: true,
       run: layout.onToggleExpand,
@@ -179,8 +183,18 @@ export function buildMessageActions(
  * (`diff-view`, `expand`) sit outside this group and never move.
  */
 const SCREEN_ORDER: Record<'mirrored' | 'normal', MessageActionId[]> = {
-  normal: ['copy-json', 'copy-markdown', 'copy-content', 'quote'],
-  mirrored: ['quote', 'copy-json', 'copy-markdown', 'copy-content'],
+  normal: [
+    'copy-json',
+    'copy-markdown',
+    'copy-content',
+    'quote',
+  ],
+  mirrored: [
+    'quote',
+    'copy-json',
+    'copy-markdown',
+    'copy-content',
+  ],
 }
 
 /** The ids the trailing group renders, always after the leading one. */

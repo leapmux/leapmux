@@ -84,13 +84,24 @@ codebuddyTest('discovers custom native styles and changes them without rewriting
       const settings = join(config, 'settings.json')
       writePrivateJSON(settings, { model: CODEBUDDY_MODEL_ID, outputStyle: 'Configured Custom' })
       return {
-        agentEnv: { ...leapmuxServer.agentEnv, ...environment, HOME: home, USERPROFILE: home, ZDOTDIR: home },
+        agentEnv: {
+          ...leapmuxServer.agentEnv,
+          ...environment,
+          HOME: home,
+          USERPROFILE: home,
+          ZDOTDIR: home,
+        },
         setup: { settings },
       }
     },
     openAgent: (server, workspaceId, workingDir) => openAgentViaAPI(server, workspaceId, workingDir, agentOpenOptions(CODEBUDDY_AGENT.provider)),
   }, async ({ server, workspaceId, setup }) => {
-    const native = await nativeContext({ page, leapmuxServer: server, workspaceId, modelScript })
+    const native = await nativeContext({
+      page,
+      leapmuxServer: server,
+      workspaceId,
+      modelScript,
+    })
     const before = await currentNativeAgent(native)
     await exerciseNativeOptionSequence(native, {
       groupId: 'outputStyle',

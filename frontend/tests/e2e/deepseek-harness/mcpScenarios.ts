@@ -34,8 +34,12 @@ export async function withDeepseekHarnessMcp(
     runDirectory: createTestDirectory('deepseek-mcp-profile-'),
     modelURL,
     modelKey: MODEL_KEY,
-    mcpServers: [{ name: server.name, command: server.command, args: server.args }],
-    ...(setup.agentPreset !== undefined ? { agentPreset: setup.agentPreset } : {}),
+    mcpServers: [
+      { name: server.name, command: server.command, args: server.args },
+    ],
+    ...(setup.agentPreset !== undefined
+      ? { agentPreset: setup.agentPreset }
+      : {}),
   })
   await withNativeWorker(context.leapmuxServer, { dataDirPrefix: 'deepseek-mcp-worker', workerName: 'DeepSeek MCP worker', env }, async (worker) => {
     const privateContext = { ...context, leapmuxServer: worker.server }

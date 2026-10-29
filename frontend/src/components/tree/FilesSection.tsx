@@ -112,7 +112,9 @@ const GIT_ENTRY_SORT_FIELDS: FileSortFields<GitFileStatusEntry> = {
   // slash still covers git's collapsed untracked subtree. Both group with the
   // directories, which is the rule the tree follows.
   isDir: entry => entry.isDir || isUntrackedDirEntry(entry.path),
-  size: entry => (entry.size === undefined ? undefined : Number(entry.size)),
+  size: entry => (entry.size === undefined
+    ? undefined
+    : Number(entry.size)),
   modTime: entry => entry.modTime,
 }
 
@@ -130,11 +132,17 @@ export const FilesSectionHeaderActions: Component<FilesSectionHeaderActionsProps
     <>
       <Show when={props.handle()?.isFiltered() ?? false}>
         <IconButton
-          icon={flatListMode() ? FolderTree : List}
+          icon={flatListMode()
+            ? FolderTree
+            : List}
           iconSize="sm"
           size="sm"
-          title={flatListMode() ? 'Tree view' : 'Flat list'}
-          state={flatListMode() ? IconButtonState.Active : IconButtonState.Enabled}
+          title={flatListMode()
+            ? 'Tree view'
+            : 'Flat list'}
+          state={flatListMode()
+            ? IconButtonState.Active
+            : IconButtonState.Enabled}
           onClick={() => props.handle()?.toggleFlatListMode()}
           data-testid="files-flat-list-toggle"
         />
@@ -158,11 +166,17 @@ export const FilesSectionHeaderActions: Component<FilesSectionHeaderActionsProps
         data-testid="files-collapse-all"
       />
       <IconButton
-        icon={showingHidden() ? Eye : EyeOff}
+        icon={showingHidden()
+          ? Eye
+          : EyeOff}
         iconSize="sm"
         size="sm"
-        title={shortcutHint(showingHidden() ? 'Hide hidden files' : 'Show hidden files', 'app.toggleHiddenFiles')}
-        state={showingHidden() ? IconButtonState.Enabled : IconButtonState.Active}
+        title={shortcutHint(showingHidden()
+          ? 'Hide hidden files'
+          : 'Show hidden files', 'app.toggleHiddenFiles')}
+        state={showingHidden()
+          ? IconButtonState.Enabled
+          : IconButtonState.Active}
         onClick={() => props.handle()?.toggleShowHiddenFiles()}
         data-testid="files-show-hidden-toggle"
       />
@@ -273,7 +287,9 @@ export const FilesSection: Component<FilesSectionProps> = (props) => {
   // second `isVisible()` call beside the first could not be narrowed.
   const isVisibleProps = () => {
     const predicate = isVisible()
-    return predicate !== undefined ? { isVisible: predicate } : {}
+    return predicate !== undefined
+      ? { isVisible: predicate }
+      : {}
   }
 
   return (
@@ -304,8 +320,12 @@ export const FilesSection: Component<FilesSectionProps> = (props) => {
 
       <div
         id={filterPanelId}
-        role={isGitRepo() ? 'tabpanel' : undefined}
-        tabIndex={isGitRepo() ? 0 : undefined}
+        role={isGitRepo()
+          ? 'tabpanel'
+          : undefined}
+        tabIndex={isGitRepo()
+          ? 0
+          : undefined}
         class={styles.panel}
       >
         <Show
@@ -320,8 +340,12 @@ export const FilesSection: Component<FilesSectionProps> = (props) => {
                     selectedPath={props.fileTreePath}
                     onSelect={props.onFileSelect}
                     onFileOpen={path => props.onFileOpen?.(path, activeFilter())}
-                    {...(props.onMention !== undefined ? { onMention: props.onMention } : {})}
-                    {...(props.onOpenTerminal !== undefined ? { onOpenTerminal: props.onOpenTerminal } : {})}
+                    {...(props.onMention !== undefined
+                      ? { onMention: props.onMention }
+                      : {})}
+                    {...(props.onOpenTerminal !== undefined
+                      ? { onOpenTerminal: props.onOpenTerminal }
+                      : {})}
                     rootPath={root()}
                     homeDir={props.homeDir}
                     flavor={props.flavor}
@@ -329,8 +353,12 @@ export const FilesSection: Component<FilesSectionProps> = (props) => {
                     {...isVisibleProps()}
                     showHiddenFiles={showHiddenFiles()}
                     sortOrder={sortOrder()}
-                    {...(props.turnEndTrigger !== undefined ? { turnEndTrigger: props.turnEndTrigger } : {})}
-                    {...(props.enabled !== undefined ? { enabled: props.enabled } : {})}
+                    {...(props.turnEndTrigger !== undefined
+                      ? { turnEndTrigger: props.turnEndTrigger }
+                      : {})}
+                    {...(props.enabled !== undefined
+                      ? { enabled: props.enabled }
+                      : {})}
                     ref={(h) => { treeHandle = h }}
                   />
                 )}
@@ -355,7 +383,13 @@ export const FilesSection: Component<FilesSectionProps> = (props) => {
               }}
             </For>
             <Show when={sortedChangedFiles().length === 0}>
-              <div style={{ 'padding': 'var(--space-4)', 'color': 'var(--faint-foreground)', 'font-size': 'var(--text-7)', 'text-align': 'center' }}>
+              <div style={{
+                'padding': 'var(--space-4)',
+                'color': 'var(--faint-foreground)',
+                'font-size': 'var(--text-7)',
+                'text-align': 'center',
+              }}
+              >
                 No changes
               </div>
             </Show>

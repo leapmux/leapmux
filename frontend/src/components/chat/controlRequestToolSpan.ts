@@ -33,8 +33,12 @@ export function useControlRequestToolSpan(
     const current = request()
     // The provider identifies the span, because the path to a tool-call id is that
     // provider's own wire shape.
-    const spanId = current ? pluginFor(provider())?.controls?.controlToolSpanId?.(current.payload) : ''
-    return spanId ? { spanId, agentSessionId: current?.agentSessionId ?? '' } : undefined
+    const spanId = current
+      ? pluginFor(provider())?.controls?.controlToolSpanId?.(current.payload)
+      : ''
+    return spanId
+      ? { spanId, agentSessionId: current?.agentSessionId ?? '' }
+      : undefined
   }
 
   createEffect(() => {
@@ -56,6 +60,8 @@ export function useControlRequestToolSpan(
   return () => {
     const resolver = context()
     const target = identity()
-    return resolver && target ? resolver.request(target)?.resolved : undefined
+    return resolver && target
+      ? resolver.request(target)?.resolved
+      : undefined
   }
 }

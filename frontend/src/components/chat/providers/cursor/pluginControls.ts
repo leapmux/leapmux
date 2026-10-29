@@ -19,4 +19,6 @@ export const cursorQuestionHandling: ProviderAskUserQuestion = {
 }
 
 export const cursorControlActionsFor: NonNullable<ProviderControlCapability['controlActionsFor']> = payload =>
-  isCursorCreatePlanPayload(payload) ? CursorControlActions : undefined
+  isCursorCreatePlanPayload(payload)
+    ? CursorControlActions
+    : undefined

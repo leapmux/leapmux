@@ -40,7 +40,9 @@ export function gooseChildTaskId(snapshot: NativeMessageSnapshot, spawnCallId: s
       throw new Error('The native Goose parent frame must contain an object.')
     if (body.sessionUpdate === 'tool_call' && body.toolCallId === spawnCallId) {
       const meta = body._meta
-      const tool = isObject(meta) && isObject(meta.goose) ? meta.goose.toolCall : undefined
+      const tool = isObject(meta) && isObject(meta.goose)
+        ? meta.goose.toolCall
+        : undefined
       if (!isObject(tool) || tool.toolName !== GOOSE_SUBAGENT.Tool || tool.extensionName !== GOOSE_SUBAGENT.Extension)
         throw new Error('The paired Goose call is not a native summon delegate.')
       if (!isObject(body.rawInput) || body.rawInput.instructions !== prompt)
@@ -50,7 +52,9 @@ export function gooseChildTaskId(snapshot: NativeMessageSnapshot, spawnCallId: s
     }
     if (body.sessionUpdate === 'tool_call_update' && body.toolCallId === spawnCallId && Array.isArray(body.content)) {
       for (const block of body.content) {
-        const text = isObject(block) && isObject(block.content) && typeof block.content.text === 'string' ? block.content.text : ''
+        const text = isObject(block) && isObject(block.content) && typeof block.content.text === 'string'
+          ? block.content.text
+          : ''
         if (text.startsWith(DELEGATED_PREFIX)) {
           sessionID = text.slice(DELEGATED_PREFIX.length).trim()
           break

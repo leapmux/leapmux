@@ -28,13 +28,26 @@ codexTest('executes the native MCP echo tool and preserves its argument refusal'
   const expectedEchoArguments = { query: 'NATIVE_CODEX_QUERY', limit: 0, tail: 'NATIVE_CODEX_TAIL' }
   await withCleanup(async () => {
     const server = writeMcpFormServer(codexHome, 'form-server.mjs', { receiptLog, expectedEchoArguments })
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
     await openProviderAgent(leapmuxServer, context.workspaceId, CODEX_AGENT, { workingDir: directory })
     await openWorkspace(page, context.workspaceId)
     for (const valid of [true, false]) {
       const callId = valid ? 'codex-native-mcp-accepted' : 'codex-native-mcp-refused'
       const marker = valid ? 'PERMISSION_ACCEPTED' : 'PERMISSION_ARGUMENTS_FAILED'
-      const request = await invokeNativeMcpTool(context, { server: server.name, tool: 'echo', callId, input: { ...expectedEchoArguments, query: valid ? expectedEchoArguments.query : 'WRONG_NATIVE_QUERY' } })
+      const request = await invokeNativeMcpTool(context, {
+        server: server.name,
+        tool: 'echo',
+        callId,
+        input: {
+          ...expectedEchoArguments,
+          query: valid ? expectedEchoArguments.query : 'WRONG_NATIVE_QUERY',
+        },
+      })
       await waitForMcpToolListed(receiptLog, 'echo')
       expect(nativeToolResult(request, callId)).toContain(marker)
       const receipt = readMcpServerReceipt(receiptLog)

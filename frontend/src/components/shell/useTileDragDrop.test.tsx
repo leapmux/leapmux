@@ -21,7 +21,12 @@ function twoTiles(layoutStore: ReturnType<typeof createTestTabStores>['layoutSto
   const [tileA, tileB] = layoutStore.getAllTileIds()
   if (tileA === undefined || tileB === undefined)
     throw new Error('expected two tiles after split')
-  return { fromTile: tileB === toTile ? tileA : tileB, toTile }
+  return {
+    fromTile: tileB === toTile
+      ? tileA
+      : tileB,
+    toTile,
+  }
 }
 
 // Regression: dragging the active tab across tiles used to leave the
@@ -41,13 +46,30 @@ describe('useTileDragDrop.handleCrossTileMove focus follows active tab', () => {
       const floatingWindowStore = createTestFloatingWindowStore()
       const { fromTile, toTile } = twoTiles(layoutStore)
 
-      emitAddTab({ type: TabType.AGENT, id: 'a-active', tileId: fromTile, position: 'a', workerId: 'w-1' })
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'a-active',
+        tileId: fromTile,
+        position: 'a',
+        workerId: 'w-1',
+      })
       selection.setActiveById(TabType.AGENT, 'a-active')
       // A sibling tab on the destination so the drop has context.
-      emitAddTab({ type: TabType.AGENT, id: 'a-dest', tileId: toTile, position: 'a', workerId: 'w-1' })
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'a-dest',
+        tileId: toTile,
+        position: 'a',
+        workerId: 'w-1',
+      })
       layoutStore.setFocusedTile(fromTile)
 
-      const ops = useTileDragDrop({ view, selection, layoutStore, floatingWindowStore })
+      const ops = useTileDragDrop({
+        view,
+        selection,
+        layoutStore,
+        floatingWindowStore,
+      })
       ops.handleCrossTileMove(fromTile, toTile, tabKey({ type: TabType.AGENT, id: 'a-active' }), null)
 
       expect(layoutStore.focusedTileId()).toBe(toTile)
@@ -65,12 +87,29 @@ describe('useTileDragDrop.handleCrossTileMove focus follows active tab', () => {
       // Two tabs on the source: a-active is the visible one; the
       // user is dragging the inactive a-bg without leaving their
       // current attention.
-      emitAddTab({ type: TabType.AGENT, id: 'a-active', tileId: fromTile, position: 'a', workerId: 'w-1' })
-      emitAddTab({ type: TabType.AGENT, id: 'a-bg', tileId: fromTile, position: 'b', workerId: 'w-1' })
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'a-active',
+        tileId: fromTile,
+        position: 'a',
+        workerId: 'w-1',
+      })
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'a-bg',
+        tileId: fromTile,
+        position: 'b',
+        workerId: 'w-1',
+      })
       selection.setActiveById(TabType.AGENT, 'a-active')
       layoutStore.setFocusedTile(fromTile)
 
-      const ops = useTileDragDrop({ view, selection, layoutStore, floatingWindowStore })
+      const ops = useTileDragDrop({
+        view,
+        selection,
+        layoutStore,
+        floatingWindowStore,
+      })
       ops.handleCrossTileMove(fromTile, toTile, tabKey({ type: TabType.AGENT, id: 'a-bg' }), null)
 
       // Focus stays on the source — the active tab is unchanged on
@@ -102,11 +141,34 @@ describe('useTileDragDrop.handleCrossTileMove drop position', () => {
 
       // Source holds one tab at the same seed rank the destination's
       // head uses — the collision that makes the stale read observable.
-      emitAddTab({ type: TabType.AGENT, id: 'a-dragged', tileId: fromTile, position: 'n', workerId: 'w-1' })
-      emitAddTab({ type: TabType.AGENT, id: 'b-head', tileId: toTile, position: 'n', workerId: 'w-1' })
-      emitAddTab({ type: TabType.AGENT, id: 'c-next', tileId: toTile, position: 'nn', workerId: 'w-1' })
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'a-dragged',
+        tileId: fromTile,
+        position: 'n',
+        workerId: 'w-1',
+      })
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'b-head',
+        tileId: toTile,
+        position: 'n',
+        workerId: 'w-1',
+      })
+      emitAddTab({
+        type: TabType.AGENT,
+        id: 'c-next',
+        tileId: toTile,
+        position: 'nn',
+        workerId: 'w-1',
+      })
 
-      const ops = useTileDragDrop({ view, selection, layoutStore, floatingWindowStore })
+      const ops = useTileDragDrop({
+        view,
+        selection,
+        layoutStore,
+        floatingWindowStore,
+      })
       // Drop onto the destination's HEAD: the dragged tab must take that
       // slot and displace `b-head` right.
       ops.handleCrossTileMove(

@@ -72,7 +72,9 @@ export function useExternalApps(enabled: Accessor<boolean>): ExternalApps {
   // groups the file manager ahead of the editors and reads the kind off the
   // wire.
   const sorted = createMemo<ExternalApp[]>(() =>
-    [...externalApps()].sort((a, b) => compareNames(a.displayName, b.displayName)),
+    [
+      ...externalApps(),
+    ].sort((a, b) => compareNames(a.displayName, b.displayName)),
   )
 
   // The pin may name an application that has since been uninstalled. Answer

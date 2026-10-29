@@ -98,7 +98,9 @@ export function CommandInputSummary(props: {
   collapsed?: boolean
   onOverflowChange?: (overflowing: boolean) => void
 }): JSX.Element {
-  const displayCommand = createMemo(() => props.collapsed ? collapsedCommandSummaryText(props.command) : props.command)
+  const displayCommand = createMemo(() => props.collapsed
+    ? collapsedCommandSummaryText(props.command)
+    : props.command)
   const overflow = useCollapsedSummaryOverflow({
     collapsed: () => props.collapsed === true,
     content: displayCommand,
@@ -107,10 +109,14 @@ export function CommandInputSummary(props: {
 
   return (
     <CommandHighlightHtml
-      {...(props.language !== undefined ? { language: props.language } : {})}
+      {...(props.language !== undefined
+        ? { language: props.language }
+        : {})}
       class={joinClassNames(toolInputSummary, props.collapsed && commandInputCollapsed, props.collapsed && overflow.overflowing() && commandInputCollapsedFade)}
       code={displayCommand()}
-      {...(props.context !== undefined ? { context: props.context } : {})}
+      {...(props.context !== undefined
+        ? { context: props.context }
+        : {})}
       {...(props.collapsed !== undefined
         ? { dataCommandInputCollapsed: props.collapsed, dataCommandInputOverflowing: props.collapsed && overflow.overflowing() }
         : {})}
@@ -124,10 +130,14 @@ export function CommandInputSummary(props: {
 export function CommandInputBody(props: { command: string, language?: CommandLanguage, context?: ToolResultRenderContext }): JSX.Element {
   return (
     <CommandHighlightHtml
-      {...(props.language !== undefined ? { language: props.language } : {})}
+      {...(props.language !== undefined
+        ? { language: props.language }
+        : {})}
       class={toolResultContentAnsi}
       code={props.command}
-      {...(props.context !== undefined ? { context: props.context } : {})}
+      {...(props.context !== undefined
+        ? { context: props.context }
+        : {})}
       maxHighlightChars={COMMAND_INPUT_HIGHLIGHT_CHAR_LIMIT}
     />
   )

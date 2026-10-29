@@ -26,7 +26,10 @@ export function museControlResponseSummary(cr: PersistedControlResponse): Contro
   if (!Array.isArray(answers))
     return null
   const questions = museQuestions(cr.request ?? {})
-  const byId = new Map(answers.filter(isObject).map(answer => [pickString(answer, 'questionId'), answer]))
+  const byId = new Map(answers.filter(isObject).map(answer => [
+    pickString(answer, 'questionId'),
+    answer,
+  ]))
   const lines: string[] = []
   for (const question of questions) {
     const answer = byId.get(question.id ?? '')

@@ -4,7 +4,13 @@ import { cursorProtobufNumber, cursorProtobufString, descend, encodeLengthDelimi
 import { cursorSubagentExecutionRequest, cursorSubagentExecutionResponseOf, cursorTaskCompletedFromNativeReply } from './cursorSubagentWire'
 import { cursorSubagentReplyFixture, cursorSubagentSuccessFixture } from './cursorTestFrames'
 
-const call = { callID: 'native-task', description: 'Actual native task', prompt: 'Execute the actual child.', modelID: 'auto', parentConversationID: 'actual-parent' }
+const call = {
+  callID: 'native-task',
+  description: 'Actual native task',
+  prompt: 'Execute the actual child.',
+  modelID: 'auto',
+  parentConversationID: 'actual-parent',
+}
 
 describe('cursorSubagentExecutionRequest', () => {
   it('uses the actual native execution, task, parent, model, and prompt fields', () => {
@@ -36,11 +42,22 @@ describe('cursorSubagentExecutionRequest', () => {
     expect(cursorSubagentExecutionRequest(0, call)).toBeInstanceOf(Uint8Array)
   })
 
-  it.each([-1, 0.5, Number.NaN, Number.POSITIVE_INFINITY, 0x1_0000_0000])('rejects an invalid native execution ID: %s', (id) => {
+  it.each([
+    -1,
+    0.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    0x1_0000_0000,
+  ])('rejects an invalid native execution ID: %s', (id) => {
     expect(() => cursorSubagentExecutionRequest(id, call)).toThrow('must fit uint32')
   })
 
-  it.each(['callID', 'modelID', 'parentConversationID', 'prompt'] as const)('rejects an empty required native field: %s', (field) => {
+  it.each([
+    'callID',
+    'modelID',
+    'parentConversationID',
+    'prompt',
+  ] as const)('rejects an empty required native field: %s', (field) => {
     expect(() => cursorSubagentExecutionRequest(1, { ...call, [field]: '' })).toThrow('requires its tool, model, parent, and prompt')
   })
 })
@@ -48,7 +65,15 @@ describe('cursorSubagentExecutionRequest', () => {
 describe('cursorSubagentExecutionResponseOf', () => {
   it('reads the actual child ID, report, and zero tool count', () => {
     const outcome = cursorSubagentSuccessFixture({ agentID: 'actual-child', finalMessage: 'ACTUAL_CHILD_REPORT', toolCallCount: 0 })
-    expect(cursorSubagentExecutionResponseOf(cursorSubagentReplyFixture(3, outcome))).toMatchObject({ id: 3, execID: 'native-task', success: true, agentID: 'actual-child', finalMessage: 'ACTUAL_CHILD_REPORT', toolCallCount: 0, rawResult: outcome })
+    expect(cursorSubagentExecutionResponseOf(cursorSubagentReplyFixture(3, outcome))).toMatchObject({
+      id: 3,
+      execID: 'native-task',
+      success: true,
+      agentID: 'actual-child',
+      finalMessage: 'ACTUAL_CHILD_REPORT',
+      toolCallCount: 0,
+      rawResult: outcome,
+    })
   })
 
   it('keeps absent and explicit empty reports distinct', () => {
@@ -59,7 +84,10 @@ describe('cursorSubagentExecutionResponseOf', () => {
   })
 
   it('retains the native error text and optional child ID', () => {
-    const outcome = encodeLengthDelimited(2, new Uint8Array(Buffer.concat([encodeStringField(1, 'actual-child'), encodeStringField(2, 'Actual native child failure.')])))
+    const outcome = encodeLengthDelimited(2, new Uint8Array(Buffer.concat([
+      encodeStringField(1, 'actual-child'),
+      encodeStringField(2, 'Actual native child failure.'),
+    ])))
     expect(cursorSubagentExecutionResponseOf(cursorSubagentReplyFixture(5, outcome))).toMatchObject({ success: false, agentID: 'actual-child', error: 'Actual native child failure.' })
     const empty = cursorSubagentExecutionResponseOf(cursorSubagentReplyFixture(5, encodeLengthDelimited(2, encodeStringField(2, ''))))
     expect(empty).toMatchObject({ success: false, error: '' })
@@ -73,7 +101,10 @@ describe('cursorSubagentExecutionResponseOf', () => {
 
   it('rejects a missing outcome and two native outcome choices', () => {
     expect(() => cursorSubagentExecutionResponseOf(cursorSubagentReplyFixture(1, new Uint8Array()))).toThrow('has no result')
-    const duplicate = new Uint8Array(Buffer.concat([cursorSubagentSuccessFixture({ agentID: 'actual-child' }), encodeLengthDelimited(2, encodeStringField(2, 'Failure.'))]))
+    const duplicate = new Uint8Array(Buffer.concat([
+      cursorSubagentSuccessFixture({ agentID: 'actual-child' }),
+      encodeLengthDelimited(2, encodeStringField(2, 'Failure.')),
+    ]))
     expect(() => cursorSubagentExecutionResponseOf(cursorSubagentReplyFixture(1, duplicate))).toThrow('repeats its result choice')
   })
 

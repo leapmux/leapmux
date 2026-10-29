@@ -62,9 +62,15 @@ export function dividerMetaFromMessage(parsed: ParsedMessageContent): TurnMetric
   if (durationMs === undefined && costUsd === undefined && numToolUses === undefined)
     return undefined
   return {
-    ...(durationMs !== undefined ? { durationMs } : {}),
-    ...(costUsd !== undefined ? { costUsd } : {}),
-    ...(numToolUses !== undefined ? { numToolUses } : {}),
+    ...(durationMs !== undefined
+      ? { durationMs }
+      : {}),
+    ...(costUsd !== undefined
+      ? { costUsd }
+      : {}),
+    ...(numToolUses !== undefined
+      ? { numToolUses }
+      : {}),
   }
 }
 

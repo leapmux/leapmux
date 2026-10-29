@@ -6,7 +6,9 @@ export function piPlanApprovalDetails(payload: Record<string, unknown>): string[
   const lines = pickString(payload, 'title').split('\n').map(line => line.trim())
   return ['Model: ', 'Plan reinjection: '].flatMap((prefix) => {
     const line = lines.find(line => line.startsWith(prefix))
-    return line ? [line] : []
+    return line
+      ? [line]
+      : []
   })
 }
 

@@ -13,7 +13,16 @@ const base = createACPProvider({
   defaultPermissionMode: GEMINI_MODE.Default,
   planValue: GEMINI_MODE.Plan,
   permissionPresets: geminiPermissionPresets,
-  attachments: { text: true, image: true, pdf: true, audio: true, binary: true },
+  attachments: {
+    text: true,
+    image: true,
+    pdf: true,
+    audio: true,
+    binary: true,
+  },
 })
 
-registerProvider(AgentProvider.GEMINI_CLI, { ...base, transcript: composeGeminiTranscript(base.transcript) })
+registerProvider(AgentProvider.GEMINI_CLI, {
+  ...base,
+  transcript: composeGeminiTranscript(base.transcript),
+})

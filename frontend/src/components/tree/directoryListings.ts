@@ -78,12 +78,16 @@ export async function loadListings(
     path: dirPath,
     maxDepth: 5,
     dirsOnly: !showFiles,
-    ...(fromRoot ? { fromRoot } : {}),
+    ...(fromRoot
+      ? { fromRoot }
+      : {}),
   })
   return {
     listings: resp.listings.map(toListingData),
     ...(resp.unreadable
-      ? { unreadable: { path: resp.unreadable.path, reason: resp.unreadable.reason } }
+      ? {
+          unreadable: { path: resp.unreadable.path, reason: resp.unreadable.reason },
+        }
       : {}),
   }
 }
@@ -119,7 +123,9 @@ export async function loadChildren(
  * and an un-normalized comparison says it is not.
  */
 export function ancestorChain(root: string, target: string, flavor: PathFlavor): string[] {
-  const rel = target ? relativeUnder(normalizeSeparators(target, flavor), normalizeSeparators(root, flavor), flavor) : null
+  const rel = target
+    ? relativeUnder(normalizeSeparators(target, flavor), normalizeSeparators(root, flavor), flavor)
+    : null
   if (!rel)
     return [root]
   const chain = [root]
@@ -317,7 +323,9 @@ export function createDirectoryListings(opts: DirectoryListingsOptions): Directo
     if (parent === undefined)
       return chain
     const known = opts.getChildren(parent)?.find(c => samePath(c.path, target, flavor))
-    return known && !known.isDir ? chain.slice(0, -1) : chain
+    return known && !known.isDir
+      ? chain.slice(0, -1)
+      : chain
   }
 
   // Load the root listing and, when the tree has somewhere to reveal, every
@@ -402,7 +410,10 @@ export function createDirectoryListings(opts: DirectoryListingsOptions): Directo
         // reaches the target: the per-node cascade re-lists each such level
         // under the path it asked for, at one round trip per level. The chain
         // is an optimization, and this is the case where it does not apply.
-        opts.setListings([{ ...first, path: root }, ...rest])
+        opts.setListings([
+          { ...first, path: root },
+          ...rest,
+        ])
         // The worker names the directory its chain stopped at, and why. Set it
         // AFTER the listings, because writing a listing clears the reason for
         // that path and the unreadable one carries no listing.
@@ -428,5 +439,10 @@ export function createDirectoryListings(opts: DirectoryListingsOptions): Directo
     claimInFlight(chain, work)
   })
 
-  return { loading, error, ensureChildren, refetchChildren }
+  return {
+    loading,
+    error,
+    ensureChildren,
+    refetchChildren,
+  }
 }

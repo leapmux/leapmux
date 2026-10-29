@@ -79,7 +79,9 @@ function deliveredChildReport(requestBody: unknown): string | undefined {
 /** Finish only the native child continuation after its own report reached its caller. */
 export function claudeDeliveredChildResponse(requestBody: unknown): MockModelStep | undefined {
   const report = deliveredChildReport(requestBody)
-  return report === undefined ? undefined : { text: report }
+  return report === undefined
+    ? undefined
+    : { text: report }
 }
 
 /** Deliver a completed Claude child report through the tool that its actual request offers. */
@@ -88,5 +90,10 @@ export function applyClaudeChildHandback(requestBody: unknown, step: MockModelSt
     || !hasNativeHandback(requestBody) || deliveredChildReport(requestBody) !== undefined) {
     return step
   }
-  return { ...step, toolCalls: [claudeSubagentHandbackToolCall(`${responseId}-handback`, step.text)] }
+  return {
+    ...step,
+    toolCalls: [
+      claudeSubagentHandbackToolCall(`${responseId}-handback`, step.text),
+    ],
+  }
 }

@@ -71,13 +71,18 @@ export function classifyMiMoMessage(input: ClassificationInput): MessageCategory
         return { kind: 'unknown' }
       }
       case MIMO_EVENT.SessionError:
-        return persistedAsTurnEnd(parent) ? { kind: 'result_divider' } : notification([parent], 'hidden')
+        return persistedAsTurnEnd(parent)
+          ? { kind: 'result_divider' }
+          : notification([parent], 'hidden')
       case MIMO_EVENT.SessionRetryAttempt:
         return notification([parent], 'hidden')
       case MIMO_EVENT.MessagePartUpdated: {
         const part = pickObject(event.properties, 'part')
-        if (pickString(part, 'type') === MIMO_PART_TYPE.Compaction)
-          return part && mimoCompactionEnded(part) ? notification([parent]) : { kind: 'unknown' }
+        if (pickString(part, 'type') === MIMO_PART_TYPE.Compaction) {
+          return part && mimoCompactionEnded(part)
+            ? notification([parent])
+            : { kind: 'unknown' }
+        }
         const tool = mimoToolPart(parent)
         if (!tool)
           return { kind: 'unknown' }

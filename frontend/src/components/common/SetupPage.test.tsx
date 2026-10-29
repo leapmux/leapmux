@@ -73,8 +73,12 @@ function renderSetup() {
 
 /** Fill the fields every sign-up method needs. */
 function fillCommonFields(username: string) {
-  fireEvent.input(screen.getByLabelText('Username'), { target: { value: username } })
-  fireEvent.input(screen.getByLabelText('Email'), { target: { value: `${username}@example.com` } })
+  fireEvent.input(screen.getByLabelText('Username'), {
+    target: { value: username },
+  })
+  fireEvent.input(screen.getByLabelText('Email'), {
+    target: { value: `${username}@example.com` },
+  })
 }
 
 beforeEach(() => {
@@ -162,7 +166,9 @@ describe('the first-run setup page (SetupPage)', () => {
   // took the setup exemption on the password path only.
   it('registers the first administrator with a passkey', async () => {
     mockBeginPasskeySignUp.mockResolvedValue({ sessionId: 's-1', optionsJson: '{}' })
-    mockFinishPasskeySignUp.mockResolvedValue({ user: { id: 'u-1', username: 'admin' } })
+    mockFinishPasskeySignUp.mockResolvedValue({
+      user: { id: 'u-1', username: 'admin' },
+    })
 
     renderSetup()
     await screen.findByText('Welcome to LeapMux')
@@ -182,13 +188,19 @@ describe('the first-run setup page (SetupPage)', () => {
   })
 
   it('still registers the first administrator with a password', async () => {
-    mockSignUp.mockResolvedValue({ user: { id: 'u-1', username: 'admin' } })
+    mockSignUp.mockResolvedValue({
+      user: { id: 'u-1', username: 'admin' },
+    })
 
     renderSetup()
     await screen.findByText('Welcome to LeapMux')
     fillCommonFields('admin')
-    fireEvent.input(screen.getByLabelText('New Password'), { target: { value: 'strongpass1' } })
-    fireEvent.input(screen.getByLabelText('Confirm Password'), { target: { value: 'strongpass1' } })
+    fireEvent.input(screen.getByLabelText('New Password'), {
+      target: { value: 'strongpass1' },
+    })
+    fireEvent.input(screen.getByLabelText('Confirm Password'), {
+      target: { value: 'strongpass1' },
+    })
     fireEvent.click(screen.getByRole('button', { name: 'Create account' }))
 
     await vi.waitFor(() => {

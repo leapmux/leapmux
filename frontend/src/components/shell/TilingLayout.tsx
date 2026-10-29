@@ -63,7 +63,12 @@ function useAxisRatios(
       }
     })
   }
-  return { effective, cumulativeRatios, gridTemplate, startDrag }
+  return {
+    effective,
+    cumulativeRatios,
+    gridTemplate,
+    startDrag,
+  }
 }
 
 interface TilingCallbacks {
@@ -96,8 +101,12 @@ function threadCallbacks(props: TilingCallbacks): TilingCallbacks {
   /* eslint-disable solid/reactivity -- every caller spreads this inside JSX, where Solid wraps the expression in a lazy mergeProps getter, so these reads stay tracked. */
   return {
     renderTile: props.renderTile,
-    ...(props.onRatioChange === undefined ? {} : { onRatioChange: props.onRatioChange }),
-    ...(props.onGridRatiosChange === undefined ? {} : { onGridRatiosChange: props.onGridRatiosChange }),
+    ...(props.onRatioChange === undefined
+      ? {}
+      : { onRatioChange: props.onRatioChange }),
+    ...(props.onGridRatiosChange === undefined
+      ? {}
+      : { onGridRatiosChange: props.onGridRatiosChange }),
   }
   /* eslint-enable solid/reactivity */
 }
@@ -117,7 +126,10 @@ function LayoutNodeRenderer(props: LayoutNodeRendererProps): JSX.Element {
   const node = () => props.node
   return (
     <Switch>
-      <Match when={node().type === 'leaf' ? node() : null}>
+      <Match when={node().type === 'leaf'
+        ? node()
+        : null}
+      >
         {leaf => (
           // GridRenderer uses `<Index each={cells}>`, which keeps the
           // same DOM slot when the underlying cell record mutates
@@ -137,7 +149,10 @@ function LayoutNodeRenderer(props: LayoutNodeRendererProps): JSX.Element {
           </Show>
         )}
       </Match>
-      <Match when={node().type === 'grid' ? node() as GridNode : null}>
+      <Match when={node().type === 'grid'
+        ? node() as GridNode
+        : null}
+      >
         {grid => (
           <GridRenderer
             grid={grid()}
@@ -145,7 +160,10 @@ function LayoutNodeRenderer(props: LayoutNodeRendererProps): JSX.Element {
           />
         )}
       </Match>
-      <Match when={node().type === 'split' ? node() as SplitNode : null}>
+      <Match when={node().type === 'split'
+        ? node() as SplitNode
+        : null}
+      >
         {split => (
           <SplitRenderer
             split={split()}
@@ -174,11 +192,18 @@ function SplitRenderer(props: SplitRendererProps): JSX.Element {
   // committing. During a drag we only mutate the local signal, not the
   // store, so this never fires mid-drag.
   const dragTeardown = createDragTeardownHandle(
-    () => [s().id, s().direction, s().ratios, s().children],
+    () => [
+      s().id,
+      s().direction,
+      s().ratios,
+      s().children,
+    ],
   )
 
   const axis = useAxisRatios(
-    () => isVerticalDivider() ? 'col' : 'row',
+    () => isVerticalDivider()
+      ? 'col'
+      : 'row',
     () => s().ratios,
     () => containerRef,
     dragTeardown,
@@ -200,7 +225,9 @@ function SplitRenderer(props: SplitRendererProps): JSX.Element {
       data-direction={s().direction}
       data-testid="tile-split"
       style={{
-        [isVerticalDivider() ? 'grid-template-columns' : 'grid-template-rows']: axis.gridTemplate(),
+        [isVerticalDivider()
+          ? 'grid-template-columns'
+          : 'grid-template-rows']: axis.gridTemplate(),
       }}
     >
       {/*
@@ -222,8 +249,12 @@ function SplitRenderer(props: SplitRendererProps): JSX.Element {
           <div
             class={styles.tilingCell}
             style={{
-              'grid-column': isVerticalDivider() ? `${i + 1}` : '1',
-              'grid-row': isVerticalDivider() ? '1' : `${i + 1}`,
+              'grid-column': isVerticalDivider()
+                ? `${i + 1}`
+                : '1',
+              'grid-row': isVerticalDivider()
+                ? '1'
+                : `${i + 1}`,
             }}
           >
             <LayoutNodeRenderer
@@ -237,7 +268,9 @@ function SplitRenderer(props: SplitRendererProps): JSX.Element {
         {(pos, i) => (
           <div
             class={styles.tilingSeparator}
-            data-axis={isVerticalDivider() ? 'col' : 'row'}
+            data-axis={isVerticalDivider()
+              ? 'col'
+              : 'row'}
             data-testid="tile-resize-handle"
             // role="separator" + aria-orientation describes the separator
             // itself: a vertical-divider split has a *vertical* separator
@@ -245,9 +278,13 @@ function SplitRenderer(props: SplitRendererProps): JSX.Element {
             // intentionally not implemented; revisit if accessibility
             // audits demand it.
             role="separator"
-            aria-orientation={isVerticalDivider() ? 'vertical' : 'horizontal'}
+            aria-orientation={isVerticalDivider()
+              ? 'vertical'
+              : 'horizontal'}
             style={{
-              [isVerticalDivider() ? 'left' : 'top']: `${pos() * 100}%`,
+              [isVerticalDivider()
+                ? 'left'
+                : 'top']: `${pos() * 100}%`,
             }}
             onPointerDown={e => axis.startDrag(i, e)}
           />
@@ -264,12 +301,21 @@ function GridRenderer(props: GridRendererProps): JSX.Element {
   // Cancel any in-flight drag when the grid's structure or persisted
   // ratios change — same rationale as in SplitRenderer.
   const dragTeardown = createDragTeardownHandle(
-    () => [g().id, g().rows, g().cols, g().rowRatios, g().colRatios, g().cells],
+    () => [
+      g().id,
+      g().rows,
+      g().cols,
+      g().rowRatios,
+      g().colRatios,
+      g().cells,
+    ],
   )
 
   const makeAxis = (which: GridAxis) => useAxisRatios(
     () => which,
-    () => which === 'col' ? g().colRatios : g().rowRatios,
+    () => which === 'col'
+      ? g().colRatios
+      : g().rowRatios,
     () => containerRef,
     dragTeardown,
     () => {

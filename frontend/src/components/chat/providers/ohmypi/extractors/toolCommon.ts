@@ -72,8 +72,16 @@ export function ohMyPiExtractTool(payload: Record<string, unknown> | null | unde
     toolName,
     args: pickObject(payload, OH_MY_PI_FRAME_FIELD.Args) ?? {},
     intent: pickString(payload, 'intent'),
-    ...(result ? { result: ohMyPiToolResult(result) } : {}),
-    ...(partial ? { partialResult: ohMyPiToolResult(partial) } : {}),
+    ...(result
+      ? {
+          result: ohMyPiToolResult(result),
+        }
+      : {}),
+    ...(partial
+      ? {
+          partialResult: ohMyPiToolResult(partial),
+        }
+      : {}),
     isError: payload.isError === true,
   }
   toolCache.set(payload, tool)
@@ -83,7 +91,9 @@ export function ohMyPiExtractTool(payload: Record<string, unknown> | null | unde
 /** The frame's `type`, when it is one of the three tool frames. */
 function toolFrameType(payload: Record<string, unknown> | null | undefined): string {
   const type = pickString(payload, 'type')
-  return type === OH_MY_PI_EVENT.ToolExecutionStart || type === OH_MY_PI_EVENT.ToolExecutionEnd ? type : ''
+  return type === OH_MY_PI_EVENT.ToolExecutionStart || type === OH_MY_PI_EVENT.ToolExecutionEnd
+    ? type
+    : ''
 }
 
 /**

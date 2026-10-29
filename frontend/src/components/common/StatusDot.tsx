@@ -44,7 +44,9 @@ export interface StatusDotProps {
 export function StatusDot(props: StatusDotProps) {
   const dot = () => (
     <span
-      class={props.class ? `${statusDot} ${props.class}` : statusDot}
+      class={props.class
+        ? `${statusDot} ${props.class}`
+        : statusDot}
       role="img"
       aria-label={props.label}
       data-status={props.status}

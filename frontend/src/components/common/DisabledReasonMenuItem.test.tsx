@@ -11,7 +11,10 @@ function renderItem(reason: string | undefined, onClick = vi.fn()) {
       </DisabledReasonMenuItem>
     </menu>
   ))
-  return { onClick, item: screen.getByTestId('item') }
+  return {
+    onClick,
+    item: screen.getByTestId('item'),
+  }
 }
 
 describe('DisabledReasonMenuItem', () => {

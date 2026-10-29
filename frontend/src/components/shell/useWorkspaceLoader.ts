@@ -19,8 +19,12 @@ export function useWorkspaceLoader(opts: UseWorkspaceLoaderOpts) {
   // Stabilize the identity of fetched proto objects so the sidebar's
   // <For>s don't unmount and remount every row when the lists are
   // refreshed (e.g. after a moveSection rollback). See `lib/identityCache.ts`.
-  const workspaceIdentity = createIdentityCache<Workspace>({ keyOf: w => w.id })
-  const sectionIdentity = createIdentityCache<Section>({ keyOf: s => s.id })
+  const workspaceIdentity = createIdentityCache<Workspace>({
+    keyOf: w => w.id,
+  })
+  const sectionIdentity = createIdentityCache<Section>({
+    keyOf: s => s.id,
+  })
   const sectionItemIdentity = createIdentityCache<SectionItem>({
     // SectionItems don't have their own id; (sectionId, workspaceId) is unique.
     keyOf: i => `${i.sectionId}\u0000${i.workspaceId}`,
@@ -119,5 +123,10 @@ export function useWorkspaceLoader(opts: UseWorkspaceLoaderOpts) {
       })
   }
 
-  return { loadWorkspaces, loadSections, handleMoveSection, handleMoveSectionServer }
+  return {
+    loadWorkspaces,
+    loadSections,
+    handleMoveSection,
+    handleMoveSectionServer,
+  }
 }

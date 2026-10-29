@@ -3,7 +3,14 @@ import { AgentProvider, MessageCompletion } from '~/generated/proto/leapmux/v1/a
 import { input } from '../testUtils'
 import { ohMyPiRelatedMessages, ohMyPiSpanRole } from './spanRole'
 
-const frame = (type: string, completion?: MessageCompletion) => ({ ...input({ type, toolCallId: 'c', toolName: 'bash' }, undefined, AgentProvider.OH_MY_PI), ...(completion !== undefined ? { completion } : {}) })
+function frame(type: string, completion?: MessageCompletion) {
+  return {
+    ...input({ type, toolCallId: 'c', toolName: 'bash' }, undefined, AgentProvider.OH_MY_PI),
+    ...(completion !== undefined
+      ? { completion }
+      : {}),
+  }
+}
 
 describe('ohMyPiSpanRole', () => {
   it('reads the side of a span from the frame type', () => {

@@ -31,13 +31,34 @@ export function clineResultDivider(parsed: unknown, completion?: MessageCompleti
   const envelope = clineEnvelope(parsed)
   if (!envelope || !clineEndsRun(envelope.event))
     return null
-  const durationMs = pickNumber(isObject(parsed) ? parsed : undefined, 'duration_ms')
+  const durationMs = pickNumber(isObject(parsed)
+    ? parsed
+    : undefined, 'duration_ms')
   const reason = pickString(envelope.payload, CLINE_FIELD.Reason)
-  if (completion === MessageCompletion.INTERRUPTED || envelope.event === CLINE_EVENT.RunAborted || reason === CLINE_RUN_REASON.Aborted)
-    return { label: turnEndLabel('interrupted', { durationMs }) }
+  if (completion === MessageCompletion.INTERRUPTED || envelope.event === CLINE_EVENT.RunAborted || reason === CLINE_RUN_REASON.Aborted) {
+    return {
+      label: turnEndLabel('interrupted', { durationMs }),
+    }
+  }
   if (envelope.event === CLINE_EVENT.RunFailed || completion === MessageCompletion.ERROR) {
     const error = pickString(envelope.payload, CLINE_FIELD.Error) || pickString(pickObject(envelope.payload, CLINE_FIELD.Result), CLINE_FIELD.Text)
-    return { label: turnEndLabel('failed', { durationMs, qualifiers: [REASON_QUALIFIERS.get(reason)], reason: error }), isError: true }
+    return {
+      label: turnEndLabel('failed', {
+        durationMs,
+        qualifiers: [
+          REASON_QUALIFIERS.get(reason),
+        ],
+        reason: error,
+      }),
+      isError: true,
+    }
   }
-  return { label: turnEndLabel('ended', { durationMs, qualifiers: [REASON_QUALIFIERS.get(reason)] }) }
+  return {
+    label: turnEndLabel('ended', {
+      durationMs,
+      qualifiers: [
+        REASON_QUALIFIERS.get(reason),
+      ],
+    }),
+  }
 }

@@ -71,7 +71,12 @@ function visitReportSpecs(report: unknown, visitSpec: (spec: PlaywrightReportSpe
     for (const spec of suite.specs) {
       if (!isObject(spec) || typeof spec.file !== 'string' || !spec.file || !Array.isArray(spec.tests) || spec.tests.length === 0)
         throw new Error('The Playwright report contains an incomplete test.')
-      visitSpec({ file: spec.file, tests: spec.tests, source: spec, ancestors: path })
+      visitSpec({
+        file: spec.file,
+        tests: spec.tests,
+        source: spec,
+        ancestors: path,
+      })
     }
     for (const child of suite.suites ?? [])
       visit(child, path)
@@ -97,7 +102,7 @@ export interface E2ETestCoverage {
 
 function stringIdentity(value: unknown, field: string): string {
   if (typeof value !== 'string')
-    throw new Error(`The Playwright report contains an invalid ${field} identity.`)
+    throw new TypeError(`The Playwright report contains an invalid ${field} identity.`)
   return value
 }
 
@@ -126,16 +131,36 @@ export function discoveredTestCoverage(report: unknown): E2ETestCoverage {
       const projectName = stringIdentity(test.projectName, 'project name')
       // Playwright's blob merge drops __projectId and keeps the project name.
       // Preserve a present ID. Exact coverage rejects ambiguous merged project names.
-      const projectId = test.projectId === undefined ? projectName : stringIdentity(test.projectId, 'project ID')
+      const projectId = test.projectId === undefined
+        ? projectName
+        : stringIdentity(test.projectId, 'project ID')
       // The Playwright JSON report omits repeatEachIndex and merges repeats into this array.
       // Count each specification and project separately to retain every repeat.
-      const identity = JSON.stringify([spec.file, titlePath, line, column, projectId, projectName])
+      const identity = JSON.stringify([
+        spec.file,
+        titlePath,
+        line,
+        column,
+        projectId,
+        projectName,
+      ])
       const repeatIndex = repeats.get(identity) ?? 0
       repeats.set(identity, repeatIndex + 1)
-      cases.push({ file: spec.file, titlePath, line, column, projectId, projectName, repeatIndex })
+      cases.push({
+        file: spec.file,
+        titlePath,
+        line,
+        column,
+        projectId,
+        projectName,
+        repeatIndex,
+      })
     }
   })
-  return { files: [...files].sort(), cases }
+  return {
+    files: [...files].sort(),
+    cases,
+  }
 }
 
 export function readDiscoveredTestCoverage(path: string): E2ETestCoverage {
@@ -161,7 +186,15 @@ export function collectShardBlobs(artifactDirs: readonly string[], destination: 
 /** Require exact selected case coverage in the parsed merged report before a complete run can succeed. */
 export function assertMergedTestCoverage(report: unknown, expectedCases: readonly E2ECaseIdentity[]): void {
   const identities = (cases: readonly E2ECaseIdentity[]): string[] => cases.map(({ file, titlePath, line, column, projectId, projectName, repeatIndex }) =>
-    JSON.stringify([file, titlePath, line, column, projectId, projectName, repeatIndex])).sort()
+    JSON.stringify([
+      file,
+      titlePath,
+      line,
+      column,
+      projectId,
+      projectName,
+      repeatIndex,
+    ])).sort()
   const actual = identities(discoveredTestCoverage(report).cases)
   if (JSON.stringify(actual) !== JSON.stringify(identities(expectedCases)))
     throw new Error('The merged E2E report does not contain every selected test case exactly once.')
@@ -202,8 +235,19 @@ export function reportedFileDurations(report: unknown): Map<string, FileDuration
   return totals
 }
 
-const TEST_OUTCOMES = new Set(['expected', 'unexpected', 'flaky', 'skipped'])
-const TEST_STATUSES = new Set(['passed', 'failed', 'timedOut', 'skipped', 'interrupted'])
+const TEST_OUTCOMES = new Set([
+  'expected',
+  'unexpected',
+  'flaky',
+  'skipped',
+])
+const TEST_STATUSES = new Set([
+  'passed',
+  'failed',
+  'timedOut',
+  'skipped',
+  'interrupted',
+])
 
 /**
  * Decide whether one Playwright test leaves its file without a complete clean result.

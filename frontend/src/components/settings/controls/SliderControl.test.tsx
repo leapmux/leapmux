@@ -23,11 +23,15 @@ describe('SliderControl', () => {
     const slider = screen.getByRole('slider', { name: 'Volume' }) as HTMLInputElement
     expect(screen.getByText('40%')).toBeTruthy()
 
-    fireEvent.input(slider, { target: { value: '60' } })
+    fireEvent.input(slider, {
+      target: { value: '60' },
+    })
     expect(screen.getByText('60%')).toBeTruthy()
     expect(onChange).not.toHaveBeenCalled()
 
-    fireEvent.change(slider, { target: { value: '60' } })
+    fireEvent.change(slider, {
+      target: { value: '60' },
+    })
     expect(onChange).toHaveBeenCalledWith(60)
   })
 })

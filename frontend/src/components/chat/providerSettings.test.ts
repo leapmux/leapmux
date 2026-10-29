@@ -20,22 +20,32 @@ function group(id: string, optionIds: string[], currentValue: string): Available
 const MODES = ['default', 'auto', 'bypassPermissions']
 
 describe('permissionPresetActive', () => {
-  const groups = [group('permissionMode', MODES, 'auto')]
+  const groups = [
+    group('permissionMode', MODES, 'auto'),
+  ]
 
   it('reports a preset whose every axis already holds its value', () => {
-    expect(permissionPresetActive({ sets: { permissionMode: 'auto' } }, groups, {})).toBe(true)
+    expect(permissionPresetActive({
+      sets: { permissionMode: 'auto' },
+    }, groups, {})).toBe(true)
   })
 
   it('reports nothing for a preset that would change an axis', () => {
-    expect(permissionPresetActive({ sets: { permissionMode: 'bypassPermissions' } }, groups, {})).toBe(false)
+    expect(permissionPresetActive({
+      sets: { permissionMode: 'bypassPermissions' },
+    }, groups, {})).toBe(false)
   })
 
   it('prefers the optimistic value over the catalog value', () => {
     // A switch the user just made, before the agent confirms it. The pill must
     // open on where the session is going, not where it was.
     const values = { permissionMode: 'bypassPermissions' }
-    expect(permissionPresetActive({ sets: { permissionMode: 'bypassPermissions' } }, groups, values)).toBe(true)
-    expect(permissionPresetActive({ sets: { permissionMode: 'auto' } }, groups, values)).toBe(false)
+    expect(permissionPresetActive({
+      sets: { permissionMode: 'bypassPermissions' },
+    }, groups, values)).toBe(true)
+    expect(permissionPresetActive({
+      sets: { permissionMode: 'auto' },
+    }, groups, values)).toBe(false)
   })
 
   it('requires EVERY axis of a multi-axis preset', () => {
@@ -65,26 +75,42 @@ describe('permissionPresetActive', () => {
     ['missing', ''],
     ['off-list', 'unknown'],
   ])('does not treat a %s current value as the default preset', (_, currentValue) => {
-    const unresolvedCurrent = [group('permissionMode', ['smart', 'bypass'], currentValue)]
+    const unresolvedCurrent = [
+      group('permissionMode', ['smart', 'bypass'], currentValue),
+    ]
 
-    expect(permissionPresetActive({ sets: { permissionMode: 'smart' } }, unresolvedCurrent, {})).toBe(false)
+    expect(permissionPresetActive({
+      sets: { permissionMode: 'smart' },
+    }, unresolvedCurrent, {})).toBe(false)
   })
 })
 
 describe('activePermissionPreset', () => {
   const presets = {
-    smart: { sets: { permissionMode: 'auto' } },
-    bypass: { sets: { permissionMode: 'bypassPermissions' } },
+    smart: {
+      sets: { permissionMode: 'auto' },
+    },
+    bypass: {
+      sets: { permissionMode: 'bypassPermissions' },
+    },
   }
 
   it('reports the preset the session has on', () => {
-    expect(activePermissionPreset(presets, [group('permissionMode', MODES, 'auto')], {})).toBe('smart')
-    expect(activePermissionPreset(presets, [group('permissionMode', MODES, 'bypassPermissions')], {})).toBe('bypass')
+    expect(activePermissionPreset(presets, [
+      group('permissionMode', MODES, 'auto'),
+    ], {})).toBe('smart')
+    expect(activePermissionPreset(presets, [
+      group('permissionMode', MODES, 'bypassPermissions'),
+    ], {})).toBe('bypass')
   })
 
   it('reports nothing when neither preset is on', () => {
-    expect(activePermissionPreset(presets, [group('permissionMode', MODES, 'default')], {})).toBeUndefined()
-    expect(activePermissionPreset({}, [group('permissionMode', MODES, 'auto')], {})).toBeUndefined()
+    expect(activePermissionPreset(presets, [
+      group('permissionMode', MODES, 'default'),
+    ], {})).toBeUndefined()
+    expect(activePermissionPreset({}, [
+      group('permissionMode', MODES, 'auto'),
+    ], {})).toBeUndefined()
   })
 
   it('prefers bypass when both presets report active', () => {
@@ -92,8 +118,12 @@ describe('activePermissionPreset', () => {
     // permission behavior. An untouched request must preserve that stronger
     // state rather than reapply Assisted Approval and clear Allow All.
     const copilot = {
-      smart: { sets: { copilot_assisted_approval: 'on' } },
-      bypass: { sets: { allow_all: 'on' } },
+      smart: {
+        sets: { copilot_assisted_approval: 'on' },
+      },
+      bypass: {
+        sets: { allow_all: 'on' },
+      },
     }
     const groups = [
       group('copilot_assisted_approval', ['off', 'on'], 'on'),

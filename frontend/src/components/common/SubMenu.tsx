@@ -80,7 +80,9 @@ export const SubMenu: Component<SubMenuProps> = (props) => {
         setOpen(open)
         props.onToggle?.(open)
       }}
-      {...(props.popoverTestId !== undefined ? { 'data-testid': props.popoverTestId } : {})}
+      {...(props.popoverTestId !== undefined
+        ? { 'data-testid': props.popoverTestId }
+        : {})}
       trigger={triggerProps => (
         <button
           type="button"

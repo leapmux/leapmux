@@ -17,7 +17,12 @@ const harness = vi.hoisted(() => ({
 }))
 
 /** The request that the allowed operation produces. */
-const RESULT_REQUEST: MockModelRequestRecord = { protocol: 'openai-chat-completions', path: '/v1/chat/completions', stepIndex: 1, body: {} }
+const RESULT_REQUEST: MockModelRequestRecord = {
+  protocol: 'openai-chat-completions',
+  path: '/v1/chat/completions',
+  stepIndex: 1,
+  body: {},
+}
 
 /** A fake locator that the mocked `expect` recognizes. */
 const BANNER = { fake: 'banner' } as unknown as Locator
@@ -73,17 +78,26 @@ vi.mock('@playwright/test', async (importOriginal) => {
         toHaveCount: async (count: number) => {
           harness.events.push(`no editor:${count}`)
         },
-        not: { toContainText: async () => {} },
+        not: {
+          toContainText: async () => {},
+        },
       }
     }
     return expect(value, message)
   }
-  return { ...actual, expect: Object.assign(fakeExpect, { poll: (read: () => unknown, options?: { message?: string }) => expect.poll(read, options) }) }
+  return {
+    ...actual,
+    expect: Object.assign(fakeExpect, {
+      poll: (read: () => unknown, options?: { message?: string }) => expect.poll(read, options),
+    }),
+  }
 })
 
 function context(): ManagedNativeScenarioContext {
   return {
-    page: { locator: () => ({ fake: 'editor' }) } as unknown as Page,
+    page: {
+      locator: () => ({ fake: 'editor' }),
+    } as unknown as Page,
     modelScript: {} as ModelScript,
     provider: AgentProvider.KIMI_CODE,
     providerAgent: { provider: AgentProvider.KIMI_CODE, prefix: 'native-e2e' },
@@ -95,8 +109,14 @@ function context(): ManagedNativeScenarioContext {
 /** A plan that records its own guard and proof. */
 function plan(name: string, outputGate?: GatedOutput): NativePermissionOperationPlan {
   return {
-    toolCall: { id: `${name}-call`, name: 'bash', arguments: { command: name } },
-    ...(outputGate ? { outputGate } : {}),
+    toolCall: {
+      id: `${name}-call`,
+      name: 'bash',
+      arguments: { command: name },
+    },
+    ...(outputGate
+      ? { outputGate }
+      : {}),
     beforeDecision: () => {
       harness.events.push(`${name} guard`)
     },
@@ -108,20 +128,30 @@ function plan(name: string, outputGate?: GatedOutput): NativePermissionOperation
 
 /** Classify every frame as one permission. */
 function permissionClassifier() {
-  return () => ({ kind: 'permission' as const, permission: { title: 'Run the command', options: [] } })
+  return () => ({
+    kind: 'permission' as const,
+    permission: { title: 'Run the command', options: [] },
+  })
 }
 
 beforeEach(() => {
   harness.events.length = 0
   harness.decisions.length = 0
-  harness.frames = [{ payload: { method: 'permission' } }]
+  harness.frames = [
+    {
+      payload: { method: 'permission' },
+    },
+  ]
   harness.defaultPlan = undefined
 })
 
 describe('exerciseUnsupportedControlThroughPermission', () => {
   it('writes the default native file and allows it while the observation checks the banner', async () => {
     harness.defaultPlan = plan('default')
-    await exerciseUnsupportedControlThroughPermission(context(), { purpose: 'editor', classify: permissionClassifier() })
+    await exerciseUnsupportedControlThroughPermission(context(), {
+      purpose: 'editor',
+      classify: permissionClassifier(),
+    })
     expect(harness.events).toEqual([
       `default write:${JSON.stringify(defaultControlPermissionWrite('editor'))}`,
       'observe:dialog-editor',
@@ -132,11 +162,15 @@ describe('exerciseUnsupportedControlThroughPermission', () => {
       'no editor:0',
       'watch cancelled',
     ])
-    expect(harness.decisions).toEqual([{ operation: harness.defaultPlan, nativeProof: undefined }])
+    expect(harness.decisions).toEqual([
+      { operation: harness.defaultPlan, nativeProof: undefined },
+    ])
   })
 
   it('allows the caller operation and hands it the extra proof', async () => {
-    const gate = { shown: async () => {} } as unknown as GatedOutput
+    const gate = {
+      shown: async () => {},
+    } as unknown as GatedOutput
     const operation = plan('caller', gate)
     const nativeProof = (request: MockModelRequestRecord) => {
       harness.events.push(`extra proof:${request.stepIndex}`)
@@ -148,7 +182,9 @@ describe('exerciseUnsupportedControlThroughPermission', () => {
       nativeProof,
     })
     expect(harness.events.some(event => event.startsWith('default write'))).toBe(false)
-    expect(harness.decisions).toEqual([{ operation, nativeProof }])
+    expect(harness.decisions).toEqual([
+      { operation, nativeProof },
+    ])
     expect(harness.events).toContain('extra proof:1')
   })
 

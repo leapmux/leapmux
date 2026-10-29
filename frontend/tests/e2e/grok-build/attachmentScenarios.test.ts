@@ -20,7 +20,11 @@ beforeEach(() => {
 afterEach(() => rmSync(directory, { recursive: true, force: true }))
 
 function body(mimeType = 'application/pdf', size = 6, path = copied) {
-  return { messages: [{ role: 'user', content: `<file_contents type="binary" path="${path}" mime_type="${mimeType}" size="${size}"/>` }] }
+  return {
+    messages: [
+      { role: 'user', content: `<file_contents type="binary" path="${path}" mime_type="${mimeType}" size="${size}"/>` },
+    ],
+  }
 }
 
 describe('expectGrokCopiedBytes', () => {
@@ -36,8 +40,18 @@ describe('expectGrokCopiedBytes', () => {
     [undefined, 'contains no messages array'],
     [null, 'contains no messages array'],
     [{}, 'contains no messages array'],
-    [{ messages: [] }, 'the last user message of the native Grok request holds text'],
-    [{ messages: [{ role: 'assistant', content: 'No user descriptor.' }] }, 'the last user message of the native Grok request holds text'],
+    [
+      { messages: [] },
+      'the last user message of the native Grok request holds text',
+    ],
+    [
+      {
+        messages: [
+          { role: 'assistant', content: 'No user descriptor.' },
+        ],
+      },
+      'the last user message of the native Grok request holds text',
+    ],
   ])('rejects an absent native user descriptor: %j', (request, error) => {
     expect(() => expectGrokCopiedBytes(request, source, 'application/pdf')).toThrow(error)
   })
@@ -102,7 +116,16 @@ describe('expectGrokCopiedBytes', () => {
     expect(() => expectGrokCopiedBytes(request, source, 'application/pdf')).toThrow('native Grok request contains no messages array')
   })
 
-  it.each([{ message: null }, { message: 7 }, { message: [] }, { message: { content: 'No role.' } }])('rejects a malformed native message entry with its validation error: $message', ({ message }) => {
-    expect(() => expectGrokCopiedBytes({ messages: [message] }, source, 'application/pdf')).toThrow('native Grok request contains an invalid message')
+  it.each([
+    { message: null },
+    { message: 7 },
+    { message: [] },
+    {
+      message: { content: 'No role.' },
+    },
+  ])('rejects a malformed native message entry with its validation error: $message', ({ message }) => {
+    expect(() => expectGrokCopiedBytes({
+      messages: [message],
+    }, source, 'application/pdf')).toThrow('native Grok request contains an invalid message')
   })
 })

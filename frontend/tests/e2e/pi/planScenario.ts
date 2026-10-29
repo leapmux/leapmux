@@ -32,7 +32,11 @@ export async function exercisePiFreshPlanSession(context: ManagedNativeScenarioC
   // - Without the marker in the plan, the mock answers the turn that runs the plan from its ambient scenario, not from
   //   the script of this test.
   const start = await modelScript.queue(
-    { toolCalls: [exitPlanModeToolCall(context.provider, 'fresh-plan', modelScript.prompt('# Fresh implementation probe\n\n- Reply with FRESH_PLAN_DONE. Do not call tools or change files.'))] },
+    {
+      toolCalls: [
+        exitPlanModeToolCall(context.provider, 'fresh-plan', modelScript.prompt('# Fresh implementation probe\n\n- Reply with FRESH_PLAN_DONE. Do not call tools or change files.')),
+      ],
+    },
     { text: 'FRESH_PLAN_DONE' },
   )
   await sendMessage(page, modelScript.prompt('Finish the plan.'))

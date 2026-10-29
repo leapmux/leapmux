@@ -3,7 +3,12 @@ import { agentRunStatusLabel } from '../../../model/tools/agent'
 import { reasonixAgentResult } from './agent'
 
 function taskResult(input: Record<string, unknown>, output: string, status: unknown) {
-  return reasonixAgentResult({ toolName: 'task', input, output, status })
+  return reasonixAgentResult({
+    toolName: 'task',
+    input,
+    output,
+    status,
+  })
 }
 
 const header = 'Subagent reference: sa_example\nSubagent outcome: status=completed retryable=false'
@@ -13,9 +18,28 @@ describe('agentRunStatusLabel', () => {
   // claiming a state no provider reported. Every producer that can emit `unknown`
   // words it itself today, so this is the branch that holds when one stops.
   it('answers nothing for an outcome no provider worded', () => {
-    expect(agentRunStatusLabel({ description: '', agentId: 'a', outcome: 'unknown', metadata: [], body: '' })).toBe('')
-    expect(agentRunStatusLabel({ description: '', agentId: 'a', outcome: 'running', metadata: [], body: '' })).toBe('running')
-    expect(agentRunStatusLabel({ description: '', agentId: 'a', outcome: 'unknown', statusLabel: 'status unavailable', metadata: [], body: '' })).toBe('status unavailable')
+    expect(agentRunStatusLabel({
+      description: '',
+      agentId: 'a',
+      outcome: 'unknown',
+      metadata: [],
+      body: '',
+    })).toBe('')
+    expect(agentRunStatusLabel({
+      description: '',
+      agentId: 'a',
+      outcome: 'running',
+      metadata: [],
+      body: '',
+    })).toBe('running')
+    expect(agentRunStatusLabel({
+      description: '',
+      agentId: 'a',
+      outcome: 'unknown',
+      statusLabel: 'status unavailable',
+      metadata: [],
+      body: '',
+    })).toBe('status unavailable')
   })
 
   // EMPTY is absent, not a label. Every producer derives this from a picked wire
@@ -24,8 +48,22 @@ describe('agentRunStatusLabel', () => {
   // reached here as `''`. Under `??` that empty string counted as a label and
   // suppressed the outcome word, and the card headed itself with no state at all.
   it('reads an empty label as absent, so the outcome still supplies the word', () => {
-    expect(agentRunStatusLabel({ description: '', agentId: 'a', outcome: 'completed', statusLabel: '', metadata: [], body: '' })).toBe('completed')
-    expect(agentRunStatusLabel({ description: '', agentId: 'a', outcome: 'unknown', statusLabel: '', metadata: [], body: '' })).toBe('')
+    expect(agentRunStatusLabel({
+      description: '',
+      agentId: 'a',
+      outcome: 'completed',
+      statusLabel: '',
+      metadata: [],
+      body: '',
+    })).toBe('completed')
+    expect(agentRunStatusLabel({
+      description: '',
+      agentId: 'a',
+      outcome: 'unknown',
+      statusLabel: '',
+      metadata: [],
+      body: '',
+    })).toBe('')
   })
 })
 
@@ -51,7 +89,12 @@ describe('reasonix agent result', () => {
     expect(taskResult({ run_in_background: true }, 'Unrecognized response', 'completed').outcome).toBe('unknown')
   })
 
-  it.each([['completed', 'completed'], ['partial', 'unknown'], ['failed', 'failed'], ['cancelled', 'stopped']])('reads the %s outcome of an ephemeral subagent without a reference', (status, outcome) => {
+  it.each([
+    ['completed', 'completed'],
+    ['partial', 'unknown'],
+    ['failed', 'failed'],
+    ['cancelled', 'stopped'],
+  ])('reads the %s outcome of an ephemeral subagent without a reference', (status, outcome) => {
     const source = taskResult({}, `Subagent outcome: status=${status} retryable=true error_code=native_code\n\nFinal answer:\nReport`, 'completed')
     expect(source.outcome).toBe(outcome)
     expect(source.agentId).toBe('')
@@ -95,7 +138,11 @@ describe('reasonix agent result', () => {
     expect(taskResult({}, `${header}\n\nFinal answer:\n`, 'completed').body).toBe('')
   })
 
-  it.each([['partial', 'unknown'], ['failed', 'failed'], ['cancelled', 'stopped']])('renders the native %s outcome', (status, outcome) => {
+  it.each([
+    ['partial', 'unknown'],
+    ['failed', 'failed'],
+    ['cancelled', 'stopped'],
+  ])('renders the native %s outcome', (status, outcome) => {
     const output = `Subagent reference: sa_example\nSubagent outcome: status=${status} retryable=true error_code=native_code\n\nFinal answer:\nReport`
     const source = taskResult({}, output, 'completed')
     expect(source.outcome).toBe(outcome)

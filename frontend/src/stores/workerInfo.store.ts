@@ -118,7 +118,9 @@ export function createWorkerInfoStore(): WorkerInfoStore {
    */
   function snapshot(workerId: string): WorkerInfo | null {
     const row = infoByWorker[workerId]
-    return row ? { ...row } : null
+    return row
+      ? { ...row }
+      : null
   }
 
   /**
@@ -242,7 +244,12 @@ export function createWorkerInfoStore(): WorkerInfoStore {
     return workerInfo(workerId)?.os
   }
 
-  return { workerInfo, fetchWorkerInfo, getHomeDir, getOs }
+  return {
+    workerInfo,
+    fetchWorkerInfo,
+    getHomeDir,
+    getOs,
+  }
 }
 
 /**

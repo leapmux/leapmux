@@ -98,7 +98,9 @@ function renderContainer(opts: ContainerOpts = {}) {
         title={opts.title ?? 'Test Window'}
         floatingWindowStore={store}
         onClose={opts.onClose ?? (() => {})}
-        {...(opts.onActivate !== undefined ? { onActivate: opts.onActivate } : {})}
+        {...(opts.onActivate !== undefined
+          ? { onActivate: opts.onActivate }
+          : {})}
       >
         <div data-testid="window-content">child</div>
       </FloatingWindowContainer>
@@ -118,7 +120,17 @@ describe('resolveParentSize', () => {
   it('returns the immediate parent rect when it has non-zero dimensions', () => {
     const parent = document.createElement('div')
     Object.defineProperty(parent, 'getBoundingClientRect', {
-      value: () => ({ width: 800, height: 600, top: 0, left: 0, right: 800, bottom: 600, x: 0, y: 0, toJSON: () => ({}) }),
+      value: () => ({
+        width: 800,
+        height: 600,
+        top: 0,
+        left: 0,
+        right: 800,
+        bottom: 600,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      }),
     })
     const child = document.createElement('div')
     parent.appendChild(child)
@@ -128,11 +140,31 @@ describe('resolveParentSize', () => {
   it('walks up the ancestor chain past zero-sized intermediates', () => {
     const grandparent = document.createElement('div')
     Object.defineProperty(grandparent, 'getBoundingClientRect', {
-      value: () => ({ width: 1024, height: 768, top: 0, left: 0, right: 1024, bottom: 768, x: 0, y: 0, toJSON: () => ({}) }),
+      value: () => ({
+        width: 1024,
+        height: 768,
+        top: 0,
+        left: 0,
+        right: 1024,
+        bottom: 768,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      }),
     })
     const parent = document.createElement('div')
     Object.defineProperty(parent, 'getBoundingClientRect', {
-      value: () => ({ width: 0, height: 0, top: 0, left: 0, right: 0, bottom: 0, x: 0, y: 0, toJSON: () => ({}) }),
+      value: () => ({
+        width: 0,
+        height: 0,
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      }),
     })
     grandparent.appendChild(parent)
     const child = document.createElement('div')
@@ -153,7 +185,17 @@ describe('resolveParentSize', () => {
   it('falls back to the visual viewport when every ancestor is zero-sized', () => {
     const root = document.createElement('div')
     Object.defineProperty(root, 'getBoundingClientRect', {
-      value: () => ({ width: 0, height: 0, top: 0, left: 0, right: 0, bottom: 0, x: 0, y: 0, toJSON: () => ({}) }),
+      value: () => ({
+        width: 0,
+        height: 0,
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        x: 0,
+        y: 0,
+        toJSON: () => ({}),
+      }),
     })
     const child = document.createElement('div')
     root.appendChild(child)
@@ -181,7 +223,12 @@ describe('FloatingWindowContainer', () => {
   })
 
   it('applies fractional position and size via inline style as percent', () => {
-    renderContainer({ x: 0.25, y: 0.5, width: 0.4, height: 0.3 })
+    renderContainer({
+      x: 0.25,
+      y: 0.5,
+      width: 0.4,
+      height: 0.3,
+    })
     const win = screen.getByTestId('floating-window')
     expect(win.style.left).toBe('25%')
     expect(win.style.top).toBe('50%')
@@ -291,7 +338,12 @@ describe('FloatingWindowContainer', () => {
 describe('move-drag edge snapping', () => {
   it('snaps against the live width when a peer resizes mid-drag', () => {
     const store = createTestFloatingWindowStore()
-    const created = store.addWindow({ x: 0.1, y: 0.1, width: 0.2, height: 0.2 })
+    const created = store.addWindow({
+      x: 0.1,
+      y: 0.1,
+      width: 0.2,
+      height: 0.2,
+    })
     if (!created)
       throw new Error('addWindow returned null')
 

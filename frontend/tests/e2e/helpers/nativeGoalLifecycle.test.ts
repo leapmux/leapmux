@@ -73,7 +73,9 @@ vi.mock('./goalsAndTodos', async importOriginal => ({
   clearGoal: async () => browser.act('clear'),
   expectEmptyGoalCard: async () => expect(browser.goal).toBe('none'),
   openGoalMenu: async () => {},
-  goalAction: (_page: Page, action: string) => ({ click: async () => browser.act(action) }),
+  goalAction: (_page: Page, action: string) => ({
+    click: async () => browser.act(action),
+  }),
   expectGoalStatus: async (_page: Page, status: string) => pollFor(() => browser.goal, goal => goal === status),
 }))
 
@@ -85,7 +87,11 @@ interface CountProbe {
 }
 
 function countProbe(count: () => number): CountProbe {
-  return { countProbe: true, count, filter: () => countProbe(count) }
+  return {
+    countProbe: true,
+    count,
+    filter: () => countProbe(count),
+  }
 }
 
 function isCountProbe(value: unknown): value is CountProbe {
@@ -108,7 +114,9 @@ vi.mock('@playwright/test', async (importOriginal) => {
     expect: Object.assign(check, {
       poll: <T>(read: () => T | Promise<T>) => ({
         toBeGreaterThan: (floor: number) => pollFor(read, value => typeof value === 'number' && value > floor),
-        not: { toContain: (item: string) => pollFor(read, value => Array.isArray(value) && !value.includes(item)) },
+        not: {
+          toContain: (item: string) => pollFor(read, value => Array.isArray(value) && !value.includes(item)),
+        },
       }),
     }),
   }
@@ -195,7 +203,18 @@ class SimulatedGoalAgent {
       for (const call of answer.toolCalls)
         this.runWriteTool(call)
       await this.request('round', [
-        { role: 'assistant', content: null, tool_calls: answer.toolCalls.map(call => ({ id: call.id, type: 'function', function: { name: call.name, arguments: JSON.stringify(call.arguments) } })) },
+        {
+          role: 'assistant',
+          content: null,
+          tool_calls: answer.toolCalls.map(call => ({
+            id: call.id,
+            type: 'function',
+            function: {
+              name: call.name,
+              arguments: JSON.stringify(call.arguments),
+            },
+          })),
+        },
         ...answer.toolCalls.map(call => ({ role: 'tool', tool_call_id: call.id, content: 'The file was written.' })),
       ])
     }
@@ -229,25 +248,56 @@ class SimulatedGoalAgent {
         body: JSON.stringify({
           model: MOCK_MODELS.zai,
           stream: false,
-          messages: [{ role: 'system', content: kind === 'title' ? SESSION_TITLE_SYSTEM : this.profile.system }, { role: 'user', content: user }, ...extra],
+          messages: [
+            {
+              role: 'system',
+              content: kind === 'title'
+                ? SESSION_TITLE_SYSTEM
+                : this.profile.system,
+            },
+            { role: 'user', content: user },
+            ...extra,
+          ],
         }),
         signal: controller.signal,
       })
       const body: unknown = await response.json()
       if (response.status !== 200)
         throw new Error(`The mock model refused the simulated request: ${response.status} ${JSON.stringify(body)}`)
-      const choice: unknown = isObject(body) && Array.isArray(body.choices) ? body.choices[0] : undefined
-      const message: unknown = isObject(choice) ? choice.message : undefined
-      const calls: unknown[] = isObject(message) && Array.isArray(message.tool_calls) ? message.tool_calls : []
+      const choice: unknown = isObject(body) && Array.isArray(body.choices)
+        ? body.choices[0]
+        : undefined
+      const message: unknown = isObject(choice)
+        ? choice.message
+        : undefined
+      const calls: unknown[] = isObject(message) && Array.isArray(message.tool_calls)
+        ? message.tool_calls
+        : []
       const toolCalls = calls.map((call): MockModelToolCall => {
-        const fn: unknown = isObject(call) ? call.function : undefined
+        const fn: unknown = isObject(call)
+          ? call.function
+          : undefined
         if (!isObject(call) || typeof call.id !== 'string' || !isObject(fn) || typeof fn.name !== 'string' || typeof fn.arguments !== 'string')
           throw new Error(`The mock model answer holds a malformed tool call: ${JSON.stringify(call)}`)
         const args: unknown = JSON.parse(fn.arguments)
-        return { id: call.id, name: fn.name, arguments: isObject(args) ? args : {} }
+        return {
+          id: call.id,
+          name: fn.name,
+          arguments: isObject(args)
+            ? args
+            : {},
+        }
       })
-      this.receipts.push({ kind, outcome: 'answered', ...(toolCalls.length > 0 ? { toolCalls } : {}) })
-      return toolCalls.length > 0 ? { toolCalls } : {}
+      this.receipts.push({
+        kind,
+        outcome: 'answered',
+        ...(toolCalls.length > 0
+          ? { toolCalls }
+          : {}),
+      })
+      return toolCalls.length > 0
+        ? { toolCalls }
+        : {}
     }
     catch (error) {
       if (!controller.signal.aborted)
@@ -319,14 +369,40 @@ function startGoal(serverURL: string, script: ModelScript, profile: AgentProfile
     releaseGate,
   }
   const helper = exerciseNativeGoalPauseAndResume(
-    { page: fakePage(), modelScript: observed, provider: profile.provider, providerAgent: { provider: profile.provider, prefix: 'native-e2e' }, leapmuxServer: { hubUrl: '', adminToken: '', workerId: '' }, workspaceId: '' },
-    { pauseTiming: profile.pause, pausedProof: async () => {} },
+    {
+      page: fakePage(),
+      modelScript: observed,
+      provider: profile.provider,
+      providerAgent: { provider: profile.provider, prefix: 'native-e2e' },
+      leapmuxServer: { hubUrl: '', adminToken: '', workerId: '' },
+      workspaceId: '',
+    },
+    {
+      pauseTiming: profile.pause,
+      pausedProof: async () => {},
+    },
   )
-  return { helper, agent, script: observed, rules, releaseGate }
+  return {
+    helper,
+    agent,
+    script: observed,
+    rules,
+    releaseGate,
+  }
 }
 
-const QWEN: AgentProfile = { provider: AgentProvider.QWEN_CODE, system: QWEN_ROUND_SYSTEM, titleFirst: false, pause: 'at-once' }
-const GROK: AgentProfile = { provider: AgentProvider.GROK_BUILD, system: GROK_ROUND_SYSTEM, titleFirst: true, pause: 'after-the-round' }
+const QWEN: AgentProfile = {
+  provider: AgentProvider.QWEN_CODE,
+  system: QWEN_ROUND_SYSTEM,
+  titleFirst: false,
+  pause: 'at-once',
+}
+const GROK: AgentProfile = {
+  provider: AgentProvider.GROK_BUILD,
+  system: GROK_ROUND_SYSTEM,
+  titleFirst: true,
+  pause: 'after-the-round',
+}
 
 describe('exerciseNativeGoalPauseAndResume', () => {
   beforeEach(() => {
@@ -370,8 +446,20 @@ describe('exerciseNativeGoalPauseAndResume', () => {
       await run.agent.settle()
       const [title, round, followUp] = run.agent.receipts
       // The housekeeping rule answers the title at once, with the tool that Grok forces.
-      expect(title).toMatchObject({ kind: 'title', outcome: 'answered', toolCalls: [{ name: 'session_title' }] })
-      expect(round).toMatchObject({ kind: 'round', outcome: 'answered', toolCalls: [expect.objectContaining({ id: 'native-goal-progress' })] })
+      expect(title).toMatchObject({
+        kind: 'title',
+        outcome: 'answered',
+        toolCalls: [
+          { name: 'session_title' },
+        ],
+      })
+      expect(round).toMatchObject({
+        kind: 'round',
+        outcome: 'answered',
+        toolCalls: [
+          expect.objectContaining({ id: 'native-goal-progress' }),
+        ],
+      })
       expect(followUp).toEqual({ kind: 'round', outcome: 'answered' })
       expect(existsSync(join(browser.workingDir, 'native-goal-progress.txt'))).toBe(true)
       expect(run.releaseGate).toHaveBeenCalledOnce()

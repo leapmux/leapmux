@@ -11,17 +11,31 @@ import {
 } from './toolCommon'
 
 function toolEvent(kind: string, payload: Record<string, unknown> = {}): Record<string, unknown> {
-  return { type: ZCODE_EVENT.ToolUpdated, payload: { kind, toolCallId: 'call-1', ...payload } }
+  return {
+    type: ZCODE_EVENT.ToolUpdated,
+    payload: { kind, toolCallId: 'call-1', ...payload },
+  }
 }
 
 function parsedOf(parent: Record<string, unknown>): ParsedMessageContent {
-  return { rawText: '', topLevel: parent, parentObject: parent, wrapper: null }
+  return {
+    rawText: '',
+    topLevel: parent,
+    parentObject: parent,
+    wrapper: null,
+  }
 }
 
 describe('zcodeEnvelope', () => {
   it('unwraps a row into its type and payload', () => {
-    expect(zcodeEnvelope({ type: ZCODE_EVENT.TurnCompleted, payload: { duration: 5 } }))
-      .toEqual({ type: ZCODE_EVENT.TurnCompleted, payload: { duration: 5 } })
+    expect(zcodeEnvelope({
+      type: ZCODE_EVENT.TurnCompleted,
+      payload: { duration: 5 },
+    }))
+      .toEqual({
+        type: ZCODE_EVENT.TurnCompleted,
+        payload: { duration: 5 },
+      })
   })
 
   it('reports an empty payload for a row that carries none', () => {
@@ -67,7 +81,9 @@ describe('zcodeExtractTool', () => {
         originalBytes: 4096,
         returnedBytes: 1024,
         display: { kind: 'file_diff' },
-        perf: { detail: { kind: 'command' } },
+        perf: {
+          detail: { kind: 'command' },
+        },
       },
     }))
     expect(update).toMatchObject({ toolName: '', durationMs: 90, isError: false })
@@ -85,29 +101,45 @@ describe('zcodeExtractTool', () => {
   // The app-server omits `success` on some result shapes; an absent flag with a
   // present result means it succeeded, so only an explicit false is a failure.
   it('treats an absent success flag as success and an explicit false as failure', () => {
-    expect(zcodeExtractTool(toolEvent(ZCODE_TOOL_KIND.Result, { result: { content: 'x' } }))?.result?.success)
+    expect(zcodeExtractTool(toolEvent(ZCODE_TOOL_KIND.Result, {
+      result: { content: 'x' },
+    }))?.result?.success)
       .toBe(true)
-    expect(zcodeExtractTool(toolEvent(ZCODE_TOOL_KIND.Result, { result: { success: false } }))?.isError)
+    expect(zcodeExtractTool(toolEvent(ZCODE_TOOL_KIND.Result, {
+      result: { success: false },
+    }))?.isError)
       .toBe(true)
   })
 
   // Three independent signals, and any one of them is a failure.
   it('flags a failure from the kind, from an error object, and from an unsuccessful result', () => {
     expect(zcodeExtractTool(toolEvent(ZCODE_TOOL_KIND.Error))?.isError).toBe(true)
-    expect(zcodeExtractTool(toolEvent(ZCODE_TOOL_KIND.Result, { error: { message: 'no' } }))?.isError).toBe(true)
-    expect(zcodeExtractTool(toolEvent(ZCODE_TOOL_KIND.Result, { result: { success: false } }))?.isError).toBe(true)
+    expect(zcodeExtractTool(toolEvent(ZCODE_TOOL_KIND.Result, {
+      error: { message: 'no' },
+    }))?.isError).toBe(true)
+    expect(zcodeExtractTool(toolEvent(ZCODE_TOOL_KIND.Result, {
+      result: { success: false },
+    }))?.isError).toBe(true)
   })
 
   it('returns null for another event type and for a row with no toolCallId', () => {
-    expect(zcodeExtractTool({ type: ZCODE_EVENT.SessionUpdated, payload: { kind: 'result' } })).toBeNull()
-    expect(zcodeExtractTool({ type: ZCODE_EVENT.ToolUpdated, payload: { kind: 'result' } })).toBeNull()
+    expect(zcodeExtractTool({
+      type: ZCODE_EVENT.SessionUpdated,
+      payload: { kind: 'result' },
+    })).toBeNull()
+    expect(zcodeExtractTool({
+      type: ZCODE_EVENT.ToolUpdated,
+      payload: { kind: 'result' },
+    })).toBeNull()
     expect(zcodeExtractTool(null)).toBeNull()
   })
 
   // The unwrap is memoized by payload identity so a render pass does not walk the
   // same row repeatedly. The cached value must be the same object, not a copy.
   it('returns the identical object for a repeated call on the same row', () => {
-    const row = toolEvent(ZCODE_TOOL_KIND.Result, { result: { content: 'x' } })
+    const row = toolEvent(ZCODE_TOOL_KIND.Result, {
+      result: { content: 'x' },
+    })
     expect(zcodeExtractTool(row)).toBe(zcodeExtractTool(row))
   })
 
@@ -156,7 +188,9 @@ describe('zcodeExtractTool progress tails', () => {
 })
 
 describe('zcodeToolName', () => {
-  const result = toolEvent(ZCODE_TOOL_KIND.Result, { result: { content: 'x' } })
+  const result = toolEvent(ZCODE_TOOL_KIND.Result, {
+    result: { content: 'x' },
+  })
 
   it('prefers the payload name, which is authoritative when present', () => {
     const row = toolEvent(ZCODE_TOOL_KIND.Scheduled, { toolName: ZCODE_TOOL.Bash })
@@ -194,15 +228,21 @@ describe('zcodeToolInput', () => {
   })
 
   it('prefers its own non-empty input over the sibling', () => {
-    const scheduled = parsedOf(toolEvent(ZCODE_TOOL_KIND.Scheduled, { input: { from: 'sibling' } }))
-    expect(zcodeToolInput(zcodeRow(toolEvent(ZCODE_TOOL_KIND.Scheduled, { input: { from: 'own' } }), undefined, scheduled)))
+    const scheduled = parsedOf(toolEvent(ZCODE_TOOL_KIND.Scheduled, {
+      input: { from: 'sibling' },
+    }))
+    expect(zcodeToolInput(zcodeRow(toolEvent(ZCODE_TOOL_KIND.Scheduled, {
+      input: { from: 'own' },
+    }), undefined, scheduled)))
       .toEqual({ from: 'own' })
   })
 
   // An `inputOmitted` scheduled row states `{}`, and the sibling is then the only
   // copy -- so an EMPTY own input must not win over a populated sibling.
   it('reaches the sibling when its own input is an empty object', () => {
-    const scheduled = parsedOf(toolEvent(ZCODE_TOOL_KIND.Scheduled, { input: { from: 'sibling' } }))
+    const scheduled = parsedOf(toolEvent(ZCODE_TOOL_KIND.Scheduled, {
+      input: { from: 'sibling' },
+    }))
     expect(zcodeToolInput(zcodeRow(toolEvent(ZCODE_TOOL_KIND.Result, { input: {} }), undefined, scheduled)))
       .toEqual({ from: 'sibling' })
   })
@@ -217,12 +257,18 @@ describe('zcodeErrorText', () => {
   const update = (payload: Record<string, unknown>) => zcodeExtractTool(toolEvent(ZCODE_TOOL_KIND.Error, payload))!
 
   it('prefers the error object message', () => {
-    expect(zcodeErrorText(update({ error: { message: 'the reason' }, result: { content: 'ignored' } })))
+    expect(zcodeErrorText(update({
+      error: { message: 'the reason' },
+      result: { content: 'ignored' },
+    })))
       .toBe('the reason')
   })
 
   it('falls back to the result content when the error object has no message', () => {
-    expect(zcodeErrorText(update({ error: { code: 'EACCES' }, result: { content: 'the body' } })))
+    expect(zcodeErrorText(update({
+      error: { code: 'EACCES' },
+      result: { content: 'the body' },
+    })))
       .toBe('the body')
   })
 
@@ -240,7 +286,10 @@ describe('zcodeTodoItemsFromInput', () => {
         { content: 'B', status: 'completed' },
       ],
     })
-    expect(items!.map(t => [t.content, t.status])).toEqual([['A', 'in_progress'], ['B', 'completed']])
+    expect(items!.map(t => [t.content, t.status])).toEqual([
+      ['A', 'in_progress'],
+      ['B', 'completed'],
+    ])
     expect(items![0]?.activeForm).toBe('Doing A')
   })
 
@@ -263,17 +312,32 @@ describe('zcodeTodoItemsFromInput', () => {
 // only source for it -- and when the arguments were positional and optional, a call
 // site that omitted the sibling compiled and rendered a nameless row.
 describe('zcodeRow', () => {
-  const resultRow = toolEvent(ZCODE_TOOL_KIND.Result, { result: { content: 'ok' } })
+  const resultRow = toolEvent(ZCODE_TOOL_KIND.Result, {
+    result: { content: 'ok' },
+  })
   const scheduledSibling = parsedOf(
-    toolEvent(ZCODE_TOOL_KIND.Scheduled, { toolName: ZCODE_TOOL.Bash, input: { command: 'ls' } }),
+    toolEvent(ZCODE_TOOL_KIND.Scheduled, {
+      toolName: ZCODE_TOOL.Bash,
+      input: { command: 'ls' },
+    }),
   )
 
   it.each([
-    toolEvent(ZCODE_TOOL_KIND.Scheduled, { toolCallId: 'other', toolName: 'Read', input: { file_path: '/other' } }),
-    toolEvent(ZCODE_TOOL_KIND.Result, { toolName: 'Read', input: { file_path: '/other' } }),
+    toolEvent(ZCODE_TOOL_KIND.Scheduled, {
+      toolCallId: 'other',
+      toolName: 'Read',
+      input: { file_path: '/other' },
+    }),
+    toolEvent(ZCODE_TOOL_KIND.Result, {
+      toolName: 'Read',
+      input: { file_path: '/other' },
+    }),
   ])('rejects an unrelated or non-request sibling: %j', (unrelated) => {
     const row = zcodeRow(resultRow, undefined, parsedOf(unrelated))
-    expect({ toolName: row.toolName, input: zcodeToolInput(row) }).toEqual({ toolName: '', input: {} })
+    expect({
+      toolName: row.toolName,
+      input: zcodeToolInput(row),
+    }).toEqual({ toolName: '', input: {} })
   })
 
   it('resolves the tool name once, in the payload > span > sibling order', () => {
@@ -293,7 +357,10 @@ describe('zcodeRow', () => {
   })
 
   it('prefers the input the row itself carries over the sibling', () => {
-    const own = toolEvent(ZCODE_TOOL_KIND.Scheduled, { toolName: ZCODE_TOOL.Bash, input: { command: 'pwd' } })
+    const own = toolEvent(ZCODE_TOOL_KIND.Scheduled, {
+      toolName: ZCODE_TOOL.Bash,
+      input: { command: 'pwd' },
+    })
     expect(zcodeToolInput(zcodeRow(own, undefined, scheduledSibling))).toEqual({ command: 'pwd' })
   })
 })
@@ -308,7 +375,12 @@ describe('zcodeToolInput stored state', () => {
         id: 'part',
         sessionId: 'session',
         messageId: 'message',
-        data: { type: 'tool', callID: 'call-1', tool: ZCODE_TOOL.Bash, state: { status: 'completed', input: storedInput } },
+        data: {
+          type: 'tool',
+          callID: 'call-1',
+          tool: ZCODE_TOOL.Bash,
+          state: { status: 'completed', input: storedInput },
+        },
       },
     }
   }
@@ -319,9 +391,14 @@ describe('zcodeToolInput stored state', () => {
   // next lookup reads.
   it('keeps looking when the stored state carries an empty input', () => {
     const scheduled = toolEvent(ZCODE_TOOL_KIND.Scheduled)
-    const completed = toolEvent(ZCODE_TOOL_KIND.Result, { result: { success: true } })
+    const completed = toolEvent(ZCODE_TOOL_KIND.Result, {
+      result: { success: true },
+    })
     const row = zcodeRow(scheduled, ZCODE_TOOL.Bash, undefined, stored(ZCODE_TOOL_KIND.Scheduled, {}))
-    const result = { ...parsedOf(completed), supplementalContent: stored(ZCODE_TOOL_KIND.Result, { command: 'ls -la' }) }
+    const result = {
+      ...parsedOf(completed),
+      supplementalContent: stored(ZCODE_TOOL_KIND.Result, { command: 'ls -la' }),
+    }
     expect(zcodeToolInput({ ...row, result })).toEqual({ command: 'ls -la' })
   })
 

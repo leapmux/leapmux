@@ -32,7 +32,12 @@ const GROK_MCP_NAMESPACE = 'mcp'
 const GROK_MCP_SEPARATOR = '__'
 
 /** The names outside the kind table that the adapter still reads by name. */
-const GROK_BRANCH_TOOLS: ReadonlySet<string> = new Set([GROK_TOOL.SpawnSubagent, GROK_TOOL_NAME.TodoWrite, GROK_TOOL_NAME.UseTool, GROK_TOOL_NAME.Workflow])
+const GROK_BRANCH_TOOLS: ReadonlySet<string> = new Set([
+  GROK_TOOL.SpawnSubagent,
+  GROK_TOOL_NAME.TodoWrite,
+  GROK_TOOL_NAME.UseTool,
+  GROK_TOOL_NAME.Workflow,
+])
 
 /** Grok's own identity of one call, `_meta["x.ai/tool"]`, when the frame carries it. */
 function grokToolMeta(tool: Record<string, unknown>): Record<string, unknown> | undefined {
@@ -51,7 +56,9 @@ export function grokToolName(tool: Record<string, unknown>): string {
   if (name)
     return name
   const title = pickString(tool, 'title')
-  return isGrokTool(title) || GROK_BRANCH_TOOLS.has(title) ? title : ''
+  return isGrokTool(title) || GROK_BRANCH_TOOLS.has(title)
+    ? title
+    : ''
 }
 
 /**
@@ -66,7 +73,10 @@ export function grokToolName(tool: Record<string, unknown>): string {
 function grokArgs(facts: ACPToolFacts): Record<string, unknown> {
   const { [GROK_INPUT_VARIANT]: _variant, ...own } = facts.args
   const canonical = pickObject(grokToolMeta(facts.tool), 'input') ?? {}
-  const args: Record<string, unknown> = { ...canonical, ...own }
+  const args: Record<string, unknown> = {
+    ...canonical,
+    ...own,
+  }
   const target = pickString(own, 'target_file') || pickString(own, 'target_directory')
   if (target && !pickFirstString(args, TOOL_FILE_PATH_KEYS))
     args.path = target
@@ -76,9 +86,17 @@ function grokArgs(facts: ACPToolFacts): Record<string, unknown> {
 /** The questions of one `ask_user_question`, with Grok's snake-case flag folded. */
 function grokQuestionPrompts(input: Record<string, unknown>): QuestionPrompt[] {
   const raw = Array.isArray(input.questions)
-    ? input.questions.map(entry => isObject(entry) && entry.multiSelect === undefined && entry.multi_select !== undefined ? { ...entry, multiSelect: entry.multi_select } : entry)
+    ? input.questions.map(entry => isObject(entry) && entry.multiSelect === undefined && entry.multi_select !== undefined
+        ? { ...entry, multiSelect: entry.multi_select }
+        : entry)
     : input.questions
-  return questionsFromWire(raw).map(({ question, options, header }) => ({ question, options, ...(header !== undefined ? { header } : {}) }))
+  return questionsFromWire(raw).map(({ question, options, header }) => ({
+    question,
+    options,
+    ...(header !== undefined
+      ? { header }
+      : {}),
+  }))
 }
 
 /**
@@ -88,17 +106,36 @@ function grokQuestionPrompts(input: Record<string, unknown>): QuestionPrompt[] {
  * states a list. The row states them together.
  */
 function grokTaskIds(input: Record<string, unknown>): string {
-  const ids = Array.isArray(input.task_ids) ? input.task_ids.filter((id): id is string => typeof id === 'string' && id !== '') : []
-  return ids.length > 0 ? ids.join(', ') : pickString(input, 'task_id')
+  const ids = Array.isArray(input.task_ids)
+    ? input.task_ids.filter((id): id is string => typeof id === 'string' && id !== '')
+    : []
+  return ids.length > 0
+    ? ids.join(', ')
+    : pickString(input, 'task_id')
 }
 
 /** The request of one scheduler call. The tool name states the action. */
 function grokTriggerRequest(name: string, input: Record<string, unknown>): ToolRequestByKind['trigger'] {
-  const action = name === GROK_TOOL_NAME.SchedulerCreate ? 'create' : name === GROK_TOOL_NAME.SchedulerDelete ? 'delete' : 'list'
+  const action = name === GROK_TOOL_NAME.SchedulerCreate
+    ? 'create'
+    : name === GROK_TOOL_NAME.SchedulerDelete
+      ? 'delete'
+      : 'list'
   const triggerId = pickString(input, 'task_id') || pickString(input, 'id')
   const schedule = pickString(input, 'interval')
   const prompt = pickString(input, 'prompt')
-  return { action, ...(triggerId ? { triggerId } : {}), ...(prompt ? { name: prompt } : {}), ...(schedule ? { schedule } : {}) }
+  return {
+    action,
+    ...(triggerId
+      ? { triggerId }
+      : {}),
+    ...(prompt
+      ? { name: prompt }
+      : {}),
+    ...(schedule
+      ? { schedule }
+      : {}),
+  }
 }
 
 /**
@@ -112,7 +149,15 @@ function grokMcpSpec(facts: ACPToolFacts, name: string, server: string, tool: st
   return {
     ...mcpToolCallRequest(server, tool, input),
     name,
-    ...(facts.finished ? { result: facts.status === 'failed' ? failedResult(facts.text) : { content: grokMcpContent(facts) } } : {}),
+    ...(facts.finished
+      ? {
+          result: facts.status === 'failed'
+            ? failedResult(facts.text)
+            : {
+                content: grokMcpContent(facts),
+              },
+        }
+      : {}),
   }
 }
 
@@ -130,14 +175,42 @@ export const grokToolCallAdapter: ACPToolCallAdapter = (facts, base) => {
   const title = pickString(facts.tool, 'title')
 
   if (name === GROK_TOOL.SpawnSubagent) {
-    const request = grokAgentRequest(input, title && title !== name ? title : 'Subagent', toolCallId)
+    const request = grokAgentRequest(input, title && title !== name
+      ? title
+      : 'Subagent', toolCallId)
     // `facts.finished`, never the frame's own status: a retained row of a turn that
     // ended keeps its report.
-    return { kind: 'agent', name, request, ...(facts.finished ? { result: { agents: [grokAgentRun(facts, request)] } } : {}) }
+    return {
+      kind: 'agent',
+      name,
+      request,
+      ...(facts.finished
+        ? {
+            result: {
+              agents: [
+                grokAgentRun(facts, request),
+              ],
+            },
+          }
+        : {}),
+    }
   }
   if (name === GROK_TOOL_NAME.Workflow) {
     const request = grokWorkflowRequest(input, facts)
-    return { kind: 'agent', name, request, ...(facts.finished ? { result: { agents: [grokWorkflowRun(facts, request, input)] } } : {}) }
+    return {
+      kind: 'agent',
+      name,
+      request,
+      ...(facts.finished
+        ? {
+            result: {
+              agents: [
+                grokWorkflowRun(facts, request, input),
+              ],
+            },
+          }
+        : {}),
+    }
   }
   // Grok MERGES the list into the one it holds when `merge` is set, so the arguments
   // can state a part of the list. The request is what the call asked for, and the
@@ -145,7 +218,9 @@ export const grokToolCallAdapter: ACPToolCallAdapter = (facts, base) => {
   if (name === GROK_TOOL_NAME.TodoWrite && Array.isArray(input.todos)) {
     const updated = pickObject(grokRawOutput(facts.tool, 'Todo'), 'TodosUpdated')
     const asked = rawTodosToItems(input.todos)
-    const held = Array.isArray(updated?.todos) ? rawTodosToItems(updated.todos) : asked
+    const held = Array.isArray(updated?.todos)
+      ? rawTodosToItems(updated.todos)
+      : asked
     return {
       kind: 'todo',
       name,
@@ -153,7 +228,13 @@ export const grokToolCallAdapter: ACPToolCallAdapter = (facts, base) => {
       // undefined, because the ACP wrapper spreads this over the frame's own title.
       title: undefined,
       request: { items: asked },
-      ...(facts.finished ? { result: facts.status === 'failed' ? failedResult(facts.text) : { items: held } } : {}),
+      ...(facts.finished
+        ? {
+            result: facts.status === 'failed'
+              ? failedResult(facts.text)
+              : { items: held },
+          }
+        : {}),
     }
   }
   if (name === GROK_TOOL_NAME.UseTool) {
@@ -169,13 +250,19 @@ export const grokToolCallAdapter: ACPToolCallAdapter = (facts, base) => {
     const pair = splitPrefixedPair(name, '', GROK_MCP_SEPARATOR)
     if (pair || pickString(grokToolMeta(facts.tool), 'namespace') === GROK_MCP_NAMESPACE)
       return grokMcpSpec(facts, name, pair?.server ?? '', pair?.tool ?? name, input)
-    return { ...base(), name }
+    return {
+      ...base(),
+      name,
+    }
   }
 
   const kind = GROK_TOOL_KINDS[name]
   // RE-DERIVED, not cloned: every fact the shared build reads from the kind or from
   // the arguments is computed again under the kind the table states.
-  const remapFacts = acpRemapFacts(facts, { tool: { ...facts.tool, [ACP_SUPPLEMENT_REQUEST.RawInput]: input }, kind })
+  const remapFacts = acpRemapFacts(facts, {
+    tool: { ...facts.tool, [ACP_SUPPLEMENT_REQUEST.RawInput]: input },
+    kind,
+  })
 
   if (name === GROK_TOOL_NAME.RunTerminalCommand || name === GROK_TOOL_NAME.Monitor) {
     const spec = acpSpecFor(remapFacts, GROK_TOOL_KINDS[name])
@@ -184,31 +271,70 @@ export const grokToolCallAdapter: ACPToolCallAdapter = (facts, base) => {
     const exit = grokCommandExit(facts.tool)
     if (!exit || spec.result === undefined || !('commands' in spec.result))
       return { ...spec, name }
-    return { ...spec, name, result: { ...spec.result, commands: spec.result.commands.map(command => withCommandExit(command, exit)) } }
+    return {
+      ...spec,
+      name,
+      result: {
+        ...spec.result,
+        commands: spec.result.commands.map(command => withCommandExit(command, exit)),
+      },
+    }
   }
   if (name === GROK_TOOL_NAME.ListDir) {
     const spec = acpSpecFor(remapFacts, GROK_TOOL_KINDS[name])
-    const listing = facts.finished && facts.status !== 'failed' ? grokListResult(facts.tool) : null
-    return listing ? { ...spec, name, result: listing } : { ...spec, name }
+    const listing = facts.finished && facts.status !== 'failed'
+      ? grokListResult(facts.tool)
+      : null
+    return listing
+      ? { ...spec, name, result: listing }
+      : { ...spec, name }
   }
   if (name === GROK_TOOL_NAME.Grep) {
     const spec = acpSpecFor(remapFacts, GROK_TOOL_KINDS[name])
-    const matches = facts.finished && facts.status !== 'failed' ? grokGrepResult(facts.tool) : null
-    return matches ? { ...spec, name, result: matches } : { ...spec, name }
+    const matches = facts.finished && facts.status !== 'failed'
+      ? grokGrepResult(facts.tool)
+      : null
+    return matches
+      ? { ...spec, name, result: matches }
+      : { ...spec, name }
   }
   if (name === GROK_TOOL_NAME.GetOutput || name === GROK_TOOL_NAME.Kill) {
     const taskId = grokTaskIds(input)
     const timeoutMs = pickNumber(input, 'timeout_ms')
     const request: ToolRequestByKind['task'] = {
-      action: name === GROK_TOOL_NAME.Kill ? 'stop' : 'output',
-      ...(taskId ? { taskId } : {}),
-      ...(timeoutMs !== null ? { timeoutMs } : {}),
+      action: name === GROK_TOOL_NAME.Kill
+        ? 'stop'
+        : 'output',
+      ...(taskId
+        ? { taskId }
+        : {}),
+      ...(timeoutMs !== null
+        ? { timeoutMs }
+        : {}),
     }
     if (!facts.finished)
       return { kind: 'task', name, request, title }
-    if (facts.status === 'failed')
-      return { kind: 'task', name, request, title, result: failedResult(facts.text) }
-    return { kind: 'task', name, request, title, result: { outcome: name === GROK_TOOL_NAME.Kill ? 'stopped' : 'completed', output: facts.text } }
+    if (facts.status === 'failed') {
+      return {
+        kind: 'task',
+        name,
+        request,
+        title,
+        result: failedResult(facts.text),
+      }
+    }
+    return {
+      kind: 'task',
+      name,
+      request,
+      title,
+      result: {
+        outcome: name === GROK_TOOL_NAME.Kill
+          ? 'stopped'
+          : 'completed',
+        output: facts.text,
+      },
+    }
   }
   // The scheduler and the web search answer in words, which is the declared result of
   // both kinds. The shared ladder already placed the unfinished and the failed call,
@@ -217,24 +343,58 @@ export const grokToolCallAdapter: ACPToolCallAdapter = (facts, base) => {
     const spec = acpSpecFor(remapFacts, GROK_TOOL_KINDS[name])
     const request = grokTriggerRequest(name, input)
     return spec.result !== undefined && isUnparsedToolResult(spec.result)
-      ? { ...spec, name, request, result: proseResult(facts.text) }
+      ? {
+          ...spec,
+          name,
+          request,
+          result: proseResult(facts.text),
+        }
       : { ...spec, name, request }
   }
   if (name === GROK_TOOL_NAME.WebSearch) {
     const spec = acpSpecFor(remapFacts, GROK_TOOL_KINDS[name])
     return spec.result !== undefined && isUnparsedToolResult(spec.result)
-      ? { ...spec, name, result: { links: [], summary: facts.text } }
+      ? {
+          ...spec,
+          name,
+          result: { links: [], summary: facts.text },
+        }
       : { ...spec, name }
   }
   if (name === GROK_TOOL_NAME.AskUserQuestion) {
     const questions = grokQuestionPrompts(input)
     const header = questions[0]?.header || questions[0]?.question || 'Question'
-    const asked = { kind: 'question' as const, name, request: { questions }, ...(title ? { title } : {}) }
+    const asked = {
+      kind: 'question' as const,
+      name,
+      request: { questions },
+      ...(title
+        ? { title }
+        : {}),
+    }
     if (!facts.finished)
       return asked
-    if (facts.status === 'failed')
-      return { ...asked, result: failedResult(facts.text) }
-    return { ...asked, ...(facts.text ? { result: { answers: [{ header, answer: facts.text }] } } : {}) }
+    if (facts.status === 'failed') {
+      return {
+        ...asked,
+        result: failedResult(facts.text),
+      }
+    }
+    return {
+      ...asked,
+      ...(facts.text
+        ? {
+            result: {
+              answers: [
+                { header, answer: facts.text },
+              ],
+            },
+          }
+        : {}),
+    }
   }
-  return { ...acpSpecFor(remapFacts, kind), name }
+  return {
+    ...acpSpecFor(remapFacts, kind),
+    name,
+  }
 }

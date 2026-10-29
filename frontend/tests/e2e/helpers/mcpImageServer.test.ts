@@ -12,9 +12,18 @@ function run(method: string, params: unknown) {
   try {
     const image = writeToolImage(directory, 'actual')
     const server = writeMcpImageServer(directory, image)
-    const request = { jsonrpc: '2.0', id: 0, method, params }
+    const request = {
+      jsonrpc: '2.0',
+      id: 0,
+      method,
+      params,
+    }
     const reply = JSON.parse(execFileSync(server.command, [...server.args], { input: `${JSON.stringify(request)}\n`, encoding: 'utf8', timeout: 30000 }))
-    return { server, reply, ready: existsSync(server.ready) }
+    return {
+      server,
+      reply,
+      ready: existsSync(server.ready),
+    }
   }
   finally {
     rmSync(directory, { recursive: true, force: true })
@@ -45,7 +54,14 @@ describe('writeMcpImageServer', () => {
     expect(reply.result.content[1]).toMatchObject({ type: 'image', mimeType: 'image/png' })
   })
 
-  it.each([{ name: 'wrong', args: {} }, { name: 'show', args: null }, { name: 'show', args: { extra: true } }])('rejects a wrong call before returning an image: %j', ({ name, args }) => {
+  it.each([
+    { name: 'wrong', args: {} },
+    { name: 'show', args: null },
+    {
+      name: 'show',
+      args: { extra: true },
+    },
+  ])('rejects a wrong call before returning an image: %j', ({ name, args }) => {
     const reply = execute(name, args)
     expect(reply.error?.code).toBe(-32602)
     expect(reply.result).toBeUndefined()

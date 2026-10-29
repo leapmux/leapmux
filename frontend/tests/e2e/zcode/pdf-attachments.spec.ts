@@ -45,7 +45,9 @@ zcodeTest('refuses a PDF on a model without PDF input and delivers the same queu
   expect(request.body).toMatchObject({ model: MOCK_MODELS.zai })
   await expectAttachmentInRequest(page, request, 'pdf', file)
   await expect(inputQueue(page)).toHaveCount(0)
-  await expect(userBubbles(page).filter({ hasText: basename(file) })).toHaveCount(1)
+  await expect(userBubbles(page).filter({
+    hasText: basename(file),
+  })).toHaveCount(1)
   await expect(assistantBubbles(page).filter({ hasText: answer })).toBeVisible()
   expectSameNativeSession(before, await currentNativeAgent(native), 'Retrying the PDF')
 })

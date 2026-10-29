@@ -10,11 +10,28 @@ import { mimoExtractRow } from './row'
 import '~/components/chat/providers'
 
 const provider = AgentProvider.MIMO_CODE
-const noSpan: ToolSpanContext = { request: undefined, result: undefined, role: 'result', visibleRows: { request: false, result: true } }
+const noSpan: ToolSpanContext = {
+  request: undefined,
+  result: undefined,
+  role: 'result',
+  visibleRows: { request: false, result: true },
+}
 
 function extract(parent: Record<string, unknown>, kind: MessageCategory['kind'], span: ToolSpanContext = noSpan, completion?: MessageCompletion) {
-  const resolved = resolveMessageForRendering({ rawText: '', topLevel: parent, parentObject: parent, wrapper: null }, provider)
-  return mimoExtractRow({ category: { kind } as MessageCategory, resolved, span, ...(completion !== undefined ? { completion } : {}) })
+  const resolved = resolveMessageForRendering({
+    rawText: '',
+    topLevel: parent,
+    parentObject: parent,
+    wrapper: null,
+  }, provider)
+  return mimoExtractRow({
+    category: { kind } as MessageCategory,
+    resolved,
+    span,
+    ...(completion !== undefined
+      ? { completion }
+      : {}),
+  })
 }
 
 const input = { command: 'echo hi' }
@@ -29,14 +46,37 @@ describe('mimoExtractRow', () => {
   })
 
   it('reads the opening frame as the request row of a running call', () => {
-    const row = extract(openingFrame(MIMO_TOOL.Bash, input), 'tool_use', { ...noSpan, role: 'request', visibleRows: { request: true, result: false } })
-    expect(row).toMatchObject({ kind: 'tool', role: 'request', hasResultRow: false, call: { kind: 'execute', status: 'in_progress' } })
+    const row = extract(openingFrame(MIMO_TOOL.Bash, input), 'tool_use', {
+      ...noSpan,
+      role: 'request',
+      visibleRows: { request: true, result: false },
+    })
+    expect(row).toMatchObject({
+      kind: 'tool',
+      role: 'request',
+      hasResultRow: false,
+      call: { kind: 'execute', status: 'in_progress' },
+    })
   })
 
   it('reads the final frame as the result row, with the request row beside it', () => {
-    const span: ToolSpanContext = { request: parsedFrame(openingFrame(MIMO_TOOL.Bash, input)), result: undefined, role: 'result', visibleRows: { request: true, result: true } }
-    const row = extract(toolFrame(MIMO_TOOL.Bash, { input, output: 'hi\n', metadata: { output: 'hi\n', exit: 0 } }), 'tool_result', span)
-    expect(row).toMatchObject({ kind: 'tool', role: 'result', hasRequestRow: true, call: { kind: 'execute', status: 'completed' } })
+    const span: ToolSpanContext = {
+      request: parsedFrame(openingFrame(MIMO_TOOL.Bash, input)),
+      result: undefined,
+      role: 'result',
+      visibleRows: { request: true, result: true },
+    }
+    const row = extract(toolFrame(MIMO_TOOL.Bash, {
+      input,
+      output: 'hi\n',
+      metadata: { output: 'hi\n', exit: 0 },
+    }), 'tool_result', span)
+    expect(row).toMatchObject({
+      kind: 'tool',
+      role: 'result',
+      hasRequestRow: true,
+      call: { kind: 'execute', status: 'completed' },
+    })
   })
 
   // The worker ends a cut call with its last running frame. LeapMux's own completion
@@ -44,28 +84,61 @@ describe('mimoExtractRow', () => {
   // one the frame carries.
   it('reads a running frame as the result row when the input completion ends it', () => {
     const row = extract(openingFrame(MIMO_TOOL.Bash, input), 'tool_result', noSpan, MessageCompletion.INTERRUPTED)
-    expect(row).toMatchObject({ kind: 'tool', role: 'result', call: { status: 'cancelled' } })
+    expect(row).toMatchObject({
+      kind: 'tool',
+      role: 'result',
+      call: { status: 'cancelled' },
+    })
   })
 
   // An opening row whose call already answered draws the answer's status, because
   // every MiMo frame states the whole call.
   it('reads the final frame of the same call on the opening row', () => {
-    const span: ToolSpanContext = { request: undefined, result: parsedFrame(toolFrame(MIMO_TOOL.Bash, { input, output: 'hi\n' })), role: 'request', visibleRows: { request: true, result: true } }
+    const span: ToolSpanContext = {
+      request: undefined,
+      result: parsedFrame(toolFrame(MIMO_TOOL.Bash, { input, output: 'hi\n' })),
+      role: 'request',
+      visibleRows: { request: true, result: true },
+    }
     const row = extract(openingFrame(MIMO_TOOL.Bash, input), 'tool_use', span)
-    expect(row).toMatchObject({ kind: 'tool', role: 'request', hasResultRow: true, call: { status: 'completed' } })
+    expect(row).toMatchObject({
+      kind: 'tool',
+      role: 'request',
+      hasResultRow: true,
+      call: { status: 'completed' },
+    })
   })
 
   // One turn can run several calls at once. A frame of another call is no side of
   // this one, and its answer must not draw under this call's header.
   it('ignores a result side of another call', () => {
-    const sibling = parsedFrame(toolFrame(MIMO_TOOL.Bash, { status: MIMO_TOOL_STATUS.Error, input: { command: 'false' }, error: 'Command exited with code 1' }, 'call-2'))
-    const row = extract(openingFrame(MIMO_TOOL.Bash, input), 'tool_use', { ...noSpan, role: 'request', result: sibling, visibleRows: { request: true, result: true } })
-    expect(row).toMatchObject({ kind: 'tool', role: 'request', call: { id: 'prt_call-1', status: 'in_progress' } })
-    expect(row?.kind === 'tool' && row.call.kind === 'execute' ? row.call.request.command : null).toBe('echo hi')
+    const sibling = parsedFrame(toolFrame(MIMO_TOOL.Bash, {
+      status: MIMO_TOOL_STATUS.Error,
+      input: { command: 'false' },
+      error: 'Command exited with code 1',
+    }, 'call-2'))
+    const row = extract(openingFrame(MIMO_TOOL.Bash, input), 'tool_use', {
+      ...noSpan,
+      role: 'request',
+      result: sibling,
+      visibleRows: { request: true, result: true },
+    })
+    expect(row).toMatchObject({
+      kind: 'tool',
+      role: 'request',
+      call: { id: 'prt_call-1', status: 'in_progress' },
+    })
+    expect(row?.kind === 'tool' && row.call.kind === 'execute'
+      ? row.call.request.command
+      : null).toBe('echo hi')
   })
 
   it.each(['part', 'message', 'session'] as const)('ignores a result that reuses the CallID with a different native %s', (field) => {
-    const sibling = toolFrame(MIMO_TOOL.Bash, { status: MIMO_TOOL_STATUS.Error, input: { command: 'false' }, error: 'Command exited with code 1' })
+    const sibling = toolFrame(MIMO_TOOL.Bash, {
+      status: MIMO_TOOL_STATUS.Error,
+      input: { command: 'false' },
+      error: 'Command exited with code 1',
+    })
     const part = pickObject(pickObject(sibling, 'properties'), 'part')
     if (!part)
       throw new Error('The native tool fixture supplied no part.')
@@ -75,10 +148,21 @@ describe('mimoExtractRow', () => {
       part.messageID = 'msg_other'
     else
       part.sessionID = 'ses_other'
-    const span: ToolSpanContext = { ...noSpan, role: 'request', result: parsedFrame(sibling), visibleRows: { request: true, result: true } }
+    const span: ToolSpanContext = {
+      ...noSpan,
+      role: 'request',
+      result: parsedFrame(sibling),
+      visibleRows: { request: true, result: true },
+    }
     const row = extract(openingFrame(MIMO_TOOL.Bash, input), 'tool_use', span)
-    expect(row).toMatchObject({ kind: 'tool', role: 'request', call: { status: 'in_progress' } })
-    expect(row?.kind === 'tool' && row.call.kind === 'execute' ? row.call.request.command : null).toBe('echo hi')
+    expect(row).toMatchObject({
+      kind: 'tool',
+      role: 'request',
+      call: { status: 'in_progress' },
+    })
+    expect(row?.kind === 'tool' && row.call.kind === 'execute'
+      ? row.call.request.command
+      : null).toBe('echo hi')
   })
 
   it('answers null for a tool category on a frame that is not a tool part', () => {

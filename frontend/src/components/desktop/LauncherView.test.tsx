@@ -31,8 +31,20 @@ describe('LauncherView', () => {
     window.history.replaceState({}, '', '/?cleanup_error=lease%20release%20failed')
     bridgeMocks.getRuntimeState.mockResolvedValue({ shellMode: 'launcher', connected: false })
     bridgeMocks.getStartupInfo.mockResolvedValue({
-      config: { mode: '', hub_url: '', window_width: 0, window_height: 0, window_mode: 'normal' },
-      buildInfo: { version: '', commitHash: '', commitTime: '', buildTime: '', branch: '' },
+      config: {
+        mode: '',
+        hub_url: '',
+        window_width: 0,
+        window_height: 0,
+        window_mode: 'normal',
+      },
+      buildInfo: {
+        version: '',
+        commitHash: '',
+        commitTime: '',
+        buildTime: '',
+        branch: '',
+      },
     })
     bridgeMocks.checkFullDiskAccess.mockResolvedValue(true)
     bridgeMocks.restoreWindowGeometry.mockResolvedValue(undefined)
@@ -97,8 +109,20 @@ describe('LauncherView', () => {
   // either end would leave a login launch silently opening a window.
   it('forwards the shell launch decision into the geometry restore', async () => {
     bridgeMocks.getStartupInfo.mockResolvedValue({
-      config: { mode: '', hub_url: '', window_width: 1280, window_height: 800, window_mode: 'maximized' },
-      buildInfo: { version: '', commitHash: '', commitTime: '', buildTime: '', branch: '' },
+      config: {
+        mode: '',
+        hub_url: '',
+        window_width: 1280,
+        window_height: 800,
+        window_mode: 'maximized',
+      },
+      buildInfo: {
+        version: '',
+        commitHash: '',
+        commitTime: '',
+        buildTime: '',
+        branch: '',
+      },
       launchVisibility: 'hidden',
     })
 

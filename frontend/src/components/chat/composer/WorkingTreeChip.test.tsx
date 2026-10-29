@@ -34,19 +34,31 @@ function renderChip(overrides: Omit<Partial<WorkingTreeInfo>, 'homeDir'> & {
   homeDir?: string | undefined
   disabledReason?: string
 } = {}) {
-  const homeDir = 'homeDir' in overrides ? overrides.homeDir : '/home/dev'
+  const homeDir = 'homeDir' in overrides
+    ? overrides.homeDir
+    : '/home/dev'
   const workingTree: WorkingTreeInfo = {
     isWorktree: overrides.isWorktree ?? true,
-    name: 'name' in overrides ? overrides.name! : 'feature',
+    name: 'name' in overrides
+      ? overrides.name!
+      : 'feature',
     directory: overrides.directory ?? WORKTREE_DIR,
-    ...(homeDir === undefined ? {} : { homeDir }),
-    ...(overrides.flavor === undefined ? {} : { flavor: overrides.flavor }),
-    ...(overrides.stats === undefined ? {} : { stats: overrides.stats }),
+    ...(homeDir === undefined
+      ? {}
+      : { homeDir }),
+    ...(overrides.flavor === undefined
+      ? {}
+      : { flavor: overrides.flavor }),
+    ...(overrides.stats === undefined
+      ? {}
+      : { stats: overrides.stats }),
   }
   render(() => (
     <WorkingTreeChip
       workingTree={workingTree}
-      {...(overrides.disabledReason === undefined ? {} : { disabledReason: overrides.disabledReason })}
+      {...(overrides.disabledReason === undefined
+        ? {}
+        : { disabledReason: overrides.disabledReason })}
       workerId="w-1"
       actions={stubBranchMenuActions()}
     />
@@ -92,7 +104,9 @@ describe('WorkingTreeChip', () => {
   })
 
   it('drops the badge when there is nothing to report', () => {
-    const chip = renderChip({ stats: { added: 0, deleted: 0, untracked: 0 } })
+    const chip = renderChip({
+      stats: { added: 0, deleted: 0, untracked: 0 },
+    })
 
     const tooltip = hoverForTooltip(chip!)
     expect(tooltip!.querySelector('[data-testid="git-diff-stats"]')).toBeNull()
@@ -104,7 +118,9 @@ describe('WorkingTreeChip', () => {
   // The status bar already carries four chips on a narrow tile, so the badge
   // stays in the tooltip. A visible badge here would push the name out.
   it('carries no badge on the chip itself', () => {
-    const chip = renderChip({ stats: { added: 38, deleted: 12, untracked: 0 } })
+    const chip = renderChip({
+      stats: { added: 38, deleted: 12, untracked: 0 },
+    })
 
     expect(chip!.querySelector('[data-testid="git-diff-stats"]')).toBeNull()
   })
@@ -118,7 +134,10 @@ describe('WorkingTreeChip', () => {
   // A reason the actions are unusable outranks the rows: it is the only route
   // to that reason for a user who never opens the menu.
   it('replaces the rows with the reason when the actions are unusable', () => {
-    const chip = renderChip({ disabledReason: 'This Worker is offline.', stats: { added: 1, deleted: 0, untracked: 0 } })
+    const chip = renderChip({
+      disabledReason: 'This Worker is offline.',
+      stats: { added: 1, deleted: 0, untracked: 0 },
+    })
 
     const tooltip = hoverForTooltip(chip!)
     expect(tooltip!.textContent).toBe('This Worker is offline.')

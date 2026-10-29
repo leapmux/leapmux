@@ -13,12 +13,16 @@ cursorTest('approves a native create-plan request', async ({ native }) => {
   await chooseSettingsOption(page, 'permissionMode-plan')
   await waitForSettingsIdle(page)
   // Cursor answers its own Run with the create-plan result, so the turn is one model step.
-  const start = await modelScript.queue({ toolCalls: [cursorCreatePlanToolCall(
-    'cursor-plan',
-    'Review changes',
-    'Review without edits.',
-    '# Plan\n\n1. Inspect the files.',
-  )] })
+  const start = await modelScript.queue({
+    toolCalls: [
+      cursorCreatePlanToolCall(
+        'cursor-plan',
+        'Review changes',
+        'Review without edits.',
+        '# Plan\n\n1. Inspect the files.',
+      ),
+    ],
+  })
   await sendMessage(page, modelScript.prompt('Write a plan and ask for approval.'))
   await modelScript.waitForSteps(start + 1)
   const banner = await waitForControlBanner(page)
@@ -45,12 +49,16 @@ cursorTest('rejects a native create-plan request and keeps the saved decision af
   const agent = await waitForNativeOptionApplied(native, 'permissionMode', 'plan')
   const watch = await watchNativeControls(leapmuxServer, agent.id)
   await withCleanup(async () => {
-    const start = await modelScript.queue({ toolCalls: [cursorCreatePlanToolCall(
-      'cursor-rejected-plan',
-      'Keep planning',
-      'Keep this plan unapproved.',
-      '# Plan\n\n1. Review the change.',
-    )] })
+    const start = await modelScript.queue({
+      toolCalls: [
+        cursorCreatePlanToolCall(
+          'cursor-rejected-plan',
+          'Keep planning',
+          'Keep this plan unapproved.',
+          '# Plan\n\n1. Review the change.',
+        ),
+      ],
+    })
     await sendMessage(page, modelScript.prompt('Write a plan and ask for approval.'))
     await modelScript.waitForSteps(start + 1)
     const banner = controlBanner(page)
@@ -69,7 +77,13 @@ cursorTest('rejects a native create-plan request and keeps the saved decision af
     const { decision } = await readObservedNativeDecision(native, agent, watch, observed)
     expect(decision.request.method).toBe(CURSOR_METHOD.CreatePlan)
     // A bare rejection carries no reason field, which is what lets cursor-agent supply its own.
-    expect(decision.response).toEqual({ jsonrpc: '2.0', id: observed.payload.id, result: { outcome: { outcome: 'rejected' } } })
+    expect(decision.response).toEqual({
+      jsonrpc: '2.0',
+      id: observed.payload.id,
+      result: {
+        outcome: { outcome: 'rejected' },
+      },
+    })
 
     await page.reload()
     await expect(result.first()).toBeVisible()

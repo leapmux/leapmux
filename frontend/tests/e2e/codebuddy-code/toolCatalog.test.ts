@@ -3,7 +3,11 @@ import { codebuddyReplSchema, parseCodebuddyReplDiscovery } from './toolCatalog'
 
 const input = {
   type: 'object',
-  properties: { code: { type: 'string' }, timeout: { type: 'number' }, description: { type: 'string' } },
+  properties: {
+    code: { type: 'string' },
+    timeout: { type: 'number' },
+    description: { type: 'string' },
+  },
   required: ['code'],
   additionalProperties: false,
 }
@@ -15,12 +19,25 @@ function receipt(schema: unknown = input, name = 'REPL', count = 1): string {
 describe('codebuddyReplSchema', () => {
   it('validates the actual direct PTC schema and keeps native optional fields', () => {
     expect(codebuddyReplSchema(input)).toEqual(input)
-    expect(codebuddyReplSchema({ type: 'object', properties: { code: { type: 'string' } }, required: ['code'] })).toMatchObject({ required: ['code'] })
+    expect(codebuddyReplSchema({
+      type: 'object',
+      properties: {
+        code: { type: 'string' },
+      },
+      required: ['code'],
+    })).toMatchObject({
+      required: ['code'],
+    })
   })
 
   it('rejects an optional code field and invalid direct PTC parameter types', () => {
     expect(() => codebuddyReplSchema({ ...input, required: [] })).toThrow('code schema')
-    expect(() => codebuddyReplSchema({ ...input, properties: { code: { type: 'number' } } })).toThrow('code schema')
+    expect(() => codebuddyReplSchema({
+      ...input,
+      properties: {
+        code: { type: 'number' },
+      },
+    })).toThrow('code schema')
   })
 })
 
@@ -30,7 +47,13 @@ describe('parseCodebuddyReplDiscovery', () => {
   })
 
   it('rejects a keyword fallback whose description mentions REPL and code', () => {
-    const fallback = receipt({ type: 'object', properties: { cron: { type: 'string' } }, required: ['cron'] }, 'CronCreate')
+    const fallback = receipt({
+      type: 'object',
+      properties: {
+        cron: { type: 'string' },
+      },
+      required: ['cron'],
+    }, 'CronCreate')
     expect(fallback).toContain('REPL')
     expect(fallback).toContain('code')
     expect(() => parseCodebuddyReplDiscovery(fallback)).toThrow('exactly the REPL tool')
@@ -49,9 +72,26 @@ describe('parseCodebuddyReplDiscovery', () => {
     [],
     {},
     { ...input, required: [] },
-    { ...input, properties: { code: { type: 'number' } } },
-    { ...input, properties: { code: { type: 'string' }, timeout: { type: 'string' } } },
-    { ...input, properties: { code: { type: 'string' }, description: { type: 'object' } } },
+    {
+      ...input,
+      properties: {
+        code: { type: 'number' },
+      },
+    },
+    {
+      ...input,
+      properties: {
+        code: { type: 'string' },
+        timeout: { type: 'string' },
+      },
+    },
+    {
+      ...input,
+      properties: {
+        code: { type: 'string' },
+        description: { type: 'object' },
+      },
+    },
   ])('rejects an invalid native code schema: %j', (schema) => {
     expect(() => parseCodebuddyReplDiscovery(receipt(schema))).toThrow('code schema')
   })

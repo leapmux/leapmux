@@ -52,10 +52,14 @@ function messageErrorFallback(label: string) {
   return (err: unknown) => {
     logger.warn(label, err)
     const message = formatErrorMessage(err)
-    const rawStack = err instanceof Error ? err.stack : undefined
+    const rawStack = err instanceof Error
+      ? err.stack
+      : undefined
     const [resolved] = createResource(
       () => rawStack,
-      stack => stack ? resolveStack(stack) : Promise.resolve(undefined),
+      stack => stack
+        ? resolveStack(stack)
+        : Promise.resolve(undefined),
     )
     return (
       <span class={chatStyles.systemMessage}>
@@ -111,8 +115,12 @@ function injectCopyButtons(container: HTMLElement): Array<() => void> {
       return (
         <IconButton
           class="copy-code-button"
-          icon={copied() ? Check : Copy}
-          title={copied() ? 'Copied' : 'Copy'}
+          icon={copied()
+            ? Check
+            : Copy}
+          title={copied()
+            ? 'Copied'
+            : 'Copy'}
           onClick={copy}
         />
       )
@@ -213,7 +221,9 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   const resolved = createMemo(() => props.host?.messages?.resolvedMessage(props.message, props.prepared?.original))
   const prepared = createMemo<PreparedMessage>(() => {
     const resolvedParsed = resolved()?.resolved
-    return props.prepared ?? prepareMessage(props.message, resolvedParsed !== undefined ? { resolved: resolvedParsed } : {})
+    return props.prepared ?? prepareMessage(props.message, resolvedParsed !== undefined
+      ? { resolved: resolvedParsed }
+      : {})
   })
   const parsed = () => prepared().original
   const category = () => prepared().category
@@ -229,7 +239,9 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   const rawJson = (): string =>
     buildRawJsonEnvelope(resolved()?.message ?? props.message, resolved()?.original ?? parsed(), sourceLabel(props.message.source), props.host?.getHeightDebug?.())
 
-  const { copied: jsonCopied, copy: copyJson } = useCopyButton(() => props.premeasureMode ? undefined : prettifyJson(rawJson()))
+  const { copied: jsonCopied, copy: copyJson } = useCopyButton(() => props.premeasureMode
+    ? undefined
+    : prettifyJson(rawJson()))
 
   // Reactive, memoized pretty raw JSON for the displayed block. Gated on the only two
   // categories that render it (hidden / unsupported_provider) so the proto-envelope
@@ -282,7 +294,9 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   const row = (): ChatRow | null => extractedRow(extraction())
   const toolRow = createMemo(() => {
     const current = row()
-    return current?.kind === 'tool' ? current : null
+    return current?.kind === 'tool'
+      ? current
+      : null
   })
 
   // Toolbar metadata for the current message — collapsibility, diff presence, the
@@ -297,7 +311,9 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   // (~/components/chat/chatMarkPreview.ts); nothing in this file reads it.
   const toolMeta = createMemo<ToolCallMeta | null>(() => {
     const current = row()
-    return current?.kind === 'tool' ? toolCallMeta(current) : null
+    return current?.kind === 'tool'
+      ? toolCallMeta(current)
+      : null
   })
 
   // A tool request draws its actions inside ToolUseLayout.
@@ -314,17 +330,23 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
   const hasToolResultDiff = () => toolMeta()?.hasDiff ?? false
   const hasCopyableResult = () => toolMeta()?.hasCopyable ?? false
 
-  const { copied: resultCopied, copy: copyResultContent } = useCopyButton(() => props.premeasureMode ? undefined : toolMeta()?.copyableContent() ?? undefined)
+  const { copied: resultCopied, copy: copyResultContent } = useCopyButton(() => props.premeasureMode
+    ? undefined
+    : toolMeta()?.copyableContent() ?? undefined)
 
   const diffView = () => props.host?.localDiffView ?? prefs.diffView()
-  const toggleDiffView = () => props.host?.onSetLocalDiffView?.(diffView() === 'unified' ? 'split' : 'unified')
+  const toggleDiffView = () => props.host?.onSetLocalDiffView?.(diffView() === 'unified'
+    ? 'split'
+    : 'unified')
 
   // Memoize the wrapped onReply so callers reading `context.onReply` get a
   // stable reference between renders. Recomputes only when `props.onReply`
   // identity changes.
   const wrappedOnReply = createMemo(() => {
     const onReply = props.onReply
-    return onReply ? (text: string) => onReply(formatChatQuote(text)) : undefined
+    return onReply
+      ? (text: string) => onReply(formatChatQuote(text))
+      : undefined
   })
 
   // Stamp the message identity a renderer cannot know onto the open request.
@@ -348,7 +370,9 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     openImageHost()?.({
       seq: props.message.seq,
       index: image.index,
-      ...(image.filePath !== undefined ? { filePath: image.filePath } : {}),
+      ...(image.filePath !== undefined
+        ? { filePath: image.filePath }
+        : {}),
       title: image.title || props.message.spanType || 'Image',
     })
   }
@@ -367,9 +391,13 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     cachedFileImage: filePath => sources.cachedFileImage(filePath),
     deferLoad: () => props.premeasureMode === true || props.host?.rowOffscreen?.() === true,
     premeasurePass: () => props.premeasureMode === true,
-    ...(untrack(openImageHost) !== undefined ? { openImage } : {}),
+    ...(untrack(openImageHost) !== undefined
+      ? { openImage }
+      : {}),
   })
-  const toolProgress: ToolProgressSource = { liveTail: () => sources.progress() }
+  const toolProgress: ToolProgressSource = {
+    liveTail: () => sources.progress(),
+  }
   const reviews = reviewActionsFrom({
     messageId: () => props.message.id,
     approveAutoReviewDenial: () => props.host?.onApproveAutoReviewDenial,
@@ -385,14 +413,26 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     get homeDir() { return props.homeDir },
     diffView,
     get onReply() { return wrappedOnReply() },
-    ...(subagents !== undefined ? { subagents } : {}),
-    ...(images !== undefined ? { images } : {}),
+    ...(subagents !== undefined
+      ? { subagents }
+      : {}),
+    ...(images !== undefined
+      ? { images }
+      : {}),
     // A getter, so the control follows the host: the agent gains and loses the
     // capability as it starts and stops.
-    get reviews() { return props.host?.onApproveAutoReviewDenial !== undefined ? reviews : undefined },
+    get reviews() {
+      return props.host?.onApproveAutoReviewDenial !== undefined
+        ? reviews
+        : undefined
+    },
     toolProgress,
     get onCopyJson() { return copyJson },
-    get jsonCopied() { return props.premeasureMode ? () => false : jsonCopied },
+    get jsonCopied() {
+      return props.premeasureMode
+        ? () => false
+        : jsonCopied
+    },
     get createdAt() { return props.message.createdAt },
     get expandAgentThoughts() { return prefs.expandAgentThoughts() },
     // Resolve the row's expand-toggle UI key ONCE here (kind + provider), so the
@@ -451,7 +491,9 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     }
   }
 
-  const { copied: markdownCopied, copy: copyMarkdown } = useCopyButton(() => props.premeasureMode ? undefined : proseText() ?? undefined)
+  const { copied: markdownCopied, copy: copyMarkdown } = useCopyButton(() => props.premeasureMode
+    ? undefined
+    : proseText() ?? undefined)
 
   const rowClass = () => messageRowClass(category().kind, props.message.source)
   const bubbleClass = () => {
@@ -561,7 +603,9 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     const onMutations = (records: MutationRecord[]) => {
       for (const r of records) {
         const node = r.target
-        const asEl = node instanceof Element ? node : node.parentElement
+        const asEl = node instanceof Element
+          ? node
+          : node.parentElement
         if (!asEl?.closest('.copy-code-button')) {
           schedule()
           return
@@ -592,10 +636,22 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
     return {
       contentCopied: resultCopied(),
       markdownCopied: markdownCopied(),
-      ...(hasCopyableResult() ? { onCopyContent: copyResultContent } : {}),
-      ...(copyContentLabel !== undefined ? { copyContentLabel } : {}),
-      ...(quotableText() ? { onReply: props.premeasureMode ? () => {} : handleReply } : {}),
-      ...(proseText() ? { onCopyMarkdown: copyMarkdown } : {}),
+      ...(hasCopyableResult()
+        ? { onCopyContent: copyResultContent }
+        : {}),
+      ...(copyContentLabel !== undefined
+        ? { copyContentLabel }
+        : {}),
+      ...(quotableText()
+        ? {
+            onReply: props.premeasureMode
+              ? () => {}
+              : handleReply,
+          }
+        : {}),
+      ...(proseText()
+        ? { onCopyMarkdown: copyMarkdown }
+        : {}),
     }
   })
 
@@ -612,9 +668,15 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
       jsonCopied: jsonCopied(),
       hasDiff: hasToolResultDiff(),
       diffView: diffView(),
-      ...(isCollapsibleToolResult() ? { onToggleExpand: toggleToolResultExpanded } : {}),
-      ...(expandLabel !== undefined ? { expandLabel } : {}),
-      ...(hasToolResultDiff() ? { onToggleDiffView: toggleDiffView } : {}),
+      ...(isCollapsibleToolResult()
+        ? { onToggleExpand: toggleToolResultExpanded }
+        : {}),
+      ...(expandLabel !== undefined
+        ? { expandLabel }
+        : {}),
+      ...(hasToolResultDiff()
+        ? { onToggleDiffView: toggleDiffView }
+        : {}),
     }
   })
   // Right-click / long-press anywhere on the row opens the same actions the hover
@@ -660,7 +722,9 @@ export const MessageBubble: Component<MessageBubbleProps> = (props) => {
           data-tool-call-id={toolRow()?.call.id}
           data-tool-row-role={toolRow()?.role}
           data-tool-status={toolRow()?.call.status}
-          data-message-seq={toolRow() ? String(props.message.seq) : undefined}
+          data-message-seq={toolRow()
+            ? String(props.message.seq)
+            : undefined}
         >
           <div ref={contentRef} data-testid="message-content">
             <ErrorBoundary fallback={messageErrorFallback('Failed to render message:')}>

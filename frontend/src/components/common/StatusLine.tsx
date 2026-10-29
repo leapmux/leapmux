@@ -22,6 +22,13 @@ export interface StatusMessage {
  */
 export const StatusLine: Component<{ message: StatusMessage | null | undefined }> = props => (
   <Show when={props.message}>
-    {msg => <div class={msg().type === 'success' ? successText : errorText}>{msg().text}</div>}
+    {msg => (
+      <div class={msg().type === 'success'
+        ? successText
+        : errorText}
+      >
+        {msg().text}
+      </div>
+    )}
   </Show>
 )

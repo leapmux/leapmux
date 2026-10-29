@@ -36,7 +36,9 @@ export function cursorSubagentExecutionRequest(id: number, call: CursorSubagentE
     encodeStringField(2, 'explore'),
     encodeStringField(3, call.modelID),
     encodeStringField(4, call.prompt),
-    encodeVarintField(5, call.readonly === false ? 0 : 1),
+    encodeVarintField(5, call.readonly === false
+      ? 0
+      : 1),
     encodeStringField(9, call.parentConversationID),
     encodeStringField(16, call.parentConversationID),
   ])
@@ -66,7 +68,13 @@ export function cursorSubagentExecutionResponseOf(clientMessage: Uint8Array): Cu
   const error = cursorProtobufBytes(result, 2)
   if (success !== undefined && error !== undefined)
     throw new Error('The native Cursor subagent reply repeats its result choice.')
-  const common = { id, rawResult, ...(execID !== undefined ? { execID } : {}) }
+  const common = {
+    id,
+    rawResult,
+    ...(execID !== undefined
+      ? { execID }
+      : {}),
+  }
   if (success !== undefined) {
     const values = readCursorProtobufFields(success)
     const agentID = cursorProtobufString(values, 1)
@@ -76,7 +84,17 @@ export function cursorSubagentExecutionResponseOf(clientMessage: Uint8Array): Cu
     const toolCallCount = cursorProtobufNumber(values, 3, true)
     if (toolCallCount !== undefined && toolCallCount < 0)
       throw new Error('The native Cursor child tool count is negative.')
-    return { ...common, success: true, agentID, ...(finalMessage !== undefined ? { finalMessage } : {}), ...(toolCallCount !== undefined ? { toolCallCount } : {}) }
+    return {
+      ...common,
+      success: true,
+      agentID,
+      ...(finalMessage !== undefined
+        ? { finalMessage }
+        : {}),
+      ...(toolCallCount !== undefined
+        ? { toolCallCount }
+        : {}),
+    }
   }
   if (error !== undefined) {
     const values = readCursorProtobufFields(error)
@@ -84,7 +102,14 @@ export function cursorSubagentExecutionResponseOf(clientMessage: Uint8Array): Cu
     if (message === undefined)
       throw new Error('The native Cursor child error has no message.')
     const agentID = cursorProtobufString(values, 1)
-    return { ...common, success: false, error: message, ...(agentID !== undefined ? { agentID } : {}) }
+    return {
+      ...common,
+      success: false,
+      error: message,
+      ...(agentID !== undefined
+        ? { agentID }
+        : {}),
+    }
   }
   throw new Error('The native Cursor subagent reply has no result.')
 }
@@ -95,18 +120,32 @@ export function cursorTaskCompletedFromNativeReply(call: CursorTaskCall, reply: 
     encodeStringField(1, call.description),
     encodeStringField(2, call.prompt),
     encodeLengthDelimited(3, encodeLengthDelimited(4, new Uint8Array())),
-    ...(reply.agentID !== undefined ? [encodeStringField(6, reply.agentID)] : []),
+    ...(reply.agentID !== undefined
+      ? [
+          encodeStringField(6, reply.agentID),
+        ]
+      : []),
   ])
   const result = reply.success
     ? encodeLengthDelimited(1, concatBytes([
-        ...(reply.finalMessage !== undefined ? [encodeLengthDelimited(1, encodeLengthDelimited(1, encodeStringField(1, reply.finalMessage)))] : []),
+        ...(reply.finalMessage !== undefined
+          ? [
+              encodeLengthDelimited(1, encodeLengthDelimited(1, encodeStringField(1, reply.finalMessage))),
+            ]
+          : []),
         encodeStringField(2, reply.agentID),
         encodeVarintField(3, 0),
       ]))
     : encodeLengthDelimited(2, encodeStringField(1, reply.error))
   const tool = concatBytes([
-    encodeLengthDelimited(19, concatBytes([encodeLengthDelimited(1, args), encodeLengthDelimited(2, result)])),
+    encodeLengthDelimited(19, concatBytes([
+      encodeLengthDelimited(1, args),
+      encodeLengthDelimited(2, result),
+    ])),
     encodeStringField(57, call.callID),
   ])
-  return encodeLengthDelimited(1, encodeLengthDelimited(3, concatBytes([encodeStringField(1, call.callID), encodeLengthDelimited(2, tool)])))
+  return encodeLengthDelimited(1, encodeLengthDelimited(3, concatBytes([
+    encodeStringField(1, call.callID),
+    encodeLengthDelimited(2, tool),
+  ])))
 }

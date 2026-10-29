@@ -14,13 +14,24 @@ import { nativeContext } from './scenarios'
  */
 kiroTest.describe('Kiro subagent registry', () => {
   kiroTest('shows the child prompt while the child still runs', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-    const { workingDir } = await openNativeAgent(context, { overrides: { optionValues: { [KIRO_OPTION.PolicyPreset]: KIRO_POLICY_PRESET.AllowAll } } })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
+    const { workingDir } = await openNativeAgent(context, {
+      overrides: {
+        optionValues: { [KIRO_OPTION.PolicyPreset]: KIRO_POLICY_PRESET.AllowAll },
+      },
+    })
     await exerciseLiveChildTranscript(context, {
       childWhen: kiroChildTurn('Reply with CHILD_LIVE_DONE'),
       childTask: 'Reply with CHILD_LIVE_DONE.',
       parentTask: 'Delegate the live child task.',
-      toolProof: { read: { workingDir } },
+      toolProof: {
+        read: { workingDir },
+      },
     })
   })
 })

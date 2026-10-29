@@ -108,7 +108,9 @@ function renderTitlebar(activeWorkingDir?: () => string | undefined) {
       onToggleRightSidebar={() => {}}
       leftSidebarVisible
       rightSidebarVisible
-      {...(activeWorkingDir !== undefined ? { activeWorkingDir } : {})}
+      {...(activeWorkingDir !== undefined
+        ? { activeWorkingDir }
+        : {})}
     />
   )))
 }
@@ -284,7 +286,9 @@ describe('CustomTitlebar open-in-app slot', () => {
 
   it('hides the open-in-app button when not in solo mode (e.g. web)', async () => {
     runtimeLocalSolo.value = false
-    detectedApps.value = [editorApp('vscode', 'Visual Studio Code')]
+    detectedApps.value = [
+      editorApp('vscode', 'Visual Studio Code'),
+    ]
     const { container } = renderTitlebar(() => '/home/u/proj')
     await new Promise(r => setTimeout(r, 0))
     expect(container.querySelector('[data-testid="open-in-app"]')).toBeNull()
@@ -292,7 +296,9 @@ describe('CustomTitlebar open-in-app slot', () => {
 
   it('shows the open-in-app button before the left-sidebar toggle in solo mode', async () => {
     runtimeLocalSolo.value = true
-    detectedApps.value = [editorApp('vscode', 'Visual Studio Code')]
+    detectedApps.value = [
+      editorApp('vscode', 'Visual Studio Code'),
+    ]
     const { container } = renderTitlebar(() => '/home/u/proj')
     const button = await screen.findByTestId('open-in-app')
     const sidebarToggle = container.querySelector('button[aria-label^="Toggle left sidebar"]')

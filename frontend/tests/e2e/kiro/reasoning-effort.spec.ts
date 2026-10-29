@@ -14,9 +14,13 @@ function expectModelAtEffort(request: MockModelRequestRecord, model: string, eff
 }
 
 kiroTest('sends the chosen effort into native turns before and after reload', async ({ native }) => {
-  await exerciseNativeOption(native, { groupId: 'effortLevel', value: 'high', nativeProof: (request) => {
-    expect(request.body).toHaveProperty('additionalModelRequestFields.output_config.effort', 'high')
-  } })
+  await exerciseNativeOption(native, {
+    groupId: 'effortLevel',
+    value: 'high',
+    nativeProof: (request) => {
+      expect(request.body).toHaveProperty('additionalModelRequestFields.output_config.effort', 'high')
+    },
+  })
 })
 
 // A Kiro model write starts the effort at the default of the new model. Both models offer low, medium, and high.

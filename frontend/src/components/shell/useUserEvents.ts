@@ -599,7 +599,9 @@ function defaultBuildWsUrl(workspaceIds: string[], resume: ResumeToken | null): 
     params.set(WS_PARAM_RESUME_EPOCH, resume.epoch.toString())
   }
   const qs = params.toString()
-  return `${base}${WS_USER_EVENTS_ROUTE}${qs ? `?${qs}` : ''}`
+  return `${base}${WS_USER_EVENTS_ROUTE}${qs
+    ? `?${qs}`
+    : ''}`
 }
 
 function dispatchEvent(

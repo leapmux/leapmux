@@ -27,7 +27,9 @@ export interface DiracPlanReadiness {
 
 /** Read the native plan attention record that follows the response-field clear. */
 export function parseDiracPlanInput(value: unknown): DiracPlanInput {
-  const notification = isObject(value) && isObject(value.notification) ? value.notification : undefined
+  const notification = isObject(value) && isObject(value.notification)
+    ? value.notification
+    : undefined
   if (!isObject(value) || value.hookName !== 'Notification'
     || typeof value.taskId !== 'string' || value.taskId.trim() === ''
     || !notification || notification.event !== 'user_attention'
@@ -69,12 +71,19 @@ export async function withDiracPlanReadiness(
   assertPrivateNativePath(options.home, options.runDir)
   const directory = join(options.home, '.dirac')
   const hooksDirectory = join(directory, 'Hooks')
-  const hookPath = join(hooksDirectory, process.platform === 'win32' ? 'Notification.ps1' : 'Notification')
+  const hookPath = join(hooksDirectory, process.platform === 'win32'
+    ? 'Notification.ps1'
+    : 'Notification')
   for (const path of [directory, hooksDirectory, hookPath])
     assertExistingPrivatePath(path, options.runDir)
   mkdirSync(hooksDirectory, { recursive: true })
   assertPrivateNativePath(hooksDirectory, options.runDir)
-  const previous = existsSync(hookPath) ? { bytes: readFileSync(hookPath), mode: statSync(hookPath).mode & 0o777 } : undefined
+  const previous = existsSync(hookPath)
+    ? {
+        bytes: readFileSync(hookPath),
+        mode: statSync(hookPath).mode & 0o777,
+      }
+    : undefined
   const signalDirectory = mkdtempSync(join(options.runDir, 'dirac-plan-readiness-'))
   const signalPath = join(signalDirectory, 'ready.json')
   const scriptPath = join(signalDirectory, 'notification.cjs')
@@ -128,6 +137,9 @@ process.stdout.write(JSON.stringify({ cancel: false, contextModification: '', er
     const removeSignalDirectory = async () => {
       rmSync(signalDirectory, { recursive: true, force: true })
     }
-    await finishCleanup([restoreHook(), removeSignalDirectory()])
+    await finishCleanup([
+      restoreHook(),
+      removeSignalDirectory(),
+    ])
   })
 }

@@ -49,20 +49,28 @@ describe('renderTreeToLocal', () => {
       kind: NodeKind.SPLIT,
       direction: SplitDirection.VERTICAL,
       ratios: [0.3, 0.7],
-      children: [tree({ nodeId: 'a' }), tree({ nodeId: 'b' })],
+      children: [
+        tree({ nodeId: 'a' }),
+        tree({ nodeId: 'b' }),
+      ],
     }))
     expect(vertical).toEqual({
       type: 'split',
       id: 's',
       direction: 'vertical',
       ratios: [0.3, 0.7],
-      children: [{ type: 'leaf', id: 'a' }, { type: 'leaf', id: 'b' }],
+      children: [
+        { type: 'leaf', id: 'a' },
+        { type: 'leaf', id: 'b' },
+      ],
     })
     const horizontal = toLocal(tree({
       nodeId: 's2',
       kind: NodeKind.SPLIT,
       direction: SplitDirection.HORIZONTAL,
-      children: [tree({ nodeId: 'a2' })],
+      children: [
+        tree({ nodeId: 'a2' }),
+      ],
     }))
     expect(horizontal).toMatchObject({ direction: 'horizontal' })
   })
@@ -76,7 +84,10 @@ describe('renderTreeToLocal', () => {
       rowRatios: [1],
       colRatios: [0.5, 0.5],
       // The second cell is the shared empty tree, which converts to null.
-      children: [tree({ nodeId: 'c00' }), tree({ nodeId: '' })],
+      children: [
+        tree({ nodeId: 'c00' }),
+        tree({ nodeId: '' }),
+      ],
     }))
     expect(local).toEqual({
       type: 'grid',
@@ -88,7 +99,10 @@ describe('renderTreeToLocal', () => {
       // Keyed off the PARENT plus the index, which is exactly why `project()` can
       // share one empty-cell object across every grid without two holes
       // colliding on the same placeholder id.
-      cells: [{ type: 'leaf', id: 'c00' }, { type: 'leaf', id: '__empty_g_1' }],
+      cells: [
+        { type: 'leaf', id: 'c00' },
+        { type: 'leaf', id: '__empty_g_1' },
+      ],
     })
   })
 
@@ -96,15 +110,32 @@ describe('renderTreeToLocal', () => {
     const local = toLocal(tree({
       nodeId: 's',
       kind: NodeKind.SPLIT,
-      children: [tree({ nodeId: 'a' }), tree({ nodeId: '' })],
+      children: [
+        tree({ nodeId: 'a' }),
+        tree({ nodeId: '' }),
+      ],
     }))
-    expect(local).toMatchObject({ children: [{ type: 'leaf', id: 'a' }] })
+    expect(local).toMatchObject({
+      children: [
+        { type: 'leaf', id: 'a' },
+      ],
+    })
   })
 
   it('copies the ratio arrays out rather than aliasing the projection', () => {
-    const rt = tree({ nodeId: 's', kind: NodeKind.SPLIT, ratios: [0.5, 0.5], children: [tree({ nodeId: 'a' }), tree({ nodeId: 'b' })] })
+    const rt = tree({
+      nodeId: 's',
+      kind: NodeKind.SPLIT,
+      ratios: [0.5, 0.5],
+      children: [
+        tree({ nodeId: 'a' }),
+        tree({ nodeId: 'b' }),
+      ],
+    })
     const local = toLocal(rt)
-    expect(local).toMatchObject({ ratios: [0.5, 0.5] })
+    expect(local).toMatchObject({
+      ratios: [0.5, 0.5],
+    })
     expect((local as { ratios: number[] }).ratios).not.toBe(rt.ratios)
   })
 
@@ -122,9 +153,25 @@ describe('renderTreeToLocal', () => {
 
   it('returns the same subtree objects when only an ancestor was rebuilt', () => {
     const child = tree({ nodeId: 'a' })
-    const first = toLocal(tree({ nodeId: 's', kind: NodeKind.SPLIT, ratios: [0.5, 0.5], children: [child, tree({ nodeId: 'b' })] }))
+    const first = toLocal(tree({
+      nodeId: 's',
+      kind: NodeKind.SPLIT,
+      ratios: [0.5, 0.5],
+      children: [
+        child,
+        tree({ nodeId: 'b' }),
+      ],
+    }))
     // What a ratio drag produces: a fresh parent over the very same children.
-    const second = toLocal(tree({ nodeId: 's', kind: NodeKind.SPLIT, ratios: [0.3, 0.7], children: [child, tree({ nodeId: 'b' })] }))
+    const second = toLocal(tree({
+      nodeId: 's',
+      kind: NodeKind.SPLIT,
+      ratios: [0.3, 0.7],
+      children: [
+        child,
+        tree({ nodeId: 'b' }),
+      ],
+    }))
     expect(second).not.toBe(first)
     expect((second as { children: unknown[] }).children[0]).toBe((first as { children: unknown[] }).children[0])
   })
@@ -142,7 +189,10 @@ describe('renderTreeToLocal', () => {
       nodeId: 'x',
       kind: NodeKind.SPLIT,
       ratios: [0.5, 0.5],
-      children: [tree({ nodeId: 'c1' }), tree({ nodeId: 'c2' })],
+      children: [
+        tree({ nodeId: 'c1' }),
+        tree({ nodeId: 'c2' }),
+      ],
     }))
     expect(asLeaf?.type).toBe('leaf')
     expect(asSplit?.type, 'the second conversion is its own node, not the first one').toBe('split')

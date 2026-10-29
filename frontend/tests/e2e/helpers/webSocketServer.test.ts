@@ -19,7 +19,9 @@ async function startServer(protocols?: readonly string[]) {
   const sockets: Duplex[] = []
   server.on('upgrade', (request, socket, head) => {
     sockets.push(socket)
-    const connection = acceptWebSocket(request, socket, head, protocols ? { protocols } : {})
+    const connection = acceptWebSocket(request, socket, head, protocols
+      ? { protocols }
+      : {})
     if (!connection)
       return
     const waiter = waiters.shift()
@@ -133,7 +135,10 @@ describe('readClientFrame', () => {
     const first = clientFrame(0x2, Buffer.from('a'), false)
     const second = clientFrame(0x0, Buffer.from('b'))
     const read = readClientFrame(Buffer.concat([first, second]))
-    expect(read).toMatchObject({ kind: 'frame', frame: { fin: false, opcode: 0x2 } })
+    expect(read).toMatchObject({
+      kind: 'frame',
+      frame: { fin: false, opcode: 0x2 },
+    })
     if (read.kind === 'frame')
       expect(read.rest.equals(second)).toBe(true)
   })
@@ -221,7 +226,13 @@ describe('acceptWebSocket', () => {
     expect(serverSide.closed).toBe(true)
     serverSide.send('late')
     await ended
-    expect(serverFrames(Buffer.concat(replies))).toEqual([{ fin: true, opcode: 0x8, payload: Buffer.from([0x03, 0xE8]) }])
+    expect(serverFrames(Buffer.concat(replies))).toEqual([
+      {
+        fin: true,
+        opcode: 0x8,
+        payload: Buffer.from([0x03, 0xE8]),
+      },
+    ])
     socket.destroy()
   })
 
@@ -270,7 +281,11 @@ function serverFrames(data: Buffer): ServerFrame[] {
       length = Number(data.readBigUInt64BE(offset + 2))
       start = offset + 10
     }
-    frames.push({ fin: (data[offset]! & 0x80) !== 0, opcode: data[offset]! & 0x0F, payload: Buffer.from(data.subarray(start, start + length)) })
+    frames.push({
+      fin: (data[offset]! & 0x80) !== 0,
+      opcode: data[offset]! & 0x0F,
+      payload: Buffer.from(data.subarray(start, start + length)),
+    })
     offset = start + length
   }
   return frames
@@ -300,7 +315,9 @@ function fakeSocket() {
     frames: () => {
       const all = Buffer.concat(written)
       const bodyStart = all.indexOf('\r\n\r\n')
-      return serverFrames(all.subarray(bodyStart < 0 ? all.byteLength : bodyStart + 4))
+      return serverFrames(all.subarray(bodyStart < 0
+        ? all.byteLength
+        : bodyStart + 4))
     },
     handshake: () => Buffer.concat(written).toString('latin1'),
     ended: () => ended,
@@ -311,7 +328,10 @@ function fakeSocket() {
 
 /** An upgrade request that holds only the fields the endpoint reads. */
 function upgradeRequest(headers: IncomingHttpHeaders, method = 'GET'): IncomingMessage {
-  return { method, headers: { 'upgrade': 'websocket', 'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==', ...headers } } as IncomingMessage
+  return {
+    method,
+    headers: { 'upgrade': 'websocket', 'sec-websocket-key': 'dGhlIHNhbXBsZSBub25jZQ==', ...headers },
+  } as IncomingMessage
 }
 
 /** Let the stream deliver what the test pushed. */
@@ -335,15 +355,29 @@ describe('acceptWebSocket handshake', () => {
 
   it('takes the first protocol of its own preference that the client offered', () => {
     const fake = fakeSocket()
-    const connection = acceptWebSocket(upgradeRequest({ 'sec-websocket-protocol': 'b, a' }), fake.socket, Buffer.alloc(0), { protocols: ['a', 'b'] })
+    const connection = acceptWebSocket(upgradeRequest({ 'sec-websocket-protocol': 'b, a' }), fake.socket, Buffer.alloc(0), {
+      protocols: ['a', 'b'],
+    })
     expect(connection?.protocol).toBe('a')
   })
 
   it.each([
-    ['no key', upgradeRequest({ 'sec-websocket-key': undefined })],
-    ['an empty key', upgradeRequest({ 'sec-websocket-key': '' })],
-    ['another upgrade', upgradeRequest({ upgrade: 'h2c' })],
-    ['a POST', upgradeRequest({}, 'POST')],
+    [
+      'no key',
+      upgradeRequest({ 'sec-websocket-key': undefined }),
+    ],
+    [
+      'an empty key',
+      upgradeRequest({ 'sec-websocket-key': '' }),
+    ],
+    [
+      'another upgrade',
+      upgradeRequest({ upgrade: 'h2c' }),
+    ],
+    [
+      'a POST',
+      upgradeRequest({}, 'POST'),
+    ],
   ])('refuses a request with %s', (_label, request) => {
     const fake = fakeSocket()
     expect(acceptWebSocket(request, fake.socket, Buffer.alloc(0))).toBeNull()
@@ -365,7 +399,12 @@ describe('acceptWebSocket connection', () => {
     connection.onMessage(text => messages.push(text))
     let closes = 0
     connection.onClose(() => closes++)
-    return { fake, connection, messages, closes: () => closes }
+    return {
+      fake,
+      connection,
+      messages,
+      closes: () => closes,
+    }
   }
 
   // A client may send its first frame in the same packet as the handshake, and the
@@ -379,7 +418,11 @@ describe('acceptWebSocket connection', () => {
   it('reads a frame that arrives in several pieces', async () => {
     const { fake, messages } = open()
     const frame = clientFrame(0x1, Buffer.from('pieces'))
-    for (const piece of [frame.subarray(0, 1), frame.subarray(1, 5), frame.subarray(5)])
+    for (const piece of [
+      frame.subarray(0, 1),
+      frame.subarray(1, 5),
+      frame.subarray(5),
+    ])
       fake.receive(piece)
     await settle()
     expect(messages).toEqual(['pieces'])
@@ -396,7 +439,13 @@ describe('acceptWebSocket connection', () => {
     const { fake, connection, messages } = open()
     fake.receive(clientClose(4000))
     await settle()
-    expect(fake.frames()).toEqual([{ fin: true, opcode: 0x8, payload: Buffer.from([0x0F, 0xA0]) }])
+    expect(fake.frames()).toEqual([
+      {
+        fin: true,
+        opcode: 0x8,
+        payload: Buffer.from([0x0F, 0xA0]),
+      },
+    ])
     expect(fake.ended()).toBe(true)
     expect(connection.closed).toBe(true)
     expect(messages).toEqual([])
@@ -419,9 +468,25 @@ describe('acceptWebSocket connection', () => {
   })
 
   it.each([
-    ['a continuation frame with no message', [clientFrame(0x0, Buffer.from('x'))]],
-    ['a new message inside a fragmented one', [clientFrame(0x1, Buffer.from('a'), false), clientFrame(0x1, Buffer.from('b'))]],
-    ['an unknown opcode', [clientFrame(0x3, Buffer.from('x'))]],
+    [
+      'a continuation frame with no message',
+      [
+        clientFrame(0x0, Buffer.from('x')),
+      ],
+    ],
+    [
+      'a new message inside a fragmented one',
+      [
+        clientFrame(0x1, Buffer.from('a'), false),
+        clientFrame(0x1, Buffer.from('b')),
+      ],
+    ],
+    [
+      'an unknown opcode',
+      [
+        clientFrame(0x3, Buffer.from('x')),
+      ],
+    ],
   ])('closes with the protocol error code for %s', async (_label, frames) => {
     const { fake, messages } = open()
     fake.receive(Buffer.concat(frames))
@@ -437,7 +502,10 @@ describe('acceptWebSocket connection', () => {
   it('closes with the too-big code for a fragmented message past the cap', async () => {
     const { fake, messages } = open()
     const half = Buffer.alloc(MAX_WEBSOCKET_MESSAGE_BYTES / 2 + 1, 0x61)
-    fake.receive(Buffer.concat([clientFrame(0x1, half, false), clientFrame(0x0, half, true)]))
+    fake.receive(Buffer.concat([
+      clientFrame(0x1, half, false),
+      clientFrame(0x0, half, true),
+    ]))
     await settle()
     const [close] = fake.frames()
     expect(close?.opcode).toBe(0x8)

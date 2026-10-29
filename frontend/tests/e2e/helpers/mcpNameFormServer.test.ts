@@ -24,15 +24,29 @@ interface Reply {
 function run(messages: unknown[], options = { serverName: 'probe', expectedName: 'kiro-e2e' }) {
   const server = writeMcpNameFormServer(directory, options)
   const output = execFileSync(server.command, [...server.args], { input: `${messages.map(message => JSON.stringify(message)).join('\n')}\n`, encoding: 'utf8', timeout: 30000 })
-  return { server, replies: output.trim().split('\n').map(line => JSON.parse(line) as Reply), ready: existsSync(server.ready) }
+  return {
+    server,
+    replies: output.trim().split('\n').map(line => JSON.parse(line) as Reply),
+    ready: existsSync(server.ready),
+  }
 }
 
-const call = { jsonrpc: '2.0', id: 7, method: 'tools/call', params: { name: 'ask', arguments: {} } }
+const call = {
+  jsonrpc: '2.0',
+  id: 7,
+  method: 'tools/call',
+  params: { name: 'ask', arguments: {} },
+}
 
 describe('writeMcpNameFormServer', () => {
   it('reports the configured name and lists its one tool, which writes the ready file', () => {
     const { server, replies, ready } = run([
-      { jsonrpc: '2.0', id: 0, method: 'initialize', params: { protocolVersion: '2025-03-26' } },
+      {
+        jsonrpc: '2.0',
+        id: 0,
+        method: 'initialize',
+        params: { protocolVersion: '2025-03-26' },
+      },
       { jsonrpc: '2.0', id: 1, method: 'tools/list' },
     ], { serverName: 'form_probe', expectedName: 'grok-e2e' })
     expect(server.name).toBe('form_probe')
@@ -42,11 +56,28 @@ describe('writeMcpNameFormServer', () => {
   })
 
   it('writes no ready file before an agent lists its tools', () => {
-    expect(run([{ jsonrpc: '2.0', id: 0, method: 'initialize', params: { protocolVersion: '2025-03-26' } }]).ready).toBe(false)
+    expect(run([
+      {
+        jsonrpc: '2.0',
+        id: 0,
+        method: 'initialize',
+        params: { protocolVersion: '2025-03-26' },
+      },
+    ]).ready).toBe(false)
   })
 
   it('asks for one name field and accepts the expected name', () => {
-    const { replies } = run([call, { jsonrpc: '2.0', id: 'probe-form', result: { action: 'accept', content: { name: 'kiro-e2e' } } }])
+    const { replies } = run([
+      call,
+      {
+        jsonrpc: '2.0',
+        id: 'probe-form',
+        result: {
+          action: 'accept',
+          content: { name: 'kiro-e2e' },
+        },
+      },
+    ])
     const form = replies.find(reply => reply.method === 'elicitation/create')
     expect(form?.id).toBe('probe-form')
     expect(Object.keys(form?.params?.requestedSchema?.properties ?? {})).toEqual(['name'])
@@ -54,16 +85,33 @@ describe('writeMcpNameFormServer', () => {
   })
 
   it.each([
-    { label: 'another name', result: { action: 'accept', content: { name: 'other' } } },
-    { label: 'a decline', result: { action: 'decline' } },
-    { label: 'a cancel', result: { action: 'cancel' } },
+    {
+      label: 'another name',
+      result: {
+        action: 'accept',
+        content: { name: 'other' },
+      },
+    },
+    {
+      label: 'a decline',
+      result: { action: 'decline' },
+    },
+    {
+      label: 'a cancel',
+      result: { action: 'cancel' },
+    },
   ])('fails the round trip for $label', ({ result }) => {
-    const { replies } = run([call, { jsonrpc: '2.0', id: 'probe-form', result }])
+    const { replies } = run([
+      call,
+      { jsonrpc: '2.0', id: 'probe-form', result },
+    ])
     expect(replies.find(reply => reply.id === 7)?.result?.content?.[0]?.text).toBe('FORM_ROUND_TRIP_FAILED')
   })
 
   it('refuses an unsupported method', () => {
-    expect(run([{ jsonrpc: '2.0', id: 3, method: 'resources/list' }]).replies[0]?.error?.code).toBe(-32601)
+    expect(run([
+      { jsonrpc: '2.0', id: 3, method: 'resources/list' },
+    ]).replies[0]?.error?.code).toBe(-32601)
   })
 
   it('refuses an empty expected name and an invalid server name before it writes a script', () => {

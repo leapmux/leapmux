@@ -12,7 +12,12 @@ describe('the composer reply of each ACP plugin', () => {
     method: 'session/request_permission',
     params: {
       sessionId: 's',
-      toolCall: { toolCallId: 'c', kind: 'execute', title: 'Run', rawInput: { command: 'ls' } },
+      toolCall: {
+        toolCallId: 'c',
+        kind: 'execute',
+        title: 'Run',
+        rawInput: { command: 'ls' },
+      },
       options: [
         { optionId: 'allow-1', name: 'Allow', kind: 'allow_once' },
         { optionId: 'reject-1', name: 'Reject', kind: 'reject_once' },
@@ -33,20 +38,53 @@ describe('the composer reply of each ACP plugin', () => {
   it.each(ACP_PROVIDERS.map(provider => [AgentProvider[provider], provider] as const))('selects the agent\'s own options for %s', (_name, provider) => {
     const controls = providerFor(provider)?.controls
     expect(controls?.buildControlResponse?.(PERMISSION_REQUEST, 'use the other file', 'jsonrpc:3'))
-      .toMatchObject({ jsonrpc: '2.0', result: { outcome: { outcome: 'selected', optionId: 'reject-1' } } })
+      .toMatchObject({
+        jsonrpc: '2.0',
+        result: {
+          outcome: { outcome: 'selected', optionId: 'reject-1' },
+        },
+      })
     expect(controls?.buildControlResponse?.(PERMISSION_REQUEST, '', 'jsonrpc:3'))
-      .toMatchObject({ jsonrpc: '2.0', result: { outcome: { outcome: 'selected', optionId: 'allow-1' } } })
+      .toMatchObject({
+        jsonrpc: '2.0',
+        result: {
+          outcome: { outcome: 'selected', optionId: 'allow-1' },
+        },
+      })
   })
 
   // OpenCode and Kilo draw their daemon's own `once`/`reject` pair for a request that
   // states no option list, and the composer answers with the same pair.
   it.each([AgentProvider.OPENCODE, AgentProvider.KILO].map(provider => [AgentProvider[provider], provider] as const))('answers an option-less request with the daemon pair for %s', (_name, provider) => {
-    const optionLess = { ...PERMISSION_REQUEST, params: { ...PERMISSION_REQUEST.params, options: undefined } }
+    const optionLess = {
+      ...PERMISSION_REQUEST,
+      params: { ...PERMISSION_REQUEST.params, options: undefined },
+    }
     const controls = providerFor(provider)?.controls
-    expect(controls?.extractControl?.({ payload: optionLess })).toMatchObject({ kind: 'permission', permission: { options: [{ optionId: 'once' }, { optionId: 'reject' }] } })
+    expect(controls?.extractControl?.({ payload: optionLess })).toMatchObject({
+      kind: 'permission',
+      permission: {
+        options: [
+          { optionId: 'once' },
+          { optionId: 'reject' },
+        ],
+      },
+    })
     expect(controls?.buildControlResponse?.(optionLess, 'use the other file', 'jsonrpc:3'))
-      .toEqual({ jsonrpc: '2.0', id: 'jsonrpc:3', result: { outcome: { outcome: 'selected', optionId: 'reject' } } })
+      .toEqual({
+        jsonrpc: '2.0',
+        id: 'jsonrpc:3',
+        result: {
+          outcome: { outcome: 'selected', optionId: 'reject' },
+        },
+      })
     expect(controls?.buildControlResponse?.(optionLess, '', 'jsonrpc:3'))
-      .toEqual({ jsonrpc: '2.0', id: 'jsonrpc:3', result: { outcome: { outcome: 'selected', optionId: 'once' } } })
+      .toEqual({
+        jsonrpc: '2.0',
+        id: 'jsonrpc:3',
+        result: {
+          outcome: { outcome: 'selected', optionId: 'once' },
+        },
+      })
   })
 })

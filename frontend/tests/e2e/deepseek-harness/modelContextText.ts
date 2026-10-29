@@ -5,20 +5,20 @@ function contentText(content: unknown, toolResult = false): string {
   if (typeof content === 'string')
     return content
   if (!Array.isArray(content))
-    throw new Error('The DeepSeek Harness model content must contain native blocks or text.')
+    throw new TypeError('The DeepSeek Harness model content must contain native blocks or text.')
   return content.map((block: unknown) => {
     if (!isObject(block) || typeof block.type !== 'string')
       throw new Error('The DeepSeek Harness model content contains an invalid block.')
     if (block.type === 'text') {
       if (typeof block.text !== 'string')
-        throw new Error('The DeepSeek Harness native text block has no text value.')
+        throw new TypeError('The DeepSeek Harness native text block has no text value.')
       return block.text
     }
     if (block.type === 'tool_result' && !toolResult)
       return contentText(block.content, true)
     if (block.type === 'thinking' && !toolResult) {
       if (typeof block.thinking !== 'string')
-        throw new Error('The DeepSeek Harness native thinking block has no text value.')
+        throw new TypeError('The DeepSeek Harness native thinking block has no text value.')
       return block.thinking
     }
     if (block.type === 'image' || (!toolResult && (block.type === 'tool_use' || block.type === 'redacted_thinking')))

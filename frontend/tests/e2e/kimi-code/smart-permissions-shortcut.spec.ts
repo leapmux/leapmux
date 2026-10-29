@@ -37,7 +37,11 @@ kimiTest.describe('applies Kimi Code permission presets', () => {
     await applyPermissionPreset(page, 'bypass')
     await expectSettingsChip(page, 'Never Ask')
     const bypass = await modelScript.queue(
-      { toolCalls: [bashToolCall(native.provider, 'bypass-delete', 'rm -r -f shortcut-dangerous-proof')] },
+      {
+        toolCalls: [
+          bashToolCall(native.provider, 'bypass-delete', 'rm -r -f shortcut-dangerous-proof'),
+        ],
+      },
       { text: 'Bypass removed the file.' },
     )
     await sendMessage(page, modelScript.prompt('Run the scripted delete under Bypass permissions.'))

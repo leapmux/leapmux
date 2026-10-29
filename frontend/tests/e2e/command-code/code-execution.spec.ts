@@ -17,7 +17,9 @@ commandCodeTest('checks the complete native catalog and its exact executor looku
   for (const name of executors)
     expect(names).not.toContain(name)
   const { resultRequest } = await runNativeToolTurn(native, {
-    toolCalls: [commandCodeLoadToolsToolCall('find-native-code', `select:${executors.join(',')}`)],
+    toolCalls: [
+      commandCodeLoadToolsToolCall('find-native-code', `select:${executors.join(',')}`),
+    ],
     prompt: 'Look up the exact native source executor interfaces.',
     answer: 'The native executor lookup completed.',
   })

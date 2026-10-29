@@ -83,7 +83,13 @@ export function readNativeStoredControlDecision(snapshot: NativeMessageSnapshot,
       throw new Error(`The saved decision for native request ${requestId} has no valid Worker row identity.`)
     if (!saved.claimToken.trim() || !saved.request || !saved.response)
       throw new Error(`The saved decision for native request ${requestId} lacks its native request, its native answer, or its claim token.`)
-    decisions.push({ message, requestId: saved.requestId, claimToken: saved.claimToken, request: saved.request, response: saved.response })
+    decisions.push({
+      message,
+      requestId: saved.requestId,
+      claimToken: saved.claimToken,
+      request: saved.request,
+      response: saved.response,
+    })
   }
   const [decision, ...others] = decisions
   if (!decision || others.length > 0)

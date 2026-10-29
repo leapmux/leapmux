@@ -41,14 +41,33 @@ describe('the kind-discriminated tool call model', () => {
   })
 
   it('answers the typed result only for the kind\'s own payload', () => {
-    expect(typedResult({ kind: 'think', result: proseResult('thought') })?.text).toBe('thought')
-    expect(typedResult({ kind: 'think', result: failedResult('no') })).toBeUndefined()
-    expect(typedResult({ kind: 'think', result: unparsedResult('raw') })).toBeUndefined()
+    expect(typedResult({
+      kind: 'think',
+      result: proseResult('thought'),
+    })?.text).toBe('thought')
+    expect(typedResult({
+      kind: 'think',
+      result: failedResult('no'),
+    })).toBeUndefined()
+    expect(typedResult({
+      kind: 'think',
+      result: unparsedResult('raw'),
+    })).toBeUndefined()
     expect(typedResult({ kind: 'think' })).toBeUndefined()
   })
 
   it('joins an envelope with a payload and defaults the images to none', () => {
-    const call = createToolCall({ id: 'f1', name: 'WebFetch', lifecycle: { ...TEST_LIFECYCLE('unstated'), rowFinal: true } }, { kind: 'fetch', request: { url: 'https://example.com' } })
+    const call = createToolCall({
+      id: 'f1',
+      name: 'WebFetch',
+      lifecycle: {
+        ...TEST_LIFECYCLE('unstated'),
+        rowFinal: true,
+      },
+    }, {
+      kind: 'fetch',
+      request: { url: 'https://example.com' },
+    })
     expect(call.id).toBe('f1')
     expect(call.name).toBe('WebFetch')
     expect(call.status).toBe('incomplete')
@@ -67,8 +86,16 @@ describe('the kind-discriminated tool call model', () => {
   it('keeps the envelope fields a payload states as undefined', () => {
     const statedNone: Record<string, unknown> = { name: undefined, images: undefined }
     const call = createToolCall(
-      { id: 'c4', name: 'Bash', lifecycle: TEST_LIFECYCLE('completed') },
-      { kind: 'execute', request: { command: 'ls' }, ...statedNone },
+      {
+        id: 'c4',
+        name: 'Bash',
+        lifecycle: TEST_LIFECYCLE('completed'),
+      },
+      {
+        kind: 'execute',
+        request: { command: 'ls' },
+        ...statedNone,
+      },
     )
     expect(call.name).toBe('Bash')
     expect(call.images).toEqual([])
@@ -76,8 +103,16 @@ describe('the kind-discriminated tool call model', () => {
 
   it('lets a payload that states a name of its own win', () => {
     const call = createToolCall(
-      { id: 'c5', name: '', lifecycle: TEST_LIFECYCLE('completed') },
-      { kind: 'execute', request: { command: 'ls' }, name: 'run_terminal_cmd' },
+      {
+        id: 'c5',
+        name: '',
+        lifecycle: TEST_LIFECYCLE('completed'),
+      },
+      {
+        kind: 'execute',
+        request: { command: 'ls' },
+        name: 'run_terminal_cmd',
+      },
     )
     expect(call.name).toBe('run_terminal_cmd')
   })
@@ -87,14 +122,36 @@ describe('the kind-discriminated tool call model', () => {
   // reader refused arriving as an error. Every provider used to apply this itself.
   it('lets the payload state the outcome the envelope could not', () => {
     const call = createToolCall(
-      { id: 'c1', name: 'ExitPlanMode', lifecycle: TEST_LIFECYCLE('completed') },
-      { kind: 'switch_mode', request: { mode: 'plan' }, statusOverride: 'declined', result: proseResult('Not yet') },
+      {
+        id: 'c1',
+        name: 'ExitPlanMode',
+        lifecycle: TEST_LIFECYCLE('completed'),
+      },
+      {
+        kind: 'switch_mode',
+        request: { mode: 'plan' },
+        statusOverride: 'declined',
+        result: proseResult('Not yet'),
+      },
     )
     expect(call.status).toBe('declined')
   })
 
   it('keeps the envelope status when the payload states no override', () => {
-    const call = createToolCall({ id: 'c2', name: 'Bash', lifecycle: { frameStatus: 'failed', providerOutcome: null, retainedOutcome: null, rowFinal: false, resultFrameLanded: false } }, { kind: 'execute', request: { command: 'false' } })
+    const call = createToolCall({
+      id: 'c2',
+      name: 'Bash',
+      lifecycle: {
+        frameStatus: 'failed',
+        providerOutcome: null,
+        retainedOutcome: null,
+        rowFinal: false,
+        resultFrameLanded: false,
+      },
+    }, {
+      kind: 'execute',
+      request: { command: 'false' },
+    })
     expect(call.status).toBe('failed')
   })
 
@@ -102,8 +159,16 @@ describe('the kind-discriminated tool call model', () => {
   // survive onto the call as a second one.
   it('leaves the override off the built call', () => {
     const call = createToolCall(
-      { id: 'c3', name: 'Bash', lifecycle: TEST_LIFECYCLE('completed') },
-      { kind: 'execute', request: { command: 'false' }, statusOverride: 'failed' },
+      {
+        id: 'c3',
+        name: 'Bash',
+        lifecycle: TEST_LIFECYCLE('completed'),
+      },
+      {
+        kind: 'execute',
+        request: { command: 'false' },
+        statusOverride: 'failed',
+      },
     )
     expect(call).not.toHaveProperty('statusOverride')
     expect(Object.keys(call)).not.toContain('statusOverride')
@@ -122,13 +187,116 @@ describe('an observable degradation', () => {
 
   /** One draft per fault code, each named by the invariant it breaks. */
   const FAULT_DRAFTS: Array<[ToolCallFault, Parameters<typeof createToolCall>]> = [
-    ['result-before-the-call-finished', [{ id: 'f1', name: 'Think', lifecycle: TEST_LIFECYCLE('pending') }, { kind: 'think', request: { text: 't' }, result: proseResult('early') }]],
-    ['pictures-before-the-call-finished', [{ id: 'f2', name: 'Read', lifecycle: TEST_LIFECYCLE('in_progress') }, { kind: 'read', request: { path: '/a' }, images: [{ mimeType: 'image/png', data: 'aGk=' }] }]],
-    ['completed-with-a-failure-result', [{ id: 'f4', name: 'Think', lifecycle: TEST_LIFECYCLE('completed') }, { kind: 'think', request: { text: 't' }, result: failedResult('boom') }]],
-    ['failed-with-an-unparsed-result', [{ id: 'f5', name: 'Read', lifecycle: TEST_LIFECYCLE('failed') }, { kind: 'read', request: { path: '/a' }, result: unparsedResult('raw') }]],
-    ['declined-with-a-typed-payload', [{ id: 'f6', name: 'Read', lifecycle: TEST_LIFECYCLE('declined') }, { kind: 'read', request: { path: '/a' }, result: { lines: null, fallbackContent: 'body' } }]],
-    ['a-generic-kind-carries-its-own-images', [{ id: 'f7', name: 'Tool', lifecycle: TEST_LIFECYCLE('completed') }, { kind: 'mcp', request: { server: 's', tool: 't', args: {} }, images: [{ mimeType: 'image/png', data: 'aGk=' }], result: { content: [] } }]],
-    ['a-file-change-states-no-file', [{ id: 'f8', name: 'Edit', lifecycle: TEST_LIFECYCLE('completed') }, { kind: 'edit', request: { changes: [] }, result: { changes: [] } }]],
+    [
+      'result-before-the-call-finished',
+      [
+        {
+          id: 'f1',
+          name: 'Think',
+          lifecycle: TEST_LIFECYCLE('pending'),
+        },
+        {
+          kind: 'think',
+          request: { text: 't' },
+          result: proseResult('early'),
+        },
+      ],
+    ],
+    [
+      'pictures-before-the-call-finished',
+      [
+        {
+          id: 'f2',
+          name: 'Read',
+          lifecycle: TEST_LIFECYCLE('in_progress'),
+        },
+        {
+          kind: 'read',
+          request: { path: '/a' },
+          images: [
+            { mimeType: 'image/png', data: 'aGk=' },
+          ],
+        },
+      ],
+    ],
+    [
+      'completed-with-a-failure-result',
+      [
+        {
+          id: 'f4',
+          name: 'Think',
+          lifecycle: TEST_LIFECYCLE('completed'),
+        },
+        {
+          kind: 'think',
+          request: { text: 't' },
+          result: failedResult('boom'),
+        },
+      ],
+    ],
+    [
+      'failed-with-an-unparsed-result',
+      [
+        {
+          id: 'f5',
+          name: 'Read',
+          lifecycle: TEST_LIFECYCLE('failed'),
+        },
+        {
+          kind: 'read',
+          request: { path: '/a' },
+          result: unparsedResult('raw'),
+        },
+      ],
+    ],
+    [
+      'declined-with-a-typed-payload',
+      [
+        {
+          id: 'f6',
+          name: 'Read',
+          lifecycle: TEST_LIFECYCLE('declined'),
+        },
+        {
+          kind: 'read',
+          request: { path: '/a' },
+          result: { lines: null, fallbackContent: 'body' },
+        },
+      ],
+    ],
+    [
+      'a-generic-kind-carries-its-own-images',
+      [
+        {
+          id: 'f7',
+          name: 'Tool',
+          lifecycle: TEST_LIFECYCLE('completed'),
+        },
+        {
+          kind: 'mcp',
+          request: { server: 's', tool: 't', args: {} },
+          images: [
+            { mimeType: 'image/png', data: 'aGk=' },
+          ],
+          result: { content: [] },
+        },
+      ],
+    ],
+    [
+      'a-file-change-states-no-file',
+      [
+        {
+          id: 'f8',
+          name: 'Edit',
+          lifecycle: TEST_LIFECYCLE('completed'),
+        },
+        {
+          kind: 'edit',
+          request: { changes: [] },
+          result: { changes: [] },
+        },
+      ],
+    ],
   ]
 
   it('preserves the fault and the original kind on the degraded call', () => {
@@ -142,10 +310,26 @@ describe('an observable degradation', () => {
   it('warns once per fault code, however many frames break it', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     for (let i = 0; i < 3; i++) {
-      createToolCall({ id: 'f2', name: 'Read', lifecycle: TEST_LIFECYCLE('in_progress') }, { kind: 'read', request: { path: '/a' }, images: [{ mimeType: 'image/png', data: 'aGk=' }] })
+      createToolCall({
+        id: 'f2',
+        name: 'Read',
+        lifecycle: TEST_LIFECYCLE('in_progress'),
+      }, {
+        kind: 'read',
+        request: { path: '/a' },
+        images: [
+          { mimeType: 'image/png', data: 'aGk=' },
+        ],
+      })
     }
     expect(warn).toHaveBeenCalledTimes(1)
-    expect(warn.mock.calls[0]?.[1]).toMatchObject({ fault: 'pictures-before-the-call-finished', callId: 'f2', toolName: 'Read', originalKind: 'read', status: 'in_progress' })
+    expect(warn.mock.calls[0]?.[1]).toMatchObject({
+      fault: 'pictures-before-the-call-finished',
+      callId: 'f2',
+      toolName: 'Read',
+      originalKind: 'read',
+      status: 'in_progress',
+    })
   })
 
   it('warns separately for each fault code', () => {
@@ -160,15 +344,55 @@ describe('an observable degradation', () => {
 
   it('restores the warnings after a reset', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    createToolCall({ id: 'f2', name: 'Read', lifecycle: TEST_LIFECYCLE('in_progress') }, { kind: 'read', request: { path: '/a' }, images: [{ mimeType: 'image/png', data: 'aGk=' }] })
+    createToolCall({
+      id: 'f2',
+      name: 'Read',
+      lifecycle: TEST_LIFECYCLE('in_progress'),
+    }, {
+      kind: 'read',
+      request: { path: '/a' },
+      images: [
+        { mimeType: 'image/png', data: 'aGk=' },
+      ],
+    })
     expect(warn).toHaveBeenCalledTimes(1)
     __resetToolCallWarningsForTest()
-    createToolCall({ id: 'f2', name: 'Read', lifecycle: TEST_LIFECYCLE('in_progress') }, { kind: 'read', request: { path: '/a' }, images: [{ mimeType: 'image/png', data: 'aGk=' }] })
+    createToolCall({
+      id: 'f2',
+      name: 'Read',
+      lifecycle: TEST_LIFECYCLE('in_progress'),
+    }, {
+      kind: 'read',
+      request: { path: '/a' },
+      images: [
+        { mimeType: 'image/png', data: 'aGk=' },
+      ],
+    })
     expect(warn).toHaveBeenCalledTimes(2)
   })
 
   it('states no degradation on a valid generic call', () => {
-    const call = createToolCall({ id: 'g', name: 'Tool', lifecycle: { frameStatus: 'completed', providerOutcome: null, retainedOutcome: null, rowFinal: false, resultFrameLanded: false } }, { kind: 'other', request: { args: { a: 1 } }, result: { content: [{ type: 'text', text: 'ok' }] } })
+    const call = createToolCall({
+      id: 'g',
+      name: 'Tool',
+      lifecycle: {
+        frameStatus: 'completed',
+        providerOutcome: null,
+        retainedOutcome: null,
+        rowFinal: false,
+        resultFrameLanded: false,
+      },
+    }, {
+      kind: 'other',
+      request: {
+        args: { a: 1 },
+      },
+      result: {
+        content: [
+          { type: 'text', text: 'ok' },
+        ],
+      },
+    })
     expect(call.kind).toBe('other')
     expect(call.degradation).toBeUndefined()
   })
@@ -179,21 +403,38 @@ describe('an observable degradation', () => {
 // and each finished override. The expected answer is spelled from the RULES the
 // derivation's own doc states -- an independent reading, not a second call.
 describe('deriveToolCallStatus', () => {
-  const PROVIDER_OUTCOMES = [null, 'succeeded', 'failed', 'interrupted', 'declined'] as const
-  const RETAINED_OUTCOMES = [null, 'succeeded', 'failed', 'interrupted'] as const
+  const PROVIDER_OUTCOMES = [
+    null,
+    'succeeded',
+    'failed',
+    'interrupted',
+    'declined',
+  ] as const
+  const RETAINED_OUTCOMES = [
+    null,
+    'succeeded',
+    'failed',
+    'interrupted',
+  ] as const
 
   /** The rules, restated independently of the function under test. */
   function expected(facts: ToolCallLifecycleFacts, resultAvailable: boolean, statusOverride?: 'completed' | 'failed' | 'cancelled' | 'declined'): ToolCallStatus {
-    if (statusOverride !== undefined)
-      return statusOverride === 'completed' && !resultAvailable ? 'incomplete' : statusOverride
+    if (statusOverride !== undefined) {
+      return statusOverride === 'completed' && !resultAvailable
+        ? 'incomplete'
+        : statusOverride
+    }
     if (facts.providerOutcome === 'interrupted' || facts.retainedOutcome === 'interrupted')
       return 'cancelled'
     if (facts.providerOutcome === 'failed')
       return 'failed'
     if (facts.providerOutcome === 'declined')
       return 'declined'
-    if (isFinishedToolCallStatus(facts.frameStatus))
-      return facts.frameStatus === 'completed' && !resultAvailable ? 'incomplete' : facts.frameStatus
+    if (isFinishedToolCallStatus(facts.frameStatus)) {
+      return facts.frameStatus === 'completed' && !resultAvailable
+        ? 'incomplete'
+        : facts.frameStatus
+    }
     if (facts.retainedOutcome === 'failed')
       return 'failed'
     if (facts.resultFrameLanded)
@@ -204,13 +445,22 @@ describe('deriveToolCallStatus', () => {
   }
 
   it('derives every combination of the fact space from the stated precedence', () => {
-    for (const frameStatus of [...UNFINISHED_TOOL_STATUSES, ...FINISHED_TOOL_STATUSES]) {
+    for (const frameStatus of [
+      ...UNFINISHED_TOOL_STATUSES,
+      ...FINISHED_TOOL_STATUSES,
+    ]) {
       for (const providerOutcome of PROVIDER_OUTCOMES) {
         for (const retainedOutcome of RETAINED_OUTCOMES) {
           for (const rowFinal of [false, true]) {
             for (const resultFrameLanded of [false, true]) {
               for (const resultAvailable of [false, true]) {
-                const facts: ToolCallLifecycleFacts = { frameStatus, providerOutcome, retainedOutcome, rowFinal, resultFrameLanded }
+                const facts: ToolCallLifecycleFacts = {
+                  frameStatus,
+                  providerOutcome,
+                  retainedOutcome,
+                  rowFinal,
+                  resultFrameLanded,
+                }
                 expect(deriveToolCallStatus(facts, resultAvailable), JSON.stringify({ facts, resultAvailable })).toBe(expected(facts, resultAvailable))
               }
             }
@@ -221,9 +471,23 @@ describe('deriveToolCallStatus', () => {
   })
 
   it('lets each finished override win over every fact', () => {
-    for (const statusOverride of ['completed', 'failed', 'cancelled', 'declined'] as const) {
-      for (const frameStatus of [...UNFINISHED_TOOL_STATUSES, ...FINISHED_TOOL_STATUSES]) {
-        const facts: ToolCallLifecycleFacts = { frameStatus, providerOutcome: 'failed', retainedOutcome: 'interrupted', rowFinal: true, resultFrameLanded: true }
+    for (const statusOverride of [
+      'completed',
+      'failed',
+      'cancelled',
+      'declined',
+    ] as const) {
+      for (const frameStatus of [
+        ...UNFINISHED_TOOL_STATUSES,
+        ...FINISHED_TOOL_STATUSES,
+      ]) {
+        const facts: ToolCallLifecycleFacts = {
+          frameStatus,
+          providerOutcome: 'failed',
+          retainedOutcome: 'interrupted',
+          rowFinal: true,
+          resultFrameLanded: true,
+        }
         expect(deriveToolCallStatus(facts, true, statusOverride), `${frameStatus} + ${statusOverride}`).toBe(statusOverride)
       }
     }
@@ -233,19 +497,55 @@ describe('deriveToolCallStatus', () => {
   // completes nothing. A turn that later stopped is not a tool that finished, and
   // only the landed result states the second fact.
   it('keeps a succeeded outcome from completing an unfinished, unanswered call', () => {
-    expect(deriveToolCallStatus({ frameStatus: 'in_progress', providerOutcome: 'succeeded', retainedOutcome: 'succeeded', rowFinal: false, resultFrameLanded: false }, false)).toBe('in_progress')
-    expect(deriveToolCallStatus({ frameStatus: 'unstated', providerOutcome: null, retainedOutcome: 'succeeded', rowFinal: false, resultFrameLanded: false }, false)).toBe('unstated')
+    expect(deriveToolCallStatus({
+      frameStatus: 'in_progress',
+      providerOutcome: 'succeeded',
+      retainedOutcome: 'succeeded',
+      rowFinal: false,
+      resultFrameLanded: false,
+    }, false)).toBe('in_progress')
+    expect(deriveToolCallStatus({
+      frameStatus: 'unstated',
+      providerOutcome: null,
+      retainedOutcome: 'succeeded',
+      rowFinal: false,
+      resultFrameLanded: false,
+    }, false)).toBe('unstated')
     // The landed result is what completes it.
-    expect(deriveToolCallStatus({ frameStatus: 'in_progress', providerOutcome: 'succeeded', retainedOutcome: 'succeeded', rowFinal: false, resultFrameLanded: true }, true)).toBe('completed')
+    expect(deriveToolCallStatus({
+      frameStatus: 'in_progress',
+      providerOutcome: 'succeeded',
+      retainedOutcome: 'succeeded',
+      rowFinal: false,
+      resultFrameLanded: true,
+    }, true)).toBe('completed')
   })
 
   it('keeps a provider body outcome over an explicit finished frame word', () => {
-    expect(deriveToolCallStatus({ frameStatus: 'completed', providerOutcome: 'failed', retainedOutcome: null, rowFinal: true, resultFrameLanded: true }, true)).toBe('failed')
-    expect(deriveToolCallStatus({ frameStatus: 'failed', providerOutcome: 'interrupted', retainedOutcome: null, rowFinal: true, resultFrameLanded: true }, true)).toBe('cancelled')
+    expect(deriveToolCallStatus({
+      frameStatus: 'completed',
+      providerOutcome: 'failed',
+      retainedOutcome: null,
+      rowFinal: true,
+      resultFrameLanded: true,
+    }, true)).toBe('failed')
+    expect(deriveToolCallStatus({
+      frameStatus: 'failed',
+      providerOutcome: 'interrupted',
+      retainedOutcome: null,
+      rowFinal: true,
+      resultFrameLanded: true,
+    }, true)).toBe('cancelled')
   })
 
   it('lets a retained interruption win over a provider failure', () => {
-    expect(deriveToolCallStatus({ frameStatus: 'completed', providerOutcome: 'failed', retainedOutcome: 'interrupted', rowFinal: true, resultFrameLanded: true }, true)).toBe('cancelled')
+    expect(deriveToolCallStatus({
+      frameStatus: 'completed',
+      providerOutcome: 'failed',
+      retainedOutcome: 'interrupted',
+      rowFinal: true,
+      resultFrameLanded: true,
+    }, true)).toBe('cancelled')
   })
 })
 

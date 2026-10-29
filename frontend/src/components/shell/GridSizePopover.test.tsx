@@ -58,8 +58,12 @@ describe('GridSizePopover manual entry', () => {
     const { onSelect } = setup()
     const rowsInput = screen.getByTestId('grid-size-rows-input') as HTMLInputElement
     const colsInput = screen.getByTestId('grid-size-cols-input') as HTMLInputElement
-    fireEvent.input(rowsInput, { target: { value: '8' } })
-    fireEvent.input(colsInput, { target: { value: '5' } })
+    fireEvent.input(rowsInput, {
+      target: { value: '8' },
+    })
+    fireEvent.input(colsInput, {
+      target: { value: '5' },
+    })
     fireEvent.click(screen.getByTestId('grid-size-create-button'))
     expect(onSelect).toHaveBeenCalledWith(8, 5)
   })
@@ -86,8 +90,12 @@ describe('GridSizePopover manual entry', () => {
     const popover = screen.getByTestId('grid-size-popover')
     const hide = vi.spyOn(popover, 'hidePopover')
 
-    fireEvent.input(screen.getByTestId('grid-size-rows-input'), { target: { value: '2' } })
-    fireEvent.input(screen.getByTestId('grid-size-cols-input'), { target: { value: '2' } })
+    fireEvent.input(screen.getByTestId('grid-size-rows-input'), {
+      target: { value: '2' },
+    })
+    fireEvent.input(screen.getByTestId('grid-size-cols-input'), {
+      target: { value: '2' },
+    })
     fireEvent.click(screen.getByTestId('grid-size-create-button'))
 
     expect(onSelect).toHaveBeenCalledWith(2, 2)
@@ -100,12 +108,20 @@ describe('GridSizePopover manual entry', () => {
     const colsInput = screen.getByTestId('grid-size-cols-input') as HTMLInputElement
     const create = screen.getByTestId('grid-size-create-button') as HTMLButtonElement
     expect(create.disabled).toBe(true) // empty
-    fireEvent.input(rowsInput, { target: { value: '0' } })
-    fireEvent.input(colsInput, { target: { value: '5' } })
+    fireEvent.input(rowsInput, {
+      target: { value: '0' },
+    })
+    fireEvent.input(colsInput, {
+      target: { value: '5' },
+    })
     expect(create.disabled).toBe(true)
-    fireEvent.input(rowsInput, { target: { value: '21' } })
+    fireEvent.input(rowsInput, {
+      target: { value: '21' },
+    })
     expect(create.disabled).toBe(true)
-    fireEvent.input(rowsInput, { target: { value: '8' } })
+    fireEvent.input(rowsInput, {
+      target: { value: '8' },
+    })
     expect(create.disabled).toBe(false)
   })
 })

@@ -35,7 +35,9 @@ function renderTile(opts: RenderOpts = {}) {
         onFocus={opts.onFocus ?? (() => {})}
         // Omitted when the fixture passed no pop action: the prop takes no
         // explicit undefined.
-        {...(opts.pop !== undefined ? { pop: opts.pop } : {})}
+        {...(opts.pop !== undefined
+          ? { pop: opts.pop }
+          : {})}
       >
         <div data-testid="tile-content">content</div>
       </Tile>
@@ -51,19 +53,25 @@ describe('tile', () => {
   })
 
   it('hides the close button when closeMode is "none"', () => {
-    renderTile({ closeMode: { kind: 'none' } })
+    renderTile({
+      closeMode: { kind: 'none' },
+    })
     expect(screen.queryByTestId('close-tile')).toBeNull()
     expect(screen.queryByTestId('close-grid')).toBeNull()
   })
 
   it('shows close-tile when closeMode is "tile"', () => {
-    renderTile({ closeMode: { kind: 'tile' } })
+    renderTile({
+      closeMode: { kind: 'tile' },
+    })
     expect(screen.getByTestId('close-tile')).toBeInTheDocument()
     expect(screen.queryByTestId('close-grid')).toBeNull()
   })
 
   it('shows close-grid (with "Close grid" tooltip) when closeMode is "grid"', () => {
-    renderTile({ closeMode: { kind: 'grid', gridId: 'g1' } })
+    renderTile({
+      closeMode: { kind: 'grid', gridId: 'g1' },
+    })
     const btn = screen.getByTestId('close-grid')
     expect(btn).toBeInTheDocument()
     expect(btn.getAttribute('title') ?? btn.getAttribute('aria-label')).toBe('Close grid')
@@ -118,14 +126,20 @@ describe('tile', () => {
 
   it('invokes onClose when the close button is clicked (tile mode)', () => {
     const onClose = vi.fn()
-    renderTile({ closeMode: { kind: 'tile' }, onClose })
+    renderTile({
+      closeMode: { kind: 'tile' },
+      onClose,
+    })
     fireEvent.click(screen.getByTestId('close-tile'))
     expect(onClose).toHaveBeenCalledTimes(1)
   })
 
   it('invokes onClose when the close button is clicked (grid mode)', () => {
     const onClose = vi.fn()
-    renderTile({ closeMode: { kind: 'grid', gridId: 'g1' }, onClose })
+    renderTile({
+      closeMode: { kind: 'grid', gridId: 'g1' },
+      onClose,
+    })
     fireEvent.click(screen.getByTestId('close-grid'))
     expect(onClose).toHaveBeenCalledTimes(1)
   })
@@ -149,13 +163,25 @@ describe('tile', () => {
   })
 
   it('renders pop-out button when the action carries the pop-out testId', () => {
-    renderTile({ pop: { label: 'Pop out to floating window', testId: 'pop-out-button', onClick: () => {} } })
+    renderTile({
+      pop: {
+        label: 'Pop out to floating window',
+        testId: 'pop-out-button',
+        onClick: () => {},
+      },
+    })
     expect(screen.getByTestId('pop-out-button')).toBeInTheDocument()
     expect(screen.queryByTestId('pop-in-button')).toBeNull()
   })
 
   it('renders pop-in button when the action carries the pop-in testId', () => {
-    renderTile({ pop: { label: 'Pop in to main window', testId: 'pop-in-button', onClick: () => {} } })
+    renderTile({
+      pop: {
+        label: 'Pop in to main window',
+        testId: 'pop-in-button',
+        onClick: () => {},
+      },
+    })
     expect(screen.getByTestId('pop-in-button')).toBeInTheDocument()
     expect(screen.queryByTestId('pop-out-button')).toBeNull()
   })

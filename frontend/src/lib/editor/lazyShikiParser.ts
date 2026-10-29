@@ -71,7 +71,9 @@ export function createLazyShikiParser(
   // code block, per edit, for the rest of the session.
   const themeFailures = new Map<string, number>()
   return ({ content, language, pos, size }) => {
-    const lang = language ? resolveBundledLang(language) : undefined
+    const lang = language
+      ? resolveBundledLang(language)
+      : undefined
     // Unknown/absent language: plain.
     if (!lang)
       return []
@@ -145,7 +147,10 @@ export function createLazyShikiParser(
     }
 
     try {
-      const { tokens, rootStyle } = highlighter.codeToTokens(content, { lang, ...dualThemeTokenOptions(pair) })
+      const { tokens, rootStyle } = highlighter.codeToTokens(content, {
+        lang,
+        ...dualThemeTokenOptions(pair),
+      })
       const decorations: DecorationType[] = []
       if (rootStyle)
         decorations.push(Decoration.node(pos, pos + size, { style: rootStyle }))

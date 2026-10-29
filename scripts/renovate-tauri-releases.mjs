@@ -12,7 +12,12 @@ export function matchesCargoRequirement(version, requirement) {
 }
 
 export function tauriReleaseAgeMs(config, security = false) {
-  const policy = security ? { ...config, ...config.vulnerabilityAlerts } : config
+  const policy = security
+    ? {
+        ...config,
+        ...config.vulnerabilityAlerts,
+      }
+    : config
   const days = /^(\d+) days$/.exec(policy.minimumReleaseAge ?? '')
   if (!days || policy.minimumReleaseAgeBuffer != null)
     throw new Error('Tauri preparation requires a whole-day release age without an additional buffer.')
@@ -33,13 +38,21 @@ export function eligibleTauriReleases(releases, minimum, { now = Date.now(), min
 
 export async function readTauriReleases(name, request = fetch) {
   const npm = name.startsWith('@tauri-apps/')
-  const url = npm ? `https://registry.npmjs.org/${encodeURIComponent(name)}` : `https://crates.io/api/v1/crates/${encodeURIComponent(name)}`
-  const response = await request(url, { headers: { 'User-Agent': 'leapmux-dependency-maintenance' }, signal: AbortSignal.timeout(30000) })
+  const url = npm
+    ? `https://registry.npmjs.org/${encodeURIComponent(name)}`
+    : `https://crates.io/api/v1/crates/${encodeURIComponent(name)}`
+  const response = await request(url, {
+    headers: { 'User-Agent': 'leapmux-dependency-maintenance' },
+    signal: AbortSignal.timeout(30000),
+  })
   if (!response.ok)
     throw new Error(`Tauri companion metadata read failed: ${response.status} ${url}`)
   const metadata = await response.json()
-  if (npm ? !metadata.time || typeof metadata.time !== 'object' : !Array.isArray(metadata.versions))
+  if (npm
+    ? !metadata.time || typeof metadata.time !== 'object'
+    : !Array.isArray(metadata.versions)) {
     throw new Error(`Invalid Tauri release metadata: ${name}`)
+  }
   return npm
     ? Object.entries(metadata.time).map(([version, publishedAt]) => ({ version, publishedAt }))
     : metadata.versions.map(release => ({ version: release.num, publishedAt: release.created_at, yanked: release.yanked }))
@@ -49,7 +62,9 @@ export async function readTauriReleases(name, request = fetch) {
 export function tauriPairCandidates(npmReleases, cargoReleases, { npmMinimum, cargoMinimum, existing = {}, security = false, preferLowest = security, safe = () => true, npmName, cargoName, now = Date.now(), minimumAgeMs, maximumMajor = Math.max(Number(npmMinimum.split('.')[0]), Number(cargoMinimum.split('.')[0])) }) {
   if (!Number.isSafeInteger(maximumMajor) || maximumMajor < 0)
     throw new Error('The selected Tauri major must be a nonnegative safe integer.')
-  const direction = preferLowest ? 1 : -1
+  const direction = preferLowest
+    ? 1
+    : -1
   const eligible = (releases, minimum, name, current) => {
     const candidates = eligibleTauriReleases(releases, minimum, { now, minimumAgeMs })
     // Keeping a trusted locked version introduces no release; every changed version still needs a timestamp.
@@ -66,6 +81,13 @@ export function tauriPairCandidates(npmReleases, cargoReleases, { npmMinimum, ca
     if (!npmByMinor.has(minor))
       npmByMinor.set(minor, npmRelease.version)
   }
-  return cargo.flatMap(release => npmByMinor.has(tauriMajorMinor(release.version)) ? [{ npm: npmByMinor.get(tauriMajorMinor(release.version)), cargo: release.version }] : [])
+  return cargo.flatMap(release => npmByMinor.has(tauriMajorMinor(release.version))
+    ? [
+        {
+          npm: npmByMinor.get(tauriMajorMinor(release.version)),
+          cargo: release.version,
+        },
+      ]
+    : [])
     .sort((a, b) => (Bun.semver.order(a.npm, b.npm) || Bun.semver.order(a.cargo, b.cargo)) * direction)
 }

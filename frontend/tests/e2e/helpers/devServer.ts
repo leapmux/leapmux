@@ -58,7 +58,12 @@ export async function startDevServer(opts: StartDevServerOptions = {}): Promise<
     const adminToken = await signUpViaAPI(unseeded.hubUrl, TEST_ADMIN_USERNAME, TEST_ADMIN_PASSWORD, TEST_ADMIN_DISPLAY_NAME)
     const adminUserId = await getUserId(unseeded.hubUrl, adminToken)
     const workerId = await getWorkerId(unseeded.hubUrl, adminToken)
-    return { ...unseeded, adminToken, adminUserId, workerId }
+    return {
+      ...unseeded,
+      adminToken,
+      adminUserId,
+      workerId,
+    }
   }, () => stopDevServer(unseeded))
 }
 
@@ -70,7 +75,13 @@ export async function startUnseededDevServer(opts: StartDevServerOptions = {}): 
   const { binaryPath } = getGlobalState()
   const dataDir = createTestDirectory(`${opts.dataDirPrefix ?? 'leapmux-e2e-'}-`)
 
-  const proc = spawnTestProcess(binaryPath, ['dev', '-listen', '127.0.0.1:0', '-data-dir', dataDir], {
+  const proc = spawnTestProcess(binaryPath, [
+    'dev',
+    '-listen',
+    '127.0.0.1:0',
+    '-data-dir',
+    dataDir,
+  ], {
     stdio: ['ignore', 'pipe', 'pipe'],
     env: hubSpawnEnv(opts.env),
   })
@@ -92,7 +103,10 @@ export async function startUnseededDevServer(opts: StartDevServerOptions = {}): 
 }
 
 export async function stopDevServer(handle: DevServerHandle | UnseededDevServerHandle, extraPaths: string[] = []): Promise<void> {
-  await finishCleanup([closeTestChannels(handle.hubUrl), stopProcess(handle.proc)])
+  await finishCleanup([
+    closeTestChannels(handle.hubUrl),
+    stopProcess(handle.proc),
+  ])
   rmSync(handle.dataDir, { recursive: true, force: true })
   for (const p of extraPaths)
     rmSync(p, { recursive: true, force: true })
@@ -148,7 +162,13 @@ export async function startSoloServer(opts: StartSoloServerOptions = {}): Promis
   const dataDir = createTestDirectory(`${opts.dataDirPrefix ?? 'leapmux-e2e-solo'}-`)
   const requestedListen = `${opts.listenHost ?? '127.0.0.1'}:0`
 
-  const proc = spawnTestProcess(binaryPath, ['solo', '-listen', requestedListen, '-data-dir', dataDir], {
+  const proc = spawnTestProcess(binaryPath, [
+    'solo',
+    '-listen',
+    requestedListen,
+    '-data-dir',
+    dataDir,
+  ], {
     stdio: ['ignore', 'pipe', 'pipe'],
     env: hubSpawnEnv(opts.env),
   })
@@ -162,7 +182,12 @@ export async function startSoloServer(opts: StartSoloServerOptions = {}): Promis
     proc.stderr?.resume()
   }
 
-  const handle = { hubUrl: '', listen: '', proc, dataDir }
+  const handle = {
+    hubUrl: '',
+    listen: '',
+    proc,
+    dataDir,
+  }
   return cleanupOnFailure(async () => {
     const { hubUrl, listen } = await waitForHubStart(join(hubDataDir(dataDir), 'state.json'), proc, '127.0.0.1')
     handle.hubUrl = hubUrl
@@ -178,6 +203,9 @@ export async function startSoloServer(opts: StartSoloServerOptions = {}): Promis
 export async function stopSoloServer(handle: SoloServerHandle | undefined): Promise<void> {
   if (!handle)
     return
-  await finishCleanup([closeTestChannels(handle.hubUrl), stopProcess(handle.proc)])
+  await finishCleanup([
+    closeTestChannels(handle.hubUrl),
+    stopProcess(handle.proc),
+  ])
   rmSync(handle.dataDir, { recursive: true, force: true })
 }

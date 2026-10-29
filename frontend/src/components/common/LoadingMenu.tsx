@@ -165,7 +165,9 @@ function detailRenderer(
 ): (() => JSX.Element) | undefined {
   if (detail === undefined)
     return undefined
-  return () => (live && detail.render ? detail.render() : detail.text())
+  return () => (live && detail.render
+    ? detail.render()
+    : detail.text())
 }
 
 /**
@@ -280,8 +282,14 @@ export const LoadingMenu: Component<LoadingMenuProps> = (props) => {
     if (isEmpty())
       return { label: props.emptyLabel }
     const match = selected()
-    if (match)
-      return { label: match.label, ...(match.detail !== undefined ? { detail: match.detail } : {}) }
+    if (match) {
+      return {
+        label: match.label,
+        ...(match.detail !== undefined
+          ? { detail: match.detail }
+          : {}),
+      }
+    }
     if (props.value === '')
       return { label: props.placeholder ?? props.emptyLabel }
     return { label: props.value }
@@ -333,7 +341,9 @@ export const LoadingMenu: Component<LoadingMenuProps> = (props) => {
             // renderer answers undefined -- an option with no detail.
             const detailProps = () => {
               const detail = detailRenderer(option.detail, everOpened())
-              return detail !== undefined ? { detail } : {}
+              return detail !== undefined
+                ? { detail }
+                : {}
             }
             return (
               <>
@@ -382,7 +392,9 @@ export const LoadingMenu: Component<LoadingMenuProps> = (props) => {
   return (
     <DropdownMenu
       aria-label={props.ariaLabel}
-      as={filtering() ? 'div' : 'menu'}
+      as={filtering()
+        ? 'div'
+        : 'menu'}
       // This menu's trigger IS a field -- it is shaped like the input it
       // replaces -- so the popover follows its width. See the prop.
       matchTriggerWidth

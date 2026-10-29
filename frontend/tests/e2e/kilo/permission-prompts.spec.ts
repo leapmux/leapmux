@@ -23,7 +23,12 @@ kiloTest('keeps exact file bytes after a native Deny decision', async ({ native 
   const file = join(agent.workingDir, fileName)
   const initialContent = `KEEP_THE_NATIVE_FILE_${randomUUID()}\n`
   // Kilo asks its bash permission for this command, because its default bash rule is ask and no allow rule covers node.
-  const operation = await createNativePermissionFileWrite(native, { fileName, callId: 'kilo-denied-write', outputPrefix: 'UNAPPROVED_WRITE', initialContent })
+  const operation = await createNativePermissionFileWrite(native, {
+    fileName,
+    callId: 'kilo-denied-write',
+    outputPrefix: 'UNAPPROVED_WRITE',
+    initialContent,
+  })
   await exerciseOpenCodeFamilyDenial(native, {
     toolCall: operation.toolCall,
     prompt: 'Run the scripted permission probe.',
@@ -37,7 +42,12 @@ kiloTest('sends the reader\'s typed refusal reason as the next message', async (
   const agent = await currentNativeAgent(native)
   const file = join(agent.workingDir, 'native-reason-write.txt')
   const initialContent = `KEEP_THE_NATIVE_FILE_${randomUUID()}\n`
-  const operation = await createNativePermissionFileWrite(native, { fileName: 'native-reason-write.txt', callId: 'kilo-reason-write', outputPrefix: 'UNAPPROVED_WRITE', initialContent })
+  const operation = await createNativePermissionFileWrite(native, {
+    fileName: 'native-reason-write.txt',
+    callId: 'kilo-reason-write',
+    outputPrefix: 'UNAPPROVED_WRITE',
+    initialContent,
+  })
   await exerciseNativePermissionReason(native, {
     toolCall: operation.toolCall,
     route: 'next-message',
@@ -64,6 +74,8 @@ kiloTest('an always answer covers the same command in the next turn', async ({ n
     secondProof: () => expect(readFileSync(file, 'utf8')).toBe('kilo-alwayskilo-always'),
     viewProof: () => expect(savedControlAnswer(native.page)).toHaveText('Always allow'),
     // Kilo also writes the rule to its global configuration, which every later Kilo spec of the run reads.
-    ruleFiles: [join(home, '.config', 'kilo', 'kilo.jsonc')],
+    ruleFiles: [
+      join(home, '.config', 'kilo', 'kilo.jsonc'),
+    ],
   })
 })

@@ -151,5 +151,7 @@ const HIDDEN_RESULT_TOOLS: ReadonlySet<string> = new Set<string>([
 
 /** Whether this side of a Claude tool span draws no row at all. */
 export function claudeToolRowHidden(toolName: string, side: 'request' | 'result'): boolean {
-  return side === 'request' ? HIDDEN_REQUEST_TOOLS.has(toolName) : HIDDEN_RESULT_TOOLS.has(toolName)
+  return side === 'request'
+    ? HIDDEN_REQUEST_TOOLS.has(toolName)
+    : HIDDEN_RESULT_TOOLS.has(toolName)
 }

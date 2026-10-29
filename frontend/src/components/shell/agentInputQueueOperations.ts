@@ -114,7 +114,9 @@ export function createAgentInputQueueOperations(deps: {
       attachments: queueAttachmentsOf(fileAttachments),
       // An omitted `scheduled_at` keeps the stored schedule, and an empty one
       // clears it.
-      ...(scheduledAt !== undefined ? { scheduledAt } : {}),
+      ...(scheduledAt !== undefined
+        ? { scheduledAt }
+        : {}),
     }))
   }
   const cancelQueueEdit = async (item: QueuedAgentInput) => {
@@ -159,8 +161,16 @@ export function createAgentInputQueueOperations(deps: {
     const initialAgentID = deps.focusedAgentId()
     if (!initialAgentID)
       return false
-    const payload = { agentId: initialAgentID, kind, text: content, attachments: fileAttachments, scheduledAt }
-    const inputId = requirePendingAttempt ? enqueueRetry.inputIdForPendingAttempt(payload) : enqueueRetry.inputIdFor(payload)
+    const payload = {
+      agentId: initialAgentID,
+      kind,
+      text: content,
+      attachments: fileAttachments,
+      scheduledAt,
+    }
+    const inputId = requirePendingAttempt
+      ? enqueueRetry.inputIdForPendingAttempt(payload)
+      : enqueueRetry.inputIdFor(payload)
     if (inputId === undefined)
       return false
     const existing = inFlightByInputId.get(inputId)

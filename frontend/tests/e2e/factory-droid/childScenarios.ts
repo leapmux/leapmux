@@ -53,26 +53,42 @@ export async function exerciseNativeChildTranscript(context: ManagedNativeScenar
     {
       name: 'the Droid child reads its note',
       when: { system: DROID_CHILD_SYSTEM, body: CHILD_TASK },
-      respond: { text: modelScript.prompt('DROID_CHILD_EARLY'), toolCalls: [readToolCall(context.provider, 'droid-child-read', note)] },
+      respond: {
+        text: modelScript.prompt('DROID_CHILD_EARLY'),
+        toolCalls: [
+          readToolCall(context.provider, 'droid-child-read', note),
+        ],
+      },
       once: true,
     },
     {
       name: 'the Droid child reports the marker',
-      when: { system: DROID_CHILD_SYSTEM, body: [CHILD_TASK, 'DROID_CHILD_EARLY'] },
-      respond: { gate: childGate, text: modelScript.prompt('DROID_CHILD_FINAL') },
+      when: {
+        system: DROID_CHILD_SYSTEM,
+        body: [CHILD_TASK, 'DROID_CHILD_EARLY'],
+      },
+      respond: {
+        gate: childGate,
+        text: modelScript.prompt('DROID_CHILD_FINAL'),
+      },
       once: true,
     },
     droidChildNoticeRule(CHILD_DESCRIPTION, { text: 'DROID_ROOT_CHILD_REPORTED' }, 'the Droid root reports its completed child'),
     {
       name: 'the Droid child answers its tab follow-up',
       when: { system: DROID_CHILD_SYSTEM, body: 'Report the file marker once more.' },
-      respond: { gate: followUpGate, text: modelScript.prompt('DROID_CHILD_FOLLOWUP_DONE') },
+      respond: {
+        gate: followUpGate,
+        text: modelScript.prompt('DROID_CHILD_FOLLOWUP_DONE'),
+      },
       once: true,
     },
   )
   const spawn = childSpawnCall(childPrompt)
   const start = await modelScript.queue(
-    { toolCalls: [spawn] },
+    {
+      toolCalls: [spawn],
+    },
     { text: 'DROID_ROOT_DONE' },
   )
   await sendMessage(page, modelScript.prompt('Delegate the note inspection to a background child.'))
@@ -83,8 +99,12 @@ export async function exerciseNativeChildTranscript(context: ManagedNativeScenar
   if (!factoryHome)
     throw new Error('the Droid test needs an isolated Factory home')
   const nativeLog = join(factoryHome, '.factory', 'logs', 'droid-log-single.log')
-  if (existsSync(nativeLog))
-    await testInfo.attach('droid-native-log', { body: readFileSync(nativeLog), contentType: 'text/plain' })
+  if (existsSync(nativeLog)) {
+    await testInfo.attach('droid-native-log', {
+      body: readFileSync(nativeLog),
+      contentType: 'text/plain',
+    })
+  }
   expect(taskResult).toContain('Task launched in background')
   await expect.poll(async () => (await modelScript.status()).ruleMatches['the Droid child reads its note'] ?? 0).toBe(1)
   // The root is the agent on screen before the child tab opens.

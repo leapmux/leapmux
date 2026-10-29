@@ -61,7 +61,9 @@ async function offsetFromTrigger(popover: Locator, triggerTestId: string): Promi
     // "Test timeout exceeded" instead of naming the assertion. Nothing inside
     // this loop waits -- the assertions read an already-captured value -- so
     // the limit only decides how long we keep re-measuring.
-  }).toPass({ timeout: waitTimeoutBeforeTestDeadline() })
+  }).toPass({
+    timeout: waitTimeoutBeforeTestDeadline(),
+  })
   return geometry!
 }
 
@@ -259,7 +261,12 @@ test.describe('DropdownMenu Popover – Focus and Positioning', () => {
 /** Read all four computed padding values inside the page without a closure over this file. */
 function readPadding(el: Element): string {
   const style = getComputedStyle(el)
-  return [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft].join(' ')
+  return [
+    style.paddingTop,
+    style.paddingRight,
+    style.paddingBottom,
+    style.paddingLeft,
+  ].join(' ')
 }
 
 /**
@@ -284,7 +291,12 @@ function resolveCardPaddings(popoverPadding: string): { oat: string, popover: st
     document.body.append(probe)
     try {
       const style = getComputedStyle(probe)
-      return [style.paddingTop, style.paddingRight, style.paddingBottom, style.paddingLeft].join(' ')
+      return [
+        style.paddingTop,
+        style.paddingRight,
+        style.paddingBottom,
+        style.paddingLeft,
+      ].join(' ')
     }
     finally {
       probe.remove()
@@ -363,7 +375,7 @@ test.describe('agent info card', () => {
     // A plain click first. `aria-expanded` is the app's OWN statement of whether
     // the popover is open, and it flips synchronously with the dismiss -- a
     // visibility check alone would pass on a popover caught mid-fade, which is
-    // exactly the state a dismiss leaves behind for 150ms.
+    // exactly the state a dismiss leaves behind for 250ms.
     await sessionId.click()
     await expect(infoTrigger).toHaveAttribute('aria-expanded', 'true')
     await expect(popover).toBeVisible()
@@ -492,7 +504,9 @@ test.describe('nested popovers', () => {
 
     // A click INSIDE the inner card keeps both open, which is what `as="card"`
     // promises and what a text selection inside it depends on.
-    await infoCard.click({ position: { x: 4, y: 4 } })
+    await infoCard.click({
+      position: { x: 4, y: 4 },
+    })
     await expect(infoCard).toBeVisible()
     await expect(plusMenu).toBeVisible()
 

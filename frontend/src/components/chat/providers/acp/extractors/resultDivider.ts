@@ -35,9 +35,16 @@ export function acpResultDivider(parsed: unknown): TurnEnd | null {
  * the same words there, so its divider reads the same as the divider of a prompt.
  */
 export function acpStopReasonDivider(reason: string): TurnEnd {
-  if (reason === ACP_STOP_CANCELLED)
-    return { label: turnEndLabel('interrupted') }
-  return { label: turnEndLabel('ended', { qualifiers: [reason !== ACP_STOP_END_TURN && reason] }) }
+  if (reason === ACP_STOP_CANCELLED) {
+    return {
+      label: turnEndLabel('interrupted'),
+    }
+  }
+  return {
+    label: turnEndLabel('ended', {
+      qualifiers: [reason !== ACP_STOP_END_TURN && reason],
+    }),
+  }
 }
 
 /**
@@ -48,7 +55,11 @@ export function acpStopReasonDivider(reason: string): TurnEnd {
  */
 export function acpDividerReader(agentTurnEnd?: (parent: Record<string, unknown>) => string | undefined) {
   return (parsed: unknown): TurnEnd | null => {
-    const reason = agentTurnEnd && isObject(parsed) ? agentTurnEnd(parsed) : undefined
-    return reason !== undefined ? acpStopReasonDivider(reason) : acpResultDivider(parsed)
+    const reason = agentTurnEnd && isObject(parsed)
+      ? agentTurnEnd(parsed)
+      : undefined
+    return reason !== undefined
+      ? acpStopReasonDivider(reason)
+      : acpResultDivider(parsed)
   }
 }

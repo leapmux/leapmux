@@ -134,7 +134,9 @@ describe('signup completion page (OAuthCompleteSignupPage)', () => {
     })
 
     const usernameInput = screen.getByLabelText('Username') as HTMLInputElement
-    fireEvent.input(usernameInput, { target: { value: 'testuser' } })
+    fireEvent.input(usernameInput, {
+      target: { value: 'testuser' },
+    })
 
     const submitButton = screen.getByRole('button', { name: 'Create account' })
     fireEvent.click(submitButton)
@@ -185,7 +187,9 @@ describe('signup completion page (OAuthCompleteSignupPage)', () => {
       displayName: 'Test User',
       providerName: 'GitHub',
     })
-    mockCompleteOAuthSignup.mockResolvedValue({ user: { id: 'u1', username: 'testuser' } })
+    mockCompleteOAuthSignup.mockResolvedValue({
+      user: { id: 'u1', username: 'testuser' },
+    })
 
     renderPage()
 
@@ -196,8 +200,12 @@ describe('signup completion page (OAuthCompleteSignupPage)', () => {
     expect(emailInput.readOnly).toBe(false)
     expect(emailInput.required).toBe(true)
 
-    fireEvent.input(screen.getByLabelText('Username'), { target: { value: 'testuser' } })
-    fireEvent.input(emailInput, { target: { value: '  typed@example.com  ' } })
+    fireEvent.input(screen.getByLabelText('Username'), {
+      target: { value: 'testuser' },
+    })
+    fireEvent.input(emailInput, {
+      target: { value: '  typed@example.com  ' },
+    })
     fireEvent.click(screen.getByRole('button', { name: 'Create account' }))
 
     await vi.waitFor(() => {
@@ -223,7 +231,9 @@ describe('signup completion page (OAuthCompleteSignupPage)', () => {
     })
 
     const usernameInput = screen.getByLabelText('Username') as HTMLInputElement
-    fireEvent.input(usernameInput, { target: { value: 'taken-user' } })
+    fireEvent.input(usernameInput, {
+      target: { value: 'taken-user' },
+    })
 
     const submitButton = screen.getByRole('button', { name: 'Create account' })
     fireEvent.click(submitButton)

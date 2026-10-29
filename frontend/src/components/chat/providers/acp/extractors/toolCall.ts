@@ -140,9 +140,32 @@ function acpGenericCard(facts: ACPToolFacts): { request: McpRequest, result: Gen
   const title = acpCallTitle(facts)
   // `facts.argsText` rather than a second format of `args`: a scalar input has no
   // object to format, and this card is the one surface that can still show it.
-  const request: McpRequest = { server: '', tool: facts.wireKind === 'other' && pickString(facts.tool, 'kind') !== 'other' ? pickString(facts.tool, 'kind') : title, args, ...(facts.argsText !== undefined ? { argsText: facts.argsText } : {}) }
-  const content = facts.content.length > 0 ? facts.content.map(parseMcpContentItem) : facts.text ? [{ type: 'text' as const, text: facts.text }] : []
-  return { request, result: { content, ...(facts.structuredJson !== undefined ? { structuredJson: facts.structuredJson } : {}) } }
+  const request: McpRequest = {
+    server: '',
+    tool: facts.wireKind === 'other' && pickString(facts.tool, 'kind') !== 'other'
+      ? pickString(facts.tool, 'kind')
+      : title,
+    args,
+    ...(facts.argsText !== undefined
+      ? { argsText: facts.argsText }
+      : {}),
+  }
+  const content = facts.content.length > 0
+    ? facts.content.map(parseMcpContentItem)
+    : facts.text
+      ? [
+          { type: 'text' as const, text: facts.text },
+        ]
+      : []
+  return {
+    request,
+    result: {
+      content,
+      ...(facts.structuredJson !== undefined
+        ? { structuredJson: facts.structuredJson }
+        : {}),
+    },
+  }
 }
 
 /**
@@ -164,7 +187,13 @@ function acpArgumentsOnly<P extends ToolKind>(kind: P): ACPSpecEntry<P> {
   // declares it. A contextual signature is not an annotated position, so without this
   // the literal escapes the excess-property check -- the same hole every `build` in
   // `ACP_SPEC_READERS` closes, one level down.
-  return { build: (facts): ToolCallSpecVariant<P> => ({ kind, request: acpDefaultRequestFor(kind, facts), title: acpCallTitle(facts) }) }
+  return {
+    build: (facts): ToolCallSpecVariant<P> => ({
+      kind,
+      request: acpDefaultRequestFor(kind, facts),
+      title: acpCallTitle(facts),
+    }),
+  }
 }
 
 /**
@@ -217,12 +246,21 @@ function acpFileChangeParts(kind: 'edit' | 'write', facts: ACPToolFacts): { requ
   const sources = Array.isArray(facts.tool.content)
     ? facts.tool.content.flatMap((entry) => {
         const source = acpFileEditFromToolCallContent([entry])
-        return fileEditHasDiff(source) ? [source] : []
+        return fileEditHasDiff(source)
+          ? [source]
+          : []
       })
     : []
   const requested = acpRequestedFileChanges(kind, facts, changes, sources)
-  const request: FileChangeRequest = { changes: requested.map(source => ({ ...source, showLineNumbers: false })) }
-  return sources.length > 0 ? { request, result: { changes: sources } } : { request }
+  const request: FileChangeRequest = {
+    changes: requested.map(source => ({ ...source, showLineNumbers: false })),
+  }
+  return sources.length > 0
+    ? {
+        request,
+        result: { changes: sources },
+      }
+    : { request }
 }
 
 /**
@@ -308,100 +346,237 @@ function fileChangesNeedResult(request: { changes: readonly unknown[] }, facts: 
  * {@link ACP_TOOL_REQUEST_OVERRIDES} growing past its deviations.
  */
 export const ACP_SPEC_READERS: { [P in ToolKind]: ACPSpecEntry<P> } = {
-  execute: { ownsFailure: true, needsResult: request => !request.command, build: (facts): ToolCallSpecVariant<'execute'> => {
-    const kind = 'execute' as const
-    const args = facts.args
+  execute: {
+    ownsFailure: true,
+    needsResult: request => !request.command,
+    build: (facts): ToolCallSpecVariant<'execute'> => {
+      const kind = 'execute' as const
+      const args = facts.args
 
-    const description = pickString(args, 'description')
-    const request: ToolRequestByKind['execute'] = { command: pickString(args, 'command') || '', ...(description ? { description } : {}) }
-    const merged = acpExecuteFromToolCall(facts.tool)
-    // The call's own text blocks and its terminals are two different outputs: an
-    // agent that wrote a preamble beside a terminal reference meant both to show.
-    // A terminal id that resolved to no terminal says LeapMux could not recover
-    // the stream, which `outputUnavailable` states -- `[no output]` would claim
-    // the command printed nothing.
-    const ownOutput = merged?.output && !facts.terminals.entries.some(entry => entry.output === merged.output)
-      ? [{ ...merged, outputUnavailable: false }]
-      : []
-    const commands = facts.terminals.entries.length > 0
-      ? [...ownOutput, ...facts.terminals.entries]
-      : merged
-        ? [{ ...merged, outputUnavailable: facts.terminals.unresolved.length > 0 && !merged.output }]
+      const description = pickString(args, 'description')
+      const request: ToolRequestByKind['execute'] = {
+        command: pickString(args, 'command') || '',
+        ...(description
+          ? { description }
+          : {}),
+      }
+      const merged = acpExecuteFromToolCall(facts.tool)
+      // The call's own text blocks and its terminals are two different outputs: an
+      // agent that wrote a preamble beside a terminal reference meant both to show.
+      // A terminal id that resolved to no terminal says LeapMux could not recover
+      // the stream, which `outputUnavailable` states -- `[no output]` would claim
+      // the command printed nothing.
+      const ownOutput = merged?.output && !facts.terminals.entries.some(entry => entry.output === merged.output)
+        ? [
+            { ...merged, outputUnavailable: false },
+          ]
         : []
-    // A command states itself in the shared header; a title that merely repeats
-    // it would sit above the very command it ran.
-    const frameTitle = pickString(facts.tool, 'title')
-    const title = frameTitle && frameTitle !== request.command && frameTitle !== pickString(facts.tool, 'kind') ? frameTitle : undefined
-    return { kind, request, ...(title !== undefined ? { title } : {}), result: { commands, unresolvedTerminals: facts.terminals.unresolved } }
-  } },
-  read: { needsResult: (request, facts) => !request.path && !pickFirstString(facts.args, TOOL_FILE_PATH_KEYS), build: (facts): ToolCallSpecVariant<'read'> => {
-    const kind = 'read' as const
-    const args = facts.args
-    const title = acpCallTitle(facts)
+      const commands = facts.terminals.entries.length > 0
+        ? [
+            ...ownOutput,
+            ...facts.terminals.entries,
+          ]
+        : merged
+          ? [
+              { ...merged, outputUnavailable: facts.terminals.unresolved.length > 0 && !merged.output },
+            ]
+          : []
+      // A command states itself in the shared header; a title that merely repeats
+      // it would sit above the very command it ran.
+      const frameTitle = pickString(facts.tool, 'title')
+      const title = frameTitle && frameTitle !== request.command && frameTitle !== pickString(facts.tool, 'kind')
+        ? frameTitle
+        : undefined
+      return {
+        kind,
+        request,
+        ...(title !== undefined
+          ? { title }
+          : {}),
+        result: { commands, unresolvedTerminals: facts.terminals.unresolved },
+      }
+    },
+  },
+  read: {
+    needsResult: (request, facts) => !request.path && !pickFirstString(facts.args, TOOL_FILE_PATH_KEYS),
+    build: (facts): ToolCallSpecVariant<'read'> => {
+      const kind = 'read' as const
+      const args = facts.args
+      const title = acpCallTitle(facts)
 
-    const offset = pickNumber(args, 'offset', undefined)
-    const limit = pickNumber(args, 'limit', undefined)
-    const request: ToolRequestByKind['read'] = { path: pickFirstString(args, TOOL_FILE_PATH_KEYS) ?? '', ...(offset !== undefined ? { offset } : {}), ...(limit !== undefined ? { limit } : {}) }
-    const source = acpReadFromToolCall(facts.tool)
-    if (source?.lines !== null && source)
-      return { kind, request, title, result: source }
-    return { kind, request, title, images: facts.images }
-  } },
-  edit: { needsResult: fileChangesNeedResult, build: (facts): ToolCallSpecVariant<'edit'> => ({ kind: 'edit', ...acpFileChangeParts('edit', facts) }) },
-  write: { needsResult: fileChangesNeedResult, build: (facts): ToolCallSpecVariant<'write'> => ({ kind: 'write', ...acpFileChangeParts('write', facts) }) },
-  search: { needsResult: request => !request.pattern, build: (facts): ToolCallSpecVariant<'search'> => {
-    const kind = 'search' as const
-    const args = facts.args
-    const title = acpCallTitle(facts)
+      const offset = pickNumber(args, 'offset', undefined)
+      const limit = pickNumber(args, 'limit', undefined)
+      const request: ToolRequestByKind['read'] = {
+        path: pickFirstString(args, TOOL_FILE_PATH_KEYS) ?? '',
+        ...(offset !== undefined
+          ? { offset }
+          : {}),
+        ...(limit !== undefined
+          ? { limit }
+          : {}),
+      }
+      const source = acpReadFromToolCall(facts.tool)
+      if (source?.lines !== null && source)
+        return { kind, request, title, result: source }
+      return {
+        kind,
+        request,
+        title,
+        images: facts.images,
+      }
+    },
+  },
+  edit: {
+    needsResult: fileChangesNeedResult,
+    build: (facts): ToolCallSpecVariant<'edit'> => ({
+      kind: 'edit',
+      ...acpFileChangeParts('edit', facts),
+    }),
+  },
+  write: {
+    needsResult: fileChangesNeedResult,
+    build: (facts): ToolCallSpecVariant<'write'> => ({
+      kind: 'write',
+      ...acpFileChangeParts('write', facts),
+    }),
+  },
+  search: {
+    needsResult: request => !request.pattern,
+    build: (facts): ToolCallSpecVariant<'search'> => {
+      const kind = 'search' as const
+      const args = facts.args
+      const title = acpCallTitle(facts)
 
-    const request: ToolRequestByKind['search'] = { pattern: pickString(args, 'pattern') || pickString(args, 'query') || '', paths: toolInputPaths(args) }
-    const source = acpSearchFromToolCall(facts.tool)
-    return source ? { kind, request, title, result: source } : { kind, request, title }
-  } },
-  fetch: { needsResult: request => !request.url, build: (facts): ToolCallSpecVariant<'fetch'> => {
-    const kind = 'fetch' as const
-    const args = facts.args
-    const title = acpCallTitle(facts)
+      const request: ToolRequestByKind['search'] = {
+        pattern: pickString(args, 'pattern') || pickString(args, 'query') || '',
+        paths: toolInputPaths(args),
+      }
+      const source = acpSearchFromToolCall(facts.tool)
+      return source
+        ? { kind, request, title, result: source }
+        : { kind, request, title }
+    },
+  },
+  fetch: {
+    needsResult: request => !request.url,
+    build: (facts): ToolCallSpecVariant<'fetch'> => {
+      const kind = 'fetch' as const
+      const args = facts.args
+      const title = acpCallTitle(facts)
 
-    const request: ToolRequestByKind['fetch'] = { url: pickString(args, 'url') || '' }
-    const source = acpWebFetchFromToolCall(facts.tool)
-    return source ? { kind, request, title, result: source } : { kind, request, title }
-  } },
-  switch_mode: { build: (facts): ToolCallSpecVariant<'switch_mode'> => {
-    const kind = 'switch_mode' as const
-    // The one kind in this list the protocol itself defines. Its answer is the
-    // sentence the switch wrote, which is the prose the kind draws.
-    //
-    // The ARGUMENTS come from the shared table, which every other kind here reads.
-    // This branch spelled its own request once, so the table entry for the kind was
-    // unreachable and read a different key set -- no test could see the two disagree,
-    // and a reader who corrected the table changed nothing.
-    const request = acpDefaultRequestFor(kind, facts)
-    return { kind, request, title: acpCallTitle(facts), result: proseResult(facts.text) }
-  } },
+      const request: ToolRequestByKind['fetch'] = { url: pickString(args, 'url') || '' }
+      const source = acpWebFetchFromToolCall(facts.tool)
+      return source
+        ? { kind, request, title, result: source }
+        : { kind, request, title }
+    },
+  },
+  switch_mode: {
+    build: (facts): ToolCallSpecVariant<'switch_mode'> => {
+      const kind = 'switch_mode' as const
+      // The one kind in this list the protocol itself defines. Its answer is the
+      // sentence the switch wrote, which is the prose the kind draws.
+      //
+      // The ARGUMENTS come from the shared table, which every other kind here reads.
+      // This branch spelled its own request once, so the table entry for the kind was
+      // unreachable and read a different key set -- no test could see the two disagree,
+      // and a reader who corrected the table changed nothing.
+      const request = acpDefaultRequestFor(kind, facts)
+      return {
+        kind,
+        request,
+        title: acpCallTitle(facts),
+        result: proseResult(facts.text),
+      }
+    },
+  },
   // The three kinds that state no vocabulary. Each states its OWN kind, which is what
   // the shared `default` case could not do.
-  unspecified: { build: (facts): ToolCallSpecVariant<'unspecified'> => ({ kind: 'unspecified', ...acpGenericCard(facts) }) },
-  other: { build: (facts): ToolCallSpecVariant<'other'> => ({ kind: 'other', ...acpGenericCard(facts) }) },
-  mcp: { build: (facts): ToolCallSpecVariant<'mcp'> => ({ kind: 'mcp', ...acpGenericCard(facts) }) },
+  unspecified: {
+    build: (facts): ToolCallSpecVariant<'unspecified'> => ({
+      kind: 'unspecified',
+      ...acpGenericCard(facts),
+    }),
+  },
+  other: {
+    build: (facts): ToolCallSpecVariant<'other'> => ({
+      kind: 'other',
+      ...acpGenericCard(facts),
+    }),
+  },
+  mcp: {
+    build: (facts): ToolCallSpecVariant<'mcp'> => ({
+      kind: 'mcp',
+      ...acpGenericCard(facts),
+    }),
+  },
   // The kinds whose DECLARED result is the words the tool wrote. `unparsedResult`
   // states "this build could not read the payload into the kind's shape", which is
   // never true where the shape IS the words, so each answers prose instead. `think`
   // is the fifth of them and sits with the rest of the table below, because its words
   // reach it through its own request rather than through the content blocks.
-  agents: { build: (facts): ToolCallSpecVariant<'agents'> => ({ kind: 'agents', request: acpDefaultRequestFor('agents', facts), title: acpCallTitle(facts), result: proseResult(facts.text, 'markdown') }) },
-  memory: { build: (facts): ToolCallSpecVariant<'memory'> => ({ kind: 'memory', request: acpDefaultRequestFor('memory', facts), title: acpCallTitle(facts), result: proseResult(facts.text) }) },
-  message: { build: (facts): ToolCallSpecVariant<'message'> => ({ kind: 'message', request: acpDefaultRequestFor('message', facts), title: acpCallTitle(facts), result: proseResult(facts.text) }) },
-  report: { build: (facts): ToolCallSpecVariant<'report'> => ({ kind: 'report', request: acpDefaultRequestFor('report', facts), title: acpCallTitle(facts), result: proseResult(facts.text, 'markdown') }) },
+  agents: {
+    build: (facts): ToolCallSpecVariant<'agents'> => ({
+      kind: 'agents',
+      request: acpDefaultRequestFor('agents', facts),
+      title: acpCallTitle(facts),
+      result: proseResult(facts.text, 'markdown'),
+    }),
+  },
+  memory: {
+    build: (facts): ToolCallSpecVariant<'memory'> => ({
+      kind: 'memory',
+      request: acpDefaultRequestFor('memory', facts),
+      title: acpCallTitle(facts),
+      result: proseResult(facts.text),
+    }),
+  },
+  message: {
+    build: (facts): ToolCallSpecVariant<'message'> => ({
+      kind: 'message',
+      request: acpDefaultRequestFor('message', facts),
+      title: acpCallTitle(facts),
+      result: proseResult(facts.text),
+    }),
+  },
+  report: {
+    build: (facts): ToolCallSpecVariant<'report'> => ({
+      kind: 'report',
+      request: acpDefaultRequestFor('report', facts),
+      title: acpCallTitle(facts),
+      result: proseResult(facts.text, 'markdown'),
+    }),
+  },
   // An agent launch and a to-do list both answer on the row that COMPLETES them, and
   // neither states its answer in the arguments, so both always need the result side.
-  agent: { ...acpArgumentsOnly('agent'), needsResult: () => true },
-  todo: { ...acpArgumentsOnly('todo'), needsResult: () => true },
-  delete: { ...acpArgumentsOnly('delete'), needsResult: fileChangesNeedResult },
-  move: { ...acpArgumentsOnly('move'), needsResult: fileChangesNeedResult },
-  glob: { ...acpArgumentsOnly('glob'), needsResult: request => !request.pattern },
-  grep: { ...acpArgumentsOnly('grep'), needsResult: request => !request.pattern },
-  web_search: { ...acpArgumentsOnly('web_search'), needsResult: request => !request.query },
+  agent: {
+    ...acpArgumentsOnly('agent'),
+    needsResult: () => true,
+  },
+  todo: {
+    ...acpArgumentsOnly('todo'),
+    needsResult: () => true,
+  },
+  delete: {
+    ...acpArgumentsOnly('delete'),
+    needsResult: fileChangesNeedResult,
+  },
+  move: {
+    ...acpArgumentsOnly('move'),
+    needsResult: fileChangesNeedResult,
+  },
+  glob: {
+    ...acpArgumentsOnly('glob'),
+    needsResult: request => !request.pattern,
+  },
+  grep: {
+    ...acpArgumentsOnly('grep'),
+    needsResult: request => !request.pattern,
+  },
+  web_search: {
+    ...acpArgumentsOnly('web_search'),
+    needsResult: request => !request.query,
+  },
   chart: acpArgumentsOnly('chart'),
   // The PICTURES are the answer and they arrive on `call.images`, so the typed result
   // states only a prompt the generator revised. State the prompt all the same: a
@@ -410,7 +585,14 @@ export const ACP_SPEC_READERS: { [P in ToolKind]: ACPSpecEntry<P> } = {
   // An `{}` here states no prompt, so {@link acpSpecFor} replaces it with the words
   // the call printed whenever it printed any. That is what carries the reason a
   // cancelled or failed generation gave beside the picture it never produced.
-  image: { build: (facts): ToolCallSpecVariant<'image'> => ({ kind: 'image', request: acpDefaultRequestFor('image', facts), title: acpCallTitle(facts), result: {} }) },
+  image: {
+    build: (facts): ToolCallSpecVariant<'image'> => ({
+      kind: 'image',
+      request: acpDefaultRequestFor('image', facts),
+      title: acpCallTitle(facts),
+      result: {},
+    }),
+  },
   list: acpArgumentsOnly('list'),
   question: acpArgumentsOnly('question'),
   skill: acpArgumentsOnly('skill'),
@@ -422,11 +604,18 @@ export const ACP_SPEC_READERS: { [P in ToolKind]: ACPSpecEntry<P> } = {
   // brand `parsedCall` strips, so `thinkRenderer` read `result` as absent, drew its
   // request line, and the row printed the first line of the thought as a summary above
   // the whole thought again.
-  think: { build: (facts): ToolCallSpecVariant<'think'> => {
-    const kind = 'think' as const
-    const request: ToolRequestByKind['think'] = acpDefaultRequestFor(kind, facts)
-    return { kind, request, title: acpCallTitle(facts), result: proseResult(request.text) }
-  } },
+  think: {
+    build: (facts): ToolCallSpecVariant<'think'> => {
+      const kind = 'think' as const
+      const request: ToolRequestByKind['think'] = acpDefaultRequestFor(kind, facts)
+      return {
+        kind,
+        request,
+        title: acpCallTitle(facts),
+        result: proseResult(request.text),
+      }
+    },
+  },
   trigger: acpArgumentsOnly('trigger'),
   wait: acpArgumentsOnly('wait'),
 }
@@ -442,7 +631,9 @@ export const ACP_SPEC_READERS: { [P in ToolKind]: ACPSpecEntry<P> } = {
  */
 function withoutResult<P extends ToolKind>(spec: ToolCallSpecVariant<P>): ToolCallSpecVariant<P> {
   const { result, ...rest } = spec
-  return result === undefined ? spec : rest
+  return result === undefined
+    ? spec
+    : rest
 }
 
 /**
@@ -491,12 +682,20 @@ export function acpSpecFor<K extends ToolKind>(facts: ACPToolFacts, kind: K): { 
     return withoutResult(spec)
   if (entry.ownsFailure)
     return spec
-  if (facts.status === 'failed')
-    return { ...spec, result: failedResult(facts.text) }
+  if (facts.status === 'failed') {
+    return {
+      ...spec,
+      result: failedResult(facts.text),
+    }
+  }
   if (spec.result !== undefined && !acpResultStatesNothing(spec.result))
     return spec
-  if (facts.text)
-    return { ...spec, result: unparsedResult(facts.text) }
+  if (facts.text) {
+    return {
+      ...spec,
+      result: unparsedResult(facts.text),
+    }
+  }
   // A result a builder stated that says nothing (see {@link acpResultStatesNothing})
   // still states "no answer", which absent does not.
   if (spec.result !== undefined)
@@ -566,7 +765,10 @@ export function acpResultStatesNothing(result: object): boolean {
 export const ACP_TOOL_REQUEST_OVERRIDES: ToolRequestOverrides<ACPToolFacts> = {
   // The frame's own TITLE, which an ACP launch states there rather than in its
   // arguments; the shared entry sees the arguments alone.
-  agent: (args, facts): ToolRequestByKind['agent'] => ({ description: acpCallTitle(facts), prompt: pickString(args, 'prompt') || pickString(args, 'instructions') || '' }),
+  agent: (args, facts): ToolRequestByKind['agent'] => ({
+    description: acpCallTitle(facts),
+    prompt: pickString(args, 'prompt') || pickString(args, 'instructions') || '',
+  }),
   // The call's collected TEXT, which is where an ACP thought arrives when the tool
   // states no `thought` argument; the shared entry sees the arguments alone.
   think: (args, facts): ToolRequestByKind['think'] => ({ text: pickString(args, 'thought') || pickString(args, 'text') || facts.text }),
@@ -579,7 +781,9 @@ function acpDefaultRequestFor<K extends ToolKind>(kind: K, facts: ACPToolFacts):
 /** The row's own header word when the arguments state one. */
 function acpCallTitle(facts: ACPToolFacts): string {
   return pickString(facts.args, 'description') || pickString(facts.tool, 'title')
-    || (facts.wireKind === 'other' && pickString(facts.tool, 'kind') !== 'other' ? humanizeWireWord(pickString(facts.tool, 'kind')) : '') || 'Tool'
+    || (facts.wireKind === 'other' && pickString(facts.tool, 'kind') !== 'other'
+      ? humanizeWireWord(pickString(facts.tool, 'kind'))
+      : '') || 'Tool'
 }
 
 /**
@@ -620,9 +824,13 @@ export type ACPToolCallAdapter = (facts: ACPToolFacts, base: () => ToolCallSpec)
 export function acpToolCall(rawTool: Record<string, unknown>, adapter: ACPToolCallAdapter | undefined, supplemental: unknown, completion?: MessageCompletion, row?: ACPToolRow): ToolCall {
   const facts = acpToolFacts(rawTool, supplemental, completion, row)
   const base = () => acpBaseSpec(facts)
-  const spec = adapter ? adapter(facts, base) : base()
+  const spec = adapter
+    ? adapter(facts, base)
+    : base()
   const name = pickString(rawTool, 'kind') || 'tool'
-  const label = facts.wireKind === 'other' && name !== 'other' ? humanizeWireWord(name) : undefined
+  const label = facts.wireKind === 'other' && name !== 'other'
+    ? humanizeWireWord(name)
+    : undefined
   // The generic trio folds to `mcp`: the uncategorized card states the server and
   // the tool, which a wrench and the word "Other" do not.
   // The request is REBUILT, not relabelled. `McpRequest` declares `server` and `tool`
@@ -631,7 +839,11 @@ export function acpToolCall(rawTool: Record<string, unknown>, adapter: ACPToolCa
   // { args } }` never supplied -- and `mcpToolCallDisplayName` then drew the header
   // as the string `undefined`. The shared card states both, so the spread keeps them.
   const folded = spec.kind === 'unspecified' || spec.kind === 'other'
-    ? { ...spec, kind: 'mcp' as const, request: { server: '', tool: '', ...spec.request } }
+    ? {
+        ...spec,
+        kind: 'mcp' as const,
+        request: { server: '', tool: '', ...spec.request },
+      }
     : spec
   const rest = folded
   // The protocol carries no tool NAME, so an adapter that knows the registry id
@@ -645,13 +857,26 @@ export function acpToolCall(rawTool: Record<string, unknown>, adapter: ACPToolCa
   // `ToolCallBase.images` states. Attaching them here rather than per case is
   // why a `fetch` of an image URL or an `execute` that returned a screenshot
   // still reaches the image tab.
-  const images = rest.images ?? (isGenericKind(folded.kind) ? [] : facts.images)
+  const images = rest.images ?? (isGenericKind(folded.kind)
+    ? []
+    : facts.images)
   // The specification's own label wins; absent on both means no label, which the
   // exact-optional rule spells by omitting the key rather than writing `undefined`.
   const callLabel = folded.label ?? label
   return createToolCall(
-    { id: pickString(rawTool, 'toolCallId'), name, lifecycle: facts.lifecycle },
-    { title: acpCallTitle(facts), ...rest, images, ...(callLabel !== undefined ? { label: callLabel } : {}) },
+    {
+      id: pickString(rawTool, 'toolCallId'),
+      name,
+      lifecycle: facts.lifecycle,
+    },
+    {
+      title: acpCallTitle(facts),
+      ...rest,
+      images,
+      ...(callLabel !== undefined
+        ? { label: callLabel }
+        : {}),
+    },
   )
 }
 
@@ -659,7 +884,9 @@ export function acpToolCall(rawTool: Record<string, unknown>, adapter: ACPToolCa
 export function acpToolCallNeedsResult(tool: Record<string, unknown>, adapter: ACPToolCallAdapter | undefined, supplemental?: unknown): boolean {
   const facts = acpToolFacts(tool, supplemental)
   const base = () => acpBaseSpec(facts)
-  return acpSpecNeedsResult(adapter ? adapter(facts, base) : base(), facts)
+  return acpSpecNeedsResult(adapter
+    ? adapter(facts, base)
+    : base(), facts)
 }
 
 /**
@@ -676,7 +903,9 @@ function acpSpecNeedsResult<K extends ToolKind>(spec: ToolCallSpecVariant<K>, fa
   const needsResult = ACP_SPEC_READERS[spec.kind].needsResult
   // The ARGUMENTS, not the typed request: every request this build produces
   // carries at least one key, so asking the request answers "no" for every call.
-  return needsResult ? needsResult(spec.request, facts) : Object.keys(facts.args).length === 0
+  return needsResult
+    ? needsResult(spec.request, facts)
+    : Object.keys(facts.args).length === 0
 }
 
 /** Collect everything the shared build and the adapters read, in one pass. */
@@ -729,14 +958,20 @@ export function acpToolFacts(rawTool: Record<string, unknown>, supplemental?: un
   const content = flattenAcpContent(tool.content)
   const text = collectAcpToolTextFromContent(content, tool.rawOutput, { rawObjects: uncategorized })
   const images = acpImagesFromContent(content, pickObject(tool, ACP_SUPPLEMENT_REQUEST.RawInput))
-  const structuredJson = tool.rawOutput !== undefined ? prettifyJson(tool.rawOutput) : undefined
+  const structuredJson = tool.rawOutput !== undefined
+    ? prettifyJson(tool.rawOutput)
+    : undefined
   return {
     tool,
     extra,
-    ...(place?.agentSessionId === undefined ? {} : { agentSessionId: place.agentSessionId }),
+    ...(place?.agentSessionId === undefined
+      ? {}
+      : { agentSessionId: place.agentSessionId }),
     wireKind,
     args,
-    ...(argsText !== undefined ? { argsText } : {}),
+    ...(argsText !== undefined
+      ? { argsText }
+      : {}),
     scalarInput,
     status,
     retained: outcome,
@@ -744,7 +979,9 @@ export function acpToolFacts(rawTool: Record<string, unknown>, supplemental?: un
     finished,
     text,
     content,
-    ...(structuredJson !== undefined ? { structuredJson } : {}),
+    ...(structuredJson !== undefined
+      ? { structuredJson }
+      : {}),
     images,
     terminals: acpTerminalResults(tool, extra),
     place: place ?? {},
@@ -767,11 +1004,18 @@ export function resolveACPToolCall(tool: Record<string, unknown>, request?: Reco
   if (!request || !tool.toolCallId || request.toolCallId !== tool.toolCallId)
     return tool
   const fields = Object.fromEntries(Object.entries(tool).filter(([, value]) => value !== undefined && value !== null))
-  const resolved = { ...request, ...fields }
+  const resolved = {
+    ...request,
+    ...fields,
+  }
   const previousInput = pickObject(request, ACP_SUPPLEMENT_REQUEST.RawInput)
   const currentInput = pickObject(tool, ACP_SUPPLEMENT_REQUEST.RawInput)
-  if (previousInput && currentInput)
-    resolved[ACP_SUPPLEMENT_REQUEST.RawInput] = { ...previousInput, ...currentInput }
+  if (previousInput && currentInput) {
+    resolved[ACP_SUPPLEMENT_REQUEST.RawInput] = {
+      ...previousInput,
+      ...currentInput,
+    }
+  }
   return resolved
 }
 
@@ -817,16 +1061,22 @@ export function acpRemapFacts(facts: ACPToolFacts, remap: { tool: Record<string,
     ? { ...framed, [ACP_SUPPLEMENT_REQUEST.RawInput]: args }
     : framed
   const content = flattenAcpContent(tool.content)
-  const structuredJson = tool.rawOutput !== undefined ? prettifyJson(tool.rawOutput) : undefined
+  const structuredJson = tool.rawOutput !== undefined
+    ? prettifyJson(tool.rawOutput)
+    : undefined
   return {
     ...facts,
     tool,
     args,
-    ...(argsText !== undefined ? { argsText } : {}),
+    ...(argsText !== undefined
+      ? { argsText }
+      : {}),
     scalarInput: hasScalarToolInput(tool),
     text: collectAcpToolTextFromContent(content, tool.rawOutput, { rawObjects: uncategorized }),
     content,
-    ...(structuredJson !== undefined ? { structuredJson } : {}),
+    ...(structuredJson !== undefined
+      ? { structuredJson }
+      : {}),
     images: acpImagesFromContent(content, pickObject(tool, ACP_SUPPLEMENT_REQUEST.RawInput)),
   }
 }
@@ -873,11 +1123,21 @@ function acpToolInput(tool: Record<string, unknown>, kind: ToolKind): Normalized
   if (hasScalarToolInput(tool)) {
     // An empty prettification states no argument at all, so the key stays absent.
     const text = prettifyArgsJson(tool[ACP_SUPPLEMENT_REQUEST.RawInput])
-    return { args: {}, ...(text ? { text } : {}) }
+    return {
+      args: {},
+      ...(text
+        ? { text }
+        : {}),
+    }
   }
   const args = argsWithRecoveredPath(pickObject(tool, ACP_SUPPLEMENT_REQUEST.RawInput) ?? {}, tool, kind)
   const text = prettifyArgsJson(args)
-  return { args, ...(text ? { text } : {}) }
+  return {
+    args,
+    ...(text
+      ? { text }
+      : {}),
+  }
 }
 
 /** The object input, plus the `locations` path when the call's own arguments omit one. */
@@ -885,9 +1145,13 @@ function argsWithRecoveredPath(input: Record<string, unknown>, tool: Record<stri
   if (!FILE_TARGET_KINDS.has(kind) || pickFirstString(input, TOOL_FILE_PATH_KEYS))
     return input
   const paths = Array.isArray(tool.locations)
-    ? [...new Set(tool.locations.filter(isObject).map(location => pickString(location, 'path')).filter(Boolean))]
+    ? [
+        ...new Set(tool.locations.filter(isObject).map(location => pickString(location, 'path')).filter(Boolean)),
+      ]
     : []
-  return paths.length === 1 ? { ...input, filePath: paths[0] } : input
+  return paths.length === 1
+    ? { ...input, filePath: paths[0] }
+    : input
 }
 
 export function parsedACPToolCall(parsed: unknown): Record<string, unknown> | null {
@@ -899,11 +1163,16 @@ export function parsedACPToolCall(parsed: unknown): Record<string, unknown> | nu
 /** Supplemental snapshots cannot change the message identity or its completion state. */
 export function resolveACPMessage(parsed: ParsedMessageContent): Record<string, unknown> | undefined {
   const original = unwrapACPResult(parsed.parentObject)
-  const supplemental = original ? acpToolSupplement(original, parsed.supplementalContent) : undefined
+  const supplemental = original
+    ? acpToolSupplement(original, parsed.supplementalContent)
+    : undefined
   if (!original || !supplemental)
     return original
   const protocol = acpSupplementProtocol(supplemental)
-  const resolved = { ...protocol, ...original }
+  const resolved = {
+    ...protocol,
+    ...original,
+  }
   // The base of the `rawInput` merge, read BEFORE the request keys land: the frame's
   // own arguments, or the protocol payload's when the frame states none. The worker
   // merges from exactly that, and reading the untouched frame here instead dropped
@@ -923,8 +1192,12 @@ export function resolveACPMessage(parsed: ParsedMessageContent): Record<string, 
     }
   }
   const supplementalInput = pickObject(supplemental, ACP_SUPPLEMENT_REQUEST.RawInput)
-  if (baseInput && supplementalInput)
-    resolved[ACP_SUPPLEMENT_REQUEST.RawInput] = { ...baseInput, ...supplementalInput }
+  if (baseInput && supplementalInput) {
+    resolved[ACP_SUPPLEMENT_REQUEST.RawInput] = {
+      ...baseInput,
+      ...supplementalInput,
+    }
+  }
   // Nothing new: answer the frame ITSELF, as the worker does. A caller that resolves
   // every row on every pass then allocates nothing for the rows that carry no join.
   return changed ? resolved : original

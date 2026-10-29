@@ -52,7 +52,9 @@ export async function readEntry(page: Page, storedKey: string): Promise<StoredEn
       get.onsuccess = () => {
         const row = get.result as { v: unknown, e: number } | undefined
         db.close()
-        resolve(row === undefined ? null : { v: row.v, e: row.e })
+        resolve(row === undefined
+          ? null
+          : { v: row.v, e: row.e })
       }
     }
   }), [DB_NAME, TABLE, storedKey] as const)
@@ -89,7 +91,13 @@ export async function writeEntry(page: Page, storedKey: string, value: unknown, 
         reject(new Error(`could not write ${key}`))
       }
     }
-  }), [DB_NAME, TABLE, storedKey, value, expiresAt] as const)
+  }), [
+    DB_NAME,
+    TABLE,
+    storedKey,
+    value,
+    expiresAt,
+  ] as const)
 }
 
 /** Every stored key, sorted. For a spec asserting which keys exist at all. */
@@ -231,7 +239,9 @@ export async function waitForStoredEntry(
 /** Every key in one Web Storage area, sorted. */
 export async function webStorageKeys(page: Page, area: 'local' | 'session'): Promise<string[]> {
   return page.evaluate((which) => {
-    const store = which === 'local' ? localStorage : sessionStorage
+    const store = which === 'local'
+      ? localStorage
+      : sessionStorage
     const keys: string[] = []
     for (let i = 0; i < store.length; i++) {
       const key = store.key(i)

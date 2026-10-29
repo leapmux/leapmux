@@ -43,7 +43,14 @@ interface ActivePageState {
 
 const DEFAULT_VIEWPORT = { width: 1280, height: 720 } as const
 const DEFAULT_PERMISSIONS = ['clipboard-read', 'clipboard-write']
-const PAGE_EVENTS_WITH_TEST_LISTENERS = ['console', 'dialog', 'pageerror', 'request', 'response', 'websocket'] as const
+const PAGE_EVENTS_WITH_TEST_LISTENERS = [
+  'console',
+  'dialog',
+  'pageerror',
+  'request',
+  'response',
+  'websocket',
+] as const
 const ISOLATED_CONTEXT_SPECS = new Set([
   'claude-code/background-tasks-sidebar.spec.ts',
   'turn-end-sound.spec.ts',
@@ -132,8 +139,11 @@ async function resetSharedPage(
     // DOMStorage needs an active frame for its security origin. A static asset
     // establishes that frame without starting the app or opening IndexedDB.
     await page.goto(`${origin}/favicon.ico`)
-    for (const isLocalStorage of [true, false])
-      await cdp.send('DOMStorage.clear', { storageId: { securityOrigin: origin, isLocalStorage } })
+    for (const isLocalStorage of [true, false]) {
+      await cdp.send('DOMStorage.clear', {
+        storageId: { securityOrigin: origin, isLocalStorage },
+      })
+    }
     await page.goto('about:blank')
     await cdp.send('Emulation.setDeviceMetricsOverride', {
       width: viewport.width,
@@ -145,7 +155,9 @@ async function resetSharedPage(
     })
     await cdp.send('Emulation.setTouchEmulationEnabled', {
       enabled: options.hasTouch,
-      ...(options.hasTouch ? { maxTouchPoints: 1 } : {}),
+      ...(options.hasTouch
+        ? { maxTouchPoints: 1 }
+        : {}),
     })
   }
   finally {
@@ -184,33 +196,42 @@ export const test = base.extend<
   transcriptGuard: async ({}, use) => { await use(createTranscriptGuard()) },
 
   // Global setup starts one dev instance for the complete run.
-  // eslint-disable-next-line no-empty-pattern
-  leapmuxServer: [async ({}, use) => {
-    const globalState = getGlobalState()
-    try {
-      await use(globalState)
-    }
-    finally {
-      await finishCleanup([closeAllUserEventsSubscriptions(), closeTestChannels(globalState.hubUrl)])
-    }
-  }, { scope: 'worker' }],
+  leapmuxServer: [
+    // eslint-disable-next-line no-empty-pattern
+    async ({}, use) => {
+      const globalState = getGlobalState()
+      try {
+        await use(globalState)
+      }
+      finally {
+        await finishCleanup([
+          closeAllUserEventsSubscriptions(),
+          closeTestChannels(globalState.hubUrl),
+        ])
+      }
+    },
+    { scope: 'worker' },
+  ],
 
-  sharedPageState: [async ({ browser, leapmuxServer }, use) => {
-    const context = await browser.newContext({
-      baseURL: leapmuxServer.hubUrl,
-      viewport: DEFAULT_VIEWPORT,
-      screen: DEFAULT_VIEWPORT,
-      deviceScaleFactor: 1,
-      // Touch changes hover controls and selection behavior for every shared test.
-      // Tests that require touch use a separate context through activePageState.
-      hasTouch: false,
-      isMobile: false,
-      permissions: DEFAULT_PERMISSIONS,
-    })
-    const state = { context, page: await newSharedPage(context) }
-    await use(state)
-    await context.close()
-  }, { scope: 'worker' }],
+  sharedPageState: [
+    async ({ browser, leapmuxServer }, use) => {
+      const context = await browser.newContext({
+        baseURL: leapmuxServer.hubUrl,
+        viewport: DEFAULT_VIEWPORT,
+        screen: DEFAULT_VIEWPORT,
+        deviceScaleFactor: 1,
+        // Touch changes hover controls and selection behavior for every shared test.
+        // Tests that require touch use a separate context through activePageState.
+        hasTouch: false,
+        isMobile: false,
+        permissions: DEFAULT_PERMISSIONS,
+      })
+      const state = { context, page: await newSharedPage(context) }
+      await use(state)
+      await context.close()
+    },
+    { scope: 'worker' },
+  ],
 
   activePageState: async ({ browser, colorScheme, deviceScaleFactor, hasTouch, isMobile, leapmuxServer, sharedPageState, viewport }, use, testInfo) => {
     const metrics = viewport ?? DEFAULT_VIEWPORT
@@ -273,16 +294,19 @@ export const test = base.extend<
   // Each workspace fixture depends on this reset, so the reset cannot remove
   // a workspace that the current test creates.
   // The four steps are independent, so they run together, and the fixture reports every failure in one error.
-  hubStateReset: [async ({ leapmuxServer }, use) => {
-    const { hubUrl, adminToken, baselineHubSettings } = leapmuxServer
-    await finishCleanup([
-      elevateSessionViaAPI(hubUrl, adminToken, TEST_ADMIN_PASSWORD),
-      deleteAllWorkspacesViaAPI(hubUrl, adminToken),
-      resetAllUserSettingsViaAPI(hubUrl, adminToken),
-      resetHubSettingsViaAPI(hubUrl, adminToken, { baseline: baselineHubSettings, password: TEST_ADMIN_PASSWORD }),
-    ])
-    await use()
-  }, { auto: true }],
+  hubStateReset: [
+    async ({ leapmuxServer }, use) => {
+      const { hubUrl, adminToken, baselineHubSettings } = leapmuxServer
+      await finishCleanup([
+        elevateSessionViaAPI(hubUrl, adminToken, TEST_ADMIN_PASSWORD),
+        deleteAllWorkspacesViaAPI(hubUrl, adminToken),
+        resetAllUserSettingsViaAPI(hubUrl, adminToken),
+        resetHubSettingsViaAPI(hubUrl, adminToken, { baseline: baselineHubSettings, password: TEST_ADMIN_PASSWORD }),
+      ])
+      await use()
+    },
+    { auto: true },
+  ],
 
   // Record page errors for every test that inherits this fixture. Do not fail the test here.
   // An uncaught app exception can otherwise appear only as a timeout on an unrelated locator.
@@ -290,46 +314,52 @@ export const test = base.extend<
   // Distinguish browser errors from deliberate test failures and app defects. ignorableErrorEvents holds browser exclusions.
   // Tests that extend @playwright/test directly or use process-control-fixtures do not inherit this recorder.
   // A suite-wide assertion requires those fixtures to participate also.
-  pageErrorRecorder: [async ({ page }, use, testInfo) => {
-    const pageErrors: string[] = []
-    const recordPageError = (error: Error) => pageErrors.push(error.stack ?? error.message)
-    page.on('pageerror', recordPageError)
+  pageErrorRecorder: [
+    async ({ page }, use, testInfo) => {
+      const pageErrors: string[] = []
+      const recordPageError = (error: Error) => pageErrors.push(error.stack ?? error.message)
+      page.on('pageerror', recordPageError)
 
-    try {
-      await use()
-    }
-    finally {
-      page.off('pageerror', recordPageError)
-    }
+      try {
+        await use()
+      }
+      finally {
+        page.off('pageerror', recordPageError)
+      }
 
-    // The chat virtualizer can exceed the ResizeObserver delivery loop.
-    // Use ignorableErrorEvents to classify that browser error. Do not duplicate its regular expression here.
-    const real = pageErrors.filter(message => !isResizeObserverLoopError(message))
-    if (real.length > 0) {
-      await testInfo.attach('page-errors', {
-        body: real.join('\n\n'),
-        contentType: 'text/plain',
-      })
-    }
-  }, { auto: true }],
+      // The chat virtualizer can exceed the ResizeObserver delivery loop.
+      // Use ignorableErrorEvents to classify that browser error. Do not duplicate its regular expression here.
+      const real = pageErrors.filter(message => !isResizeObserverLoopError(message))
+      if (real.length > 0) {
+        await testInfo.attach('page-errors', {
+          body: real.join('\n\n'),
+          contentType: 'text/plain',
+        })
+      }
+    },
+    { auto: true },
+  ],
 
   // Record toasts for every test that uses this fixture.
-  toastRecorder: [async ({ page, leapmuxServer }, use, testInfo) => {
-    const serverMark = markSuiteServerLog(leapmuxServer.serverLogPath)
-    await use()
+  toastRecorder: [
+    async ({ page, leapmuxServer }, use, testInfo) => {
+      const serverMark = markSuiteServerLog(leapmuxServer.serverLogPath)
+      await use()
 
-    await attachToastLog(page, testInfo)
-    if (testInfo.status !== testInfo.expectedStatus) {
+      await attachToastLog(page, testInfo)
+      if (testInfo.status !== testInfo.expectedStatus) {
       // An out-of-process error can otherwise appear only as a locator timeout.
-      await attachServerLog(testInfo, readSuiteServerLog(leapmuxServer.serverLogPath, serverMark))
+        await attachServerLog(testInfo, readSuiteServerLog(leapmuxServer.serverLogPath, serverMark))
 
-      // Attach actual model traffic and requests that reached no scenario.
-      // A native provider failure includes its HTTP status and request body.
-      const modelLogPath = testInfo.outputPath('model-server-log.json')
-      writeFileSync(modelLogPath, JSON.stringify(await readMockModelDiagnostics(leapmuxServer.mockModelUrl), null, 2))
-      await testInfo.attach('model-server-log', { path: modelLogPath, contentType: 'application/json' })
-    }
-  }, { auto: true }],
+        // Attach actual model traffic and requests that reached no scenario.
+        // A native provider failure includes its HTTP status and request body.
+        const modelLogPath = testInfo.outputPath('model-server-log.json')
+        writeFileSync(modelLogPath, JSON.stringify(await readMockModelDiagnostics(leapmuxServer.mockModelUrl), null, 2))
+        await testInfo.attach('model-server-log', { path: modelLogPath, contentType: 'application/json' })
+      }
+    },
+    { auto: true },
+  ],
 
   emptyWorkspace: async ({ hubStateReset, leapmuxServer }, use) => {
     // The explicit dependency makes the reset finish before this workspace starts.
@@ -337,7 +367,10 @@ export const test = base.extend<
     await withTestWorkspace(leapmuxServer, 'e2e', use)
   },
 
-  agentWorkingDir: [undefined, { option: true }],
+  agentWorkingDir: [
+    undefined,
+    { option: true },
+  ],
 
   workspace: async ({ leapmuxServer, emptyWorkspace, agentWorkingDir }, use) => {
     const agentId = await openPinnedModeAgentViaAPI(leapmuxServer, emptyWorkspace.workspaceId, agentWorkingDir)

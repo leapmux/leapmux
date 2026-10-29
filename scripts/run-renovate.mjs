@@ -5,7 +5,12 @@ import { resolve } from 'node:path'
 import process from 'node:process'
 import { pathToFileURL } from 'node:url'
 
-const nativeRuntime = { spawn, kill: process.kill, setTimeout, clearTimeout }
+const nativeRuntime = {
+  spawn,
+  kill: process.kill,
+  setTimeout,
+  clearTimeout,
+}
 
 function reportFailure(message) {
   try {
@@ -19,14 +24,23 @@ export function runWithTimeout(command, args, { timeoutMs = 50 * 60 * 1000, env 
     return Promise.reject(new Error('The execution timeout must be an integer from 1 through 2147483647 milliseconds.'))
   return new Promise((resolveResult, reject) => {
     const started = performance.now()
-    const child = runtime.spawn(command, args, { env, cwd, stdio, detached: process.platform !== 'win32' })
+    const child = runtime.spawn(command, args, {
+      env,
+      cwd,
+      stdio,
+      detached: process.platform !== 'win32',
+    })
     const pid = child.pid
     let timedOut = false
     let finished = false
     let timer
     let pendingWrites = 0
     let closeResult
-    const destinations = output ? [...new Set([streams.stdout, streams.stderr])] : []
+    const destinations = output
+      ? [
+          ...new Set([streams.stdout, streams.stderr]),
+        ]
+      : []
     const drain = () => {
       if (pendingWrites)
         return
@@ -48,7 +62,12 @@ export function runWithTimeout(command, args, { timeoutMs = 50 * 60 * 1000, env 
       if (process.platform === 'win32') {
         if (child.exitCode !== null || child.signalCode !== null)
           return
-        const killer = runtime.spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { stdio: 'ignore' })
+        const killer = runtime.spawn('taskkill', [
+          '/PID',
+          String(pid),
+          '/T',
+          '/F',
+        ], { stdio: 'ignore' })
         killer.once('error', (error) => {
           if (child.exitCode === null && child.signalCode === null)
             child.kill('SIGKILL')
@@ -79,7 +98,11 @@ export function runWithTimeout(command, args, { timeoutMs = 50 * 60 * 1000, env 
       if (finished)
         return
       timedOut = !signal
-      complete(null, signal === 'SIGINT' ? 130 : signal === 'SIGTERM' ? 143 : 124, signal ?? child.signalCode)
+      complete(null, signal === 'SIGINT'
+        ? 130
+        : signal === 'SIGTERM'
+          ? 143
+          : 124, signal ?? child.signalCode)
       try {
         stop()
       }
@@ -107,10 +130,19 @@ export function runWithTimeout(command, args, { timeoutMs = 50 * 60 * 1000, env 
       child.stderr?.destroy()
       child.unref()
       drain()
-      if (error)
+      if (error) {
         reject(error)
-      else
-        resolveResult({ code: timedOut ? 124 : code ?? 1, signal, timedOut, durationMs: Math.round(performance.now() - started) })
+      }
+      else {
+        resolveResult({
+          code: timedOut
+            ? 124
+            : code ?? 1,
+          signal,
+          timedOut,
+          durationMs: Math.round(performance.now() - started),
+        })
+      }
     }
     function fail(error) {
       if (finished)
@@ -181,8 +213,15 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   try {
     const root = resolve(import.meta.dirname, '..')
     writeFileSync(resolve(root, '.tmp/renovate-pr-details.jsonl'), '')
-    const output = { write: data => appendFileSync(resolve(root, '.tmp/renovate-cli.log'), data) }
-    const result = await runWithTimeout(process.execPath, [resolve(root, '.github/renovate/node_modules/renovate/dist/renovate.js')], { stdio: ['ignore', 'pipe', 'pipe'], output })
+    const output = {
+      write: data => appendFileSync(resolve(root, '.tmp/renovate-cli.log'), data),
+    }
+    const result = await runWithTimeout(process.execPath, [
+      resolve(root, '.github/renovate/node_modules/renovate/dist/renovate.js'),
+    ], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      output,
+    })
     appendFileSync(resolve(root, '.tmp/renovate-execution.jsonl'), `${JSON.stringify(result)}\n`)
     if (result.timedOut)
       reportFailure('Renovate exceeded its 50-minute execution limit.')

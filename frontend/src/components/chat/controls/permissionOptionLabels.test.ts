@@ -26,7 +26,13 @@ describe('permissionOptionLabel', () => {
   // `kind` comes straight off the wire. A bare index answered `Object.prototype`
   // here -- a truthy value, so the two fallbacks below it never ran and the
   // function's SOURCE TEXT became the decision button's label.
-  it.each(['toString', 'constructor', 'valueOf', 'hasOwnProperty', '__proto__'])(
+  it.each([
+    'toString',
+    'constructor',
+    'valueOf',
+    'hasOwnProperty',
+    '__proto__',
+  ])(
     'falls back for a kind spelled %s, which names an Object.prototype member',
     (kind) => {
       expect(permissionOptionLabel({ optionId: 'opt1', kind })).toBe('opt1')

@@ -41,7 +41,9 @@ export function parseDebPaths(listing) {
       continue
     }
     const [, mode, field] = row
-    const path = mode.startsWith('l') ? field.replace(/ -> .*$/, '') : field
+    const path = mode.startsWith('l')
+      ? field.replace(/ -> .*$/, '')
+      : field
     const relative = path.replace(/^\.\//, '')
     if (relative !== '') {
       paths.add(relative)

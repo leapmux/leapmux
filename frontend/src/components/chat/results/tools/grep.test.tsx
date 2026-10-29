@@ -16,6 +16,14 @@ describe('grep renderer', () => {
     request: { pattern: 'needle', paths: [] },
     minimalTitlePart: '"x"',
     titlePart: 'needle',
-    result: { filenames: [], content: '', numFiles: 0, numLines: 0, truncated: false, fallbackContent: '', empty: false },
+    result: {
+      filenames: [],
+      content: '',
+      numFiles: 0,
+      numLines: 0,
+      truncated: false,
+      fallbackContent: '',
+      empty: false,
+    },
   })
 })

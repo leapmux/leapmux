@@ -23,10 +23,19 @@ export function leapmuxUserRow(payload: unknown): ChatRow | null {
     ? payload.attachments.filter(isObject).map((item) => {
         const filename = pickString(item, 'filename') || undefined
         const mimeType = pickString(item, 'mime_type') || undefined
-        return { ...(filename !== undefined ? { filename } : {}), ...(mimeType !== undefined ? { mimeType } : {}) }
+        return {
+          ...(filename !== undefined
+            ? { filename }
+            : {}),
+          ...(mimeType !== undefined
+            ? { mimeType }
+            : {}),
+        }
       })
     : []
-  return text.trim() === '' && attachments.length === 0 ? { kind: 'hidden' } : { kind: 'user', text, attachments }
+  return text.trim() === '' && attachments.length === 0
+    ? { kind: 'hidden' }
+    : { kind: 'user', text, attachments }
 }
 
 /** The notice LeapMux writes when the reader sends a plan into execution. */
@@ -34,5 +43,7 @@ export function leapmuxPlanExecutionRow(payload: unknown): ChatRow | null {
   if (!isObject(payload))
     return null
   const text = pickString(payload, 'content')
-  return text ? { kind: 'plan-execution', text } : { kind: 'hidden' }
+  return text
+    ? { kind: 'plan-execution', text }
+    : { kind: 'hidden' }
 }

@@ -21,9 +21,13 @@ async function expectNativeSpeed(context: ManagedNativeScenarioContext, fast: bo
   const thread = threads.find(thread => thread.id === current.agentSessionId)
   expect(thread).toBeDefined()
   expect(thread?.agentMode).toBe('high')
-  expect(thread?.features).toEqual(fast ? ['fast'] : [])
+  expect(thread?.features).toEqual(fast
+    ? ['fast']
+    : [])
   await expectSettingsOptionChosen(context.page, `fastMode-${fast}`)
-  expect(await offeredSettingsOptions(context.page, 'fastMode')).toEqual([String(fast)])
+  expect(await offeredSettingsOptions(context.page, 'fastMode')).toEqual([
+    String(fast),
+  ])
   const group = await openSettingsMenu(context.page, 'fastMode')
   const option = group.getByTestId(`fastMode-${fast}`)
   await expect(option).toBeDisabled()
@@ -65,7 +69,9 @@ const restartTest = createProviderProcessTest({
   agent: AMP_AGENT,
   nativeContext,
   skipReason: AMP_E2E_SKIP_REASON,
-  openOptions: { optionValues: { agent_mode: 'high', fastMode: 'true' } },
+  openOptions: {
+    optionValues: { agent_mode: 'high', fastMode: 'true' },
+  },
 })
 
 restartTest('reads native Fast Mode after a worker restart', async ({ native, separateHubWorker }) => {

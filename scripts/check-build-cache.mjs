@@ -11,7 +11,10 @@ export async function readBuildLog(path) {
   const tasks = new Set()
   let started = false
   let completed = false
-  const lines = createInterface({ input: createReadStream(path), crlfDelay: Infinity })
+  const lines = createInterface({
+    input: createReadStream(path),
+    crlfDelay: Infinity,
+  })
   for await (const line of lines) {
     if (line === 'task: "build" started')
       started = true
@@ -44,7 +47,13 @@ async function main() {
       descriptors.push(openSync(path, 'w'))
     // Verbose mode logs even silent commands. Skipped conditions and platform commands go to stdout.
     // Read only stderr for command execution. Task's status checks and dynamic variables remain allowed.
-    result = spawnSync(executable, ['--verbose', '--color=false', '--output=interleaved', '--dry=false', 'build'], {
+    result = spawnSync(executable, [
+      '--verbose',
+      '--color=false',
+      '--output=interleaved',
+      '--dry=false',
+      'build',
+    ], {
       stdio: ['ignore', ...descriptors],
     })
   }
@@ -56,8 +65,11 @@ async function main() {
   try {
     if (result.error)
       throw new Error(`Cannot start Task: ${result.error.message}`)
-    if (result.status !== 0)
-      throw new Error(`Build failed (${result.signal ? `signal ${result.signal}` : `exit code ${result.status}`})`)
+    if (result.status !== 0) {
+      throw new Error(`Build failed (${result.signal
+        ? `signal ${result.signal}`
+        : `exit code ${result.status}`})`)
+    }
     const tasks = await readBuildLog(paths[1])
     if (tasks.length > 0)
       throw new Error(`Build commands ran: ${tasks.join(', ')}`)

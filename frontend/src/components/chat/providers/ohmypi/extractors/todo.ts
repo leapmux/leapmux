@@ -55,16 +55,28 @@ export function ohMyPiTodoSource(args: Record<string, unknown>, details: Record<
       if (!content)
         continue
       const blocker = pickString(task, 'blocker').trim()
-      const description = [phaseName, blocker ? `Blocked: ${blocker}` : ''].filter(Boolean).join('\n')
+      const description = [
+        phaseName,
+        blocker
+          ? `Blocked: ${blocker}`
+          : '',
+      ].filter(Boolean).join('\n')
       const status = todoStatus(pickString(task, 'status'))
       items.push({
         rowKey: todoRowKey(undefined, items.length, content),
         content,
         status,
-        activeForm: status === 'in_progress' ? content : '',
-        ...(description ? { description } : {}),
+        activeForm: status === 'in_progress'
+          ? content
+          : '',
+        ...(description
+          ? { description }
+          : {}),
       })
     }
   }
-  return { items, op: pickString(args, 'op') }
+  return {
+    items,
+    op: pickString(args, 'op'),
+  }
 }

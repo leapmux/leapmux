@@ -66,7 +66,10 @@ function makeMsg(overrides: Partial<Parameters<typeof makeMessage>[0]>) {
 
 describe('MessageBubble category', () => {
   it('marks the bubble with its category', () => {
-    const message = makeMsg({ source: MessageSource.USER, content: rawContent({ content: 'Hello' }) })
+    const message = makeMsg({
+      source: MessageSource.USER,
+      content: rawContent({ content: 'Hello' }),
+    })
     const view = render(() => <PreferencesProvider><MessageBubble message={message} /></PreferencesProvider>)
     expect(view.getByTestId('message-bubble')).toHaveAttribute('data-category', 'user_content')
   })
@@ -75,12 +78,69 @@ describe('MessageBubble category', () => {
 describe('standalone MCP result actions', () => {
   const output = Array.from({ length: 8 }, (_, index) => `Line ${index}`).join('\n')
   it.each([
-    { provider: AgentProvider.ZCODE, content: { type: 'tool.updated', payload: { kind: 'result', toolCallId: 'call', result: { success: true, content: output, display: { kind: 'mcp_tool', serverName: 'docs', toolName: 'lookup' } } } } },
-    { provider: AgentProvider.CODEX, content: { item: { id: 'call', type: 'mcpToolCall', status: 'completed', server: 'docs', tool: 'lookup', arguments: {}, result: { content: [{ type: 'text', text: output }] } } } },
-    { provider: AgentProvider.PI, content: { type: 'tool_execution_end', toolCallId: 'call', toolName: 'mcp', result: { content: [{ type: 'text', text: output }], details: { server: 'docs', tool: 'lookup' } } } },
-    { provider: AgentProvider.MIMO_CODE, content: toolFrame('docs_lookup', { input: {}, output }, 'call') },
+    {
+      provider: AgentProvider.ZCODE,
+      content: {
+        type: 'tool.updated',
+        payload: {
+          kind: 'result',
+          toolCallId: 'call',
+          result: {
+            success: true,
+            content: output,
+            display: { kind: 'mcp_tool', serverName: 'docs', toolName: 'lookup' },
+          },
+        },
+      },
+    },
+    {
+      provider: AgentProvider.CODEX,
+      content: {
+        item: {
+          id: 'call',
+          type: 'mcpToolCall',
+          status: 'completed',
+          server: 'docs',
+          tool: 'lookup',
+          arguments: {},
+          result: {
+            content: [
+              { type: 'text', text: output },
+            ],
+          },
+        },
+      },
+    },
+    {
+      provider: AgentProvider.PI,
+      content: {
+        type: 'tool_execution_end',
+        toolCallId: 'call',
+        toolName: 'mcp',
+        result: {
+          content: [
+            { type: 'text', text: output },
+          ],
+          details: { server: 'docs', tool: 'lookup' },
+        },
+      },
+    },
+    {
+      provider: AgentProvider.MIMO_CODE,
+      content: toolFrame('docs_lookup', { input: {}, output }, 'call'),
+    },
   ])('renders one result toolbar for provider $provider', ({ provider, content }) => {
-    render(() => <PreferencesProvider><MessageBubble message={makeMsg({ agentProvider: provider, source: MessageSource.AGENT, spanId: 'call', content: rawContent(content) })} /></PreferencesProvider>)
+    render(() => (
+      <PreferencesProvider>
+        <MessageBubble message={makeMsg({
+          agentProvider: provider,
+          source: MessageSource.AGENT,
+          spanId: 'call',
+          content: rawContent(content),
+        })}
+        />
+      </PreferencesProvider>
+    ))
     expect(screen.getAllByTestId('message-toolbar')).toHaveLength(1)
     expect(screen.getAllByRole('button', { name: 'Expand', hidden: true })).toHaveLength(1)
     expect(screen.getAllByTestId('message-copy-json')).toHaveLength(1)
@@ -97,7 +157,16 @@ describe('tool call bubble identity', () => {
       spanType: 'Read',
       content: rawContent({
         type: 'assistant',
-        message: { content: [{ type: 'tool_use', id: 'toolu_image', name: 'Read', input: { file_path: 'image.png' } }] },
+        message: {
+          content: [
+            {
+              type: 'tool_use',
+              id: 'toolu_image',
+              name: 'Read',
+              input: { file_path: 'image.png' },
+            },
+          ],
+        },
       }),
     })
     const result = makeMsg({
@@ -108,14 +177,25 @@ describe('tool call bubble identity', () => {
       spanType: 'Read',
       content: rawContent({
         type: 'user',
-        message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_image', content: 'Image opened.' }] },
+        message: {
+          content: [
+            { type: 'tool_result', tool_use_id: 'toolu_image', content: 'Image opened.' },
+          ],
+        },
       }),
     })
     const text = makeMsg({
       agentProvider: AgentProvider.CLAUDE_CODE,
       source: MessageSource.AGENT,
       seq: 3n,
-      content: rawContent({ type: 'assistant', message: { content: [{ type: 'text', text: 'Done.' }] } }),
+      content: rawContent({
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'text', text: 'Done.' },
+          ],
+        },
+      }),
     })
 
     render(() => (
@@ -188,10 +268,16 @@ async function withControlledCopyCallbacks(run: (callbacks: ControlledCopyCallba
   try {
     await run({
       runIdle: () => {
-        const pending = [...idleCallbacks.values()]
+        const pending = [
+          ...idleCallbacks.values(),
+        ]
         idleCallbacks.clear()
-        for (const callback of pending)
-          callback({ didTimeout: false, timeRemaining: () => 50 })
+        for (const callback of pending) {
+          callback({
+            didTimeout: false,
+            timeRemaining: () => 50,
+          })
+        }
         return pending.length
       },
       deliverMutations: (target) => {
@@ -199,7 +285,10 @@ async function withControlledCopyCallbacks(run: (callbacks: ControlledCopyCallba
         for (const observer of observers) {
           if (!observer.targets.has(target))
             continue
-          const records = [...observer.records.splice(0), ...observer.takeRecords()]
+          const records = [
+            ...observer.records.splice(0),
+            ...observer.takeRecords(),
+          ]
           if (records.length === 0)
             continue
           delivered += records.length
@@ -223,22 +312,24 @@ function askUserQuestionToolUse(questions: Array<{ header: string }>) {
   return {
     type: 'assistant',
     message: {
-      content: [{
-        type: 'tool_use',
-        id: 'toolu_ask_1',
-        name: 'AskUserQuestion',
-        input: {
-          questions: questions.map(q => ({
-            question: `Question about ${q.header}?`,
-            header: q.header,
-            multiSelect: false,
-            options: [
-              { label: 'Option A', description: 'First option' },
-              { label: 'Option B', description: 'Second option' },
-            ],
-          })),
+      content: [
+        {
+          type: 'tool_use',
+          id: 'toolu_ask_1',
+          name: 'AskUserQuestion',
+          input: {
+            questions: questions.map(q => ({
+              question: `Question about ${q.header}?`,
+              header: q.header,
+              multiSelect: false,
+              options: [
+                { label: 'Option A', description: 'First option' },
+                { label: 'Option B', description: 'Second option' },
+              ],
+            })),
+          },
         },
-      }],
+      ],
     },
   }
 }
@@ -249,7 +340,9 @@ function askUserQuestionToolUse(questions: Array<{ header: string }>) {
 
 describe('askUserQuestion thread rendering', () => {
   it('shows question text for single-question tool_use', () => {
-    const parent = askUserQuestionToolUse([{ header: 'Uncommitted' }])
+    const parent = askUserQuestionToolUse([
+      { header: 'Uncommitted' },
+    ])
     const msg = makeMsg({
       source: MessageSource.AGENT,
       content: rawContent(parent),
@@ -268,7 +361,10 @@ describe('askUserQuestion thread rendering', () => {
   })
 
   it('shows question count for multi-question tool_use', () => {
-    const parent = askUserQuestionToolUse([{ header: 'Auth' }, { header: 'Database' }])
+    const parent = askUserQuestionToolUse([
+      { header: 'Auth' },
+      { header: 'Database' },
+    ])
     const msg = makeMsg({
       source: MessageSource.AGENT,
       content: rawContent(parent),
@@ -299,7 +395,13 @@ describe('result_divider dispatch', () => {
     const msg = makeMsg({
       source: MessageSource.AGENT,
       agentProvider: AgentProvider.CLAUDE_CODE,
-      content: rawContent({ type: 'result', is_error: false, subtype: 'success', result: 'done', duration_ms: 1095 }),
+      content: rawContent({
+        type: 'result',
+        is_error: false,
+        subtype: 'success',
+        result: 'done',
+        duration_ms: 1095,
+      }),
     })
 
     render(() => (
@@ -360,7 +462,13 @@ describe('unsupported_provider rendering', () => {
     const msg = makeMsg({
       source: MessageSource.AGENT,
       agentProvider: AgentProvider.UNSPECIFIED,
-      content: rawContent({ type: 'result', is_error: false, subtype: 'success', result: 'done', duration_ms: 1095 }),
+      content: rawContent({
+        type: 'result',
+        is_error: false,
+        subtype: 'success',
+        result: 'done',
+        duration_ms: 1095,
+      }),
     })
 
     render(() => (
@@ -382,7 +490,14 @@ describe('unsupported_provider rendering', () => {
     // sourceLabel must display an anomalous data-role instead of reporting it as agent.
     const msg = makeMsg({
       source: MessageSource.UNSPECIFIED,
-      content: rawContent({ type: 'assistant', message: { content: [{ type: 'text', text: 'hi' }] } }),
+      content: rawContent({
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'text', text: 'hi' },
+          ],
+        },
+      }),
     })
 
     render(() => (
@@ -422,7 +537,11 @@ describe('thinking message toolbar buttons', () => {
   it('shows Quote and Copy Markdown buttons for thinking messages', () => {
     const innerMsg = {
       type: 'assistant',
-      message: { content: [{ type: 'thinking', thinking: 'Let me think about this...' }] },
+      message: {
+        content: [
+          { type: 'thinking', thinking: 'Let me think about this...' },
+        ],
+      },
     }
     const msg = makeMsg({
       source: MessageSource.AGENT,
@@ -442,7 +561,11 @@ describe('thinking message toolbar buttons', () => {
   it('orders the toolbar timestamp, Copy Raw JSON, Copy Markdown, then Quote', () => {
     const innerMsg = {
       type: 'assistant',
-      message: { content: [{ type: 'thinking', thinking: 'Order matters.' }] },
+      message: {
+        content: [
+          { type: 'thinking', thinking: 'Order matters.' },
+        ],
+      },
     }
     const msg = makeMsg({
       source: MessageSource.AGENT,
@@ -458,7 +581,9 @@ describe('thinking message toolbar buttons', () => {
     // Agent rows and tool rows share one left-to-right action order.
 
     const toolbar = screen.getByTestId('message-toolbar')
-    const ids = [...toolbar.querySelectorAll('[data-testid]')].map(el => el.getAttribute('data-testid'))
+    const ids = [
+      ...toolbar.querySelectorAll('[data-testid]'),
+    ].map(el => el.getAttribute('data-testid'))
     expect(ids).toEqual(['message-copy-json', 'message-copy-markdown', 'message-quote'])
     // The timestamp leads, ahead of every button.
     const timestamp = toolbar.querySelector(`.${toolHeaderTimestamp}`)
@@ -483,7 +608,9 @@ describe('thinking message toolbar buttons', () => {
     ))
 
     const toolbar = screen.getByTestId('message-toolbar')
-    const ids = [...toolbar.querySelectorAll('[data-testid]')].map(el => el.getAttribute('data-testid'))
+    const ids = [
+      ...toolbar.querySelectorAll('[data-testid]'),
+    ].map(el => el.getAttribute('data-testid'))
     expect(ids).toEqual(['message-quote', 'message-copy-markdown', 'message-copy-json'])
     const timestamp = toolbar.querySelector(`.${toolHeaderTimestamp}`)
     expect(timestamp).not.toBeNull()
@@ -495,7 +622,11 @@ describe('thinking message toolbar buttons', () => {
     const bandContent = (inner: unknown) => {
       const { unmount } = render(() => (
         <PreferencesProvider>
-          <MessageBubble message={makeMsg({ source: MessageSource.AGENT, content: rawContent(inner) })} />
+          <MessageBubble message={makeMsg({
+            source: MessageSource.AGENT,
+            content: rawContent(inner),
+          })}
+          />
         </PreferencesProvider>
       ))
       const cls = screen.getByTestId('message-bubble').className
@@ -506,8 +637,22 @@ describe('thinking message toolbar buttons', () => {
     // The row owns the band's background and borders. Its content element carries no bubble
     // decoration.
 
-    const thought = bandContent({ type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'hmm' }] } })
-    const text = bandContent({ type: 'assistant', message: { content: [{ type: 'text', text: 'hello' }] } })
+    const thought = bandContent({
+      type: 'assistant',
+      message: {
+        content: [
+          { type: 'thinking', thinking: 'hmm' },
+        ],
+      },
+    })
+    const text = bandContent({
+      type: 'assistant',
+      message: {
+        content: [
+          { type: 'text', text: 'hello' },
+        ],
+      },
+    })
     expect(text).toContain(chatStyles.bandMessage)
     expect(thought).toBe(text)
     expect(text).not.toContain(chatStyles.messageBubble)
@@ -517,7 +662,11 @@ describe('thinking message toolbar buttons', () => {
     const onReply = vi.fn()
     const innerMsg = {
       type: 'assistant',
-      message: { content: [{ type: 'thinking', thinking: 'Premeasure should keep toolbar geometry.' }] },
+      message: {
+        content: [
+          { type: 'thinking', thinking: 'Premeasure should keep toolbar geometry.' },
+        ],
+      },
     }
     const msg = makeMsg({
       source: MessageSource.AGENT,
@@ -547,7 +696,11 @@ describe('thinking message toolbar buttons', () => {
     const thinkingText = 'Let me think step by step about this problem.'
     const innerMsg = {
       type: 'assistant',
-      message: { content: [{ type: 'thinking', thinking: thinkingText }] },
+      message: {
+        content: [
+          { type: 'thinking', thinking: thinkingText },
+        ],
+      },
     }
     const msg = makeMsg({
       source: MessageSource.AGENT,
@@ -571,7 +724,9 @@ describe('premeasure tool action geometry', () => {
   it('keeps an inert in-flow tool-use raw JSON action slot during premeasure', async () => {
     const msg = makeMsg({
       source: MessageSource.AGENT,
-      content: rawContent(askUserQuestionToolUse([{ header: 'Premeasure' }])),
+      content: rawContent(askUserQuestionToolUse([
+        { header: 'Premeasure' },
+      ])),
     })
 
     render(() => (
@@ -594,7 +749,11 @@ describe('thinking message expansion preference', () => {
   function renderThinkingBubble(thinkingText: string) {
     const innerMsg = {
       type: 'assistant',
-      message: { content: [{ type: 'thinking', thinking: thinkingText }] },
+      message: {
+        content: [
+          { type: 'thinking', thinking: thinkingText },
+        ],
+      },
     }
     const msg = makeMsg({
       source: MessageSource.AGENT,
@@ -634,7 +793,11 @@ describe('thinking message expansion preference', () => {
     const thinkingText = 'Follows current preference'
     const innerMsg = {
       type: 'assistant',
-      message: { content: [{ type: 'thinking', thinking: thinkingText }] },
+      message: {
+        content: [
+          { type: 'thinking', thinking: thinkingText },
+        ],
+      },
     }
     const msg = makeMsg({
       source: MessageSource.AGENT,
@@ -713,7 +876,11 @@ describe('messageBubble rawJson', () => {
   it('includes content as object for non-LEAPMUX messages', async () => {
     const innerMsg = {
       type: 'assistant',
-      message: { content: [{ type: 'text', text: 'Single' }] },
+      message: {
+        content: [
+          { type: 'text', text: 'Single' },
+        ],
+      },
     }
     const msg = makeMsg({
       content: rawContent(innerMsg),
@@ -733,11 +900,24 @@ describe('messageBubble rawJson', () => {
   it('includes old_seqs from LEAPMUX notification wrapper', async () => {
     const parentMsg = {
       type: 'assistant',
-      message: { content: [{ type: 'tool_use', id: 'toolu_1', name: 'Bash', input: { command: 'ls' } }] },
+      message: {
+        content: [
+          {
+            type: 'tool_use',
+            id: 'toolu_1',
+            name: 'Bash',
+            input: { command: 'ls' },
+          },
+        ],
+      },
     }
     const childMsg = {
       type: 'user',
-      message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: 'file.txt' }] },
+      message: {
+        content: [
+          { type: 'tool_result', tool_use_id: 'toolu_1', content: 'file.txt' },
+        ],
+      },
     }
     const msg = makeMsg({
       source: MessageSource.LEAPMUX,
@@ -815,7 +995,14 @@ describe('messageBubble rawJson', () => {
     await withControlledCopyCallbacks(async (callbacks) => {
       const msg = makeMsg({
         source: MessageSource.AGENT,
-        content: rawContent({ type: 'assistant', message: { content: [{ type: 'text', text: `MARKDOWN_HEAD${'x'.repeat(100_000)}MARKDOWN_TAIL` }] } }),
+        content: rawContent({
+          type: 'assistant',
+          message: {
+            content: [
+              { type: 'text', text: `MARKDOWN_HEAD${'x'.repeat(100_000)}MARKDOWN_TAIL` },
+            ],
+          },
+        }),
       })
 
       render(() => (
@@ -838,7 +1025,14 @@ describe('messageBubble rawJson', () => {
   it('re-injects the copy button after the content re-renders (async highlight swap)', async () => {
     const msg = makeMsg({
       source: MessageSource.AGENT,
-      content: rawContent({ type: 'assistant', message: { content: [{ type: 'text', text: '```js\nconst x = 1\n```' }] } }),
+      content: rawContent({
+        type: 'assistant',
+        message: {
+          content: [
+            { type: 'text', text: '```js\nconst x = 1\n```' },
+          ],
+        },
+      }),
     })
 
     render(() => (
@@ -874,7 +1068,14 @@ describe('messageBubble rawJson', () => {
     await withControlledCopyCallbacks(async (callbacks) => {
       const msg = makeMsg({
         source: MessageSource.AGENT,
-        content: rawContent({ type: 'assistant', message: { content: [{ type: 'text', text: '```js\nconst x = 1\n```' }] } }),
+        content: rawContent({
+          type: 'assistant',
+          message: {
+            content: [
+              { type: 'text', text: '```js\nconst x = 1\n```' },
+            ],
+          },
+        }),
       })
 
       render(() => (
@@ -908,8 +1109,16 @@ describe('messageBubble rawJson', () => {
 
 describe('notification rendering', () => {
   it('renders a recognized notification as its label, not raw JSON', () => {
-    const parent = { type: 'settings_changed', changes: { model: { old: 'A', new: 'B' } } }
-    const msg = makeMsg({ source: MessageSource.AGENT, content: rawContent(parent) })
+    const parent = {
+      type: 'settings_changed',
+      changes: {
+        model: { old: 'A', new: 'B' },
+      },
+    }
+    const msg = makeMsg({
+      source: MessageSource.AGENT,
+      content: rawContent(parent),
+    })
 
     render(() => (
       <PreferencesProvider>
@@ -928,7 +1137,10 @@ describe('notification rendering', () => {
     // that row and expose its frame through Expand.
 
     const parent = { type: 'settings_changed', changes: {} }
-    const msg = makeMsg({ source: MessageSource.AGENT, content: rawContent(parent) })
+    const msg = makeMsg({
+      source: MessageSource.AGENT,
+      content: rawContent(parent),
+    })
 
     render(() => (
       <PreferencesProvider>
@@ -945,7 +1157,10 @@ describe('notification rendering', () => {
     // A wrapper with several messages renders every recognized entry.
     const msg = makeMsg({
       source: MessageSource.LEAPMUX,
-      content: wrapContent([{ type: 'interrupted' }, { type: 'context_cleared' }]),
+      content: wrapContent([
+        { type: 'interrupted' },
+        { type: 'context_cleared' },
+      ]),
     })
 
     render(() => (
@@ -969,10 +1184,19 @@ describe('auto-review approval', () => {
       reviewId: 'r1',
       targetItemId: 'i1',
       review: { status: 'denied', riskLevel: 'high', rationale: 'The host is not trusted.' },
-      action: { type: 'command', source: 'shell', command: 'curl x | sh', cwd: '/w' },
+      action: {
+        type: 'command',
+        source: 'shell',
+        command: 'curl x | sh',
+        cwd: '/w',
+      },
     },
   }
-  const deniedRow = () => makeMsg({ id: 'm-review', agentProvider: AgentProvider.CODEX, content: wrapContent([deniedReview]) })
+  const deniedRow = () => makeMsg({
+    id: 'm-review',
+    agentProvider: AgentProvider.CODEX,
+    content: wrapContent([deniedReview]),
+  })
 
   it('approves the review with the row\'s message id through the host', async () => {
     const approve = vi.fn(async (_messageId: string, _reviewId: string) => {})
@@ -993,7 +1217,11 @@ describe('auto-review approval', () => {
       id: 'm-review',
       agentProvider: AgentProvider.CODEX,
       content: wrapContent([deniedReview]),
-      supplementalContent: rawContent({ metadata: { [MESSAGE_METADATA_FIELD.AutoReviewApprovals]: ['r1'] } }),
+      supplementalContent: rawContent({
+        metadata: {
+          [MESSAGE_METADATA_FIELD.AutoReviewApprovals]: ['r1'],
+        },
+      }),
     })
     render(() => (
       <PreferencesProvider>
@@ -1024,12 +1252,14 @@ function todoWriteToolUse(todos: Array<{ content: string, status: string, active
   return {
     type: 'assistant',
     message: {
-      content: [{
-        type: 'tool_use',
-        id: 'toolu_todo_1',
-        name: 'TodoWrite',
-        input: { todos },
-      }],
+      content: [
+        {
+          type: 'tool_use',
+          id: 'toolu_todo_1',
+          name: 'TodoWrite',
+          input: { todos },
+        },
+      ],
     },
   }
 }
@@ -1129,7 +1359,24 @@ describe('todoWrite collapse/expand', () => {
       agentProvider: AgentProvider.CODEX,
       source: MessageSource.AGENT,
       spanId: 'expand-control',
-      content: rawContent({ item: { id: 'expand-control', type: 'mcpToolCall', status: 'completed', server: 'docs', tool: 'lookup', arguments: {}, result: { content: [{ type: 'text', text: Array.from({ length: 8 }, (_, index) => `Line ${index}`).join('\n') }] } } }),
+      content: rawContent({
+        item: {
+          id: 'expand-control',
+          type: 'mcpToolCall',
+          status: 'completed',
+          server: 'docs',
+          tool: 'lookup',
+          arguments: {},
+          result: {
+            content: [
+              {
+                type: 'text',
+                text: Array.from({ length: 8 }, (_, index) => `Line ${index}`).join('\n'),
+              },
+            ],
+          },
+        },
+      }),
     })
     render(() => <PreferencesProvider><MessageBubble message={control} /></PreferencesProvider>)
     expect(screen.getByRole('button', { name: /^Expand(?:\s|$)/u, hidden: true })).toBeInTheDocument()
@@ -1164,12 +1411,14 @@ function taskOutputToolUse() {
   return {
     type: 'assistant',
     message: {
-      content: [{
-        type: 'tool_use',
-        id: 'toolu_task_1',
-        name: 'TaskOutput',
-        input: { task_id: 'task-123', block: true, timeout: 30000 },
-      }],
+      content: [
+        {
+          type: 'tool_use',
+          id: 'toolu_task_1',
+          name: 'TaskOutput',
+          input: { task_id: 'task-123', block: true, timeout: 30000 },
+        },
+      ],
     },
   }
 }
@@ -1220,7 +1469,9 @@ describe('taskOutput rendering', () => {
 
 describe('askUserQuestion left border', () => {
   it('body has left border', () => {
-    const parent = askUserQuestionToolUse([{ header: 'Auth' }])
+    const parent = askUserQuestionToolUse([
+      { header: 'Auth' },
+    ])
     const msg = makeMsg({
       source: MessageSource.AGENT,
       content: rawContent(parent),
@@ -1246,12 +1497,14 @@ describe('header-only renderers', () => {
     const innerMsg = {
       type: 'assistant',
       message: {
-        content: [{
-          type: 'tool_use',
-          id: 'toolu_plan_1',
-          name: 'EnterPlanMode',
-          input: {},
-        }],
+        content: [
+          {
+            type: 'tool_use',
+            id: 'toolu_plan_1',
+            name: 'EnterPlanMode',
+            input: {},
+          },
+        ],
       },
     }
     const msg = makeMsg({
@@ -1274,12 +1527,14 @@ describe('header-only renderers', () => {
     const innerMsg = {
       type: 'assistant',
       message: {
-        content: [{
-          type: 'tool_use',
-          id: 'toolu_skill_1',
-          name: 'Skill',
-          input: { skill: 'commit' },
-        }],
+        content: [
+          {
+            type: 'tool_use',
+            id: 'toolu_skill_1',
+            name: 'Skill',
+            input: { skill: 'commit' },
+          },
+        ],
       },
     }
     const msg = makeMsg({
@@ -1301,12 +1556,14 @@ describe('header-only renderers', () => {
     const innerMsg = {
       type: 'assistant',
       message: {
-        content: [{
-          type: 'tool_use',
-          id: 'toolu_agent_1',
-          name: 'Agent',
-          input: { description: 'Search codebase', subagent_type: 'Explore', prompt: 'Find auth files' },
-        }],
+        content: [
+          {
+            type: 'tool_use',
+            id: 'toolu_agent_1',
+            name: 'Agent',
+            input: { description: 'Search codebase', subagent_type: 'Explore', prompt: 'Find auth files' },
+          },
+        ],
       },
     }
     const msg = makeMsg({
@@ -1335,12 +1592,14 @@ describe('grep result summary', () => {
     const innerMsg = {
       type: 'assistant',
       message: {
-        content: [{
-          type: 'tool_use',
-          id: 'toolu_grep_1',
-          name: 'Grep',
-          input: { pattern: 'TODO', path: '/home/user/project' },
-        }],
+        content: [
+          {
+            type: 'tool_use',
+            id: 'toolu_grep_1',
+            name: 'Grep',
+            input: { pattern: 'TODO', path: '/home/user/project' },
+          },
+        ],
       },
     }
     const msg = makeMsg({
@@ -1369,12 +1628,14 @@ describe('glob result summary', () => {
     const innerMsg = {
       type: 'assistant',
       message: {
-        content: [{
-          type: 'tool_use',
-          id: 'toolu_glob_1',
-          name: 'Glob',
-          input: { pattern: '**/*.tsx' },
-        }],
+        content: [
+          {
+            type: 'tool_use',
+            id: 'toolu_glob_1',
+            name: 'Glob',
+            input: { pattern: '**/*.tsx' },
+          },
+        ],
       },
     }
     const msg = makeMsg({
@@ -1402,12 +1663,14 @@ describe('agent stats summary', () => {
     const innerMsg = {
       type: 'assistant',
       message: {
-        content: [{
-          type: 'tool_use',
-          id: 'toolu_agent_2',
-          name: 'Agent',
-          input: { description: 'Search files', subagent_type: 'Explore', prompt: 'Find auth' },
-        }],
+        content: [
+          {
+            type: 'tool_use',
+            id: 'toolu_agent_2',
+            name: 'Agent',
+            input: { description: 'Search files', subagent_type: 'Explore', prompt: 'Find auth' },
+          },
+        ],
       },
     }
     const msg = makeMsg({
@@ -1434,12 +1697,14 @@ describe('agent stats summary', () => {
     const innerMsg = {
       type: 'assistant',
       message: {
-        content: [{
-          type: 'tool_use',
-          id: 'toolu_agent_3',
-          name: 'Agent',
-          input: { description: 'Explore message classification', subagent_type: 'Explore', prompt: 'Find classifiers' },
-        }],
+        content: [
+          {
+            type: 'tool_use',
+            id: 'toolu_agent_3',
+            name: 'Agent',
+            input: { description: 'Explore message classification', subagent_type: 'Explore', prompt: 'Find classifiers' },
+          },
+        ],
       },
     }
     const msg = makeMsg({
@@ -1507,7 +1772,11 @@ describe('plan execution bubble', () => {
     const planFlushes = planBubble.classList.contains(chatStyles.bubbleFlushRight)
     view.unmount()
 
-    const typed = makeMsg({ id: 'typed-1', source: MessageSource.USER, content: rawContent({ content: 'hello' }) })
+    const typed = makeMsg({
+      id: 'typed-1',
+      source: MessageSource.USER,
+      content: rawContent({ content: 'hello' }),
+    })
     const typedView = render(() => (
       <PreferencesProvider>
         <MessageBubble message={typed} />
@@ -1526,12 +1795,14 @@ function editToolUse(oldString: string, newString: string, filePath = '/src/app.
   return {
     type: 'assistant',
     message: {
-      content: [{
-        type: 'tool_use',
-        id: 'toolu_edit_1',
-        name: 'Edit',
-        input: { file_path: filePath, old_string: oldString, new_string: newString },
-      }],
+      content: [
+        {
+          type: 'tool_use',
+          id: 'toolu_edit_1',
+          name: 'Edit',
+          input: { file_path: filePath, old_string: oldString, new_string: newString },
+        },
+      ],
     },
   }
 }
@@ -1540,12 +1811,14 @@ function writeToolUse(content: string, filePath = '/src/new-file.ts') {
   return {
     type: 'assistant',
     message: {
-      content: [{
-        type: 'tool_use',
-        id: 'toolu_write_1',
-        name: 'Write',
-        input: { file_path: filePath, content },
-      }],
+      content: [
+        {
+          type: 'tool_use',
+          id: 'toolu_write_1',
+          name: 'Write',
+          input: { file_path: filePath, content },
+        },
+      ],
     },
   }
 }
@@ -1609,7 +1882,10 @@ describe('edit/write tool_use rendering', () => {
     expect(screen.getByTestId('message-content')).toHaveTextContent('new-file.ts')
     expect(screen.getByTestId('message-content')).not.toHaveTextContent('Failed to render message')
     cleanup()
-    const nonempty = makeMsg({ source: MessageSource.AGENT, content: rawContent(writeToolUse('export const control = true')) })
+    const nonempty = makeMsg({
+      source: MessageSource.AGENT,
+      content: rawContent(writeToolUse('export const control = true')),
+    })
     const positive = render(() => <PreferencesProvider><MessageBubble message={nonempty} /></PreferencesProvider>)
     expect(positive.container.querySelector('[data-file-diff]')).toBeInTheDocument()
   })
@@ -1622,7 +1898,13 @@ describe('edit/write tool_use rendering', () => {
       return render(() => (
         <PreferencesProvider>
           <MessageContextMenuHostProvider>
-            <MessageBubble message={msg} onReply={() => {}} {...(opts.premeasureMode !== undefined ? { premeasureMode: opts.premeasureMode } : {})} />
+            <MessageBubble
+              message={msg}
+              onReply={() => {}}
+              {...(opts.premeasureMode !== undefined
+                ? { premeasureMode: opts.premeasureMode }
+                : {})}
+            />
           </MessageContextMenuHostProvider>
         </PreferencesProvider>
       ))
@@ -1631,7 +1913,14 @@ describe('edit/write tool_use rendering', () => {
     function agentMsg() {
       return makeMsg({
         source: MessageSource.AGENT,
-        content: rawContent({ type: 'assistant', message: { content: [{ type: 'text', text: 'hello' }] } }),
+        content: rawContent({
+          type: 'assistant',
+          message: {
+            content: [
+              { type: 'text', text: 'hello' },
+            ],
+          },
+        }),
       })
     }
 
@@ -1643,17 +1932,26 @@ describe('edit/write tool_use rendering', () => {
     it('opens the same actions the hover toolbar carries', async () => {
       const { container } = renderWithHost(agentMsg())
 
-      const toolbarIds = [...screen.getByTestId('message-toolbar').querySelectorAll('[data-testid]')]
+      const toolbarIds = [
+        ...screen.getByTestId('message-toolbar').querySelectorAll('[data-testid]'),
+      ]
         .map(el => el.getAttribute('data-testid')!)
         .map(id => id.replace('message-', ''))
 
       rowOf(container).dispatchEvent(
-        new MouseEvent('contextmenu', { clientX: 150, buttons: 0, bubbles: true, cancelable: true }),
+        new MouseEvent('contextmenu', {
+          clientX: 150,
+          buttons: 0,
+          bubbles: true,
+          cancelable: true,
+        }),
       )
       await waitFor(() => expect(screen.queryByTestId('message-context-menu')?.querySelector('[data-testid]')).toBeTruthy())
 
       const menu = screen.getByTestId('message-context-menu')
-      const menuIds = [...menu.querySelectorAll('[data-testid]')]
+      const menuIds = [
+        ...menu.querySelectorAll('[data-testid]'),
+      ]
         .map(el => el.getAttribute('data-testid')!.replace('message-menu-', ''))
         // The menu's information block supplies the toolbar's timestamp.
         // The toolbar uses a plain element without a test ID. Check its text below.
@@ -1671,7 +1969,12 @@ describe('edit/write tool_use rendering', () => {
     it('suppresses the native menu on the row', () => {
       const { container } = renderWithHost(agentMsg())
 
-      const e = new MouseEvent('contextmenu', { clientX: 150, buttons: 0, bubbles: true, cancelable: true })
+      const e = new MouseEvent('contextmenu', {
+        clientX: 150,
+        buttons: 0,
+        bubbles: true,
+        cancelable: true,
+      })
       rowOf(container).dispatchEvent(e)
 
       expect(e.defaultPrevented).toBe(true)
@@ -1680,7 +1983,12 @@ describe('edit/write tool_use rendering', () => {
     it('arms no gesture on a hidden premeasure copy', () => {
       const { container } = renderWithHost(agentMsg(), { premeasureMode: true })
 
-      const e = new MouseEvent('contextmenu', { clientX: 150, buttons: 0, bubbles: true, cancelable: true })
+      const e = new MouseEvent('contextmenu', {
+        clientX: 150,
+        buttons: 0,
+        bubbles: true,
+        cancelable: true,
+      })
       rowOf(container).dispatchEvent(e)
 
       expect(e.defaultPrevented).toBe(false)
@@ -1690,7 +1998,12 @@ describe('edit/write tool_use rendering', () => {
       const { container } = renderWithHost(agentMsg())
 
       rowOf(container).dispatchEvent(
-        new MouseEvent('contextmenu', { clientX: 150, buttons: 0, bubbles: true, cancelable: true }),
+        new MouseEvent('contextmenu', {
+          clientX: 150,
+          buttons: 0,
+          bubbles: true,
+          cancelable: true,
+        }),
       )
       await waitFor(() => expect(screen.queryByTestId('message-menu-copy-json')).toBeInTheDocument())
 
@@ -1705,7 +2018,12 @@ describe('edit/write tool_use rendering', () => {
         </PreferencesProvider>
       ))
 
-      const e = new MouseEvent('contextmenu', { clientX: 150, buttons: 0, bubbles: true, cancelable: true })
+      const e = new MouseEvent('contextmenu', {
+        clientX: 150,
+        buttons: 0,
+        bubbles: true,
+        cancelable: true,
+      })
       rowOf(container).dispatchEvent(e)
 
       expect(e.defaultPrevented).toBe(false)
@@ -1726,7 +2044,16 @@ describe('tool row toolbar labels', () => {
       agentProvider: AgentProvider.CODEX,
       source: MessageSource.AGENT,
       spanId: 'codex-exec',
-      content: rawContent({ item: { id: 'codex-exec', type: 'commandExecution', status: 'completed', command: 'ls -la', aggregated_output: '', exit_code: 0 } }),
+      content: rawContent({
+        item: {
+          id: 'codex-exec',
+          type: 'commandExecution',
+          status: 'completed',
+          command: 'ls -la',
+          aggregated_output: '',
+          exit_code: 0,
+        },
+      }),
     })
 
     render(() => (
@@ -1796,7 +2123,11 @@ describe('tool row quote', () => {
       spanType: 'Grep',
       content: rawContent({
         type: 'user',
-        message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_grep_1', content: 'src/a.ts:1:hit\nsrc/b.ts:2:hit' }] },
+        message: {
+          content: [
+            { type: 'tool_result', tool_use_id: 'toolu_grep_1', content: 'src/a.ts:1:hit\nsrc/b.ts:2:hit' },
+          ],
+        },
       }),
     })
 

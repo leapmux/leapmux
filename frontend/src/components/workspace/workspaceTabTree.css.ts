@@ -37,15 +37,18 @@ export const tabIcon = style({
   flexShrink: 0,
 })
 
-export const tabLabel = style([clippedText, {
+export const tabLabel = style([
+  clippedText,
+  {
   // Natural content width (capped by row via flex-shrink) — not flex: 1 —
   // so getBoundingClientRect on this span reflects where the text actually
   // is. The tooltip centers over the rect; flex: 1 would stretch this into
   // the trailing empty space and place the tooltip far to the right. The
   // close button in sidebarActions still sits flush-right via margin-left:
   // auto, so no layout shift.
-  flex: '0 1 auto',
-}])
+    flex: '0 1 auto',
+  },
+])
 
 export const leafActions = style({
   minWidth: 0,

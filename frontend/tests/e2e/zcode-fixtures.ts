@@ -20,7 +20,9 @@ export const ZCODE_E2E_SKIP_REASON: string | null = computeZCodeE2ESkipReason({
   scriptOverride: process.env.LEAPMUX_ZCODE_SCRIPT,
   scriptExists: existsSync,
   launcherOnPath: ZCODE_LAUNCHER !== null,
-  launcherUnusableReason: ZCODE_LAUNCHER === null ? null : unusableBinaryReason('zcode', ZCODE_LAUNCHER),
+  launcherUnusableReason: ZCODE_LAUNCHER === null
+    ? null
+    : unusableBinaryReason('zcode', ZCODE_LAUNCHER),
   platform: process.platform,
   home: homedir(),
   env: hubSpawnEnv(),

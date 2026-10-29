@@ -31,7 +31,9 @@ interface FakeRow {
 }
 
 function visibleText(row: FakeRow): string {
-  return row.expanded ? `${row.text}${row.hiddenUntilExpanded ?? ''}` : row.text
+  return row.expanded
+    ? `${row.text}${row.hiddenUntilExpanded ?? ''}`
+    : row.text
 }
 
 /**
@@ -82,7 +84,9 @@ function transcriptProbe(kind: RowKind | undefined, hasText: string): Transcript
 }
 
 function rows(kind: RowKind | undefined) {
-  return { filter: ({ hasText }: { hasText: string }) => transcriptProbe(kind, hasText) }
+  return {
+    filter: ({ hasText }: { hasText: string }) => transcriptProbe(kind, hasText),
+  }
 }
 
 function isTranscriptProbe(value: unknown): value is TranscriptProbe {
@@ -98,7 +102,11 @@ interface RegistryRowProbe {
 function registryRow(): RegistryRowProbe {
   return {
     registryRowProbe: true,
-    getAttribute: async name => name === 'data-child-agent-id' ? browser.childAgentId : name === 'data-status' ? browser.childStatus : null,
+    getAttribute: async name => name === 'data-child-agent-id'
+      ? browser.childAgentId
+      : name === 'data-status'
+        ? browser.childStatus
+        : null,
   }
 }
 
@@ -138,7 +146,9 @@ vi.mock('./ui', async importOriginal => ({
   userBubbles: () => rows('user'),
   assistantBubbles: () => rows('assistant'),
   messageContents: () => rows(undefined),
-  tabById: (_page: Page, id: string) => ({ click: async () => selectTab(id) }),
+  tabById: (_page: Page, id: string) => ({
+    click: async () => selectTab(id),
+  }),
 }))
 
 vi.mock('./nativeResultView', async importOriginal => ({
@@ -201,24 +211,36 @@ vi.mock('@playwright/test', async (importOriginal) => {
     ...actual,
     expect: Object.assign(check, {
       poll: (read: () => Promise<unknown>) => ({
-        not: { toBe: async (unexpected: unknown) => expect(await read()).not.toBe(unexpected) },
+        not: {
+          toBe: async (unexpected: unknown) => expect(await read()).not.toBe(unexpected),
+        },
       }),
     }),
   }
 })
 
-const status: MockModelScenarioStatus = { complete: true, nextStep: 2, stepCount: 2, ruleMatches: {}, pendingGates: [], requests: [], unexpectedRequests: [] }
+const status: MockModelScenarioStatus = {
+  complete: true,
+  nextStep: 2,
+  stepCount: 2,
+  ruleMatches: {},
+  pendingGates: [],
+  requests: [],
+  unexpectedRequests: [],
+}
 
 describe('completeLiveChildTranscript', () => {
   it('waits for queued model steps before provider completion work', async () => {
     const steps = deferred<void>()
     const entered = deferred<void>()
     const completion = vi.fn(async () => {})
-    const finished = completeLiveChildTranscript({ waitForSteps: async () => {
-      entered.resolve()
-      await steps.promise
-      return status
-    } }, completion)
+    const finished = completeLiveChildTranscript({
+      waitForSteps: async () => {
+        entered.resolve()
+        await steps.promise
+        return status
+      },
+    }, completion)
     await withCleanup(async () => {
       await entered.promise
       expect(completion).not.toHaveBeenCalled()
@@ -233,7 +255,9 @@ describe('completeLiveChildTranscript', () => {
 
   it('preserves a provider completion failure', async () => {
     const failure = new Error('The native parent report failed.')
-    await expect(completeLiveChildTranscript({ waitForSteps: async () => status }, async () => {
+    await expect(completeLiveChildTranscript({
+      waitForSteps: async () => status,
+    }, async () => {
       throw failure
     })).rejects.toBe(failure)
   })
@@ -254,7 +278,11 @@ const READ_TOOL = readToolCall(PROVIDER, 'unit-read-name', '/unit-read-name').na
 const SHELL_TOOL = bashToolCall(PROVIDER, 'unit-shell-name', 'true').name
 const SHELL_COMMAND = 'printf unit-child-live'
 const DEFAULT_FINAL: Omit<MockModelStep, 'gate'> = { text: 'CHILD_LIVE_DONE' }
-const YIELD_FINAL: Omit<MockModelStep, 'gate'> = { toolCalls: [ohMyPiYieldToolCall('unit-native-yield', 'CHILD_LIVE_DONE')] }
+const YIELD_FINAL: Omit<MockModelStep, 'gate'> = {
+  toolCalls: [
+    ohMyPiYieldToolCall('unit-native-yield', 'CHILD_LIVE_DONE'),
+  ],
+}
 
 /** A child task with inline code. It holds `CHILD_TASK`, which the scripted matcher reads. */
 const MARKDOWN_TASK = `${CHILD_TASK} Run \`printf unit-markdown\` once.`
@@ -296,15 +324,21 @@ interface NativeAgentOptions {
 /** Parse one Chat Completions answer of the actual mock model server. */
 function parseChatAnswer(text: string): ReceivedStep {
   const body: unknown = JSON.parse(text)
-  const choice: unknown = isObject(body) && Array.isArray(body.choices) ? body.choices[0] : undefined
-  const message: unknown = isObject(choice) ? choice.message : undefined
+  const choice: unknown = isObject(body) && Array.isArray(body.choices)
+    ? body.choices[0]
+    : undefined
+  const message: unknown = isObject(choice)
+    ? choice.message
+    : undefined
   if (!isObject(message) || message.role !== 'assistant' || (message.content !== null && typeof message.content !== 'string'))
     throw new Error(`The mock model answer holds no assistant message: ${text}`)
   const calls: unknown = message.tool_calls ?? []
   if (!Array.isArray(calls))
-    throw new Error(`The mock model answer holds malformed tool calls: ${text}`)
+    throw new TypeError(`The mock model answer holds malformed tool calls: ${text}`)
   const toolCalls = calls.map((call: unknown): MockModelToolCall => {
-    const fn: unknown = isObject(call) ? call.function : undefined
+    const fn: unknown = isObject(call)
+      ? call.function
+      : undefined
     if (!isObject(call) || typeof call.id !== 'string' || !isObject(fn) || typeof fn.name !== 'string' || typeof fn.arguments !== 'string')
       throw new Error(`The mock model answer holds a malformed tool call: ${text}`)
     const args: unknown = JSON.parse(fn.arguments)
@@ -312,7 +346,14 @@ function parseChatAnswer(text: string): ReceivedStep {
       throw new Error(`The mock model tool call holds no argument object: ${text}`)
     return { id: call.id, name: fn.name, arguments: args }
   })
-  return { ...(message.content === null ? {} : { text: message.content }), ...(toolCalls.length > 0 ? { toolCalls } : {}) }
+  return {
+    ...(message.content === null
+      ? {}
+      : { text: message.content }),
+    ...(toolCalls.length > 0
+      ? { toolCalls }
+      : {}),
+  }
 }
 
 /** Send one non-streaming Chat Completions request, as a native agent does. */
@@ -332,14 +373,32 @@ function assistantMessage(step: ReceivedStep): Record<string, unknown> {
   return {
     role: 'assistant',
     content: step.text ?? null,
-    ...(step.toolCalls ? { tool_calls: step.toolCalls.map(call => ({ id: call.id, type: 'function', function: { name: call.name, arguments: JSON.stringify(call.arguments) } })) } : {}),
+    ...(step.toolCalls
+      ? {
+          tool_calls: step.toolCalls.map(call => ({
+            id: call.id,
+            type: 'function',
+            function: {
+              name: call.name,
+              arguments: JSON.stringify(call.arguments),
+            },
+          })),
+        }
+      : {}),
   }
 }
 
 function findString(value: unknown, accept: (text: string) => boolean): string | undefined {
-  if (typeof value === 'string')
-    return accept(value) ? value : undefined
-  const children = Array.isArray(value) ? value : isObject(value) ? Object.values(value) : []
+  if (typeof value === 'string') {
+    return accept(value)
+      ? value
+      : undefined
+  }
+  const children = Array.isArray(value)
+    ? value
+    : isObject(value)
+      ? Object.values(value)
+      : []
   for (const child of children) {
     const found = findString(child, accept)
     if (found !== undefined)
@@ -357,8 +416,16 @@ function appendRow(tab: string, kind: RowKind, text: string, hiddenUntilExpanded
   const transcript = browser.tabs.get(tab)
   if (!transcript)
     throw new Error(`The fake browser has no tab ${tab}.`)
-  const shown = kind === 'tool' ? text : markdownToPlainText(text)
-  transcript.push({ kind, text: shown, ...(hiddenUntilExpanded === undefined ? {} : { hiddenUntilExpanded }) })
+  const shown = kind === 'tool'
+    ? text
+    : markdownToPlainText(text)
+  transcript.push({
+    kind,
+    text: shown,
+    ...(hiddenUntilExpanded === undefined
+      ? {}
+      : { hiddenUntilExpanded }),
+  })
 }
 
 /**
@@ -368,7 +435,9 @@ function appendRow(tab: string, kind: RowKind, text: string, hiddenUntilExpanded
  */
 async function runNativeAgent(serverURL: string, parentPrompt: string, log: string[], options: NativeAgentOptions): Promise<NativeAgentReceipt> {
   appendRow(PARENT_TAB, 'user', parentPrompt)
-  const spawn = await chat(serverURL, [{ role: 'user', content: parentPrompt }])
+  const spawn = await chat(serverURL, [
+    { role: 'user', content: parentPrompt },
+  ])
   const spawnCall = spawn.toolCalls?.[0]
   if (!spawnCall || spawn.toolCalls?.length !== 1)
     throw new Error('The simulated parent did not receive exactly one spawn call.')
@@ -384,7 +453,9 @@ async function runNativeAgent(serverURL: string, parentPrompt: string, log: stri
     appendRow(CHILD_AGENT, 'assistant', options.earlyAnswer)
 
   const receipt: NativeAgentReceipt = { childResponses: [] }
-  const childMessages: unknown[] = [{ role: 'user', content: childPrompt }]
+  const childMessages: unknown[] = [
+    { role: 'user', content: childPrompt },
+  ]
   for (;;) {
     const answer = await chat(serverURL, childMessages)
     receipt.childResponses.push(answer)
@@ -488,7 +559,9 @@ function startLiveChild(serverURL: string, script: ModelScript, options: {
     runNativeAgent(serverURL, prompt, log, {
       leakReadToParent: options.leakReadToParent ?? false,
       collapseRead: options.collapseRead ?? false,
-      ...(options.earlyAnswer === undefined ? {} : { earlyAnswer: options.earlyAnswer }),
+      ...(options.earlyAnswer === undefined
+        ? {}
+        : { earlyAnswer: options.earlyAnswer }),
       hideFinal: options.hideFinal ?? false,
       hideShellRow: options.hideShellRow ?? false,
     }).then(agent.resolve, agent.reject)
@@ -510,13 +583,46 @@ function startLiveChild(serverURL: string, script: ModelScript, options: {
     childWhen: { user: CHILD_TASK },
     childTask: options.childTask ?? CHILD_TASK,
     parentTask: PARENT_TASK,
-    ...(options.childResponse ? { childResponse: options.childResponse } : {}),
-    ...(options.tool === 'read' ? { toolProof: { read: { workingDir, ...(options.expandResult ? { expandResult: true } : {}) } } } : {}),
-    ...(options.tool === 'shell' ? { toolProof: { shell: { command: SHELL_COMMAND } } } : {}),
-    ...(options.finalAnswerInChildTab === undefined ? {} : { finalAnswerInChildTab: options.finalAnswerInChildTab }),
+    ...(options.childResponse
+      ? { childResponse: options.childResponse }
+      : {}),
+    ...(options.tool === 'read'
+      ? {
+          toolProof: {
+            read: {
+              workingDir,
+              ...(options.expandResult
+                ? { expandResult: true }
+                : {}),
+            },
+          },
+        }
+      : {}),
+    ...(options.tool === 'shell'
+      ? {
+          toolProof: {
+            shell: { command: SHELL_COMMAND },
+          },
+        }
+      : {}),
+    ...(options.finalAnswerInChildTab === undefined
+      ? {}
+      : { finalAnswerInChildTab: options.finalAnswerInChildTab }),
   }
-  const context = { page: fakePage(), modelScript: observed, provider: PROVIDER, leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'unused', workerId: 'unused' }, ...(options.resolveToolRowId ? { resolveToolRowId: options.resolveToolRowId } : {}) }
-  return { helper: exerciseLiveChildTranscript(context, spec), agent: agent.promise, log }
+  const context = {
+    page: fakePage(),
+    modelScript: observed,
+    provider: PROVIDER,
+    leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'unused', workerId: 'unused' },
+    ...(options.resolveToolRowId
+      ? { resolveToolRowId: options.resolveToolRowId }
+      : {}),
+  }
+  return {
+    helper: exerciseLiveChildTranscript(context, spec),
+    agent: agent.promise,
+    log,
+  }
 }
 
 /** Run one test body against an actual mock model server and an actual model script. */
@@ -549,7 +655,14 @@ function expectMarkerRead(receipt: NativeAgentReceipt): void {
   expect(dirname(receipt.read?.path ?? '')).toBe(workingDir)
   expect(receipt.read?.content).toMatch(/^CHILDREAD[0-9a-f]{32}\n$/)
   expect(readFileSync(receipt.read?.path ?? '', 'utf8')).toBe(receipt.read?.content)
-  expect(receipt.childResponses[0]).toEqual({ toolCalls: [{ ...readToolCall(PROVIDER, 'unused', receipt.read?.path ?? ''), id: expect.any(String) }] })
+  expect(receipt.childResponses[0]).toEqual({
+    toolCalls: [
+      {
+        ...readToolCall(PROVIDER, 'unused', receipt.read?.path ?? ''),
+        id: expect.any(String),
+      },
+    ],
+  })
 }
 
 describe('exerciseLiveChildTranscript', () => {
@@ -557,7 +670,9 @@ describe('exerciseLiveChildTranscript', () => {
     const scratch = resolve(import.meta.dirname, '../../../../.tmp')
     mkdirSync(scratch, { recursive: true })
     workingDir = mkdtempSync(join(scratch, 'live-child-transcript-'))
-    browser.tabs = new Map([[PARENT_TAB, []]])
+    browser.tabs = new Map([
+      [PARENT_TAB, []],
+    ])
     browser.selected = PARENT_TAB
     browser.childAgentId = ''
     browser.childStatus = ''
@@ -637,8 +752,15 @@ describe('exerciseLiveChildTranscript', () => {
       const receipt = await run.agent
       expectMarkerRead(receipt)
       // The helper selects the result of the exact Read call that it scripted, in the visible copy of the row.
-      expect(browser.expansions).toEqual([resultBubbleSelector(receipt.read?.callId ?? '')])
-      expectOrder(run.log, ['read-delivered', 'result-expanded', 'gate-released', 'final-delivered'])
+      expect(browser.expansions).toEqual([
+        resultBubbleSelector(receipt.read?.callId ?? ''),
+      ])
+      expectOrder(run.log, [
+        'read-delivered',
+        'result-expanded',
+        'gate-released',
+        'final-delivered',
+      ])
       expect((await script.status()).pendingGates).toEqual([])
     })
   })
@@ -651,14 +773,26 @@ describe('exerciseLiveChildTranscript', () => {
           expect(query).toEqual({ callId: 'live-child-read', agentId: CHILD_AGENT })
           return 'native-child-read-part'
         })
-        const run = startLiveChild(serverURL, script, { tool: 'read', collapseRead: true, expandResult: true, resolveToolRowId })
+        const run = startLiveChild(serverURL, script, {
+          tool: 'read',
+          collapseRead: true,
+          expandResult: true,
+          resolveToolRowId,
+        })
         await run.helper
         const receipt = await run.agent
         expectMarkerRead(receipt)
         expect(receipt.read?.callId).toBe('live-child-read')
         expect(resolveToolRowId).toHaveBeenCalledExactlyOnceWith({ callId: 'live-child-read', agentId: CHILD_AGENT })
-        expect(browser.expansions).toEqual([resultBubbleSelector('native-child-read-part')])
-        expectOrder(run.log, ['read-delivered', 'result-expanded', 'gate-released', 'final-delivered'])
+        expect(browser.expansions).toEqual([
+          resultBubbleSelector('native-child-read-part'),
+        ])
+        expectOrder(run.log, [
+          'read-delivered',
+          'result-expanded',
+          'gate-released',
+          'final-delivered',
+        ])
         expect((await script.status()).pendingGates).toEqual([])
       }
       finally {
@@ -699,11 +833,15 @@ describe('exerciseLiveChildTranscript', () => {
       const run = startLiveChild(serverURL, script, { tool: 'read', leakReadToParent: true, failRelease: releaseFailure })
       const failure: unknown = await run.helper.then(() => undefined, (error: unknown) => error)
       expect(failure).toBeInstanceOf(AggregateError)
-      const errors: unknown[] = failure instanceof AggregateError ? failure.errors : []
+      const errors: unknown[] = failure instanceof AggregateError
+        ? failure.errors
+        : []
       expect(errors).toHaveLength(2)
       expect(String(errors[0])).toContain(`in tab ${PARENT_TAB}`)
       expect(errors[1]).toBeInstanceOf(AggregateError)
-      expect(errors[1] instanceof AggregateError ? errors[1].errors : []).toEqual([releaseFailure])
+      expect(errors[1] instanceof AggregateError
+        ? errors[1].errors
+        : []).toEqual([releaseFailure])
       // The failed release leaves the final child answer held, so the failure is real.
       const held = (await script.status()).pendingGates
       expect(held).toHaveLength(1)
@@ -727,7 +865,11 @@ describe('exerciseLiveChildTranscript', () => {
       const run = startLiveChild(serverURL, script, { tool: 'shell' })
       await run.helper
       const receipt = await run.agent
-      expect(receipt.childResponses[0]).toEqual({ toolCalls: [bashToolCall(PROVIDER, LIVE_CHILD_SHELL_CALL_ID, SHELL_COMMAND)] })
+      expect(receipt.childResponses[0]).toEqual({
+        toolCalls: [
+          bashToolCall(PROVIDER, LIVE_CHILD_SHELL_CALL_ID, SHELL_COMMAND),
+        ],
+      })
       expect(receipt.childResponses[1]).toEqual(DEFAULT_FINAL)
       // The shell answer arrives at once. Only the final answer waits for the helper's release.
       expectOrder(run.log, ['shell-delivered', 'gate-released', 'final-delivered'])
@@ -757,7 +899,10 @@ describe('exerciseLiveChildTranscript', () => {
 
   it('checks the held answer text, so the default text in the child tab does not fail a custom answer', async () => {
     await withLiveChildScenario(async (serverURL, script) => {
-      const run = startLiveChild(serverURL, script, { childResponse: { text: 'The custom native child report.' }, earlyAnswer: 'CHILD_LIVE_DONE' })
+      const run = startLiveChild(serverURL, script, {
+        childResponse: { text: 'The custom native child report.' },
+        earlyAnswer: 'CHILD_LIVE_DONE',
+      })
       await run.helper
       await run.agent
       expectOrder(run.log, ['gate-released', 'final-delivered'])
@@ -816,8 +961,17 @@ describe('exerciseLiveChildTranscript', () => {
 
   it.each(['', '   ', '![](child.png)'])('refuses a child task that shows no words, before it acts: %j', async (childTask) => {
     // The guard must refuse the task before the helper uses the model script, which this fake leaves empty.
-    const context = { page: fakePage(), modelScript: {} as ModelScript, provider: PROVIDER, leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'unused', workerId: 'unused' } }
-    await expect(exerciseLiveChildTranscript(context, { childWhen: { user: CHILD_TASK }, childTask, parentTask: PARENT_TASK }))
+    const context = {
+      page: fakePage(),
+      modelScript: {} as ModelScript,
+      provider: PROVIDER,
+      leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'unused', workerId: 'unused' },
+    }
+    await expect(exerciseLiveChildTranscript(context, {
+      childWhen: { user: CHILD_TASK },
+      childTask,
+      parentTask: PARENT_TASK,
+    }))
       .rejects
       .toThrow('A live child needs a task that shows words in its tab')
     expect(browser.events).toEqual([])
@@ -833,7 +987,15 @@ describe('expectChildToolOutputDeferred', () => {
 
   beforeEach(() => {
     marker = uniqueMarker('NATIVECHILDREAD')
-    browser.tabs = new Map<string, FakeRow[]>([[PARENT_TAB, []], [CHILD_AGENT, [{ kind: 'user', text: CHILD_TASK }]]])
+    browser.tabs = new Map<string, FakeRow[]>([
+      [PARENT_TAB, []],
+      [
+        CHILD_AGENT,
+        [
+          { kind: 'user', text: CHILD_TASK },
+        ],
+      ],
+    ])
     browser.selected = PARENT_TAB
     browser.childAgentId = CHILD_AGENT
     browser.childStatus = 'running'
@@ -844,7 +1006,11 @@ describe('expectChildToolOutputDeferred', () => {
 
   /** One stored Worker message of the child with `text` as its uncompressed content. */
   function storedMessage(id: string, text: string): AgentChatMessage {
-    return create(AgentChatMessageSchema, { id, contentCompression: ContentCompression.NONE, content: encoder.encode(text) })
+    return create(AgentChatMessageSchema, {
+      id,
+      contentCompression: ContentCompression.NONE,
+      content: encoder.encode(text),
+    })
   }
 
   /**
@@ -860,7 +1026,11 @@ describe('expectChildToolOutputDeferred', () => {
         protocol: 'openai-chat-completions',
         path: '/v1/chat/completions',
         rule: 'the fake held child answer',
-        body: { messages: [{ role: 'tool', tool_call_id: READ_CALL_ID, content: options.readResult }] },
+        body: {
+          messages: [
+            { role: 'tool', tool_call_id: READ_CALL_ID, content: options.readResult },
+          ],
+        },
       }),
       finish: async () => {
         browser.events.push('finish')
@@ -871,11 +1041,21 @@ describe('expectChildToolOutputDeferred', () => {
     }
   }
 
-  const context = () => ({ page: fakePage(), leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'unused', workerId: 'unused' } })
-  const options = (restoredAfterCompletion: boolean) => ({ marker, fileName: MARKER_FILE, readCallId: READ_CALL_ID, restoredAfterCompletion })
+  const context = () => ({
+    page: fakePage(),
+    leapmuxServer: { hubUrl: 'http://unused.invalid', adminToken: 'unused', workerId: 'unused' },
+  })
+  const options = (restoredAfterCompletion: boolean) => ({
+    marker,
+    fileName: MARKER_FILE,
+    readCallId: READ_CALL_ID,
+    restoredAfterCompletion,
+  })
 
   it('proves the deferred Read result, then finishes the child', async () => {
-    stored.messages = [storedMessage('prompt', CHILD_TASK)]
+    stored.messages = [
+      storedMessage('prompt', CHILD_TASK),
+    ]
     await expectChildToolOutputDeferred(context(), heldChild({ readResult: marker, restore: false }), options(false))
     expect(browser.events).toEqual(['finish'])
     expect(browser.reloads).toBe(0)
@@ -888,7 +1068,10 @@ describe('expectChildToolOutputDeferred', () => {
   })
 
   it('fails when a stored Worker message of the child holds the Read result', async () => {
-    stored.messages = [storedMessage('prompt', CHILD_TASK), storedMessage('read-result', `The file holds ${marker}.`)]
+    stored.messages = [
+      storedMessage('prompt', CHILD_TASK),
+      storedMessage('read-result', `The file holds ${marker}.`),
+    ]
     await expect(expectChildToolOutputDeferred(context(), heldChild({ readResult: marker, restore: false }), options(false))).rejects.toThrow('no stored Worker message of agent')
     expect(browser.events).toEqual(['finish'])
   })

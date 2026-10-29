@@ -61,7 +61,10 @@ test.describe('control CLI live broadcast', () => {
         openWorkspace(pageA, workspaceId),
         openWorkspace(pageB, workspaceId),
       ])
-      await Promise.all([expectAgentTabCount(pageA, 1), expectAgentTabCount(pageB, 1)])
+      await Promise.all([
+        expectAgentTabCount(pageA, 1),
+        expectAgentTabCount(pageB, 1),
+      ])
 
       // CLI creates a tab; both browsers must see it via snapshot
       // reconciliation. Active-tab is purely local under the CRDT
@@ -72,7 +75,10 @@ test.describe('control CLI live broadcast', () => {
         expect(tabById(pageA, newAgentID)).toBeVisible(),
         expect(tabById(pageB, newAgentID)).toBeVisible(),
       ])
-      await Promise.all([expectAgentTabCount(pageA, 2), expectAgentTabCount(pageB, 2)])
+      await Promise.all([
+        expectAgentTabCount(pageA, 2),
+        expectAgentTabCount(pageB, 2),
+      ])
     })
   })
 })

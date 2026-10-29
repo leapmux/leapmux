@@ -25,7 +25,17 @@ clineTest('records the completed command output limit and retains its native hea
       if (!operation)
         throw new Error('The Cline result has no exact completed native command operation.')
       const retained = clineNativeOutputLimit(JSON.stringify(operation))
-      await testInfo.attach('cline-native-output-limit', { body: JSON.stringify({ nativeId: capture.nativeCallId, sessionId: capture.agent.agentSessionId, nativeReference: operation, modelProjection: exact, previewText: retained, retained }, null, 2), contentType: 'application/json' })
+      await testInfo.attach('cline-native-output-limit', {
+        body: JSON.stringify({
+          nativeId: capture.nativeCallId,
+          sessionId: capture.agent.agentSessionId,
+          nativeReference: operation,
+          modelProjection: exact,
+          previewText: retained,
+          retained,
+        }, null, 2),
+        contentType: 'application/json',
+      })
       expect(retained).toContain(output.firstMarker)
       expect(retained).toContain(output.lastMarker)
       expect(retained).not.toContain(output.omittedMarker)

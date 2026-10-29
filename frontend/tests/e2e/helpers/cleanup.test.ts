@@ -4,7 +4,10 @@ import { cleanupOnFailure, finishCleanup, withCleanup, withCleanupSync } from '.
 describe('cleanup completion', () => {
   it('handles an empty set and successful operations', async () => {
     await expect(finishCleanup([])).resolves.toBeUndefined()
-    await expect(finishCleanup([Promise.resolve(), Promise.resolve(1)])).resolves.toBeUndefined()
+    await expect(finishCleanup([
+      Promise.resolve(),
+      Promise.resolve(1),
+    ])).resolves.toBeUndefined()
   })
 
   it('waits for every operation and preserves every failure', async () => {
@@ -15,7 +18,10 @@ describe('cleanup completion', () => {
       rejectSecond = reject
     })
     let finished = false
-    const outcome = finishCleanup([Promise.reject(first), pending])
+    const outcome = finishCleanup([
+      Promise.reject(first),
+      pending,
+    ])
       .then(() => null, error => error)
       .finally(() => { finished = true })
     await Promise.resolve()
@@ -43,7 +49,13 @@ describe('resource lifetime', () => {
     expect(events).toEqual(['use', 'cleanup'])
   })
 
-  it.each([undefined, null, 0, '', new Error('operation failed')])('preserves a failed operation and still cleans the resource: %s', async (error) => {
+  it.each([
+    undefined,
+    null,
+    0,
+    '',
+    new Error('operation failed'),
+  ])('preserves a failed operation and still cleans the resource: %s', async (error) => {
     const cleanup = vi.fn(async () => {})
     await expect(withCleanup(async () => {
       throw error
@@ -96,7 +108,13 @@ describe('withCleanupSync', () => {
     expect(events).toEqual(['use', 'cleanup'])
   })
 
-  it.each([undefined, null, 0, '', new Error('operation failed')])('throws a failed operation and still cleans the resource: %s', (error) => {
+  it.each([
+    undefined,
+    null,
+    0,
+    '',
+    new Error('operation failed'),
+  ])('throws a failed operation and still cleans the resource: %s', (error) => {
     const cleanup = vi.fn()
     expect(thrownBy(() => withCleanupSync(() => {
       throw error

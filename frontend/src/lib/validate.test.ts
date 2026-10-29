@@ -186,7 +186,9 @@ describe('sanitizeName', () => {
   it('keeps every printable ASCII character', () => {
     for (let cp = 0x20; cp < 0x7F; cp++) {
       const ch = String.fromCodePoint(cp)
-      const want = cp === 0x20 ? 'a b' : `a${ch}b`
+      const want = cp === 0x20
+        ? 'a b'
+        : `a${ch}b`
       expect(cleanName(`a${ch}b`), `U+${cp.toString(16)}`).toBe(want)
     }
   })
@@ -819,7 +821,10 @@ describe('sanitizeSlug', () => {
       ['user123', 'user123'],
       ['my-name', 'my-name'],
       ['a-b-c', 'a-b-c'],
-      ['a'.repeat(32), 'a'.repeat(32)],
+      [
+        'a'.repeat(32),
+        'a'.repeat(32),
+      ],
     ]
 
     for (const [input, expected] of cases) {
@@ -959,7 +964,13 @@ describe('validateSessionId', () => {
   })
 
   it('refuses a control character', () => {
-    for (const id of ['has\x00nul', 'has\x1Funitsep', 'has\x7Fdel', 'has\nnewline', 'has\rcarriage'])
+    for (const id of [
+      'has\x00nul',
+      'has\x1Funitsep',
+      'has\x7Fdel',
+      'has\nnewline',
+      'has\rcarriage',
+    ])
       expect(validateSessionId(id), id).not.toBeNull()
   })
 
@@ -1042,7 +1053,12 @@ describe('validateSessionId', () => {
   // element of `claude --resume <id>` and the `sessionId` member of an ACP
   // request, so it must keep refusing what it refused.
   it('stays narrower than the name rule', () => {
-    for (const id of ['has"quote', 'has\\backslash', 'has$dollar', 'has%percent']) {
+    for (const id of [
+      'has"quote',
+      'has\\backslash',
+      'has$dollar',
+      'has%percent',
+    ]) {
       expect(sanitizeName(id), `the name rule must accept ${id} for this case to bite`)
         .toEqual({ value: id, error: null })
       expect(validateSessionId(id), id).not.toBeNull()
@@ -1062,12 +1078,23 @@ describe('validateSessionId', () => {
   // hyphen-prefixed token parses as a flag of its own instead. Only the FIRST
   // character is refused: a hyphen is ordinary inside a UUID.
   it('refuses a leading hyphen', () => {
-    for (const id of ['-abc-123', '--dangerously-skip-permissions', '--resume', '-', '--'])
+    for (const id of [
+      '-abc-123',
+      '--dangerously-skip-permissions',
+      '--resume',
+      '-',
+      '--',
+    ])
       expect(validateSessionId(id), id).toBe('Session ID must not start with a hyphen')
   })
 
   it('accepts a hyphen anywhere but the first character', () => {
-    for (const id of ['abc-123', '3f9a1c2e-77b4-4d81-9e0f-5a6b7c8d9e0f', 'abc-123-', 'a--b'])
+    for (const id of [
+      'abc-123',
+      '3f9a1c2e-77b4-4d81-9e0f-5a6b7c8d9e0f',
+      'abc-123-',
+      'a--b',
+    ])
       expect(validateSessionId(id), id).toBeNull()
   })
 
@@ -1105,7 +1132,12 @@ describe('validateSessionId', () => {
   // whitespace" in one language and "contains invalid characters" in the
   // other, for one input.
   it('reports the character rule and not the whitespace rule at an edge', () => {
-    for (const id of ['\uFEFFabc-123', 'abc-123\uFEFF', '\u0085abc-123', 'abc-123\u0085'])
+    for (const id of [
+      '\uFEFFabc-123',
+      'abc-123\uFEFF',
+      '\u0085abc-123',
+      'abc-123\u0085',
+    ])
       expect(validateSessionId(id), id).toBe('Session ID contains invalid characters')
   })
 })
@@ -1142,7 +1174,11 @@ describe('pinned whitespace set', () => {
         continue // a surrogate is not a character
       const ch = String.fromCodePoint(cp)
       const pinned = PINNED.test(ch)
-      const want = cp === GO_ONLY ? true : cp === JS_ONLY ? false : /\s/u.test(ch)
+      const want = cp === GO_ONLY
+        ? true
+        : cp === JS_ONLY
+          ? false
+          : /\s/u.test(ch)
       const label = `U+${cp.toString(16).toUpperCase().padStart(4, '0')}`
       if (pinned && !want)
         extra.push(label)

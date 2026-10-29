@@ -46,7 +46,9 @@ export const NumberControl: Component<NumberControlProps> = (props) => {
           // `props.value` did not change — so without this the field keeps
           // showing a blank the store never accepted, for the life of the
           // dialog, with no error to explain it.
-          e.currentTarget.value = props.value === undefined ? '' : String(props.value)
+          e.currentTarget.value = props.value === undefined
+            ? ''
+            : String(props.value)
         }}
       />
       <Show when={props.unit}><span class={styles.unitLabel}>{props.unit}</span></Show>

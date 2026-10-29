@@ -58,8 +58,12 @@ function renderList(props: {
     <BackgroundTaskPanel
       variant="sidebar"
       tasks={props.tasks}
-      {...(props.loadFailed !== undefined ? { loadFailed: props.loadFailed } : {})}
-      {...(props.onOpenSubagent !== undefined ? { onOpenSubagent: props.onOpenSubagent } : {})}
+      {...(props.loadFailed !== undefined
+        ? { loadFailed: props.loadFailed }
+        : {})}
+      {...(props.onOpenSubagent !== undefined
+        ? { onOpenSubagent: props.onOpenSubagent }
+        : {})}
     />
   ))
 }
@@ -77,11 +81,15 @@ function classes(el: Element): string[] {
 }
 
 function titles(container: HTMLElement): HTMLElement[] {
-  return [...container.querySelectorAll<HTMLElement>(classSelector(styles.taskTitle))]
+  return [
+    ...container.querySelectorAll<HTMLElement>(classSelector(styles.taskTitle)),
+  ]
 }
 
 function secondaries(container: HTMLElement): HTMLElement[] {
-  return [...container.querySelectorAll<HTMLElement>(classSelector(styles.taskSecondary))]
+  return [
+    ...container.querySelectorAll<HTMLElement>(classSelector(styles.taskSecondary)),
+  ]
 }
 
 describe('rowDomIdentity', () => {
@@ -99,8 +107,17 @@ describe('rowDomIdentity', () => {
 describe('BackgroundTaskList', () => {
   it('shows unknown-outcome finality with a static muted dot and a retained transcript link', () => {
     const open = vi.fn()
-    const native = { ...protoTask('finished', 'Native child', ''), status: BackgroundTaskStatus.ENDED_WITH_UNKNOWN_OUTCOME, childAgentId: 'child' }
-    const { container } = renderList({ tasks: [protoBackgroundTaskToStore(native)], onOpenSubagent: open })
+    const native = {
+      ...protoTask('finished', 'Native child', ''),
+      status: BackgroundTaskStatus.ENDED_WITH_UNKNOWN_OUTCOME,
+      childAgentId: 'child',
+    }
+    const { container } = renderList({
+      tasks: [
+        protoBackgroundTaskToStore(native),
+      ],
+      onOpenSubagent: open,
+    })
     const task = container.querySelector<HTMLElement>('[data-testid="bg-task-row"]')!
     const dot = task.querySelector('[data-testid="bg-task-status-dot"]')!
     expect(task.dataset.status).toBe('ended_with_unknown_outcome')
@@ -119,7 +136,14 @@ describe('BackgroundTaskList', () => {
     ['interrupted', 'Interrupted'],
   ] as const)('shows the final %s outcome without a transcript divider', (status, label) => {
     const { container } = renderList({
-      tasks: [row({ rowKey: 'native-child', title: 'Native child', status, childAgentId: 'child-1' })],
+      tasks: [
+        row({
+          rowKey: 'native-child',
+          title: 'Native child',
+          status,
+          childAgentId: 'child-1',
+        }),
+      ],
       onOpenSubagent: vi.fn(),
     })
     const child = container.querySelector('[data-testid="bg-task-row"]')
@@ -131,7 +155,15 @@ describe('BackgroundTaskList', () => {
 
   it('renders a status glyph + title + activity for a running subagent', () => {
     const { container } = renderList({
-      tasks: [row({ rowKey: 't1', title: 'Spawned agent', status: 'running', activity: 'running Bash', childAgentId: 'c1' })],
+      tasks: [
+        row({
+          rowKey: 't1',
+          title: 'Spawned agent',
+          status: 'running',
+          activity: 'running Bash',
+          childAgentId: 'c1',
+        }),
+      ],
     })
     const el = container.querySelector('[data-testid="bg-task-row"]') as HTMLElement
     expect(el).toBeTruthy()
@@ -146,7 +178,9 @@ describe('BackgroundTaskList', () => {
   // A dot inside the title would affect its overflow and therefore its clipping tooltip.
   it('puts the status dot beside the title, on the title line', () => {
     const { container } = renderList({
-      tasks: [row({ rowKey: 't1', title: 'Spawned agent', activity: 'running Bash' })],
+      tasks: [
+        row({ rowKey: 't1', title: 'Spawned agent', activity: 'running Bash' }),
+      ],
     })
     const dot = container.querySelector('[data-testid="bg-task-status-dot"]')!
     const title = titles(container)[0]!
@@ -166,7 +200,12 @@ describe('BackgroundTaskList', () => {
   it('sets a title in the monospace face only when it is a real command', () => {
     const { container } = renderList({
       tasks: [
-        row({ rowKey: 'cmd', kind: 'shell', title: 'go test ./internal/worker/service/...', titleIsCommand: true }),
+        row({
+          rowKey: 'cmd',
+          kind: 'shell',
+          title: 'go test ./internal/worker/service/...',
+          titleIsCommand: true,
+        }),
         row({ rowKey: 'prose', kind: 'shell', title: 'Run the worker service tests' }),
         row({ rowKey: 'ag', kind: 'subagent', title: 'Review the diff' }),
       ],
@@ -186,20 +225,28 @@ describe('BackgroundTaskList', () => {
     // Cursor's native toolCallId can contain a newline. The display label must remove it.
     it('folds a newline the provider put in the key', () => {
       const { container } = renderList({
-        tasks: [row({ rowKey: 'call-abc\nfc-def', title: '' })],
+        tasks: [
+          row({ rowKey: 'call-abc\nfc-def', title: '' }),
+        ],
       })
       expect(labelOf(container)).toBe('call-abc fc-def')
     })
 
     it('strips a bidirectional override, which reorders what the reader sees', () => {
       const { container } = renderList({
-        tasks: [row({ rowKey: 'call-‮abc', title: '' })],
+        tasks: [
+          row({ rowKey: 'call-‮abc', title: '' }),
+        ],
       })
       expect(labelOf(container)).toBe('call-abc')
     })
 
     it('leaves an ordinary key alone', () => {
-      const { container } = renderList({ tasks: [row({ rowKey: 'toolu_01A2b3', title: '' })] })
+      const { container } = renderList({
+        tasks: [
+          row({ rowKey: 'toolu_01A2b3', title: '' }),
+        ],
+      })
       expect(labelOf(container)).toBe('toolu_01A2b3')
     })
 
@@ -207,7 +254,9 @@ describe('BackgroundTaskList', () => {
     // An invisible description must select the key instead of creating a blank label.
     it('falls through a candidate that cleans to nothing', () => {
       const { container } = renderList({
-        tasks: [row({ rowKey: 'call-abc', title: '', description: '​​' })],
+        tasks: [
+          row({ rowKey: 'call-abc', title: '', description: '​​' }),
+        ],
       })
       expect(labelOf(container)).toBe('call-abc')
     })
@@ -216,7 +265,9 @@ describe('BackgroundTaskList', () => {
     // When cleanName empties every candidate, the fallback must still supply a visible title.
     it('names the row Untitled when every candidate cleans to nothing', () => {
       const { container } = renderList({
-        tasks: [row({ rowKey: '\u202E\u202E', title: '', description: '\u200B' })],
+        tasks: [
+          row({ rowKey: '\u202E\u202E', title: '', description: '\u200B' }),
+        ],
       })
       expect(labelOf(container)).toBe('Untitled')
     })
@@ -224,7 +275,9 @@ describe('BackgroundTaskList', () => {
     // The Worker already cleans the title. The browser cleaner must preserve that value.
     it('passes a worker-cleaned title through unchanged', () => {
       const { container } = renderList({
-        tasks: [row({ rowKey: 'k', title: 'npm test --grep "$FOO"' })],
+        tasks: [
+          row({ rowKey: 'k', title: 'npm test --grep "$FOO"' }),
+        ],
       })
       expect(labelOf(container)).toBe('npm test --grep "$FOO"')
     })
@@ -233,11 +286,13 @@ describe('BackgroundTaskList', () => {
     // Claude can supply the same command as title and description, including repeated spaces.
     it('suppresses a description that differs from the title only by a whitespace run', () => {
       const { container } = renderList({
-        tasks: [row({
-          rowKey: 'k',
-          title: 'npm test  --grep "$FOO"',
-          description: 'npm test  --grep "$FOO"',
-        })],
+        tasks: [
+          row({
+            rowKey: 'k',
+            title: 'npm test  --grep "$FOO"',
+            description: 'npm test  --grep "$FOO"',
+          }),
+        ],
       })
       expect(labelOf(container)).toBe('npm test --grep "$FOO"')
       expect(secondaries(container)).toHaveLength(0)
@@ -246,7 +301,9 @@ describe('BackgroundTaskList', () => {
     // Providers can also include a newline in the repeated description.
     it('suppresses a description that differs from the title only by a newline', () => {
       const { container } = renderList({
-        tasks: [row({ rowKey: 'k', title: 'build\nand test', description: 'build\nand test' })],
+        tasks: [
+          row({ rowKey: 'k', title: 'build\nand test', description: 'build\nand test' }),
+        ],
       })
       expect(secondaries(container)).toHaveLength(0)
     })
@@ -254,7 +311,9 @@ describe('BackgroundTaskList', () => {
     // Keep a second line that differs from the title.
     it('still shows a description that differs from the title', () => {
       const { container } = renderList({
-        tasks: [row({ rowKey: 'k', title: 'Run the suite', description: 'npm test' })],
+        tasks: [
+          row({ rowKey: 'k', title: 'Run the suite', description: 'npm test' }),
+        ],
       })
       expect(secondaries(container).map(el => el.textContent)).toEqual(['npm test'])
     })
@@ -263,14 +322,20 @@ describe('BackgroundTaskList', () => {
     // Clean them before display and comparison.
     it('cleans the second line it does show', () => {
       const { container } = renderList({
-        tasks: [row({ rowKey: 'k', title: 'Run the suite', activity: 'step\u202Eone' })],
+        tasks: [
+          row({ rowKey: 'k', title: 'Run the suite', activity: 'step\u202Eone' }),
+        ],
       })
       expect(secondaries(container).map(el => el.textContent)).toEqual(['stepone'])
     })
   })
 
   it('renders the end label for a finished row instead of activity', () => {
-    const { container } = renderList({ tasks: [row({ rowKey: 't1', status: 'failed' })] })
+    const { container } = renderList({
+      tasks: [
+        row({ rowKey: 't1', status: 'failed' }),
+      ],
+    })
     expect(container.textContent).toContain('Failed')
   })
 
@@ -278,7 +343,12 @@ describe('BackgroundTaskList', () => {
     const { container } = renderList({
       tasks: [
         row({ rowKey: 'free', status: 'running' }),
-        row({ rowKey: 'g1', status: 'running', groupKey: 'wf:x', groupLabel: 'my workflow' }),
+        row({
+          rowKey: 'g1',
+          status: 'running',
+          groupKey: 'wf:x',
+          groupLabel: 'my workflow',
+        }),
       ],
     })
     expect(container.textContent).toContain('my workflow')
@@ -308,7 +378,9 @@ describe('BackgroundTaskList', () => {
 
   it('does not render a button when onOpenSubagent is absent', () => {
     const { container } = renderList({
-      tasks: [row({ rowKey: 'agent', status: 'running', childAgentId: 'c1' })],
+      tasks: [
+        row({ rowKey: 'agent', status: 'running', childAgentId: 'c1' }),
+      ],
     })
     const el = container.querySelector('[data-testid="bg-task-row"]') as HTMLElement
     expect(el.tagName).toBe('DIV')
@@ -323,7 +395,9 @@ describe('BackgroundTaskList', () => {
       ],
       onOpenSubagent: vi.fn(),
     })
-    const rows = [...container.querySelectorAll('[data-testid="bg-task-row"]')]
+    const rows = [
+      ...container.querySelectorAll('[data-testid="bg-task-row"]'),
+    ]
     expect(rows.map(el => el.tagName)).toEqual(['BUTTON', 'DIV'])
     expect(rows.map(el => el.getAttribute('data-status'))).toEqual(['running', 'running'])
     expect(rows.map(el => el.getAttribute('data-kind'))).toEqual(['subagent', 'shell'])
@@ -342,7 +416,9 @@ describe('BackgroundTaskList', () => {
       ],
       onOpenSubagent: vi.fn(),
     })
-    const rows = [...container.querySelectorAll('[data-testid="bg-task-row"]')]
+    const rows = [
+      ...container.querySelectorAll('[data-testid="bg-task-row"]'),
+    ]
     const classesOf = (el: Element) => new Set(el.className.split(/\s+/).filter(Boolean))
     const clickable = classesOf(rows[0]!)
     const staticRow = classesOf(rows[1]!)
@@ -357,7 +433,14 @@ describe('BackgroundTaskList', () => {
   // A retained parentAgentId must not add a redundant parent label to each row.
   it('never renders a "via <parent>" chip', () => {
     const { container } = renderList({
-      tasks: [row({ rowKey: 'agent', status: 'running', childAgentId: 'c1', parentAgentId: 'root-1' })],
+      tasks: [
+        row({
+          rowKey: 'agent',
+          status: 'running',
+          childAgentId: 'c1',
+          parentAgentId: 'root-1',
+        }),
+      ],
       onOpenSubagent: vi.fn(),
     })
     expect(container.textContent).not.toContain('via')
@@ -373,8 +456,12 @@ describe('BackgroundTaskList', () => {
       'stopped',
       'interrupted',
     ]
-    const { container } = renderList({ tasks: statuses.map(status => row({ rowKey: status, status })) })
-    const dots = [...container.querySelectorAll('[data-testid="bg-task-status-dot"]')]
+    const { container } = renderList({
+      tasks: statuses.map(status => row({ rowKey: status, status })),
+    })
+    const dots = [
+      ...container.querySelectorAll('[data-testid="bg-task-status-dot"]'),
+    ]
     expect(dots).toHaveLength(statuses.length)
     // Each status remains distinct. An interrupted task uses the failure color.
     // Reduced motion removes the active pulse, so the pending ring must still differ from the active dot.
@@ -390,21 +477,40 @@ describe('BackgroundTaskList', () => {
 
   // The accessible label distinguishes failed and interrupted states that share a color.
   it('states the status on the dot for anyone who cannot use the color', () => {
-    const { container } = renderList({ tasks: [row({ rowKey: 'a', status: 'interrupted' })] })
+    const { container } = renderList({
+      tasks: [
+        row({ rowKey: 'a', status: 'interrupted' }),
+      ],
+    })
     expect(container.querySelector('[aria-label="Interrupted"]')).not.toBeNull()
   })
 
   // Claude can repeat a background shell command in its description. Show that text once.
   it('drops a secondary line that just repeats the title', () => {
     const { container } = renderList({
-      tasks: [row({ rowKey: 'sh', kind: 'shell', status: 'running', title: 'npm test', description: 'npm test' })],
+      tasks: [
+        row({
+          rowKey: 'sh',
+          kind: 'shell',
+          status: 'running',
+          title: 'npm test',
+          description: 'npm test',
+        }),
+      ],
     })
     expect(rowsText(container)).toBe('npm test')
   })
 
   it.each(['Succeeded', ' \u200BSucceeded\u202E '])('keeps the exact status on the dot when the cleaned title %j suppresses the repeated end line', (title) => {
-    const native = { ...protoTask('same-final-label', title, ''), status: BackgroundTaskStatus.SUCCEEDED }
-    const { container } = renderList({ tasks: [protoBackgroundTaskToStore(native)] })
+    const native = {
+      ...protoTask('same-final-label', title, ''),
+      status: BackgroundTaskStatus.SUCCEEDED,
+    }
+    const { container } = renderList({
+      tasks: [
+        protoBackgroundTaskToStore(native),
+      ],
+    })
     expect(titles(container)[0]?.textContent).toBe('Succeeded')
     expect(secondaries(container)).toHaveLength(0)
     expect(container.querySelector('[data-testid="bg-task-status-dot"]')).toHaveAttribute('aria-label', 'Succeeded')
@@ -414,8 +520,15 @@ describe('BackgroundTaskList', () => {
   })
 
   it('exposes separate title and secondary fields for final-row verification', () => {
-    const native = { ...protoTask('separate-final-label', 'Review the diff', ''), status: BackgroundTaskStatus.SUCCEEDED }
-    const { container } = renderList({ tasks: [protoBackgroundTaskToStore(native)] })
+    const native = {
+      ...protoTask('separate-final-label', 'Review the diff', ''),
+      status: BackgroundTaskStatus.SUCCEEDED,
+    }
+    const { container } = renderList({
+      tasks: [
+        protoBackgroundTaskToStore(native),
+      ],
+    })
     expect(container.querySelector('[data-testid="bg-task-title"]')?.textContent).toBe('Review the diff')
     expect(container.querySelector('[data-testid="bg-task-secondary"]')?.textContent).toBe('Succeeded')
     expect(container.querySelector('[data-testid="bg-task-status-dot"]')).toHaveAttribute('aria-label', 'Succeeded')
@@ -423,7 +536,15 @@ describe('BackgroundTaskList', () => {
 
   it('keeps a secondary line that adds something the title does not say', () => {
     const { container } = renderList({
-      tasks: [row({ rowKey: 'sh', kind: 'shell', status: 'running', title: 'npm test', activity: 'installing deps' })],
+      tasks: [
+        row({
+          rowKey: 'sh',
+          kind: 'shell',
+          status: 'running',
+          title: 'npm test',
+          activity: 'installing deps',
+        }),
+      ],
     })
     expect(rowsText(container)).toContain('npm test')
     expect(rowsText(container)).toContain('installing deps')
@@ -436,10 +557,21 @@ describe('BackgroundTaskList', () => {
  */
 describe('BackgroundTaskList kind tabs', () => {
   const mixed = [
-    row({ rowKey: 'agent', kind: 'subagent', title: 'Review the diff', childAgentId: 'c1' }),
+    row({
+      rowKey: 'agent',
+      kind: 'subagent',
+      title: 'Review the diff',
+      childAgentId: 'c1',
+    }),
     row({ rowKey: 'shell', kind: 'shell', title: 'npm test' }),
     row({ rowKey: 'workflow', kind: 'workflow', title: 'Review pipeline' }),
-    row({ rowKey: 'future', kind: 'unknown', rawKind: 99, title: 'Future task', childAgentId: 'c2' }),
+    row({
+      rowKey: 'future',
+      kind: 'unknown',
+      rawKind: 99,
+      title: 'Future task',
+      childAgentId: 'c2',
+    }),
   ]
 
   it('shows every kind on the All tab', () => {
@@ -451,7 +583,9 @@ describe('BackgroundTaskList kind tabs', () => {
   it('shows only subagent rows on the Subagents tab', () => {
     const { container, getByTestId } = renderList({ tasks: mixed })
     fireEvent.click(getByTestId('bg-task-filter-subagent'))
-    const rows = [...container.querySelectorAll('[data-testid="bg-task-row"]')]
+    const rows = [
+      ...container.querySelectorAll('[data-testid="bg-task-row"]'),
+    ]
     expect(rows.map(el => el.getAttribute('data-kind'))).toEqual(['subagent'])
     expect(rowsText(container)).toContain('Review the diff')
     expect(rowsText(container)).not.toContain('npm test')
@@ -460,14 +594,18 @@ describe('BackgroundTaskList kind tabs', () => {
   it('shows only shell rows on the Shell tab', () => {
     const { container, getByTestId } = renderList({ tasks: mixed })
     fireEvent.click(getByTestId('bg-task-filter-shell'))
-    const rows = [...container.querySelectorAll('[data-testid="bg-task-row"]')]
+    const rows = [
+      ...container.querySelectorAll('[data-testid="bg-task-row"]'),
+    ]
     expect(rows.map(el => el.getAttribute('data-kind'))).toEqual(['shell'])
   })
 
   it('shows only workflow rows on the Workflows tab', () => {
     const { container, getByTestId } = renderList({ tasks: mixed })
     fireEvent.click(getByTestId('bg-task-filter-workflow'))
-    const rows = [...container.querySelectorAll('[data-testid="bg-task-row"]')]
+    const rows = [
+      ...container.querySelectorAll('[data-testid="bg-task-row"]'),
+    ]
     expect(rows.map(el => el.getAttribute('data-kind'))).toEqual(['workflow'])
     expect(rowsText(container)).toContain('Review pipeline')
     expect(rows[0]?.tagName).toBe('DIV')
@@ -485,7 +623,11 @@ describe('BackgroundTaskList kind tabs', () => {
 
   // An empty tab must state that it contains no rows. A blank region would look like a rendering failure.
   it('states that a tab with no rows is empty, per kind', () => {
-    const { container, getByTestId } = renderList({ tasks: [row({ rowKey: 'agent', kind: 'subagent' })] })
+    const { container, getByTestId } = renderList({
+      tasks: [
+        row({ rowKey: 'agent', kind: 'subagent' }),
+      ],
+    })
     fireEvent.click(getByTestId('bg-task-filter-shell'))
     expect(container.querySelectorAll('[data-testid="bg-task-row"]')).toHaveLength(0)
     expect(rowsText(container)).toBe('No shell commands')
@@ -518,7 +660,12 @@ describe('BackgroundTaskList kind tabs', () => {
   it('drops a group whose rows the filter removed', () => {
     const { container, getByTestId } = renderList({
       tasks: [
-        row({ rowKey: 'a', kind: 'subagent', groupKey: 'wf:x', groupLabel: 'my workflow' }),
+        row({
+          rowKey: 'a',
+          kind: 'subagent',
+          groupKey: 'wf:x',
+          groupLabel: 'my workflow',
+        }),
         row({ rowKey: 's', kind: 'shell', title: 'npm test' }),
       ],
     })
@@ -546,7 +693,9 @@ describe('BackgroundTaskList clipping', () => {
 
   it('clips the title and the secondary line to one line', () => {
     const { container } = renderList({
-      tasks: [row({ rowKey: 't1', title: 'Spawned agent', activity: 'running Bash' })],
+      tasks: [
+        row({ rowKey: 't1', title: 'Spawned agent', activity: 'running Bash' }),
+      ],
     })
     // Require the exact class token. A longer class containing that text cannot satisfy the assertion.
     expect(classes(titles(container)[0]!)).toContain(clippedText)
@@ -555,7 +704,9 @@ describe('BackgroundTaskList clipping', () => {
 
   it('clips a group header without wrapping its label', () => {
     const { container } = renderList({
-      tasks: [row({ rowKey: 'g1', groupKey: 'wf:x', groupLabel: 'find-flaky-tests-and-fix-them' })],
+      tasks: [
+        row({ rowKey: 'g1', groupKey: 'wf:x', groupLabel: 'find-flaky-tests-and-fix-them' }),
+      ],
     })
     const header = container.querySelector(classSelector(styles.groupHeader))!
     expect(header.textContent).toBe('find-flaky-tests-and-fix-them')
@@ -566,7 +717,9 @@ describe('BackgroundTaskList clipping', () => {
   it('gives the full group label on hover once the header is clipped', () => {
     const label = 'find-flaky-tests-and-fix-them-across-every-package'
     const { container } = renderList({
-      tasks: [row({ rowKey: 'g1', groupKey: 'wf:x', groupLabel: label })],
+      tasks: [
+        row({ rowKey: 'g1', groupKey: 'wf:x', groupLabel: label }),
+      ],
     })
     const header = container.querySelector<HTMLElement>(classSelector(styles.groupHeader))!
     stubClipped(header)
@@ -576,7 +729,14 @@ describe('BackgroundTaskList clipping', () => {
   it('gives the full title on hover once the title is clipped', () => {
     const long = 'go test ./internal/worker/service/... -run TestEverything -count=1'
     const { container } = renderList({
-      tasks: [row({ rowKey: 'cmd', kind: 'shell', title: long, titleIsCommand: true })],
+      tasks: [
+        row({
+          rowKey: 'cmd',
+          kind: 'shell',
+          title: long,
+          titleIsCommand: true,
+        }),
+      ],
     })
     const title = titles(container)[0]!
     stubClipped(title)
@@ -584,7 +744,11 @@ describe('BackgroundTaskList clipping', () => {
   })
 
   it('shows no title tooltip while the title fits', () => {
-    const { container } = renderList({ tasks: [row({ rowKey: 't1', title: 'Short' })] })
+    const { container } = renderList({
+      tasks: [
+        row({ rowKey: 't1', title: 'Short' }),
+      ],
+    })
     const title = titles(container)[0]!
     stubFitting(title)
     expect(hover(title)).toBeNull()
@@ -593,7 +757,14 @@ describe('BackgroundTaskList clipping', () => {
   it('gives the full activity on hover once the secondary line is clipped', () => {
     const activity = 'Running Bash(git log --oneline --format=%H%x09%s -n 200)'
     const { container } = renderList({
-      tasks: [row({ rowKey: 't1', title: 'Spawned agent', status: 'running', activity })],
+      tasks: [
+        row({
+          rowKey: 't1',
+          title: 'Spawned agent',
+          status: 'running',
+          activity,
+        }),
+      ],
     })
     const secondary = secondaries(container)[0]!
     stubClipped(secondary)
@@ -604,7 +775,11 @@ describe('BackgroundTaskList clipping', () => {
   // Add that explanation below the label without replacing the complete clipped text.
   // Keep the explanation available when the label fits too.
   it('adds an explanation to a finished status without losing its label', () => {
-    const { container } = renderList({ tasks: [row({ rowKey: 't1', status: 'interrupted' })] })
+    const { container } = renderList({
+      tasks: [
+        row({ rowKey: 't1', status: 'interrupted' }),
+      ],
+    })
     const secondary = secondaries(container)[0]!
     expect(secondary.textContent).toBe('Interrupted')
     const tip = hover(secondary)
@@ -614,7 +789,11 @@ describe('BackgroundTaskList clipping', () => {
 
   // Preserve the complete clipped label when its tooltip also carries an explanation.
   it('keeps a clipped label reachable beside its explanation', () => {
-    const { container } = renderList({ tasks: [row({ rowKey: 't1', status: 'interrupted' })] })
+    const { container } = renderList({
+      tasks: [
+        row({ rowKey: 't1', status: 'interrupted' }),
+      ],
+    })
     const secondary = secondaries(container)[0]!
     stubClipped(secondary)
     const tip = hover(secondary)
@@ -624,7 +803,11 @@ describe('BackgroundTaskList clipping', () => {
 
   // A final status without an explanation still exposes its complete clipped label.
   it('falls back to the label for a finished status with no explanation', () => {
-    const { container } = renderList({ tasks: [row({ rowKey: 't1', status: 'failed' })] })
+    const { container } = renderList({
+      tasks: [
+        row({ rowKey: 't1', status: 'failed' }),
+      ],
+    })
     const secondary = secondaries(container)[0]!
     expect(secondary.textContent).toBe('Failed')
     stubFitting(secondary)
@@ -710,7 +893,12 @@ describe('BackgroundTaskList in-place updates', () => {
 
   it('leaves the title and the status dot alone when the activity changes', () => {
     const { container, setTasks } = renderLiveList([
-      row({ rowKey: 't1', title: 'Review the diff', status: 'running', activity: 'reading' }),
+      row({
+        rowKey: 't1',
+        title: 'Review the diff',
+        status: 'running',
+        activity: 'reading',
+      }),
     ])
     const titleBefore = titles(container)[0]!
     const dotBefore = container.querySelector('[data-testid="bg-task-status-dot"]')!
@@ -726,7 +914,12 @@ describe('BackgroundTaskList in-place updates', () => {
 
   it('updates the title in place when the title changes', () => {
     const { container, setTasks } = renderLiveList([
-      row({ rowKey: 't1', title: 'Untitled work', status: 'running', activity: 'reading' }),
+      row({
+        rowKey: 't1',
+        title: 'Untitled work',
+        status: 'running',
+        activity: 'reading',
+      }),
     ])
     const titleBefore = titles(container)[0]!
 
@@ -741,17 +934,26 @@ describe('BackgroundTaskList in-place updates', () => {
       row({ rowKey: 'workflow-first', title: 'Compute one local value.', kind: 'workflow' }),
       row({ rowKey: 'workflow-second', title: 'Compute one local value.', kind: 'workflow' }),
     ])
-    const rows = [...container.querySelectorAll<HTMLElement>('[data-testid="bg-task-row"]')]
+    const rows = [
+      ...container.querySelectorAll<HTMLElement>('[data-testid="bg-task-row"]'),
+    ]
     expect(rows.map(element => element.dataset.taskId)).toEqual(['workflow-first', 'workflow-second'])
     setTasks(0, 'rowKey', 'workflow-replacement')
-    expect([...container.querySelectorAll<HTMLElement>('[data-testid="bg-task-row"]')].map(element => element.dataset.taskId)).toEqual(['workflow-replacement', 'workflow-second'])
+    expect([
+      ...container.querySelectorAll<HTMLElement>('[data-testid="bg-task-row"]'),
+    ].map(element => element.dataset.taskId)).toEqual(['workflow-replacement', 'workflow-second'])
     expect(container.querySelector('[data-task-id="workflow-first"]')).toBeNull()
   })
 
   // A retained row must update data-status and its strike-through class reactively.
   it('follows a status change on the row and its dot without rebuilding either', () => {
     const { container, setTasks } = renderLiveList([
-      row({ rowKey: 't1', title: 'Review the diff', status: 'running', activity: 'reading' }),
+      row({
+        rowKey: 't1',
+        title: 'Review the diff',
+        status: 'running',
+        activity: 'reading',
+      }),
     ])
     const rowBefore = container.querySelector<HTMLElement>('[data-testid="bg-task-row"]')!
     const dotBefore = container.querySelector<HTMLElement>('[data-testid="bg-task-status-dot"]')!
@@ -767,7 +969,12 @@ describe('BackgroundTaskList in-place updates', () => {
 
   it('keeps a paused child open and updates its activity without rebuilding', () => {
     const { container, setTasks } = renderLiveList([
-      row({ rowKey: 'child', title: 'Review the diff', status: 'running', activity: 'reading' }),
+      row({
+        rowKey: 'child',
+        title: 'Review the diff',
+        status: 'running',
+        activity: 'reading',
+      }),
     ])
     const taskRow = container.querySelector<HTMLElement>('[data-testid="bg-task-row"]')!
     const dot = container.querySelector<HTMLElement>('[data-testid="bg-task-status-dot"]')!
@@ -848,7 +1055,12 @@ describe('BackgroundTaskList in-place updates', () => {
   // A shell row cannot open a transcript. Its stable kind therefore selects a static element.
   it('draws a shell row as a plain element', () => {
     const [tasks] = createStore<BackgroundTaskItem[]>([
-      row({ rowKey: 't1', title: 'npm test', kind: 'shell', status: 'running' }),
+      row({
+        rowKey: 't1',
+        title: 'npm test',
+        kind: 'shell',
+        status: 'running',
+      }),
     ])
     const { container } = render(() => (
       <BackgroundTaskPanel variant="sidebar" tasks={tasks} onOpenSubagent={() => {}} />
@@ -864,19 +1076,39 @@ describe('BackgroundTaskList in-place updates', () => {
    */
   it('keeps a grouped row and its dot across a status change elsewhere in the group', () => {
     const { container, setTasks } = renderLiveList([
-      row({ rowKey: 't1', title: 'Review the diff', status: 'running', groupKey: 'wf:x', groupLabel: 'Workflow' }),
-      row({ rowKey: 't2', title: 'Write the tests', status: 'pending', groupKey: 'wf:x', groupLabel: 'Workflow' }),
+      row({
+        rowKey: 't1',
+        title: 'Review the diff',
+        status: 'running',
+        groupKey: 'wf:x',
+        groupLabel: 'Workflow',
+      }),
+      row({
+        rowKey: 't2',
+        title: 'Write the tests',
+        status: 'pending',
+        groupKey: 'wf:x',
+        groupLabel: 'Workflow',
+      }),
     ])
-    const rowsBefore = [...container.querySelectorAll('[data-testid="bg-task-row"]')]
-    const dotsBefore = [...container.querySelectorAll('[data-testid="bg-task-status-dot"]')]
+    const rowsBefore = [
+      ...container.querySelectorAll('[data-testid="bg-task-row"]'),
+    ]
+    const dotsBefore = [
+      ...container.querySelectorAll('[data-testid="bg-task-status-dot"]'),
+    ]
     expect(rowsBefore).toHaveLength(2)
 
     // Finish the second row. The first row remains unchanged.
     setTasks(1, 'status', 'succeeded')
 
-    const rowsAfter = [...container.querySelectorAll('[data-testid="bg-task-row"]')]
+    const rowsAfter = [
+      ...container.querySelectorAll('[data-testid="bg-task-row"]'),
+    ]
     expect(rowsAfter[0]).toBe(rowsBefore[0])
-    expect([...container.querySelectorAll('[data-testid="bg-task-status-dot"]')][0]).toBe(dotsBefore[0])
+    expect([
+      ...container.querySelectorAll('[data-testid="bg-task-status-dot"]'),
+    ][0]).toBe(dotsBefore[0])
     expect(rowsAfter.map(el => (el as HTMLElement).dataset.status)).toEqual(['running', 'succeeded'])
   })
 
@@ -885,8 +1117,20 @@ describe('BackgroundTaskList in-place updates', () => {
     try {
       const long = 'A grouped title far wider than the row that holds it'
       const { container, setTasks } = renderLiveList([
-        row({ rowKey: 't1', title: long, status: 'running', groupKey: 'wf:x', groupLabel: 'Workflow' }),
-        row({ rowKey: 't2', title: 'Write the tests', status: 'pending', groupKey: 'wf:x', groupLabel: 'Workflow' }),
+        row({
+          rowKey: 't1',
+          title: long,
+          status: 'running',
+          groupKey: 'wf:x',
+          groupLabel: 'Workflow',
+        }),
+        row({
+          rowKey: 't2',
+          title: 'Write the tests',
+          status: 'pending',
+          groupKey: 'wf:x',
+          groupLabel: 'Workflow',
+        }),
       ])
       const title = titles(container)[0]!
       stubClipped(title)
@@ -912,7 +1156,9 @@ describe('BackgroundTaskList in-place updates', () => {
     try {
       const store = createBackgroundTaskStore()
       const long = 'A title far wider than the row that holds it'
-      store.replace('a1', [protoTask('t1', long, 'reading')])
+      store.replace('a1', [
+        protoTask('t1', long, 'reading'),
+      ])
       const { container } = render(() => (
         <BackgroundTaskPanel variant="sidebar" tasks={store.get('a1')} />
       ))
@@ -921,7 +1167,9 @@ describe('BackgroundTaskList in-place updates', () => {
       stubClipped(title)
       expect(hoverForTooltip(title)?.textContent).toBe(long)
 
-      store.replace('a1', [protoTask('t1', long, 'writing')])
+      store.replace('a1', [
+        protoTask('t1', long, 'writing'),
+      ])
 
       expect(secondaries(container)[0]!.textContent).toBe('writing')
       expect(titles(container)[0]).toBe(title)
@@ -935,13 +1183,17 @@ describe('BackgroundTaskList in-place updates', () => {
   // The same registry update must preserve the status dot and its pulse after an activity change.
   it('keeps the status dot across a whole-registry rebroadcast', () => {
     const store = createBackgroundTaskStore()
-    store.replace('a1', [protoTask('t1', 'Review the diff', 'reading')])
+    store.replace('a1', [
+      protoTask('t1', 'Review the diff', 'reading'),
+    ])
     const { container } = render(() => (
       <BackgroundTaskPanel variant="sidebar" tasks={store.get('a1')} />
     ))
     const dot = container.querySelector('[data-testid="bg-task-status-dot"]')!
 
-    store.replace('a1', [protoTask('t1', 'Review the diff', 'writing')])
+    store.replace('a1', [
+      protoTask('t1', 'Review the diff', 'writing'),
+    ])
 
     expect(container.querySelector('[data-testid="bg-task-status-dot"]')).toBe(dot)
   })
@@ -949,12 +1201,31 @@ describe('BackgroundTaskList in-place updates', () => {
 
 describe('background task canonical outcome display', () => {
   it.each([
-    { wire: BackgroundTaskStatus.SUCCEEDED, token: 'succeeded', label: 'Succeeded', dotClass: statusDotStyles.statusDotSuccess },
-    { wire: BackgroundTaskStatus.ENDED_WITH_UNKNOWN_OUTCOME, token: 'ended_with_unknown_outcome', label: 'Ended with unknown outcome', dotClass: statusDotStyles.statusDotMuted },
+    {
+      wire: BackgroundTaskStatus.SUCCEEDED,
+      token: 'succeeded',
+      label: 'Succeeded',
+      dotClass: statusDotStyles.statusDotSuccess,
+    },
+    {
+      wire: BackgroundTaskStatus.ENDED_WITH_UNKNOWN_OUTCOME,
+      token: 'ended_with_unknown_outcome',
+      label: 'Ended with unknown outcome',
+      dotClass: statusDotStyles.statusDotMuted,
+    },
   ])('renders the explicit $token outcome and retains its native transcript link', ({ wire, token, label, dotClass }) => {
     const open = vi.fn()
-    const native = { ...protoTask('native-outcome', 'Native child', 'old activity'), status: wire, childAgentId: 'native-child' }
-    const { container } = renderList({ tasks: [protoBackgroundTaskToStore(native)], onOpenSubagent: open })
+    const native = {
+      ...protoTask('native-outcome', 'Native child', 'old activity'),
+      status: wire,
+      childAgentId: 'native-child',
+    }
+    const { container } = renderList({
+      tasks: [
+        protoBackgroundTaskToStore(native),
+      ],
+      onOpenSubagent: open,
+    })
     const task = container.querySelector<HTMLElement>('[data-testid="bg-task-row"]')!
     const dot = task.querySelector('[data-testid="bg-task-status-dot"]')!
     expect(classes(dot)).toContain(dotClass)

@@ -22,7 +22,10 @@ export async function nativeContext(fixtures: NativeContextFixtures): Promise<Ma
 
 /** Select the actual isolated executable and hold only its native runtime invocation. */
 export function nativeLaunch(context: ManagedNativeScenarioContext): NativeStartupLaunch {
-  return resolveNativeStartupLaunch(context.leapmuxServer.agentEnv, { binaryName: 'letta', holdWhen: ['server'] })
+  return resolveNativeStartupLaunch(context.leapmuxServer.agentEnv, {
+    binaryName: 'letta',
+    holdWhen: ['server'],
+  })
 }
 
 /**
@@ -36,7 +39,13 @@ export async function runningChild(context: ManagedNativeScenarioContext, option
   return openRunningNativeChild(context, heldChildOptions(script, child, {
     allowExistingRows: options.allowExistingRows ?? false,
     beforeRelease: async () => {
-      await registerLettaChildNoticeRule(context, { name: nativeChildRuleId(child.gate, 'letta-native-child-notice'), spawnCallId: child.spawn.id, description: child.description, report: 'NATIVECHILDCOMPLETE', reply: 'The native child completed.' })
+      await registerLettaChildNoticeRule(context, {
+        name: nativeChildRuleId(child.gate, 'letta-native-child-notice'),
+        spawnCallId: child.spawn.id,
+        description: child.description,
+        report: 'NATIVECHILDCOMPLETE',
+        reply: 'The native child completed.',
+      })
     },
   }))
 }

@@ -46,7 +46,9 @@ export const DriveSelector: Component<DriveSelectorProps> = (props) => {
     // selectable; without it every row is unchecked and the current location
     // becomes unreachable after one stray click.
     const roots = props.roots
-    return roots.some(r => sameRoot(r, props.value)) ? [...roots] : [props.value, ...roots]
+    return roots.some(r => sameRoot(r, props.value))
+      ? [...roots]
+      : [props.value, ...roots]
   })
 
   // A backslash and a colon are awkward to address in a selector, and the

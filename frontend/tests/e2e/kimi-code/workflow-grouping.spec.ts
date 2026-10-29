@@ -28,7 +28,11 @@ kimiTest.describe('Kimi Code workflow grouping', () => {
       },
     )
     const start = await modelScript.queue(
-      { toolCalls: [kimiAgentSwarmToolCall('swarm-run', description, modelScript.prompt('Reply with exactly {{item}}.'), ['SWARM_ALPHA', 'SWARM_BRAVO'])] },
+      {
+        toolCalls: [
+          kimiAgentSwarmToolCall('swarm-run', description, modelScript.prompt('Reply with exactly {{item}}.'), ['SWARM_ALPHA', 'SWARM_BRAVO']),
+        ],
+      },
       { text: 'The swarm finished.' },
     )
     await sendMessage(page, modelScript.prompt('Run one native AgentSwarm member and report completion.'))
@@ -47,6 +51,9 @@ kimiTest.describe('Kimi Code workflow grouping', () => {
       await expect(member).toHaveAttribute('data-status', 'succeeded')
     }
     // No spec states the full heading text, so the pattern requires only the swarm description inside it.
-    await expectRowsInWorkflowGroup([members.nth(0), members.nth(1)], new RegExp(escapeRegExp(description)))
+    await expectRowsInWorkflowGroup([
+      members.nth(0),
+      members.nth(1),
+    ], new RegExp(escapeRegExp(description)))
   })
 })

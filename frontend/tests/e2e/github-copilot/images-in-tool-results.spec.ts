@@ -26,10 +26,16 @@ copilotTest('shows the picture returned by View', async ({ native, authenticated
         content: decompressContentToString(message.content, message.contentCompression),
         supplemental: decompressContentToString(message.supplementalContent, message.supplementalContentCompression),
       }))
-      await testInfo.attach('copilot-native-worker-rows', { body: JSON.stringify(rows, null, 2), contentType: 'application/json' })
+      await testInfo.attach('copilot-native-worker-rows', {
+        body: JSON.stringify(rows, null, 2),
+        contentType: 'application/json',
+      })
     }
     catch (captureError) {
-      await testInfo.attach('copilot-native-worker-capture-error', { body: String(captureError), contentType: 'text/plain' })
+      await testInfo.attach('copilot-native-worker-capture-error', {
+        body: String(captureError),
+        contentType: 'text/plain',
+      })
     }
     throw error
   }

@@ -95,9 +95,15 @@ export function ohMyPiCommandOutcome(text: string, details: Record<string, unkno
   const truncated = isObject(pickObject(pickObject(details, OH_MY_PI_TRUNCATION_FIELD.Meta), OH_MY_PI_TRUNCATION_FIELD.Truncation))
   const result: CommandResult = {
     output: lines.join('\n'),
-    ...(exitCode !== undefined ? { exitCode } : {}),
-    ...(wallTimeMs !== undefined ? { durationMs: wallTimeMs } : {}),
-    ...(truncated ? { truncated: true } : {}),
+    ...(exitCode !== undefined
+      ? { exitCode }
+      : {}),
+    ...(wallTimeMs !== undefined
+      ? { durationMs: wallTimeMs }
+      : {}),
+    ...(truncated
+      ? { truncated: true }
+      : {}),
   }
   return { result, cancelled, timedOut }
 }
@@ -123,16 +129,24 @@ export function ohMyPiEvalResults(details: Record<string, unknown>): CommandResu
     results.push({
       output: pickString(cell, 'output'),
       label: title || `Cell ${pickNumber(cell, 'index', position) + 1}`,
-      ...(exitCode !== undefined ? { exitCode } : {}),
-      ...(durationMs !== undefined ? { durationMs } : {}),
+      ...(exitCode !== undefined
+        ? { exitCode }
+        : {}),
+      ...(durationMs !== undefined
+        ? { durationMs }
+        : {}),
     })
   }
-  return results.length > 0 ? results : null
+  return results.length > 0
+    ? results
+    : null
 }
 
 /** The highlighter word for an `eval` cell, when the closed set holds one. */
 function evalLanguage(language: string): CommandLanguage | undefined {
-  return language === OH_MY_PI_EVAL_LANGUAGE.JavaScript ? 'javascript' : undefined
+  return language === OH_MY_PI_EVAL_LANGUAGE.JavaScript
+    ? 'javascript'
+    : undefined
 }
 
 /**
@@ -145,7 +159,11 @@ export function ohMyPiEvalRequest(args: Record<string, unknown>): ExecuteRequest
   const title = pickString(args, 'title')
   return {
     command: pickString(args, 'code'),
-    ...(language !== undefined ? { language } : {}),
-    ...(title ? { description: title } : {}),
+    ...(language !== undefined
+      ? { language }
+      : {}),
+    ...(title
+      ? { description: title }
+      : {}),
   }
 }

@@ -29,7 +29,9 @@ export function stubMatchMedia() {
 
   return {
     /** The change handlers registered for one query, in registration order. */
-    handlersFor: (query: string): ChangeHandler[] => [...(handlers.get(query) ?? [])],
+    handlersFor: (query: string): ChangeHandler[] => [
+      ...(handlers.get(query) ?? []),
+    ],
     restore: () => {
       window.matchMedia = original
     },

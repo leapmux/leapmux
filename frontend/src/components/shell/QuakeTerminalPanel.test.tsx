@@ -29,9 +29,15 @@ afterEach(() => {
 
 function mount(over: { entry?: QuakeEntry, detached?: DetachedTerminal[] } = {}) {
   const entry = over.entry
-  const detached = over.detached ?? (entry?.terminalId ? [{ id: entry.terminalId, workerId: 'w1', workspaceId: 'ws1' }] : [])
+  const detached = over.detached ?? (entry?.terminalId
+    ? [
+        { id: entry.terminalId, workerId: 'w1', workspaceId: 'ws1' },
+      ]
+    : [])
   const quakeStore = {
-    entryFor: (id: string) => (entry && entry.keyId === id ? entry : undefined),
+    entryFor: (id: string) => (entry && entry.keyId === id
+      ? entry
+      : undefined),
     detachedTerminals: () => detached,
     keyOf: () => entry?.keyId,
     isQuakeTerminal: () => true,
@@ -40,14 +46,22 @@ function mount(over: { entry?: QuakeEntry, detached?: DetachedTerminal[] } = {})
     toggle: vi.fn(),
     handleShellExit: vi.fn(),
     retireStaleKeys: vi.fn(),
-    liveEntries: () => (entry ? [entry] : []),
+    liveEntries: () => (entry
+      ? [entry]
+      : []),
   }
   const view = {
     getTerminalTab: (id: string) => ({ id, type: 2 }),
-    detachedTerminalTabs: () => (entry?.terminalId ? [{ id: entry.terminalId, type: 2 }] : []),
+    detachedTerminalTabs: () => (entry?.terminalId
+      ? [
+          { id: entry.terminalId, type: 2 },
+        ]
+      : []),
   }
   const onClose = vi.fn()
-  const metadata = { get: () => undefined }
+  const metadata = {
+    get: () => undefined,
+  }
   let setTerminalTheme!: (value: TerminalThemeValue) => void
   const CapturePreferences = () => {
     const preferences = usePreferences()
@@ -70,11 +84,23 @@ function mount(over: { entry?: QuakeEntry, detached?: DetachedTerminal[] } = {})
       />
     </>
   )))
-  return { ...rendered, quakeStore, onClose, setTerminalTheme }
+  return {
+    ...rendered,
+    quakeStore,
+    onClose,
+    setTerminalTheme,
+  }
 }
 
 const KEY = quakeKeyId({ workerId: 'w1', workingDir: '/repo' })
-const OPEN: QuakeEntry = { keyId: KEY, workerId: 'w1', workingDir: '/repo', workspaceId: 'ws1', terminalId: 'q1', open: true }
+const OPEN: QuakeEntry = {
+  keyId: KEY,
+  workerId: 'w1',
+  workingDir: '/repo',
+  workspaceId: 'ws1',
+  terminalId: 'q1',
+  open: true,
+}
 const CLOSED: QuakeEntry = { ...OPEN, open: false }
 
 /**
@@ -153,8 +179,14 @@ describe('QuakeTerminalPanel', () => {
   it('re-arms the slide after the last panel is released', () => {
     const [entry, setEntry] = createSignal<QuakeEntry | undefined>(OPEN)
     const quakeStore = {
-      entryFor: (id: string) => (id === KEY ? entry() : undefined),
-      detachedTerminals: () => (entry() ? [{ id: 'q1', workerId: 'w1', workspaceId: 'ws1' }] : []),
+      entryFor: (id: string) => (id === KEY
+        ? entry()
+        : undefined),
+      detachedTerminals: () => (entry()
+        ? [
+            { id: 'q1', workerId: 'w1', workspaceId: 'ws1' },
+          ]
+        : []),
       keyOf: () => KEY,
       isQuakeTerminal: () => true,
       open: vi.fn(),
@@ -167,8 +199,13 @@ describe('QuakeTerminalPanel', () => {
     const { queryByTestId } = render(withPreferences(() => (
       <QuakeTerminalPanel
         quakeStore={quakeStore as never}
-        view={{ getTerminalTab: (id: string) => ({ id, type: 2 }), detachedTerminalTabs: () => [] } as never}
-        metadata={{ get: () => undefined } as never}
+        view={{
+          getTerminalTab: (id: string) => ({ id, type: 2 }),
+          detachedTerminalTabs: () => [],
+        } as never}
+        metadata={{
+          get: () => undefined,
+        } as never}
         activeQuakeKeyId={() => KEY}
         onClose={vi.fn()}
         confirmLink={() => Promise.resolve(false)}
@@ -203,7 +240,11 @@ describe('QuakeTerminalPanel', () => {
 
   it('holds the panel open for a background owner, so its shell keeps painting', () => {
     // No entry for the ACTIVE tab, but a companion still exists elsewhere.
-    const { getByTestId } = mount({ detached: [{ id: 'q9', workerId: 'w1', workspaceId: 'ws1' }] })
+    const { getByTestId } = mount({
+      detached: [
+        { id: 'q9', workerId: 'w1', workspaceId: 'ws1' },
+      ],
+    })
     expect(getByTestId('quake-panel').getAttribute('data-quake-open')).toBe('false')
   })
 

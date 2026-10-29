@@ -3,5 +3,7 @@ import { exerciseUngroupedNativeChildren } from '../helpers/workflowGrouping'
 import { runningChild } from './scenarios'
 
 commandCodeTest('keeps two actual native child tasks independent before and after reload', async ({ native }) => {
-  await exerciseUngroupedNativeChildren(native, { openChild: slot => runningChild(native, slot) })
+  await exerciseUngroupedNativeChildren(native, {
+    openChild: slot => runningChild(native, slot),
+  })
 })

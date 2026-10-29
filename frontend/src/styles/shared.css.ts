@@ -78,17 +78,20 @@ export const fieldTriggerChevron = style({
  * base and adds only what genuinely differs: its padding, its font size, and
  * whether it centres its content.
  */
-export const chipBase = style([controlReset, {
-  boxSizing: 'border-box',
-  display: 'inline-flex',
-  alignItems: 'center',
-  cursor: 'pointer',
-  borderRadius: 'var(--radius-small)',
-  color: 'var(--faint-foreground)',
-  selectors: {
-    '&:hover': { color: 'var(--foreground)', backgroundColor: 'var(--card)' },
+export const chipBase = style([
+  controlReset,
+  {
+    boxSizing: 'border-box',
+    display: 'inline-flex',
+    alignItems: 'center',
+    cursor: 'pointer',
+    borderRadius: 'var(--radius-small)',
+    color: 'var(--faint-foreground)',
+    selectors: {
+      '&:hover': { color: 'var(--foreground)', backgroundColor: 'var(--card)' },
+    },
   },
-}])
+])
 
 export const errorText = style({
   color: 'var(--danger)',
@@ -199,11 +202,14 @@ export const menuSubTrigger = style({
  * the icon and the text need one box between them or the chevron separates
  * them instead.
  */
-export const menuSubTriggerLabel = style([clippedText, {
-  display: 'inline-flex',
-  alignItems: 'center',
-  gap: 'var(--space-2)',
-}])
+export const menuSubTriggerLabel = style([
+  clippedText,
+  {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 'var(--space-2)',
+  },
+])
 
 export const menuSectionHeader = style({
   fontSize: 'var(--text-8)',
@@ -266,7 +272,10 @@ export const heightFull = style({
  * list), the same mechanic as `floatingCardSurface` in
  * `~/styles/popover.css.ts`.
  */
-export const pageCard = style(['card', { width: '480px' }])
+export const pageCard = style([
+  'card',
+  { width: '480px' },
+])
 
 /**
  * Painted nowhere, still in the document and still reachable by anything that

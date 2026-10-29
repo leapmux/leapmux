@@ -174,7 +174,9 @@ function buildMetadata(
   item: { parentAgentId?: string, title?: string },
   workerId: string,
 ): TabMetadata {
-  const parent = item.parentAgentId ? deps.view.getAgentTab(item.parentAgentId) : undefined
+  const parent = item.parentAgentId
+    ? deps.view.getAgentTab(item.parentAgentId)
+    : undefined
   // workerId is NOT a metadata field: it lives on the projection, and the
   // emit*Tab op carries it.
   //
@@ -202,13 +204,23 @@ function buildMetadata(
   // entry -- the tab would then sit under a repo with no branch name.
   const sameWorker = parent?.workerId === workerId
   const git = parent && sameWorker
-    ? resolveOptimisticGitInfo(parent, parent.workingDir !== undefined ? { workingDir: parent.workingDir } : {})
+    ? resolveOptimisticGitInfo(parent, parent.workingDir !== undefined
+        ? { workingDir: parent.workingDir }
+        : {})
     : undefined
   return {
-    ...(item.title ? { title: item.title } : {}),
-    ...(item.parentAgentId ? { parentAgentId: item.parentAgentId } : {}),
-    ...(parent?.workingDir !== undefined ? { workingDir: parent.workingDir } : {}),
-    ...(parent?.agentProvider !== undefined ? { agentProvider: parent.agentProvider } : {}),
+    ...(item.title
+      ? { title: item.title }
+      : {}),
+    ...(item.parentAgentId
+      ? { parentAgentId: item.parentAgentId }
+      : {}),
+    ...(parent?.workingDir !== undefined
+      ? { workingDir: parent.workingDir }
+      : {}),
+    ...(parent?.agentProvider !== undefined
+      ? { agentProvider: parent.agentProvider }
+      : {}),
     ...git,
   }
 }

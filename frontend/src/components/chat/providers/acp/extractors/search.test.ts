@@ -13,7 +13,9 @@ describe('acpSearchFromToolCall', () => {
 
   it('extracts matches from rawOutput.metadata', () => {
     const source = acpSearchFromToolCall({
-      rawOutput: { metadata: { matches: 7 } },
+      rawOutput: {
+        metadata: { matches: 7 },
+      },
     })
     expect(source).toEqual({
       filenames: [],
@@ -29,7 +31,12 @@ describe('acpSearchFromToolCall', () => {
 
   it('captures text fallback from content array', () => {
     const source = acpSearchFromToolCall({
-      content: [{ type: 'content', content: { text: 'opaque text' } }],
+      content: [
+        {
+          type: 'content',
+          content: { text: 'opaque text' },
+        },
+      ],
     })
     expect(source?.fallbackContent).toBe('opaque text')
     expect(source?.matchCount).toBeUndefined()
@@ -54,11 +61,22 @@ describe('acpSearchFromToolCall', () => {
  */
 describe('acpSearchFromToolCall empty results', () => {
   it('recognizes an empty result from an empty body', () => {
-    expect(acpSearchFromToolCall({ rawOutput: { metadata: { matches: 0 } } })?.empty).toBe(true)
+    expect(acpSearchFromToolCall({
+      rawOutput: {
+        metadata: { matches: 0 },
+      },
+    })?.empty).toBe(true)
   })
 
   it('states no empty result for a body it did not classify', () => {
-    const source = acpSearchFromToolCall({ content: [{ type: 'content', content: { text: 'nothing matched' } }] })
+    const source = acpSearchFromToolCall({
+      content: [
+        {
+          type: 'content',
+          content: { text: 'nothing matched' },
+        },
+      ],
+    })
     expect(source?.empty).toBe(false)
     expect(source?.fallbackContent).toBe('nothing matched')
   })

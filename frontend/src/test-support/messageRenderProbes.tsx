@@ -21,8 +21,17 @@ import { isObject } from '~/lib/jsonPick'
 
 /** The parse a category-driven extraction does not read. Both helpers state their row's category. */
 function parsedOf(parsed: unknown, provider?: AgentProvider): ResolvedMessageContent {
-  const parentObject = isObject(parsed) ? parsed : undefined
-  return resolveMessageForRendering({ wrapper: null, topLevel: parentObject ?? null, parentObject, rawText: '', supplementalContent: undefined, messageMetadata: undefined }, provider ?? AgentProvider.CLAUDE_CODE)
+  const parentObject = isObject(parsed)
+    ? parsed
+    : undefined
+  return resolveMessageForRendering({
+    wrapper: null,
+    topLevel: parentObject ?? null,
+    parentObject,
+    rawText: '',
+    supplementalContent: undefined,
+    messageMetadata: undefined,
+  }, provider ?? AgentProvider.CLAUDE_CODE)
 }
 
 /**
@@ -35,9 +44,13 @@ function parsedOf(parsed: unknown, provider?: AgentProvider): ResolvedMessageCon
  */
 export function renderThreadElement(messages: unknown[], provider?: AgentProvider): JSXElement | null {
   const agentProvider = provider ?? AgentProvider.CLAUDE_CODE
-  const entries = messages.flatMap(message => isObject(message) ? notificationEntriesFor(message, agentProvider) : [])
+  const entries = messages.flatMap(message => isObject(message)
+    ? notificationEntriesFor(message, agentProvider)
+    : [])
   const row = extractedRow(extractChatRow(provider, parsedOf(undefined, provider), { kind: 'notification', entries }, {}))
-  return row?.kind === 'notification' ? renderNotificationBlocks(flattenNotificationEntries(row.thread.entries)) : null
+  return row?.kind === 'notification'
+    ? renderNotificationBlocks(flattenNotificationEntries(row.thread.entries))
+    : null
 }
 
 /** Render a JSX element and return its trimmed text content ('' when null). */
@@ -82,7 +95,11 @@ export function renderThreadHasIcon(messages: unknown[], provider?: AgentProvide
  * is false when the divider hook returns null (nothing rendered).
  */
 export function renderDivider(parsed: unknown, provider: AgentProvider, completion?: MessageCompletion): { text: string, isError: boolean } {
-  const row = extractedRow(extractChatRow(provider, parsedOf(parsed, provider), { kind: 'result_divider' }, { ...(completion !== undefined ? { completion } : {}) }))
+  const row = extractedRow(extractChatRow(provider, parsedOf(parsed, provider), { kind: 'result_divider' }, {
+    ...(completion !== undefined
+      ? { completion }
+      : {}),
+  }))
   if (row?.kind !== 'divider')
     return { text: '', isError: false }
   const { container } = render(() => <ResultDivider model={row.divider} />)

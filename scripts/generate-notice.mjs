@@ -126,8 +126,12 @@ export function normalizeLicenseText(text) {
  * heading the body renders differently.
  */
 export function depHeading(dep) {
-  const base = dep.version ? `${dep.name} ${dep.version}` : dep.name
-  return dep.license ? `${base} (${dep.license})` : base
+  const base = dep.version
+    ? `${dep.name} ${dep.version}`
+    : dep.name
+  return dep.license
+    ? `${base} (${dep.license})`
+    : base
 }
 
 /**
@@ -143,11 +147,17 @@ export function depHeading(dep) {
 export function compareCrateVersions(a, b) {
   const split = (version) => {
     const dash = version.indexOf('-')
-    const core = dash === -1 ? version : version.slice(0, dash)
-    const prerelease = dash === -1 ? '' : version.slice(dash + 1)
+    const core = dash === -1
+      ? version
+      : version.slice(0, dash)
+    const prerelease = dash === -1
+      ? ''
+      : version.slice(dash + 1)
     // Build metadata ("0.6.0+11769913") carries no precedence; drop it.
     const plus = core.indexOf('+')
-    const numbers = (plus === -1 ? core : core.slice(0, plus)).split('.').map(Number)
+    const numbers = (plus === -1
+      ? core
+      : core.slice(0, plus)).split('.').map(Number)
     return { numbers, prerelease }
   }
 
@@ -165,7 +175,9 @@ export function compareCrateVersions(a, b) {
     return 1
   if (right.prerelease === '')
     return -1
-  return left.prerelease < right.prerelease ? -1 : 1
+  return left.prerelease < right.prerelease
+    ? -1
+    : 1
 }
 
 /**
@@ -196,7 +208,10 @@ export function createRustSpdxResolver(packages) {
     const previous = crateDirs.get(pkg.name)
     if (previous && compareCrateVersions(previous.version, pkg.version) >= 0)
       continue
-    crateDirs.set(pkg.name, { version: pkg.version, dir: dirname(pkg.manifest_path) })
+    crateDirs.set(pkg.name, {
+      version: pkg.version,
+      dir: dirname(pkg.manifest_path),
+    })
   }
 
   const cache = new Map()
@@ -283,12 +298,14 @@ export function collectRustSpdxTexts(licenseExpression, resolveSpdxText) {
   // grants the reader the choice, so NOTICE shows the alternatives rather than
   // silently electing one on their behalf.
   for (const operand of normalized.split(/\s+AND\s+/)) {
-    const terms = [...new Set(
-      operand
-        .split(/\s+OR\s+/)
-        .map(term => term.replace(/[()]/g, '').trim())
-        .filter(Boolean),
-    )]
+    const terms = [
+      ...new Set(
+        operand
+          .split(/\s+OR\s+/)
+          .map(term => term.replace(/[()]/g, '').trim())
+          .filter(Boolean),
+      ),
+    ]
 
     let resolvedHere = 0
     let unregistered = 0
@@ -319,7 +336,141 @@ export function collectRustSpdxTexts(licenseExpression, resolveSpdxText) {
       return { text: null, failures }
   }
 
-  return { text: texts.length > 0 ? texts.join('\n\n-----\n\n') : null, failures }
+  return {
+    text: texts.length > 0
+      ? texts.join('\n\n-----\n\n')
+      : null,
+    failures,
+  }
+}
+
+/**
+ * Track which license overrides of one kind supply a license text, so that a
+ * collector can report every override that supplies none.
+ *
+ * Nothing else notices a stale override. A collector reads an override only
+ * for a dependency that ships no license file, so an override for a package
+ * that left the graph, or for one that started shipping its own file, sits in
+ * the tree unread while it still looks maintained.
+ *
+ * `needed(name)` wins over `redundant(name, reason)` in either order, because a
+ * package can appear at several versions and one version that lacks a license
+ * file still needs the override.
+ */
+export function createOverrideTracker() {
+  const needed = new Set()
+  /** @type {Map<string, string>} */
+  const redundant = new Map()
+  return {
+    /** A dependency of this name takes, or may take, its license text from the override. */
+    needed(name) {
+      needed.add(name)
+    },
+    /** A dependency of this name exists but has no use for the override, for `reason`. */
+    redundant(name, reason) {
+      if (!redundant.has(name))
+        redundant.set(name, reason)
+    },
+    /**
+     * One error for each override in `names` that no dependency needed.
+     *
+     * @param {{label: string, kind: string, unit: string, names: string[]}} overrides
+     *   `label` opens the message (`Go`), `kind` is the directory under
+     *   scripts/license-overrides/ (`go`), and `unit` says what a dependency is
+     *   for this kind (`runtime module`)
+     */
+    staleErrors({ label, kind, unit, names }) {
+      const errors = []
+      for (const name of names) {
+        if (needed.has(name))
+          continue
+        const reason = redundant.get(name) ?? `no ${unit} of that name in the dependency graph reads it`
+        errors.push(`${label}: scripts/license-overrides/${kind}/${name}/ is stale: ${reason}. Delete it.`)
+      }
+      return errors
+    },
+  }
+}
+
+/**
+ * Decide which license a JS dependency's NOTICE entry names, where its text
+ * comes from, and what that makes of the dependency's override.
+ *
+ * A package that ships a license file but declares no license in package.json
+ * would otherwise head its text "(unknown)" -- @solidjs/start 2.1.0 dropped the
+ * field it carried through 1.x -- so that case needs an override that states
+ * the license the file grants, and fails without one.
+ *
+ * @param {{name: string, version: string, declared: string | undefined, hasLicenseFile: boolean,
+ *   override: {license: string} | undefined}} dep `declared` is package.json's `license`,
+ *   and `override` is the dependency's expected.json, when it has one
+ * @returns {{license: string, text: 'package' | 'override', override: 'needed' | 'redundant' | 'none'}
+ *   | {error: string, override: 'needed' | 'none'}} the license to name and the
+ *   directory to read its text from, or the error to report; either way, whether
+ *   the dependency needs its override
+ */
+export function resolveJsLicenseSource({ name, version, declared, hasLicenseFile, override }) {
+  const where = `scripts/license-overrides/js/${name}/`
+  if (hasLicenseFile) {
+    if (declared !== undefined) {
+      return {
+        license: declared,
+        text: 'package',
+        override: override ? 'redundant' : 'none',
+      }
+    }
+    if (!override)
+      return { error: `JS: ${name}@${version} — package.json declares no license; add ${where}expected.json with the license that its license file grants`, override: 'none' }
+    return { license: override.license, text: 'package', override: 'needed' }
+  }
+  if (!override)
+    return { error: `JS: ${name}@${version} — no license file found; add an override in ${where}`, override: 'none' }
+  // The override counts as needed even when this check rejects it, because the
+  // error already asks for a review, which a stale report would contradict.
+  const field = declared ?? 'unknown'
+  if (override.license !== field)
+    return { error: `JS: ${name}@${version} — license field changed from "${override.license}" to "${field}"; review and update the override in ${where}`, override: 'needed' }
+  return { license: field, text: 'override', override: 'needed' }
+}
+
+/**
+ * List the override names under one kind's directory, sorted. An npm scope
+ * directory (`@bufbuild`) holds one override per package of that scope, so
+ * its entries list as `@bufbuild/protobuf`. A missing directory lists none.
+ */
+export function listOverrideNames(dir) {
+  if (!existsSync(dir))
+    return []
+  const names = []
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (!entry.isDirectory())
+      continue
+    if (entry.name.startsWith('@')) {
+      for (const scoped of readdirSync(join(dir, entry.name), { withFileTypes: true })) {
+        if (scoped.isDirectory())
+          names.push(`${entry.name}/${scoped.name}`)
+      }
+    }
+    else {
+      names.push(entry.name)
+    }
+  }
+  return names.sort()
+}
+
+/**
+ * One error for each vendored SPDX text that no RUST_SPDX_LICENSE_SOURCES entry
+ * reads. An entry with no consumer in the graph stays valid (see
+ * createRustSpdxResolver), but a file that no entry points at can never reach
+ * NOTICE.
+ *
+ * @param {string[]} files the file names in scripts/license-overrides/spdx/
+ */
+export function staleSpdxTextErrors(files, sources = RUST_SPDX_LICENSE_SOURCES) {
+  const vendored = new Set(Object.values(sources).map(source => source.vendored).filter(Boolean))
+  return files
+    .filter(file => !vendored.has(file))
+    .map(file => `Rust: scripts/license-overrides/spdx/${file} is stale: no RUST_SPDX_LICENSE_SOURCES entry vendors it. Delete it.`)
 }
 
 /**
@@ -465,6 +616,7 @@ function collectGoDeps() {
   const deps = new Map()
   const warnings = []
   const errors = []
+  const overrides = createOverrideTracker()
 
   // Determine Go module cache root for walking up parent dirs.
   const goModCache = execSync('go env GOMODCACHE', { cwd: ROOT, encoding: 'utf-8' }).trim()
@@ -478,23 +630,32 @@ function collectGoDeps() {
     if (!runtimeKeys.has(key))
       continue // skip tool-only deps
 
+    // A manual override in scripts/license-overrides/go/ is named after the
+    // module path with slashes replaced by dashes.
+    const overrideName = mod.Path.replace(/\//g, '-')
+    const overrideDir = join(LICENSE_OVERRIDES_GO, overrideName)
+    const hasOverride = existsSync(join(overrideDir, 'expected.json'))
+
     let dir = mod.Dir
     if (!dir) {
       // Fallback: construct the expected cache path.
       dir = join(goModCache, `${mod.Path}@${mod.Version}`)
       if (!existsSync(dir)) {
         warnings.push(`Go: ${key} — no Dir and cache miss`)
+        // Without the module's own files, nothing shows that the override is
+        // stale, so the warning above is the whole report.
+        overrides.needed(overrideName)
         continue
       }
     }
 
     let licFile = findLicenseFile(dir, goModCache)
-    if (!licFile) {
-      // Check for a manual override in scripts/license-overrides/go/.
-      // Try the module path with slashes replaced by dashes.
-      const overrideName = mod.Path.replace(/\//g, '-')
-      const overrideDir = join(LICENSE_OVERRIDES_GO, overrideName)
-      if (existsSync(join(overrideDir, 'expected.json'))) {
+    if (hasOverride) {
+      if (licFile) {
+        overrides.redundant(overrideName, `${key} ships its own license file`)
+      }
+      else {
+        overrides.needed(overrideName)
         licFile = findLicenseFile(overrideDir, overrideDir)
       }
     }
@@ -510,7 +671,20 @@ function collectGoDeps() {
     })
   }
 
-  return { deps: [...deps.values()].sort((a, b) => a.name.localeCompare(b.name)), warnings, errors }
+  errors.push(...overrides.staleErrors({
+    label: 'Go',
+    kind: 'go',
+    unit: 'runtime module',
+    names: listOverrideNames(LICENSE_OVERRIDES_GO),
+  }))
+
+  return {
+    deps: [
+      ...deps.values(),
+    ].sort((a, b) => a.name.localeCompare(b.name)),
+    warnings,
+    errors,
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -537,6 +711,7 @@ function collectRustDeps() {
   // it is reported once no matter how many crates asked for it. The crates
   // themselves are still named individually below.
   const spdxFailures = new Map()
+  const overrides = createOverrideTracker()
 
   for (const pkg of metadata.packages ?? []) {
     if (pkg.id === metadata.resolve?.root || pkg.source == null)
@@ -555,22 +730,25 @@ function collectRustDeps() {
 
     // `license_file` names a file Cargo.toml points at explicitly; no crate in
     // the current graph sets it, but honour it ahead of discovery when one does.
-    const declared = pkg.license_file ? join(manifestDir, pkg.license_file) : null
+    const declared = pkg.license_file
+      ? join(manifestDir, pkg.license_file)
+      : null
+
+    const overrideDir = join(LICENSE_OVERRIDES_RUST, pkg.name)
+    const hasOverride = existsSync(join(overrideDir, 'expected.json'))
 
     /** @type {string[]} */
-    let licenseFiles = []
-    if (declared && existsSync(declared)) {
-      licenseFiles = [declared]
+    let licenseFiles = declared && existsSync(declared)
+      ? [declared]
+      : manifestLicenses
+    if (licenseFiles.length > 0) {
+      if (hasOverride)
+        overrides.redundant(pkg.name, `${key} ships its own license file`)
     }
-    else if (manifestLicenses.length > 0) {
-      licenseFiles = manifestLicenses
-    }
-    else {
+    else if (hasOverride) {
       // Nothing on disk: fall back to a hand-curated override directory.
-      const overrideDir = join(LICENSE_OVERRIDES_RUST, pkg.name)
-      if (existsSync(join(overrideDir, 'expected.json'))) {
-        licenseFiles = findLicenseFiles(overrideDir, overrideDir)
-      }
+      overrides.needed(pkg.name)
+      licenseFiles = findLicenseFiles(overrideDir, overrideDir)
     }
 
     let licenseText = null
@@ -602,8 +780,24 @@ function collectRustDeps() {
   // one pass: throwing here instead would abort before the JS and extra
   // collectors ran, and hide the Go errors already gathered.
   errors.push(...spdxFailures.values())
+  errors.push(...overrides.staleErrors({
+    label: 'Rust',
+    kind: 'rust',
+    unit: 'crate',
+    names: listOverrideNames(LICENSE_OVERRIDES_RUST),
+  }))
+  const spdxFiles = existsSync(LICENSE_OVERRIDES_SPDX)
+    ? readdirSync(LICENSE_OVERRIDES_SPDX, { withFileTypes: true }).filter(entry => entry.isFile()).map(entry => entry.name)
+    : []
+  errors.push(...staleSpdxTextErrors(spdxFiles))
 
-  return { deps: [...deps.values()].sort((a, b) => a.name.localeCompare(b.name)), warnings: [], errors }
+  return {
+    deps: [
+      ...deps.values(),
+    ].sort((a, b) => a.name.localeCompare(b.name)),
+    warnings: [],
+    errors,
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -619,6 +813,7 @@ function collectJsDeps() {
   const deps = []
   const warnings = []
   const errors = []
+  const overrides = createOverrideTracker()
 
   const nodeModules = join(FRONTEND, 'node_modules')
   if (!existsSync(nodeModules)) {
@@ -640,7 +835,10 @@ function collectJsDeps() {
         for (const child of readdirSync(full)) {
           if (child.startsWith('.'))
             continue
-          packages.push({ pkgDir: join(full, child), pkgName: `${entry}/${child}` })
+          packages.push({
+            pkgDir: join(full, child),
+            pkgName: `${entry}/${child}`,
+          })
         }
       }
       catch { /* ignore */ }
@@ -663,42 +861,50 @@ function collectJsDeps() {
     }
 
     const version = meta.version ?? 'unknown'
-    const licenseField = meta.license ?? 'unknown'
-    let licFile = findLicenseFile(pkgDir, nodeModules)
+    const packageLicenseFile = findLicenseFile(pkgDir, nodeModules)
+    const overrideDir = join(LICENSE_OVERRIDES_JS, pkgName)
+    const expectedPath = join(overrideDir, 'expected.json')
+    const source = resolveJsLicenseSource({
+      name: pkgName,
+      version,
+      declared: meta.license,
+      hasLicenseFile: packageLicenseFile !== null,
+      override: existsSync(expectedPath)
+        ? JSON.parse(readFileSync(expectedPath, 'utf-8'))
+        : undefined,
+    })
 
-    if (licFile) {
-      // Upstream ships a license file. Warn if we still have an override for it.
-      const overrideDir = join(LICENSE_OVERRIDES_JS, pkgName)
-      if (existsSync(join(overrideDir, 'expected.json'))) {
-        warnings.push(`JS: ${pkgName}@${version} — upstream now ships a LICENSE file; override in scripts/license-overrides/js/${pkgName}/ can be removed`)
-      }
-    }
-    else {
-      // No license file — check overrides.
-      const overrideDir = join(LICENSE_OVERRIDES_JS, pkgName)
-      const expectedPath = join(overrideDir, 'expected.json')
-      if (existsSync(expectedPath)) {
-        const expected = JSON.parse(readFileSync(expectedPath, 'utf-8'))
-        if (expected.license !== licenseField) {
-          errors.push(`JS: ${pkgName}@${version} — license field changed from "${expected.license}" to "${licenseField}"; review and update the override in scripts/license-overrides/js/${pkgName}/`)
-          continue
-        }
-        licFile = findLicenseFile(overrideDir, overrideDir)
-      }
+    if (source.override === 'needed')
+      overrides.needed(pkgName)
+    else if (source.override === 'redundant')
+      overrides.redundant(pkgName, `${pkgName}@${version} ships its own license file and declares its license`)
+    if (source.error) {
+      errors.push(source.error)
+      continue
     }
 
+    const licFile = source.text === 'override'
+      ? findLicenseFile(overrideDir, overrideDir)
+      : packageLicenseFile
     if (!licFile) {
-      errors.push(`JS: ${pkgName}@${version} — no license file found; add an override in scripts/license-overrides/js/${pkgName}/`)
+      errors.push(`JS: ${pkgName}@${version} — the override in scripts/license-overrides/js/${pkgName}/ holds no license file`)
       continue
     }
 
     deps.push({
       name: pkgName,
       version,
-      license: licenseField,
+      license: source.license,
       licenseText: normalizeLicenseText(readFileSync(licFile, 'utf-8')),
     })
   }
+
+  errors.push(...overrides.staleErrors({
+    label: 'JS',
+    kind: 'js',
+    unit: 'runtime dependency',
+    names: listOverrideNames(LICENSE_OVERRIDES_JS),
+  }))
 
   deps.sort((a, b) => a.name.localeCompare(b.name))
   return { deps, warnings, errors }
@@ -770,10 +976,16 @@ function collectExtraDeps() {
 
     deps.push({
       name: meta.name,
-      version: typeof meta.version === 'string' && meta.version.length > 0 ? meta.version : null,
+      version: typeof meta.version === 'string' && meta.version.length > 0
+        ? meta.version
+        : null,
       license: meta.license,
-      url: typeof meta.url === 'string' && meta.url.length > 0 ? meta.url : null,
-      description: typeof meta.description === 'string' && meta.description.length > 0 ? meta.description : null,
+      url: typeof meta.url === 'string' && meta.url.length > 0
+        ? meta.url
+        : null,
+      description: typeof meta.description === 'string' && meta.description.length > 0
+        ? meta.description
+        : null,
       licenseText: normalizeLicenseText(readFileSync(licFile, 'utf-8')),
     })
   }
@@ -991,8 +1203,18 @@ async function generateNotice() {
   const rust = collectRustDeps()
   const js = collectJsDeps()
   const extra = collectExtraDeps()
-  const allWarnings = [...go.warnings, ...rust.warnings, ...js.warnings, ...extra.warnings]
-  const allErrors = [...go.errors, ...rust.errors, ...js.errors, ...extra.errors]
+  const allWarnings = [
+    ...go.warnings,
+    ...rust.warnings,
+    ...js.warnings,
+    ...extra.warnings,
+  ]
+  const allErrors = [
+    ...go.errors,
+    ...rust.errors,
+    ...js.errors,
+    ...extra.errors,
+  ]
 
   if (allWarnings.length > 0) {
     console.warn('\nWarnings:')

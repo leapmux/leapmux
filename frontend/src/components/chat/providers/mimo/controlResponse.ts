@@ -16,13 +16,19 @@ function questionAnswerText(request: Record<string, unknown> | undefined, result
   if (result[OPENCODE_ANSWER_FIELD.Rejected] === true)
     return 'Dismissed'
   const rawAnswers = result[OPENCODE_ANSWER_FIELD.Answers]
-  const answers: unknown[] = Array.isArray(rawAnswers) ? rawAnswers : []
+  const answers: unknown[] = Array.isArray(rawAnswers)
+    ? rawAnswers
+    : []
   const rawQuestions = pickObject(request, 'properties')?.questions
-  const questions: unknown[] = Array.isArray(rawQuestions) ? rawQuestions : []
+  const questions: unknown[] = Array.isArray(rawQuestions)
+    ? rawQuestions
+    : []
   const lines: string[] = []
   answers.forEach((answer, index) => {
     const question = questions[index]
-    const heading = isObject(question) ? pickString(question, 'header') || pickString(question, 'question') : ''
+    const heading = isObject(question)
+      ? pickString(question, 'header') || pickString(question, 'question')
+      : ''
     const line = labeledAnswerLine(heading || `Question ${index + 1}`, answer)
     if (line !== null)
       lines.push(line)
@@ -56,7 +62,10 @@ export function mimoControlResponseSummary(cr: PersistedControlResponse): Contro
       return label(CONTROL_DECISION_WORDS.permission.deny)
     return labelOrNull(permissionOptionWords(pickString(outcome, 'optionId')))
   }
-  if (type === OPENCODE_EVENT.QuestionAsked && mimoExtractControl({ payload: cr.request ?? {} })?.kind === 'plan')
-    return result[OPENCODE_ANSWER_FIELD.Rejected] === true ? label(CONTROL_DECISION_WORDS.plan.deny) : null
+  if (type === OPENCODE_EVENT.QuestionAsked && mimoExtractControl({ payload: cr.request ?? {} })?.kind === 'plan') {
+    return result[OPENCODE_ANSWER_FIELD.Rejected] === true
+      ? label(CONTROL_DECISION_WORDS.plan.deny)
+      : null
+  }
   return labelOrNull(questionAnswerText(cr.request, result))
 }

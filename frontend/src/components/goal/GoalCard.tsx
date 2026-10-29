@@ -64,7 +64,9 @@ export const GoalCard: Component<GoalCardProps> = (props) => {
     if (props.goal.statusUnconfirmed)
       return `Session goal: ${markdownToPlainText(goal.objective)}`
     const statusDetail = visibleGoalStatusDetail(goal)
-    const detail = statusDetail ? `, ${statusDetail}` : ''
+    const detail = statusDetail
+      ? `, ${statusDetail}`
+      : ''
     // GoalObjective renders the Markdown source.
     // The live region needs the visible words without Markdown syntax.
     // GoalObjective uses the same plain text rule for its tooltip.
@@ -83,8 +85,11 @@ export const GoalCard: Component<GoalCardProps> = (props) => {
     }
     if (p.timeUsedSeconds !== undefined)
       parts.push(formatSecondsParts(p.timeUsedSeconds))
-    if (p.iterations !== undefined)
-      parts.push(`${p.iterations} ${p.iterations === 1 ? 'turn' : 'turns'}`)
+    if (p.iterations !== undefined) {
+      parts.push(`${p.iterations} ${p.iterations === 1
+        ? 'turn'
+        : 'turns'}`)
+    }
     return parts
   })
 

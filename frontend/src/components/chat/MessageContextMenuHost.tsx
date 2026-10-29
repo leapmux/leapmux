@@ -74,12 +74,18 @@ export const MessageContextMenuHostProvider: ParentComponent = (props) => {
 
   const anchor = (): PopoverAnchor | undefined => {
     const req = request()
-    return req ? pressAnchorRect(req.press) : undefined
+    return req
+      ? pressAnchorRect(req.press)
+      : undefined
   }
 
   const infoRows = (): MenuInfoRow[] => {
     const createdAt = request()?.createdAt
-    return createdAt ? [{ label: 'Sent:', value: <RelativeTimeAgo timestamp={createdAt} /> }] : []
+    return createdAt
+      ? [
+          { label: 'Sent:', value: <RelativeTimeAgo timestamp={createdAt} /> },
+        ]
+      : []
   }
 
   /**
@@ -92,7 +98,9 @@ export const MessageContextMenuHostProvider: ParentComponent = (props) => {
    * most-used actions nearest the cursor.
    */
   const menuActions = (): MessageAction[] =>
-    [...(request()?.actions ?? []).filter(a => !a.danger)].reverse()
+    [
+      ...(request()?.actions ?? []).filter(a => !a.danger),
+    ].reverse()
 
   /**
    * The destructive actions, kept OUT of the reversal and pinned to the foot of

@@ -27,13 +27,20 @@ reasonixTest('recovers the native stored image bytes into the tool result and ke
 
 reasonixTest('renders a native MCP image behind its provenance header before and after reload', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
   let imageName = ''
-  const context = await openReasonixMcpAgent({ page, workspaceId: authenticatedEmptyWorkspace.workspaceId, leapmuxServer, modelScript }, (directory) => {
+  const context = await openReasonixMcpAgent({
+    page,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    leapmuxServer,
+    modelScript,
+  }, (directory) => {
     imageName = writeToolImage(directory, 'reasonix-mcp')
     return writeMcpImageServer(directory, imageName)
   })
   const callId = 'reasonix-mcp-image'
   const { resultRequest } = await runNativeToolTurn(context, {
-    toolCalls: [mcpToolCall(context.provider, callId, { server: MCP_IMAGE_SERVER_NAME, tool: 'show', input: {} })],
+    toolCalls: [
+      mcpToolCall(context.provider, callId, { server: MCP_IMAGE_SERVER_NAME, tool: 'show', input: {} }),
+    ],
     prompt: 'Run the scripted image tool once.',
     answer: 'The native MCP image arrived.',
   })

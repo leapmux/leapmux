@@ -18,5 +18,8 @@ stop();
 await import(${JSON.stringify(pathToFileURL(serverScript).href)});
 watcher.close();
 `, { mode: 0o600 })
-  return { script, close: () => writeFileSync(signal, '', { mode: 0o600 }) }
+  return {
+    script,
+    close: () => writeFileSync(signal, '', { mode: 0o600 }),
+  }
 }

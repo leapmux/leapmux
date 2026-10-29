@@ -25,15 +25,30 @@ import { createTabMetadataStore } from './tabMetadata.store'
 // fallback order (title → FILE basename → type-default), so each branch
 // gets its own test to guard against silent drift.
 function file(overrides: Partial<Extract<Tab, { type: TabType.FILE }>> = {}): Tab {
-  return { type: TabType.FILE, id: 'f1', workspaceId: 'ws-1', ...overrides }
+  return {
+    type: TabType.FILE,
+    id: 'f1',
+    workspaceId: 'ws-1',
+    ...overrides,
+  }
 }
 
 function agent(overrides: Partial<Extract<Tab, { type: TabType.AGENT }>> = {}): Tab {
-  return { type: TabType.AGENT, id: 'a1', workspaceId: 'ws-1', ...overrides }
+  return {
+    type: TabType.AGENT,
+    id: 'a1',
+    workspaceId: 'ws-1',
+    ...overrides,
+  }
 }
 
 function terminal(overrides: Partial<Extract<Tab, { type: TabType.TERMINAL }>> = {}): Tab {
-  return { type: TabType.TERMINAL, id: 't1', workspaceId: 'ws-1', ...overrides }
+  return {
+    type: TabType.TERMINAL,
+    id: 't1',
+    workspaceId: 'ws-1',
+    ...overrides,
+  }
 }
 
 describe('tabDisplayLabel', () => {
@@ -206,7 +221,12 @@ describe('isSameRepo', () => {
 
 describe('protoToAgentTabFields git status', () => {
   const agent = (gs: GitRepoStatus | undefined) =>
-    create(AgentInfoSchema, { id: 'a1', workingDir: '/repo', agentProvider: AgentProvider.CLAUDE_CODE, gitStatus: gs })
+    create(AgentInfoSchema, {
+      id: 'a1',
+      workingDir: '/repo',
+      agentProvider: AgentProvider.CLAUDE_CODE,
+      gitStatus: gs,
+    })
   const status = () => create(GitRepoStatusSchema, { branch: 'main', toplevel: '/repo' })
 
   it('writes repo identity onto the tab when git status carries a toplevel', () => {
@@ -229,7 +249,13 @@ describe('protoToAgentTabFields git status', () => {
 // composer and the Interrupt control read the worker's decision.
 describe('protoToAgentTabFields child capabilities', () => {
   it('carries accepts_messages and accepts_interrupt onto the tab', () => {
-    const child = create(AgentInfoSchema, { id: 'c1', parentAgentId: 'root-1', agentProvider: AgentProvider.QWEN_CODE, acceptsMessages: false, acceptsInterrupt: true })
+    const child = create(AgentInfoSchema, {
+      id: 'c1',
+      parentAgentId: 'root-1',
+      agentProvider: AgentProvider.QWEN_CODE,
+      acceptsMessages: false,
+      acceptsInterrupt: true,
+    })
     const fields = protoToAgentTabFields(createRepoGitStore(), 'wkr-1', child)
     expect(fields.acceptsMessages).toBe(false)
     expect(fields.acceptsInterrupt).toBe(true)
@@ -258,14 +284,31 @@ describe('agentTabToInfo model-dependent option groups', () => {
       order: 30,
       mutable: true,
       defaultValue: 'on',
-      options: [opt('on', onLabel), opt('off', 'Off')],
+      options: [
+        opt('on', onLabel),
+        opt('off', 'Off'),
+      ],
     })
   }
   // Sonnet: high/max, adaptive thinking. Haiku: no effort, plain "On". Opus:
   // xhigh/ultracode, adaptive thinking.
-  const sonnetSub = [effortGroup(['auto', 'high', 'max'], 'high'), thinkingGroup('Adaptive')]
-  const haikuSub = [thinkingGroup('On')]
-  const opusSub = [effortGroup(['auto', 'high', 'xhigh', 'ultracode', 'max'], 'high'), thinkingGroup('Adaptive')]
+  const sonnetSub = [
+    effortGroup(['auto', 'high', 'max'], 'high'),
+    thinkingGroup('Adaptive'),
+  ]
+  const haikuSub = [
+    thinkingGroup('On'),
+  ]
+  const opusSub = [
+    effortGroup([
+      'auto',
+      'high',
+      'xhigh',
+      'ultracode',
+      'max',
+    ], 'high'),
+    thinkingGroup('Adaptive'),
+  ]
 
   function modelGroup(currentValue: string) {
     return create(AvailableOptionGroupSchema, {
@@ -275,7 +318,11 @@ describe('agentTabToInfo model-dependent option groups', () => {
       mutable: true,
       currentValue,
       defaultValue: 'sonnet',
-      options: [opt('sonnet', 'Sonnet', sonnetSub), opt('haiku', 'Haiku', haikuSub), opt('opus[1m]', 'Opus', opusSub)],
+      options: [
+        opt('sonnet', 'Sonnet', sonnetSub),
+        opt('haiku', 'Haiku', haikuSub),
+        opt('opus[1m]', 'Opus', opusSub),
+      ],
     })
   }
   const permissionGroup = create(AvailableOptionGroupSchema, {
@@ -284,14 +331,24 @@ describe('agentTabToInfo model-dependent option groups', () => {
     order: 90,
     mutable: true,
     currentValue: 'default',
-    options: [opt('default', 'Default')],
+    options: [
+      opt('default', 'Default'),
+    ],
   })
 
   // A confirmed catalog for a running agent on `model`: the top-level effort and
   // thinking groups reflect that model (matching what the worker broadcasts).
   function catalogFor(model: string): AvailableOptionGroup[] {
-    const sub = model === 'haiku' ? haikuSub : model === 'opus[1m]' ? opusSub : sonnetSub
-    return [modelGroup(model), ...sub, permissionGroup]
+    const sub = model === 'haiku'
+      ? haikuSub
+      : model === 'opus[1m]'
+        ? opusSub
+        : sonnetSub
+    return [
+      modelGroup(model),
+      ...sub,
+      permissionGroup,
+    ]
   }
 
   function infoGroups(overrides: Partial<Extract<Tab, { type: TabType.AGENT }>>): AvailableOptionGroup[] {
@@ -301,7 +358,10 @@ describe('agentTabToInfo model-dependent option groups', () => {
 
   it('leaves the catalog untouched when no model switch is pending', () => {
     const base = catalogFor('sonnet')
-    const groups = infoGroups({ optionValues: { model: 'sonnet' }, optionGroups: base })
+    const groups = infoGroups({
+      optionValues: { model: 'sonnet' },
+      optionGroups: base,
+    })
     // Same array reference: identity stability keeps <For> from churning.
     expect(groups).toBe(base)
   })
@@ -311,7 +371,11 @@ describe('agentTabToInfo model-dependent option groups', () => {
     // (keyed on the optionGroups + optionValues references, both stable until the worker confirms)
     // must hand back the SAME array on repeated reads so downstream <For>/memos don't churn.
     const base = catalogFor('sonnet')
-    const tab = agent({ agentProvider: 0, optionValues: { model: 'opus[1m]' }, optionGroups: base }) as Tab
+    const tab = agent({
+      agentProvider: 0,
+      optionValues: { model: 'opus[1m]' },
+      optionGroups: base,
+    }) as Tab
     const first = agentTabToInfo(tab)!.optionGroups
     const second = agentTabToInfo(tab)!.optionGroups
     expect(first).not.toBe(base) // it actually rebuilt (the switch is in flight)
@@ -319,7 +383,10 @@ describe('agentTabToInfo model-dependent option groups', () => {
   })
 
   it('drops the effort group and relabels thinking when switching to Haiku', () => {
-    const groups = infoGroups({ optionValues: { model: 'haiku' }, optionGroups: catalogFor('sonnet') })
+    const groups = infoGroups({
+      optionValues: { model: 'haiku' },
+      optionGroups: catalogFor('sonnet'),
+    })
     expect(groups.find(g => g.id === 'effort')).toBeUndefined()
     const thinking = groups.find(g => g.id === 'alwaysThinkingEnabled')
     expect(thinking?.options.find(o => o.id === 'on')?.name).toBe('On')
@@ -328,7 +395,10 @@ describe('agentTabToInfo model-dependent option groups', () => {
   })
 
   it('surfaces opus-only effort tiers and adaptive thinking when switching to Opus', () => {
-    const groups = infoGroups({ optionValues: { model: 'opus[1m]' }, optionGroups: catalogFor('sonnet') })
+    const groups = infoGroups({
+      optionValues: { model: 'opus[1m]' },
+      optionGroups: catalogFor('sonnet'),
+    })
     const effort = groups.find(g => g.id === 'effort')
     expect(effort?.options.map(o => o.id)).toContain('xhigh')
     expect(effort?.options.map(o => o.id)).toContain('ultracode')
@@ -339,7 +409,10 @@ describe('agentTabToInfo model-dependent option groups', () => {
     // On Opus with xhigh selected, switching to Sonnet (no xhigh) must present
     // Sonnet's effort options with default "high"; the panel's validity guard
     // then renders "high" since the carried-over xhigh is no longer offered.
-    const groups = infoGroups({ optionValues: { model: 'sonnet', effort: 'xhigh' }, optionGroups: catalogFor('opus[1m]') })
+    const groups = infoGroups({
+      optionValues: { model: 'sonnet', effort: 'xhigh' },
+      optionGroups: catalogFor('opus[1m]'),
+    })
     const effort = groups.find(g => g.id === 'effort')
     expect(effort?.options.map(o => o.id)).not.toContain('xhigh')
     expect(effort?.defaultValue).toBe('high')
@@ -348,7 +421,10 @@ describe('agentTabToInfo model-dependent option groups', () => {
   // The worker keeps the stored effort on a model switch when the new model offers it, and resets
   // it to auto otherwise. These two cases pin what the effort control shows in the meantime.
   it('keeps the carried-over effort selected when the new model offers it', () => {
-    const sonnetWithXhigh = [effortGroup(['auto', 'high', 'xhigh', 'max'], 'high'), thinkingGroup('Adaptive')]
+    const sonnetWithXhigh = [
+      effortGroup(['auto', 'high', 'xhigh', 'max'], 'high'),
+      thinkingGroup('Adaptive'),
+    ]
     const catalog = [
       create(AvailableOptionGroupSchema, {
         id: 'model',
@@ -356,19 +432,28 @@ describe('agentTabToInfo model-dependent option groups', () => {
         order: 10,
         mutable: true,
         currentValue: 'opus[1m]',
-        options: [opt('sonnet', 'Sonnet', sonnetWithXhigh), opt('opus[1m]', 'Opus', opusSub)],
+        options: [
+          opt('sonnet', 'Sonnet', sonnetWithXhigh),
+          opt('opus[1m]', 'Opus', opusSub),
+        ],
       }),
       ...opusSub,
       permissionGroup,
     ]
-    const groups = infoGroups({ optionValues: { model: 'sonnet', effort: 'xhigh' }, optionGroups: catalog })
+    const groups = infoGroups({
+      optionValues: { model: 'sonnet', effort: 'xhigh' },
+      optionGroups: catalog,
+    })
 
     expect(resolvedCurrent(groups, { model: 'sonnet', effort: 'xhigh' }, 'effort')).toBe('xhigh')
   })
 
   it('shows the default tier of the new model when it lacks the carried-over effort', () => {
     // The worker stores auto here, and the new model resolves auto to its default tier.
-    const groups = infoGroups({ optionValues: { model: 'sonnet', effort: 'xhigh' }, optionGroups: catalogFor('opus[1m]') })
+    const groups = infoGroups({
+      optionValues: { model: 'sonnet', effort: 'xhigh' },
+      optionGroups: catalogFor('opus[1m]'),
+    })
 
     expect(resolvedCurrent(groups, { model: 'sonnet', effort: 'xhigh' }, 'effort')).toBe('high')
   })
@@ -377,7 +462,10 @@ describe('agentTabToInfo model-dependent option groups', () => {
     // A hidden/unknown model id lingering in optionValues must NOT strip effort
     // and thinking to nothing -- the catalog's dependent groups survive until a
     // real push arrives.
-    const groups = infoGroups({ optionValues: { model: 'ghost-model' }, optionGroups: catalogFor('sonnet') })
+    const groups = infoGroups({
+      optionValues: { model: 'ghost-model' },
+      optionGroups: catalogFor('sonnet'),
+    })
     expect(groups.find(g => g.id === 'effort')).toBeDefined()
     expect(groups.find(g => g.id === 'alwaysThinkingEnabled')).toBeDefined()
   })
@@ -407,7 +495,9 @@ describe('deriveOptionGroupTabFields', () => {
   function group(id: string, currentValue: string): AvailableOptionGroup {
     return create(AvailableOptionGroupSchema, {
       id,
-      options: [create(AvailableOptionSchema, { id: currentValue, name: currentValue })],
+      options: [
+        create(AvailableOptionSchema, { id: currentValue, name: currentValue }),
+      ],
       currentValue,
     })
   }
@@ -433,7 +523,10 @@ describe('deriveOptionGroupTabFields', () => {
 
   it('omits empty current values and returns {} for an empty catalog', () => {
     expect(deriveOptionGroupTabFields([])).toEqual({})
-    const fields = deriveOptionGroupTabFields([group('model', 'sonnet'), group('effort', '')])
+    const fields = deriveOptionGroupTabFields([
+      group('model', 'sonnet'),
+      group('effort', ''),
+    ])
     expect(fields.optionValues).toEqual({ model: 'sonnet' })
   })
 
@@ -442,7 +535,9 @@ describe('deriveOptionGroupTabFields', () => {
     const labelled = create(AvailableOptionGroupSchema, {
       id: 'model',
       label: 'Model',
-      options: [create(AvailableOptionSchema, { id: 'sonnet', name: 'Sonnet' })],
+      options: [
+        create(AvailableOptionSchema, { id: 'sonnet', name: 'Sonnet' }),
+      ],
       currentValue: 'sonnet',
     })
     deriveOptionGroupTabFields([labelled])
@@ -494,9 +589,24 @@ describe('isTabReadyForGitStatus', () => {
   })
 
   it('treats a non-STARTING terminal tab as ready', () => {
-    const ready: Tab = { type: TabType.TERMINAL, id: 't1', workspaceId: 'ws-1', status: TerminalStatus.READY }
-    const exited: Tab = { type: TabType.TERMINAL, id: 't1', workspaceId: 'ws-1', status: TerminalStatus.EXITED }
-    const failed: Tab = { type: TabType.TERMINAL, id: 't1', workspaceId: 'ws-1', status: TerminalStatus.STARTUP_FAILED }
+    const ready: Tab = {
+      type: TabType.TERMINAL,
+      id: 't1',
+      workspaceId: 'ws-1',
+      status: TerminalStatus.READY,
+    }
+    const exited: Tab = {
+      type: TabType.TERMINAL,
+      id: 't1',
+      workspaceId: 'ws-1',
+      status: TerminalStatus.EXITED,
+    }
+    const failed: Tab = {
+      type: TabType.TERMINAL,
+      id: 't1',
+      workspaceId: 'ws-1',
+      status: TerminalStatus.STARTUP_FAILED,
+    }
     const undef: Tab = { type: TabType.TERMINAL, id: 't1', workspaceId: 'ws-1' }
     expect(isTabReadyForGitStatus(ready, null)).toBe(true)
     expect(isTabReadyForGitStatus(exited, null)).toBe(true)
@@ -507,7 +617,12 @@ describe('isTabReadyForGitStatus', () => {
   it('defers a fresh STARTING terminal tab with no startupMessage', () => {
     // OpenTerminal's response leaves the tab in STARTING with no
     // phase-0 broadcast yet — same race window as agents.
-    const tab: Tab = { type: TabType.TERMINAL, id: 't1', workspaceId: 'ws-1', status: TerminalStatus.STARTING }
+    const tab: Tab = {
+      type: TabType.TERMINAL,
+      id: 't1',
+      workspaceId: 'ws-1',
+      status: TerminalStatus.STARTING,
+    }
     expect(isTabReadyForGitStatus(tab, null)).toBe(false)
   })
 
@@ -718,7 +833,12 @@ describe('planOptimisticRepoGit', () => {
     const store = createRepoGitStore()
     seedSource(store)
     // An optimistic stamp with no status behind it: not a worker answer.
-    store.upsert(repoKey('w2', '/r'), { workerId: 'w2', toplevel: '/r', branch: '', originUrl: '' })
+    store.upsert(repoKey('w2', '/r'), {
+      workerId: 'w2',
+      toplevel: '/r',
+      branch: '',
+      originUrl: '',
+    })
 
     planOptimisticRepoGit(store, activeOn('w1'), { workerId: 'w2', workingDir: '/r' }).commit()
 
@@ -846,9 +966,28 @@ describe('rootAgentIdFor', () => {
   it('walks a parentAgentId chain up to the root id', () => {
     // grand <- parent <- child; each lookup returns the next tab up.
     const tabs = new Map<string, AgentTab>([
-      ['child', { type: TabType.AGENT, id: 'child', workspaceId: 'ws-1', parentAgentId: 'parent' }],
-      ['parent', { type: TabType.AGENT, id: 'parent', workspaceId: 'ws-1', parentAgentId: 'grand' }],
-      ['grand', { type: TabType.AGENT, id: 'grand', workspaceId: 'ws-1' }], // root
+      [
+        'child',
+        {
+          type: TabType.AGENT,
+          id: 'child',
+          workspaceId: 'ws-1',
+          parentAgentId: 'parent',
+        },
+      ],
+      [
+        'parent',
+        {
+          type: TabType.AGENT,
+          id: 'parent',
+          workspaceId: 'ws-1',
+          parentAgentId: 'grand',
+        },
+      ],
+      [
+        'grand',
+        { type: TabType.AGENT, id: 'grand', workspaceId: 'ws-1' },
+      ], // root
     ])
     const get = (id: string) => tabs.get(id)
 
@@ -865,14 +1004,25 @@ describe('rootAgentIdFor', () => {
     // keys the background-task registry, and neither the dangling parent id nor
     // the input child id is a real root, so both miss the registry the same way.
     const tabs = new Map<string, AgentTab>([
-      ['child', { type: TabType.AGENT, id: 'child', workspaceId: 'ws-1', parentAgentId: 'missing' }],
+      [
+        'child',
+        {
+          type: TabType.AGENT,
+          id: 'child',
+          workspaceId: 'ws-1',
+          parentAgentId: 'missing',
+        },
+      ],
     ])
     expect(rootAgentIdFor((id: string) => tabs.get(id), 'child')).toBe('missing')
   })
 
   it('returns the input id when the tab has no parentAgentId (itself a root)', () => {
     const tabs = new Map<string, AgentTab>([
-      ['root', { type: TabType.AGENT, id: 'root', workspaceId: 'ws-1' }],
+      [
+        'root',
+        { type: TabType.AGENT, id: 'root', workspaceId: 'ws-1' },
+      ],
     ])
     expect(rootAgentIdFor((id: string) => tabs.get(id), 'root')).toBe('root')
   })
@@ -887,8 +1037,24 @@ describe('rootAgentIdFor', () => {
     // A -> B -> A: a corrupted/circular chain. The visited-set guard must
     // break the loop and fall back to the input rather than spin forever.
     const tabs = new Map<string, AgentTab>([
-      ['A', { type: TabType.AGENT, id: 'A', workspaceId: 'ws-1', parentAgentId: 'B' }],
-      ['B', { type: TabType.AGENT, id: 'B', workspaceId: 'ws-1', parentAgentId: 'A' }],
+      [
+        'A',
+        {
+          type: TabType.AGENT,
+          id: 'A',
+          workspaceId: 'ws-1',
+          parentAgentId: 'B',
+        },
+      ],
+      [
+        'B',
+        {
+          type: TabType.AGENT,
+          id: 'B',
+          workspaceId: 'ws-1',
+          parentAgentId: 'A',
+        },
+      ],
     ])
     expect(rootAgentIdFor((id: string) => tabs.get(id), 'A')).toBe('A')
   })
@@ -896,9 +1062,33 @@ describe('rootAgentIdFor', () => {
   it('breaks a longer cycle that returns to the start after several hops', () => {
     // A -> B -> C -> A: the guard catches the revisit on the fourth lookup.
     const tabs = new Map<string, AgentTab>([
-      ['A', { type: TabType.AGENT, id: 'A', workspaceId: 'ws-1', parentAgentId: 'B' }],
-      ['B', { type: TabType.AGENT, id: 'B', workspaceId: 'ws-1', parentAgentId: 'C' }],
-      ['C', { type: TabType.AGENT, id: 'C', workspaceId: 'ws-1', parentAgentId: 'A' }],
+      [
+        'A',
+        {
+          type: TabType.AGENT,
+          id: 'A',
+          workspaceId: 'ws-1',
+          parentAgentId: 'B',
+        },
+      ],
+      [
+        'B',
+        {
+          type: TabType.AGENT,
+          id: 'B',
+          workspaceId: 'ws-1',
+          parentAgentId: 'C',
+        },
+      ],
+      [
+        'C',
+        {
+          type: TabType.AGENT,
+          id: 'C',
+          workspaceId: 'ws-1',
+          parentAgentId: 'A',
+        },
+      ],
     ])
     expect(rootAgentIdFor((id: string) => tabs.get(id), 'A')).toBe('A')
   })
@@ -909,7 +1099,16 @@ describe('rootAgentIdFor', () => {
     // A grandchild whose intermediate parent is unhydrated still resolves to the
     // real root via its own rootAgentId.
     const tabs = new Map<string, AgentTab>([
-      ['gc', { type: TabType.AGENT, id: 'gc', workspaceId: 'ws-1', parentAgentId: 'c', rootAgentId: 'root-1' }],
+      [
+        'gc',
+        {
+          type: TabType.AGENT,
+          id: 'gc',
+          workspaceId: 'ws-1',
+          parentAgentId: 'c',
+          rootAgentId: 'root-1',
+        },
+      ],
     ])
     expect(rootAgentIdFor((id: string) => tabs.get(id), 'gc')).toBe('root-1')
   })
@@ -922,11 +1121,19 @@ describe('rootAgentIdFor', () => {
  */
 describe('descendantAgentTabs', () => {
   const agent = (id: string, parentAgentId?: string): Tab =>
-    ({ type: TabType.AGENT, id, workspaceId: 'ws-1', parentAgentId } as Tab)
+    ({
+      type: TabType.AGENT,
+      id,
+      workspaceId: 'ws-1',
+      parentAgentId,
+    } as Tab)
   const ids = (tabs: readonly Tab[], id: string) => descendantAgentTabs(tabs, id).map(t => t.id)
 
   it('returns nothing for an agent with no children', () => {
-    expect(ids([agent('root'), agent('other')], 'root')).toEqual([])
+    expect(ids([
+      agent('root'),
+      agent('other'),
+    ], 'root')).toEqual([])
   })
 
   it('returns nothing for an empty tab list', () => {
@@ -934,30 +1141,49 @@ describe('descendantAgentTabs', () => {
   })
 
   it('returns every child of the agent', () => {
-    const tabs = [agent('root'), agent('c1', 'root'), agent('c2', 'root')]
+    const tabs = [
+      agent('root'),
+      agent('c1', 'root'),
+      agent('c2', 'root'),
+    ]
     expect(new Set(ids(tabs, 'root'))).toEqual(new Set(['c1', 'c2']))
   })
 
   // Deepest first, so each tab closes before the one that placed it.
   it('returns a grandchild before its own parent', () => {
-    const tabs = [agent('root'), agent('c1', 'root'), agent('gc', 'c1')]
+    const tabs = [
+      agent('root'),
+      agent('c1', 'root'),
+      agent('gc', 'c1'),
+    ]
     expect(ids(tabs, 'root')).toEqual(['gc', 'c1'])
   })
 
   it('never includes the agent itself', () => {
-    const tabs = [agent('root'), agent('c1', 'root')]
+    const tabs = [
+      agent('root'),
+      agent('c1', 'root'),
+    ]
     expect(ids(tabs, 'root')).not.toContain('root')
   })
 
   it('returns only what is below the given agent, not a sibling branch', () => {
-    const tabs = [agent('root'), agent('a'), agent('c1', 'root'), agent('c2', 'a')]
+    const tabs = [
+      agent('root'),
+      agent('a'),
+      agent('c1', 'root'),
+      agent('c2', 'a'),
+    ]
     expect(ids(tabs, 'root')).toEqual(['c1'])
   })
 
   // A child whose parent is not in the list is not this agent's descendant. It
   // stays open, matching what the sidebar draws for it -- a top-level row.
   it('ignores a child whose parent is absent from the list', () => {
-    expect(ids([agent('root'), agent('orphan', 'gone')], 'root')).toEqual([])
+    expect(ids([
+      agent('root'),
+      agent('orphan', 'gone'),
+    ], 'root')).toEqual([])
   })
 
   // A TERMINAL and an AGENT tab can share an id, and only an AGENT is ever a
@@ -979,19 +1205,36 @@ describe('descendantAgentTabs', () => {
   it('terminates on a cycle rather than recursing forever', () => {
     // root -> a -> b, and b claims a as its child again. The revisit of `a` is
     // what the visited set has to catch; without it the walk never returns.
-    const tabs = [agent('root'), agent('a', 'root'), agent('b', 'a')]
-    const cyclic = [...tabs, { type: TabType.AGENT, id: 'a', workspaceId: 'ws-1', parentAgentId: 'b' } as Tab]
+    const tabs = [
+      agent('root'),
+      agent('a', 'root'),
+      agent('b', 'a'),
+    ]
+    const cyclic = [
+      ...tabs,
+      {
+        type: TabType.AGENT,
+        id: 'a',
+        workspaceId: 'ws-1',
+        parentAgentId: 'b',
+      } as Tab,
+    ]
     expect(ids(cyclic, 'root')).toEqual(['b', 'a'])
   })
 
   it('terminates when a tab claims itself as its own parent', () => {
     // Asked about `self`, the walk finds `self` among its own children. The
     // visited set is seeded with the starting id, so it stops there.
-    expect(ids([agent('self', 'self')], 'self')).toEqual([])
+    expect(ids([
+      agent('self', 'self'),
+    ], 'self')).toEqual([])
   })
 
   it('returns nothing for an id no tab carries', () => {
-    expect(ids([agent('root'), agent('c1', 'root')], 'ghost')).toEqual([])
+    expect(ids([
+      agent('root'),
+      agent('c1', 'root'),
+    ], 'ghost')).toEqual([])
   })
 })
 
@@ -1053,7 +1296,15 @@ describe('isSteerableAgentTab', () => {
     // routes through the provider plugin's supportsSubagentSend so the single
     // source of truth is the plugin, not a hardcoded provider check.
     __resetProviderRegistryForTest()
-    registerProvider(AgentProvider.CODEX, { transcript: { classify: () => ({} as never), spanRole: () => 'other', extractRow: () => null, extractDivider: () => null }, configuration: { supportsSubagentSend: true } })
+    registerProvider(AgentProvider.CODEX, {
+      transcript: {
+        classify: () => ({} as never),
+        spanRole: () => 'other',
+        extractRow: () => null,
+        extractDivider: () => null,
+      },
+      configuration: { supportsSubagentSend: true },
+    })
     expect(
       isSteerableAgentTab({ type: TabType.AGENT, parentAgentId: 'root', agentProvider: AgentProvider.CODEX }),
     ).toBe(true)
@@ -1063,7 +1314,14 @@ describe('isSteerableAgentTab', () => {
     // Claude/ACP children do not steer; before hydration they are treated as
     // read-only rather than optimistically enabling a composer that may not work.
     __resetProviderRegistryForTest()
-    registerProvider(AgentProvider.CLAUDE_CODE, { transcript: { classify: () => ({} as never), spanRole: () => 'other', extractRow: () => null, extractDivider: () => null } })
+    registerProvider(AgentProvider.CLAUDE_CODE, {
+      transcript: {
+        classify: () => ({} as never),
+        spanRole: () => 'other',
+        extractRow: () => null,
+        extractDivider: () => null,
+      },
+    })
     expect(
       isSteerableAgentTab({ type: TabType.AGENT, parentAgentId: 'root', agentProvider: AgentProvider.CLAUDE_CODE }),
     ).toBe(false)
@@ -1076,7 +1334,12 @@ describe('isSteerableAgentTab', () => {
     // A CODEX child that the backend says is NOT steerable must read false --
     // the authoritative flag overrides the optimistic provider default.
     expect(
-      isSteerableAgentTab({ type: TabType.AGENT, parentAgentId: 'root', acceptsMessages: false, agentProvider: AgentProvider.CODEX }),
+      isSteerableAgentTab({
+        type: TabType.AGENT,
+        parentAgentId: 'root',
+        acceptsMessages: false,
+        agentProvider: AgentProvider.CODEX,
+      }),
     ).toBe(false)
   })
 })
@@ -1232,7 +1495,9 @@ describe('withoutLiveStatusFields', () => {
       supportsPreemption: true,
       title: 'Agent Liz',
     }))
-    expect(Object.keys(fields)).toEqual(expect.arrayContaining([...LIVE_STATUS_FIELDS.filter(k => k !== 'startupError')]))
+    expect(Object.keys(fields)).toEqual(expect.arrayContaining([
+      ...LIVE_STATUS_FIELDS.filter(k => k !== 'startupError'),
+    ]))
 
     const kept = withoutLiveStatusFields(fields)
     for (const key of LIVE_STATUS_FIELDS)
@@ -1248,7 +1513,9 @@ describe('withoutLiveCatalogFields', () => {
     title: 'Agent Liz',
     agentStatus: AgentStatus.ACTIVE,
     agentSessionId: 's1',
-    optionGroups: [create(AvailableOptionGroupSchema, { id: 'model', currentValue: 'opus' })],
+    optionGroups: [
+      create(AvailableOptionGroupSchema, { id: 'model', currentValue: 'opus' }),
+    ],
     optionValues: { model: 'opus' },
   }
 
@@ -1282,7 +1549,9 @@ describe('withoutLiveCatalogFields', () => {
     const fields = protoToAgentTabFields(createRepoGitStore(), 'w1', create(AgentInfoSchema, {
       id: 'a1',
       title: 'Agent Liz',
-      optionGroups: [create(AvailableOptionGroupSchema, { id: 'model', currentValue: 'opus' })],
+      optionGroups: [
+        create(AvailableOptionGroupSchema, { id: 'model', currentValue: 'opus' }),
+      ],
     }))
     expect(Object.keys(fields)).toEqual(expect.arrayContaining([...LIVE_CATALOG_FIELDS]))
 
@@ -1297,8 +1566,12 @@ describe('withoutLiveCatalogFields', () => {
   it('lists exactly the fields that deriveOptionGroupTabFields writes', () => {
     const written = new Set<string>()
     for (const groups of [
-      [create(AvailableOptionGroupSchema, { id: 'model', currentValue: 'opus' })],
-      [create(AvailableOptionGroupSchema, { id: 'model' })],
+      [
+        create(AvailableOptionGroupSchema, { id: 'model', currentValue: 'opus' }),
+      ],
+      [
+        create(AvailableOptionGroupSchema, { id: 'model' }),
+      ],
     ]) {
       for (const key of Object.keys(deriveOptionGroupTabFields(groups)))
         written.add(key)

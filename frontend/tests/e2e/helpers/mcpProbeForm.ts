@@ -35,7 +35,9 @@ const MCP_PROBE_FORM_CHOICES: Readonly<Record<string, string>> = {
 
 /** Whether a saved control answer holds every answer that `fillMcpProbeForm` gives. */
 export function mcpProbeFormDraftSaved(record: unknown): boolean {
-  const choices = isObject(record) ? pickObject(record, 'choices') : null
+  const choices = isObject(record)
+    ? pickObject(record, 'choices')
+    : null
   return choices !== null && Object.entries(MCP_PROBE_FORM_CHOICES).every(([key, value]) => choices[key] === value)
 }
 
@@ -94,7 +96,11 @@ export async function exerciseMcpProbeFormRoundTrip(
   if (options.reloadBeforeSubmit && !userId)
     throw new Error('A reload of the probe form needs the account that saves its answers.')
   const start = await modelScript.queue(
-    { toolCalls: [mcpToolCall(context.provider, options.callId, { server: MCP_FORM_SERVER_NAME, tool: 'ask', input: {} })] },
+    {
+      toolCalls: [
+        mcpToolCall(context.provider, options.callId, { server: MCP_FORM_SERVER_NAME, tool: 'ask', input: {} }),
+      ],
+    },
     nativeTextStep(context, 'The MCP probe form completed.'),
   )
   await sendMessage(page, modelScript.prompt(`Call the ${MCP_FORM_SERVER_NAME} ask tool exactly once.`))

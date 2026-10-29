@@ -46,18 +46,26 @@ export function questionsFromRecords(
   readText: QuestionTextReader,
   readOption: QuestionOptionReader,
 ): QuestionPrompt[] {
-  const records = Array.isArray(source) ? source.filter(isObject) : []
+  const records = Array.isArray(source)
+    ? source.filter(isObject)
+    : []
   return records.flatMap((record) => {
     const text = readText(record)
     if (!text.question)
       return []
-    const options = Array.isArray(record.options) ? record.options.filter(isObject) : []
-    return [{
-      ...text,
-      options: options.flatMap((option) => {
-        const built = readOption(option)
-        return built ? [built] : []
-      }),
-    }]
+    const options = Array.isArray(record.options)
+      ? record.options.filter(isObject)
+      : []
+    return [
+      {
+        ...text,
+        options: options.flatMap((option) => {
+          const built = readOption(option)
+          return built
+            ? [built]
+            : []
+        }),
+      },
+    ]
   })
 }

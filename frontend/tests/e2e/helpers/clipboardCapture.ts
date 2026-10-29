@@ -17,7 +17,9 @@ function installClipboardCapture(): void {
     throw new Error('A clipboard capture is already active in this page.')
   const clipboard = navigator.clipboard
   const writeText = clipboard?.writeText
-  const writeDescriptor = clipboard ? Object.getOwnPropertyDescriptor(clipboard, 'writeText') : undefined
+  const writeDescriptor = clipboard
+    ? Object.getOwnPropertyDescriptor(clipboard, 'writeText')
+    : undefined
   const execCommand = document.execCommand
   const execDescriptor = Object.getOwnPropertyDescriptor(document, 'execCommand')
   let writeInstalled = false

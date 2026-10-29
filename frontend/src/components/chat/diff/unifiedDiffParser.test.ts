@@ -13,7 +13,13 @@ describe('parseUnifiedDiff', () => {
     expect(parsed?.oldText).toBe('context\nold')
     expect(parsed?.newText).toBe('context\nnew')
     expect(parsed?.hunks).toEqual([
-      { oldStart: 1, oldLines: 2, newStart: 1, newLines: 2, lines: [' context', '-old', '+new'] },
+      {
+        oldStart: 1,
+        oldLines: 2,
+        newStart: 1,
+        newLines: 2,
+        lines: [' context', '-old', '+new'],
+      },
     ])
   })
 
@@ -26,7 +32,13 @@ describe('parseUnifiedDiff', () => {
   it('reports the counts the header stated, not the lines it kept', () => {
     const parsed = parseUnifiedDiff('@@ -1,9 +1,9 @@\n-old\nsomething unrecognized\n+new')
     expect(parsed?.hunks).toEqual([
-      { oldStart: 1, oldLines: 9, newStart: 1, newLines: 9, lines: ['-old', '+new'] },
+      {
+        oldStart: 1,
+        oldLines: 9,
+        newStart: 1,
+        newLines: 9,
+        lines: ['-old', '+new'],
+      },
     ])
     expect(normalizeStructuredPatchHunks(parsed?.hunks)).toBeNull()
   })
@@ -41,7 +53,13 @@ describe('parseUnifiedDiff', () => {
   it('drops the no-newline marker without counting it', () => {
     const parsed = parseUnifiedDiff('@@ -1,1 +1,1 @@\n-old\n\\ No newline at end of file\n+new')
     expect(parsed?.hunks).toEqual([
-      { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-old', '+new'] },
+      {
+        oldStart: 1,
+        oldLines: 1,
+        newStart: 1,
+        newLines: 1,
+        lines: ['-old', '+new'],
+      },
     ])
   })
 })

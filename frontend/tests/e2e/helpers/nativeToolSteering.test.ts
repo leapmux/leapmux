@@ -13,7 +13,12 @@ import { startWaitLimitForTests } from './testDeadline'
 const harness = vi.hoisted(() => ({
   events: [] as string[],
   sent: [] as string[],
-  agent: { id: 'native-agent', workingDir: '/native/work', supportsSteering: false, supportsPreemption: true },
+  agent: {
+    id: 'native-agent',
+    workingDir: '/native/work',
+    supportsSteering: false,
+    supportsPreemption: true,
+  },
   queue: [] as { id: string, text: string, state: number, canSteer: boolean, canPreempt: boolean }[],
   /** The Worker queue state of the next sent message, as the held turn leaves it. */
   queueNextSend: undefined as { state: number, canSteer: boolean, canPreempt: boolean } | undefined,
@@ -66,7 +71,9 @@ vi.mock('./ui', () => ({
     harness.sent.push(text)
     harness.events.push(`send:${text}`)
     if (harness.queueNextSend) {
-      harness.queue = [{ id: 'queued-input', text, ...harness.queueNextSend }]
+      harness.queue = [
+        { id: 'queued-input', text, ...harness.queueNextSend },
+      ]
       harness.queueNextSend = undefined
     }
   },
@@ -97,8 +104,17 @@ vi.mock('./steer', () => ({
       throw harness.steerFailure
     harness.sent.push(input.message)
     harness.events.push(`steer:${input.message}`)
-    if (harness.stopWithPending)
-      harness.queue = [{ id: 'pending', text: input.message, state: AgentInputState.AWAITING_ECHO, canSteer: false, canPreempt: false }]
+    if (harness.stopWithPending) {
+      harness.queue = [
+        {
+          id: 'pending',
+          text: input.message,
+          state: AgentInputState.AWAITING_ECHO,
+          canSteer: false,
+          canPreempt: false,
+        },
+      ]
+    }
   },
   expectSteeredReply: async (_page: Page, reply: string, at: string) => {
     harness.events.push(`steered reply:${reply}:${at}`)
@@ -118,8 +134,11 @@ vi.mock('./nativeScenario', async (importOriginal) => {
 vi.mock('./api', () => ({
   getTestChannel: async () => ({
     callWorker: async (_workerId: string, method: string, _request: unknown, _response: unknown, payload: { agentId: string }) => {
-      if (method === 'ListAgentInputQueue')
-        return { snapshot: { agentId: payload.agentId, activeTurn: false, items: harness.queue } }
+      if (method === 'ListAgentInputQueue') {
+        return {
+          snapshot: { agentId: payload.agentId, activeTurn: false, items: harness.queue },
+        }
+      }
       harness.events.push(`worker:${method}`)
       throw harness.steerFailure ?? Object.assign(new Error('agent provider does not support steering'), { source: 'rpc', code: 9 })
     },
@@ -167,7 +186,12 @@ vi.mock('@playwright/test', async (importOriginal) => {
     }
     return expect(value, message)
   }
-  return { ...actual, expect: Object.assign(fakeExpect, { poll: (read: () => unknown, options?: { message?: string }) => expect.poll(read, options) }) }
+  return {
+    ...actual,
+    expect: Object.assign(fakeExpect, {
+      poll: (read: () => unknown, options?: { message?: string }) => expect.poll(read, options),
+    }),
+  }
 })
 
 /** A script whose queue starts at `offset`, as after an earlier turn. `requestAt` builds each request from what the test sent. */
@@ -203,7 +227,10 @@ function fakeScript(offset: number, request: (stepIndex: number, queued: readonl
 
 function context(script: ReturnType<typeof fakeScript>['script']): ManagedNativeScenarioContext {
   return {
-    page: { locator: (selector: string) => fake(selector), reload: async () => { harness.events.push('reload') } } as unknown as Page,
+    page: {
+      locator: (selector: string) => fake(selector),
+      reload: async () => { harness.events.push('reload') },
+    } as unknown as Page,
     modelScript: script as unknown as ModelScript,
     provider: AgentProvider.OPENCODE,
     providerAgent: { provider: AgentProvider.OPENCODE, prefix: 'native-e2e' },
@@ -214,13 +241,25 @@ function context(script: ReturnType<typeof fakeScript>['script']): ManagedNative
 
 /** A Chat Completions request whose body holds `texts`. */
 function bodyRequest(stepIndex: number, ...texts: string[]): MockModelRequestRecord {
-  return { protocol: 'openai-chat-completions', path: '/v1/chat/completions', stepIndex, body: { messages: texts.map(content => ({ role: 'user', content })) } }
+  return {
+    protocol: 'openai-chat-completions',
+    path: '/v1/chat/completions',
+    stepIndex,
+    body: {
+      messages: texts.map(content => ({ role: 'user', content })),
+    },
+  }
 }
 
 beforeEach(() => {
   harness.events.length = 0
   harness.sent.length = 0
-  harness.agent = { id: 'native-agent', workingDir: '/native/work', supportsSteering: false, supportsPreemption: true }
+  harness.agent = {
+    id: 'native-agent',
+    workingDir: '/native/work',
+    supportsSteering: false,
+    supportsPreemption: true,
+  }
   harness.queue = []
   harness.queueNextSend = undefined
   harness.steerFailure = undefined
@@ -272,7 +311,9 @@ describe('exerciseStopWithPendingSteer', () => {
 describe('continued steer evidence', () => {
   it('checks a preempted steer on the original live transcript', async () => {
     const { script } = fakeScript(0, stepIndex => bodyRequest(stepIndex, harness.sent.at(-1) ?? ''))
-    const contextWithPartial = context(Object.assign(script, { allowUnconsumed: vi.fn() }))
+    const contextWithPartial = context(Object.assign(script, {
+      allowUnconsumed: vi.fn(),
+    }))
     await exerciseSteerDuringText(contextWithPartial, {
       answer: 'preempt',
       checkTranscript: async () => { harness.events.push('provider check') },
@@ -320,7 +361,9 @@ describe('exerciseSteerBeforeTool', () => {
     const { script, queued } = fakeScript(2, stepIndex => bodyRequest(stepIndex, steering))
     const request = await exerciseSteerBeforeTool(context(script))
     expect(queued).toHaveLength(2)
-    expect(queued[0]?.toolCalls).toEqual([bashToolCall(AgentProvider.OPENCODE, 'steer-tool', 'printf provider-steer-ready')])
+    expect(queued[0]?.toolCalls).toEqual([
+      bashToolCall(AgentProvider.OPENCODE, 'steer-tool', 'printf provider-steer-ready'),
+    ])
     expect(queued[0]?.gate).toMatch(/^native-steer-before-tool-[0-9a-f]{32}$/)
     expect(queued[1]).toEqual({ text: 'The turn ended with STEEREDWORD.' })
     expect(harness.events).toEqual([
@@ -340,7 +383,12 @@ describe('exerciseSteerBeforeTool', () => {
   it('allows the shell command through its banner before the turn ends, and counts the stated dividers', async () => {
     const { script } = fakeScript(0, stepIndex => bodyRequest(stepIndex, steering))
     await exerciseSteerBeforeTool(context(script), { approveTool: true, resultDividers: 2 })
-    expect(harness.events.slice(3, 7)).toEqual(['gate released', 'banner', 'banner holds:printf provider-steer-ready', 'answer:allow'])
+    expect(harness.events.slice(3, 7)).toEqual([
+      'gate released',
+      'banner',
+      'banner holds:printf provider-steer-ready',
+      'answer:allow',
+    ])
     expect(harness.events.at(-1)).toBe('[data-testid="result-divider"]:visible count:2')
   })
 
@@ -365,7 +413,15 @@ describe('exerciseSteerAfterTool', () => {
     const { script } = fakeScript(0, stepIndex => bodyRequest(stepIndex, steering, 'NATIVEFIRSTMARKER', 'NATIVESECONDMARKER', 'yyyy-second-tail'))
     await exerciseSteerAfterTool(context(script), { expectDisplayedOutput: false })
     const outputs = harness.events.filter(event => /output|release|steer:/.test(event))
-    expect(outputs).toEqual(['first output', `steer:${steering}`, 'release first', 'second output', 'release final', 'release first', 'release final'])
+    expect(outputs).toEqual([
+      'first output',
+      `steer:${steering}`,
+      'release first',
+      'second output',
+      'release final',
+      'release first',
+      'release final',
+    ])
     expect(harness.events).toContain('request:1')
   })
 

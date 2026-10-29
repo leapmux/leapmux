@@ -106,7 +106,12 @@ export function managedNativeContext(
   providerAgent: ProviderAgent,
   protocol: NativeProtocol = {},
 ): ManagedNativeScenarioContext {
-  return { ...fixtures, ...protocol, provider: providerAgent.provider, providerAgent }
+  return {
+    ...fixtures,
+    ...protocol,
+    provider: providerAgent.provider,
+    providerAgent,
+  }
 }
 
 /** Build a native answer while keeping provider decisions at the call site. */
@@ -130,9 +135,23 @@ export type NativeAnswerStep = 'next-step' | 'same-step'
 export function toolTurnSteps(toolCalls: readonly MockModelToolCall[], answer: MockModelStep, answerStep: NativeAnswerStep = 'next-step'): MockModelStep[] {
   if (toolCalls.length === 0)
     throw new Error('A tool turn needs at least one tool call.')
-  if (answerStep === 'same-step')
-    return [{ ...answer, toolCalls: [...toolCalls, ...answer.toolCalls ?? []] }]
-  return [{ toolCalls: [...toolCalls] }, answer]
+  if (answerStep === 'same-step') {
+    return [
+      {
+        ...answer,
+        toolCalls: [
+          ...toolCalls,
+          ...answer.toolCalls ?? [],
+        ],
+      },
+    ]
+  }
+  return [
+    {
+      toolCalls: [...toolCalls],
+    },
+    answer,
+  ]
 }
 
 /**
@@ -158,7 +177,9 @@ export async function nativeAgentsByIds(
     'ListAgents',
     ListAgentsRequestSchema,
     ListAgentsResponseSchema,
-    { tabIds: [...agentIds] },
+    {
+      tabIds: [...agentIds],
+    },
   )
   return response.agents
 }
@@ -284,7 +305,11 @@ export async function nativeToolOutcome(
   request: MockModelRequestRecord,
   callId: string,
 ): Promise<NativeToolOutcome> {
-  return context.readToolResult ? context.readToolResult(request, callId) : { text: nativeToolResult(request, callId) }
+  return context.readToolResult
+    ? context.readToolResult(request, callId)
+    : {
+        text: nativeToolResult(request, callId),
+      }
 }
 
 /** Read the last queued native request body. Keep fallback and rule requests separate. */
@@ -348,8 +373,12 @@ export function nativeTextBlocks(value: unknown, types: ReadonlySet<unknown> = U
   return value.flatMap((block: unknown) => {
     if (typeof block !== 'object' || block === null || !('text' in block) || typeof block.text !== 'string')
       return []
-    const type = 'type' in block ? block.type : undefined
-    return types.has(type) ? [block.text] : []
+    const type = 'type' in block
+      ? block.type
+      : undefined
+    return types.has(type)
+      ? [block.text]
+      : []
   })
 }
 
@@ -373,7 +402,7 @@ export function nativeModelLastUserText(request: MockModelRequestRecord): string
   }
   else {
     if (!Array.isArray(rows))
-      throw new Error('The native model request contains no user message array.')
+      throw new TypeError('The native model request contains no user message array.')
     const last = rows.findLast((row: unknown) => isObject(row) && row.role === 'user')
     if (!isObject(last))
       throw new Error('The native model request contains no user message.')
@@ -440,7 +469,9 @@ export function nativeToolArgumentText(value: unknown): string {
     // Arguments that are not JSON stay the literal text that the model wrote.
     return value
   }
-  return typeof decoded === 'object' && decoded !== null ? jsonStringValues(decoded).join('\n') : value
+  return typeof decoded === 'object' && decoded !== null
+    ? jsonStringValues(decoded).join('\n')
+    : value
 }
 
 function turnText(parts: readonly string[]): string {
@@ -449,39 +480,86 @@ function turnText(parts: readonly string[]): string {
 
 function googleConversationTurns(contents: unknown): NativeModelTurn[] {
   if (!Array.isArray(contents))
-    throw new Error('The native Google model request contains no contents array.')
+    throw new TypeError('The native Google model request contains no contents array.')
   return contents.flatMap((row: unknown): NativeModelTurn[] => {
     if (!isObject(row))
       return []
-    if (row.role === 'user')
-      return [{ role: 'user', text: googlePartsText(row.parts) }]
+    if (row.role === 'user') {
+      return [
+        {
+          role: 'user',
+          text: googlePartsText(row.parts),
+        },
+      ]
+    }
     if (row.role !== 'model')
       return []
     // A Google thought part is reasoning, not answer text.
-    const parts = Array.isArray(row.parts) ? row.parts.filter(isObject).filter(part => part.thought !== true) : []
-    const calls = parts.flatMap(part => isObject(part.functionCall) ? [nativeToolArgumentText(part.functionCall.args)] : [])
-    return [{ role: 'assistant', text: turnText([googlePartsText(parts), ...calls]) }]
+    const parts = Array.isArray(row.parts)
+      ? row.parts.filter(isObject).filter(part => part.thought !== true)
+      : []
+    const calls = parts.flatMap(part => isObject(part.functionCall)
+      ? [
+          nativeToolArgumentText(part.functionCall.args),
+        ]
+      : [])
+    return [
+      {
+        role: 'assistant',
+        text: turnText([
+          googlePartsText(parts),
+          ...calls,
+        ]),
+      },
+    ]
   })
 }
 
 function responsesConversationTurns(input: unknown): NativeModelTurn[] {
-  if (typeof input === 'string')
-    return [{ role: 'user', text: input }]
+  if (typeof input === 'string') {
+    return [
+      { role: 'user', text: input },
+    ]
+  }
   if (!Array.isArray(input))
-    throw new Error('The native Responses model request contains no input array.')
+    throw new TypeError('The native Responses model request contains no input array.')
   return input.flatMap((item: unknown): NativeModelTurn[] => {
     if (!isObject(item))
       return []
-    if (item.type === 'function_call')
-      return [{ role: 'assistant', text: nativeToolArgumentText(item.arguments) }]
-    if (item.type === 'custom_tool_call')
-      return [{ role: 'assistant', text: nativeToolArgumentText(item.input) }]
+    if (item.type === 'function_call') {
+      return [
+        {
+          role: 'assistant',
+          text: nativeToolArgumentText(item.arguments),
+        },
+      ]
+    }
+    if (item.type === 'custom_tool_call') {
+      return [
+        {
+          role: 'assistant',
+          text: nativeToolArgumentText(item.input),
+        },
+      ]
+    }
     if (item.type !== undefined && item.type !== 'message')
       return []
-    if (item.role === 'user')
-      return [{ role: 'user', text: turnText(nativeTextBlocks(item.content)) }]
-    if (item.role === 'assistant')
-      return [{ role: 'assistant', text: turnText(nativeTextBlocks(item.content, ASSISTANT_TEXT_BLOCK_TYPES)) }]
+    if (item.role === 'user') {
+      return [
+        {
+          role: 'user',
+          text: turnText(nativeTextBlocks(item.content)),
+        },
+      ]
+    }
+    if (item.role === 'assistant') {
+      return [
+        {
+          role: 'assistant',
+          text: turnText(nativeTextBlocks(item.content, ASSISTANT_TEXT_BLOCK_TYPES)),
+        },
+      ]
+    }
     return []
   })
 }
@@ -489,21 +567,44 @@ function responsesConversationTurns(input: unknown): NativeModelTurn[] {
 /** Read Chat Completions and Anthropic Messages rows. Each API keeps its tool calls in a different field. */
 function messageConversationTurns(messages: unknown): NativeModelTurn[] {
   if (!Array.isArray(messages))
-    throw new Error('The native model request contains no message array.')
+    throw new TypeError('The native model request contains no message array.')
   return messages.flatMap((message: unknown): NativeModelTurn[] => {
     if (!isObject(message))
       return []
-    if (message.role === 'user')
-      return [{ role: 'user', text: turnText(nativeTextBlocks(message.content)) }]
+    if (message.role === 'user') {
+      return [
+        {
+          role: 'user',
+          text: turnText(nativeTextBlocks(message.content)),
+        },
+      ]
+    }
     if (message.role !== 'assistant')
       return []
     const chatCalls = Array.isArray(message.tool_calls)
-      ? message.tool_calls.filter(isObject).flatMap(call => isObject(call.function) ? [nativeToolArgumentText(call.function.arguments)] : [])
+      ? message.tool_calls.filter(isObject).flatMap(call => isObject(call.function)
+          ? [
+              nativeToolArgumentText(call.function.arguments),
+            ]
+          : [])
       : []
     const anthropicCalls = Array.isArray(message.content)
-      ? message.content.filter(isObject).flatMap(block => block.type === 'tool_use' ? [nativeToolArgumentText(block.input)] : [])
+      ? message.content.filter(isObject).flatMap(block => block.type === 'tool_use'
+          ? [
+              nativeToolArgumentText(block.input),
+            ]
+          : [])
       : []
-    return [{ role: 'assistant', text: turnText([...nativeTextBlocks(message.content, ASSISTANT_TEXT_BLOCK_TYPES), ...chatCalls, ...anthropicCalls]) }]
+    return [
+      {
+        role: 'assistant',
+        text: turnText([
+          ...nativeTextBlocks(message.content, ASSISTANT_TEXT_BLOCK_TYPES),
+          ...chatCalls,
+          ...anthropicCalls,
+        ]),
+      },
+    ]
   })
 }
 

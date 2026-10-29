@@ -34,8 +34,12 @@ describe('createAgentSessionStore', () => {
       store.updateInfo('agent-1', { totalCostUsd: 2.5 })
       // fromEntries permits an explicit undefined value without a type assertion.
       // A present undefined value must not replace the stored value.
-      store.updateInfo('agent-1', Object.fromEntries([['totalCostUsd', undefined]]))
-      store.updateInfo('agent-1', Object.fromEntries([['totalCostUsd', null]]))
+      store.updateInfo('agent-1', Object.fromEntries([
+        ['totalCostUsd', undefined],
+      ]))
+      store.updateInfo('agent-1', Object.fromEntries([
+        ['totalCostUsd', null],
+      ]))
       const info = store.getInfo('agent-1')
       expect(info.totalCostUsd).toBe(2.5)
       dispose()
@@ -80,7 +84,10 @@ describe('createAgentSessionStore', () => {
   it('should load persisted info on first getInfo call', async () => {
     localStorageStore(`${PREFIX_AGENT_SESSION}agent-1`, { totalCostUsd: 3.0 })
 
-    const { store, dispose } = createRoot(dispose => ({ store: createAgentSessionStore(), dispose }))
+    const { store, dispose } = createRoot(dispose => ({
+      store: createAgentSessionStore(),
+      dispose,
+    }))
     // getInfo returns before the stored row arrives.
     // The reactive update supplies the hydrated value to the next render.
     store.getInfo('agent-1')
@@ -92,10 +99,14 @@ describe('createAgentSessionStore', () => {
     createRoot((dispose) => {
       const store = createAgentSessionStore()
       store.updateInfo('agent-1', {
-        rateLimits: { five_hour: { rateLimitType: 'five_hour', utilization: 0.5 } },
+        rateLimits: {
+          five_hour: { rateLimitType: 'five_hour', utilization: 0.5 },
+        },
       })
       store.updateInfo('agent-1', {
-        rateLimits: { seven_day: { rateLimitType: 'seven_day', utilization: 0.3 } },
+        rateLimits: {
+          seven_day: { rateLimitType: 'seven_day', utilization: 0.3 },
+        },
       })
       const info = store.getInfo('agent-1')
       expect(info.rateLimits?.five_hour?.utilization).toBe(0.5)
@@ -114,7 +125,9 @@ describe('createAgentSessionStore', () => {
         },
       })
       store.updateInfo('agent-1', {
-        rateLimits: { five_hour: { rateLimitType: 'five_hour', utilization: 0.8 } },
+        rateLimits: {
+          five_hour: { rateLimitType: 'five_hour', utilization: 0.8 },
+        },
       })
       const info = store.getInfo('agent-1')
       expect(info.rateLimits?.five_hour?.utilization).toBe(0.8)
@@ -133,8 +146,12 @@ describe('createAgentSessionStore', () => {
         },
       })
       store.updateInfo('agent-1', {
-        rateLimits: { seven_day: { rateLimitType: 'seven_day', status: 'allowed' } },
-      }, { rateLimits: { mode: 'replace' } })
+        rateLimits: {
+          seven_day: { rateLimitType: 'seven_day', status: 'allowed' },
+        },
+      }, {
+        rateLimits: { mode: 'replace' },
+      })
 
       expect(store.getInfo('agent-1').rateLimits).toEqual({
         seven_day: { rateLimitType: 'seven_day', status: 'allowed' },
@@ -153,7 +170,10 @@ describe('createAgentSessionStore', () => {
         },
       })
       store.updateInfo('agent-1', { rateLimits: {} }, {
-        rateLimits: { mode: 'merge', deleteKeys: ['account_block'] },
+        rateLimits: {
+          mode: 'merge',
+          deleteKeys: ['account_block'],
+        },
       })
 
       expect(store.getInfo('agent-1').rateLimits).toEqual({
@@ -168,7 +188,9 @@ describe('createAgentSessionStore', () => {
       const store = createAgentSessionStore()
       store.updateInfo('agent-1', { totalCostUsd: 1.5 })
       store.updateInfo('agent-1', {
-        rateLimits: { five_hour: { rateLimitType: 'five_hour', status: 'allowed_warning' } },
+        rateLimits: {
+          five_hour: { rateLimitType: 'five_hour', status: 'allowed_warning' },
+        },
       })
       const info = store.getInfo('agent-1')
       expect(info.totalCostUsd).toBe(1.5)
@@ -190,7 +212,10 @@ describe('createAgentSessionStore', () => {
   it('should keep a false output minimum value', () => {
     createRoot((dispose) => {
       const store = createAgentSessionStore()
-      store.applyProgress('agent-1', { revision: 1, output: { bytes: 2048, minimum: false } })
+      store.applyProgress('agent-1', {
+        revision: 1,
+        output: { bytes: 2048, minimum: false },
+      })
       expect(store.getProgress('agent-1').output?.minimum).toBe(false)
       dispose()
     })
@@ -282,9 +307,16 @@ describe('agentSessionStore thinkingTokens', () => {
   it('clears an explicit zero thinking count without changing other progress', () => {
     createRoot((dispose) => {
       const store = createAgentSessionStore()
-      store.applyProgress('zero-thinking', { revision: 1, thinkingTokens: 0, output: { bytes: 8, minimum: false } })
+      store.applyProgress('zero-thinking', {
+        revision: 1,
+        thinkingTokens: 0,
+        output: { bytes: 8, minimum: false },
+      })
       store.clearThinkingTokens('zero-thinking')
-      expect(store.getProgress('zero-thinking')).toEqual({ revision: 1, output: { bytes: 8, minimum: false } })
+      expect(store.getProgress('zero-thinking')).toEqual({
+        revision: 1,
+        output: { bytes: 8, minimum: false },
+      })
       dispose()
     })
   })
@@ -370,7 +402,10 @@ describe('agentSessionStore clearContextUsage', () => {
       store.clearContextUsage('agent-1')
       dispose()
     })
-    const { store, dispose } = createRoot(dispose => ({ store: createAgentSessionStore(), dispose }))
+    const { store, dispose } = createRoot(dispose => ({
+      store: createAgentSessionStore(),
+      dispose,
+    }))
     try {
       store.getInfo('agent-1')
       await vi.waitFor(() => {
@@ -403,7 +438,9 @@ describe('agentSessionStore clearContextUsage', () => {
           cacheCreationInputTokens: 0,
           cacheReadInputTokens: 0,
         },
-        rateLimits: { five_hour: { status: 'allowed' } },
+        rateLimits: {
+          five_hour: { status: 'allowed' },
+        },
       })
       dispose()
     })
@@ -425,7 +462,11 @@ describe('agentSessionStore clearContextUsage', () => {
     // A later reload reads this row. Context usage and cost are absent, and rate limits remain.
     await vi.waitFor(async () => {
       expect(await localStorageLoad(`${PREFIX_AGENT_SESSION}a-unhydrated`))
-        .toEqual({ rateLimits: { five_hour: { status: 'allowed' } } })
+        .toEqual({
+          rateLimits: {
+            five_hour: { status: 'allowed' },
+          },
+        })
     })
   })
 
@@ -465,7 +506,11 @@ describe('agentSessionStore clearContextUsage', () => {
     // Persist rate limits without context usage or cost.
     createRoot((dispose) => {
       const store = createAgentSessionStore()
-      store.updateInfo('a-nocontext', { rateLimits: { five_hour: { status: 'allowed' } } })
+      store.updateInfo('a-nocontext', {
+        rateLimits: {
+          five_hour: { status: 'allowed' },
+        },
+      })
       dispose()
     })
 
@@ -482,7 +527,11 @@ describe('agentSessionStore clearContextUsage', () => {
 
     await vi.waitFor(async () => {
       expect(await localStorageLoad(`${PREFIX_AGENT_SESSION}a-nocontext`))
-        .toEqual({ rateLimits: { five_hour: { status: 'allowed' } } })
+        .toEqual({
+          rateLimits: {
+            five_hour: { status: 'allowed' },
+          },
+        })
     })
   })
 })
@@ -498,7 +547,12 @@ describe('compactionContextUsage', () => {
   })
 
   it('preserves an existing context window so the percentage denominator survives', () => {
-    const existing = { inputTokens: 50000, cacheCreationInputTokens: 40000, cacheReadInputTokens: 60000, contextWindow: 200000 }
+    const existing = {
+      inputTokens: 50000,
+      cacheCreationInputTokens: 40000,
+      cacheReadInputTokens: 60000,
+      contextWindow: 200000,
+    }
     expect(compactionContextUsage(12000, existing)).toEqual({
       inputTokens: 0,
       cacheCreationInputTokens: 0,
@@ -515,14 +569,24 @@ describe('compactionContextUsage', () => {
   })
 
   it('preserves a context window of 0 (present-but-falsy, not dropped)', () => {
-    const result = compactionContextUsage(8000, { inputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, contextWindow: 0 })
+    const result = compactionContextUsage(8000, {
+      inputTokens: 0,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
+      contextWindow: 0,
+    })
     expect(result.contextWindow).toBe(0)
   })
 
   it('drops the stated fill of the reading before the compaction', () => {
     // The percentage describes the old context.
     // Keeping it beside a post-compaction zero would display the old percentage again.
-    const result = compactionContextUsage(0, { inputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0, usagePercent: 88 })
+    const result = compactionContextUsage(0, {
+      inputTokens: 0,
+      cacheCreationInputTokens: 0,
+      cacheReadInputTokens: 0,
+      usagePercent: 88,
+    })
     expect('usagePercent' in result).toBe(false)
     expect(result.contextTokens).toBe(0)
   })
@@ -547,7 +611,10 @@ describe('createAgentSessionStore account and hydration ownership', () => {
     const pending = deferred<{ totalCostUsd: number }>()
     const load = vi.spyOn(browserStorage, 'localStorageLoad').mockReturnValueOnce(pending.promise)
     const save = vi.spyOn(browserStorage, 'localStorageStore')
-    const { store, dispose } = createRoot(dispose => ({ store: createAgentSessionStore(), dispose }))
+    const { store, dispose } = createRoot(dispose => ({
+      store: createAgentSessionStore(),
+      dispose,
+    }))
     try {
       store.getInfo('account-read-agent')
       store.updateInfo('account-read-agent', { totalCostUsd: 98 })
@@ -575,7 +642,10 @@ describe('createAgentSessionStore account and hydration ownership', () => {
     const pending = deferred<{ totalCostUsd: number, planFilePath: string }>()
     const load = vi.spyOn(browserStorage, 'localStorageLoad').mockReturnValueOnce(pending.promise)
     const save = vi.spyOn(browserStorage, 'localStorageStore')
-    const { store, dispose } = createRoot(dispose => ({ store: createAgentSessionStore(), dispose }))
+    const { store, dispose } = createRoot(dispose => ({
+      store: createAgentSessionStore(),
+      dispose,
+    }))
     try {
       store.clearContextUsage('clear-read-agent')
       store.updateInfo('clear-read-agent', {
@@ -603,12 +673,18 @@ describe('createAgentSessionStore account and hydration ownership', () => {
     const pending = deferred<{ totalCostUsd: number }>()
     const load = vi.spyOn(browserStorage, 'localStorageLoad').mockReturnValueOnce(pending.promise)
     const save = vi.spyOn(browserStorage, 'localStorageStore')
-    const { store: outgoing, dispose: disposeOutgoing } = createRoot(dispose => ({ store: createAgentSessionStore(), dispose }))
+    const { store: outgoing, dispose: disposeOutgoing } = createRoot(dispose => ({
+      store: createAgentSessionStore(),
+      dispose,
+    }))
     outgoing.updateInfo('closed-account-agent', { totalCostUsd: 98 })
     disposeOutgoing()
     setStorageAccountForTests('account-after-close')
 
-    const { store: incoming, dispose: disposeIncoming } = createRoot(dispose => ({ store: createAgentSessionStore(), dispose }))
+    const { store: incoming, dispose: disposeIncoming } = createRoot(dispose => ({
+      store: createAgentSessionStore(),
+      dispose,
+    }))
     try {
       incoming.updateInfo('closed-account-agent', { totalCostUsd: 7 })
       pending.resolve({ totalCostUsd: 99 })
@@ -637,7 +713,9 @@ describe('createAgentSessionStore replay ownership', () => {
         store.claimGoalProgressWrite('goal-fields', 'tokensUsed', { phase: 'live' })
         expect(store.claimGoalProgressWrite('goal-fields', 'tokensUsed', { phase: 'replay', replayId: 1n })).toBe(false)
         expect(store.claimGoalProgressWrite('goal-fields', 'iterations', { phase: 'replay', replayId: 1n })).toBe(true)
-        store.updateInfo('goal-fields', { totalCostUsd: 2 }, { delivery: { phase: 'replay', replayId: 1n } })
+        store.updateInfo('goal-fields', { totalCostUsd: 2 }, {
+          delivery: { phase: 'replay', replayId: 1n },
+        })
         expect(store.getInfo('goal-fields')).toEqual({ totalCostUsd: 2 })
       }
       finally {
@@ -646,7 +724,12 @@ describe('createAgentSessionStore replay ownership', () => {
     })
   })
 
-  it.each(['tokensUsed', 'tokenBudget', 'timeUsedSeconds', 'iterations'] as const)('protects an absent %s after an accepted live goal clear', (field) => {
+  it.each([
+    'tokensUsed',
+    'tokenBudget',
+    'timeUsedSeconds',
+    'iterations',
+  ] as const)('protects an absent %s after an accepted live goal clear', (field) => {
     createRoot((dispose) => {
       try {
         const store = createAgentSessionStore()
@@ -718,13 +801,17 @@ describe('createAgentSessionStore replay ownership', () => {
       store.updateInfo('cold-history', {
         totalCostUsd: 2,
         contextUsage: { inputTokens: 10, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 },
-        rateLimits: { daily: { utilization: 0.5 } },
+        rateLimits: {
+          daily: { utilization: 0.5 },
+        },
         planFilePath: '/history-plan',
       }, { delivery })
       expect(store.getInfo('cold-history')).toEqual({
         totalCostUsd: 2,
         contextUsage: { inputTokens: 10, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 },
-        rateLimits: { daily: { utilization: 0.5 } },
+        rateLimits: {
+          daily: { utilization: 0.5 },
+        },
         planFilePath: '/history-plan',
       })
       dispose()
@@ -739,11 +826,15 @@ describe('createAgentSessionStore replay ownership', () => {
         store.beginReplay(agentId, previousId)
       store.updateInfo(agentId, { totalCostUsd: 1 })
       store.beginReplay(agentId, previousId + 1n)
-      store.updateInfo(agentId, { totalCostUsd: 2 }, { delivery: { phase: 'replay', replayId: previousId + 1n, seq: 20n } })
+      store.updateInfo(agentId, { totalCostUsd: 2 }, {
+        delivery: { phase: 'replay', replayId: previousId + 1n, seq: 20n },
+      })
       expect(store.getInfo(agentId).totalCostUsd).toBe(2)
       store.updateInfo(agentId, { totalCostUsd: 3 })
       store.beginReplay(agentId, previousId + 2n)
-      store.updateInfo(agentId, { totalCostUsd: 4 }, { delivery: { phase: 'replay', replayId: previousId + 2n, seq: 40n } })
+      store.updateInfo(agentId, { totalCostUsd: 4 }, {
+        delivery: { phase: 'replay', replayId: previousId + 2n, seq: 40n },
+      })
       expect(store.getInfo(agentId).totalCostUsd).toBe(4)
       dispose()
     })
@@ -753,9 +844,15 @@ describe('createAgentSessionStore replay ownership', () => {
     createRoot((dispose) => {
       const store = createAgentSessionStore()
       store.beginReplay('ordered-history', 1n)
-      store.updateInfo('ordered-history', { totalCostUsd: 3 }, { delivery: { phase: 'live', seq: 20n } })
-      store.updateInfo('ordered-history', { totalCostUsd: 2 }, { delivery: { phase: 'replay', replayId: 1n, seq: historySeq } })
-      expect(store.getInfo('ordered-history').totalCostUsd).toBe(historySeq > 20n ? 2 : 3)
+      store.updateInfo('ordered-history', { totalCostUsd: 3 }, {
+        delivery: { phase: 'live', seq: 20n },
+      })
+      store.updateInfo('ordered-history', { totalCostUsd: 2 }, {
+        delivery: { phase: 'replay', replayId: 1n, seq: historySeq },
+      })
+      expect(store.getInfo('ordered-history').totalCostUsd).toBe(historySeq > 20n
+        ? 2
+        : 3)
       dispose()
     })
   })
@@ -765,8 +862,12 @@ describe('createAgentSessionStore replay ownership', () => {
       const store = createAgentSessionStore()
       store.beginReplay('ephemeral-history', 1n)
       store.updateInfo('ephemeral-history', { totalCostUsd: 3 })
-      store.updateInfo('ephemeral-history', { totalCostUsd: 4 }, { delivery: { phase: 'live', seq: 30n } })
-      store.updateInfo('ephemeral-history', { totalCostUsd: 2 }, { delivery: { phase: 'replay', replayId: 1n, seq: 40n } })
+      store.updateInfo('ephemeral-history', { totalCostUsd: 4 }, {
+        delivery: { phase: 'live', seq: 30n },
+      })
+      store.updateInfo('ephemeral-history', { totalCostUsd: 2 }, {
+        delivery: { phase: 'replay', replayId: 1n, seq: 40n },
+      })
       expect(store.getInfo('ephemeral-history').totalCostUsd).toBe(4)
       dispose()
     })
@@ -777,7 +878,9 @@ describe('createAgentSessionStore replay ownership', () => {
       const store = createAgentSessionStore()
       store.beginReplay('zero-history', 1n)
       store.updateInfo('zero-history', { totalCostUsd: 0 })
-      store.updateInfo('zero-history', { totalCostUsd: 2, planFilePath: '/history-plan' }, { delivery: { phase: 'replay', replayId: 1n, seq: 40n } })
+      store.updateInfo('zero-history', { totalCostUsd: 2, planFilePath: '/history-plan' }, {
+        delivery: { phase: 'replay', replayId: 1n, seq: 40n },
+      })
       expect(store.getInfo('zero-history')).toEqual({ totalCostUsd: 0, planFilePath: '/history-plan' })
       dispose()
     })
@@ -792,7 +895,9 @@ describe('createAgentSessionStore replay ownership', () => {
         totalCostUsd: 2,
         contextUsage: { inputTokens: 10, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 },
         planFilePath: '/history-plan',
-      }, { delivery: { phase: 'replay', replayId: 1n, seq: 40n } })
+      }, {
+        delivery: { phase: 'replay', replayId: 1n, seq: 40n },
+      })
       expect(store.getInfo('clear-history')).toEqual({ planFilePath: '/history-plan' })
       dispose()
     })
@@ -805,11 +910,17 @@ describe('createAgentSessionStore replay ownership', () => {
       store.beginReplay('replaced-history', 2n)
       store.retireReplay('replaced-history', 1n)
       store.removeReplay('replaced-history', 1n)
-      store.updateInfo('replaced-history', { totalCostUsd: 9 }, { delivery: { phase: 'replay', replayId: 1n, seq: 90n } })
-      store.updateInfo('replaced-history', { totalCostUsd: 2 }, { delivery: { phase: 'replay', replayId: 2n, seq: 20n } })
+      store.updateInfo('replaced-history', { totalCostUsd: 9 }, {
+        delivery: { phase: 'replay', replayId: 1n, seq: 90n },
+      })
+      store.updateInfo('replaced-history', { totalCostUsd: 2 }, {
+        delivery: { phase: 'replay', replayId: 2n, seq: 20n },
+      })
       expect(store.getInfo('replaced-history').totalCostUsd).toBe(2)
       store.retireReplay('replaced-history', 2n)
-      store.updateInfo('replaced-history', { totalCostUsd: 8 }, { delivery: { phase: 'replay', replayId: 2n, seq: 80n } })
+      store.updateInfo('replaced-history', { totalCostUsd: 8 }, {
+        delivery: { phase: 'replay', replayId: 2n, seq: 80n },
+      })
       expect(store.getInfo('replaced-history').totalCostUsd).toBe(2)
       expect(store.acceptsReplay('replaced-history', 2n)).toBe(false)
       dispose()
@@ -822,7 +933,9 @@ describe('createAgentSessionStore replay ownership', () => {
       store.beginReplay('same-history', 1n)
       store.updateInfo('same-history', { totalCostUsd: 3 })
       store.beginReplay('same-history', 1n)
-      store.updateInfo('same-history', { totalCostUsd: 2 }, { delivery: { phase: 'replay', replayId: 1n, seq: 20n } })
+      store.updateInfo('same-history', { totalCostUsd: 2 }, {
+        delivery: { phase: 'replay', replayId: 1n, seq: 20n },
+      })
       expect(store.getInfo('same-history').totalCostUsd).toBe(3)
       dispose()
     })
@@ -845,10 +958,16 @@ describe('createAgentSessionStore replay ownership', () => {
       const replayId = 9007199254740993n
       const seq = 9007199254740995n
       store.beginReplay('large-history', replayId)
-      store.updateInfo('large-history', { totalCostUsd: 3 }, { delivery: { phase: 'live', seq } })
-      store.updateInfo('large-history', { totalCostUsd: 2 }, { delivery: { phase: 'replay', replayId, seq: seq - 1n } })
+      store.updateInfo('large-history', { totalCostUsd: 3 }, {
+        delivery: { phase: 'live', seq },
+      })
+      store.updateInfo('large-history', { totalCostUsd: 2 }, {
+        delivery: { phase: 'replay', replayId, seq: seq - 1n },
+      })
       expect(store.getInfo('large-history').totalCostUsd).toBe(3)
-      store.updateInfo('large-history', { totalCostUsd: 4 }, { delivery: { phase: 'replay', replayId, seq: seq + 1n } })
+      store.updateInfo('large-history', { totalCostUsd: 4 }, {
+        delivery: { phase: 'replay', replayId, seq: seq + 1n },
+      })
       expect(store.getInfo('large-history').totalCostUsd).toBe(4)
       dispose()
     })

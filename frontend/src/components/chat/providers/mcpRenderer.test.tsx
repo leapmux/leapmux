@@ -16,12 +16,14 @@ function makeMcpToolUse(toolName: string, input: Record<string, unknown> = {}) {
   return {
     type: 'assistant',
     message: {
-      content: [{
-        type: 'tool_use',
-        id: 'toolu_test',
-        name: toolName,
-        input,
-      }],
+      content: [
+        {
+          type: 'tool_use',
+          id: 'toolu_test',
+          name: toolName,
+          input,
+        },
+      ],
     },
   }
 }
@@ -32,11 +34,13 @@ function makeMcpToolResult(content: string) {
     type: 'user',
     message: {
       role: 'user',
-      content: [{
-        type: 'tool_result',
-        tool_use_id: 'toolu_test',
-        content,
-      }],
+      content: [
+        {
+          type: 'tool_result',
+          tool_use_id: 'toolu_test',
+          content,
+        },
+      ],
     },
   }
 }

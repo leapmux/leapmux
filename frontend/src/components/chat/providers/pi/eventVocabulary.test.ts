@@ -7,11 +7,32 @@ import './plugin'
 
 /** Supply the content that each stored row requires. */
 const PAYLOAD: Record<string, Record<string, unknown>> = {
-  [PI_EVENT.MessageEnd]: { message: { role: 'assistant', content: [{ type: 'text', text: 'Done.' }] } },
-  [PI_EVENT.ToolExecutionStart]: { toolCallId: 'call-1', toolName: 'read', args: { path: '/repo/a.ts' } },
-  [PI_EVENT.ToolExecutionEnd]: { toolCallId: 'call-1', toolName: 'read', result: { content: [{ type: 'text', text: 'ok' }] } },
+  [PI_EVENT.MessageEnd]: {
+    message: {
+      role: 'assistant',
+      content: [
+        { type: 'text', text: 'Done.' },
+      ],
+    },
+  },
+  [PI_EVENT.ToolExecutionStart]: {
+    toolCallId: 'call-1',
+    toolName: 'read',
+    args: { path: '/repo/a.ts' },
+  },
+  [PI_EVENT.ToolExecutionEnd]: {
+    toolCallId: 'call-1',
+    toolName: 'read',
+    result: {
+      content: [
+        { type: 'text', text: 'ok' },
+      ],
+    },
+  },
   [PI_EVENT.ExtensionUIRequest]: { method: 'notify', message: 'The extension reports this.' },
-  [PI_EVENT.EntryAppended]: { entry: { type: 'custom_message', display: true, content: 'A session note.' } },
+  [PI_EVENT.EntryAppended]: {
+    entry: { type: 'custom_message', display: true, content: 'A session note.' },
+  },
 }
 
 function classify(type: string): string {
@@ -30,7 +51,9 @@ const ROWS: ReadonlyMap<string, string> = new Map([
 
 describe('pi event vocabulary', () => {
   it.each(Object.values(PI_EVENT))('classifies the stored event %s according to its current reader', (type) => {
-    const expected = ROWS.get(type) ?? (PI_NOTIFICATION_EVENT.has(type) ? 'notification' : 'unknown')
+    const expected = ROWS.get(type) ?? (PI_NOTIFICATION_EVENT.has(type)
+      ? 'notification'
+      : 'unknown')
     expect(classify(type)).toBe(expected)
   })
 

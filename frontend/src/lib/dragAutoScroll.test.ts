@@ -49,8 +49,14 @@ describe('scrollableAncestor', () => {
   function box(overflowY: string, scrollHeight: number, clientHeight: number): HTMLElement {
     const el = document.createElement('div')
     el.style.overflowY = overflowY
-    Object.defineProperty(el, 'scrollHeight', { get: () => scrollHeight, configurable: true })
-    Object.defineProperty(el, 'clientHeight', { get: () => clientHeight, configurable: true })
+    Object.defineProperty(el, 'scrollHeight', {
+      get: () => scrollHeight,
+      configurable: true,
+    })
+    Object.defineProperty(el, 'clientHeight', {
+      get: () => clientHeight,
+      configurable: true,
+    })
     return el
   }
 
@@ -121,7 +127,17 @@ describe('startEdgeScroll', () => {
       set: (next: number) => { top = Math.max(0, Math.min(next, opts.scrollHeight - opts.clientHeight)) },
       configurable: true,
     })
-    el.getBoundingClientRect = () => ({ top: 0, bottom: opts.clientHeight, left: 0, right: 100, width: 100, height: opts.clientHeight, x: 0, y: 0, toJSON: () => ({}) })
+    el.getBoundingClientRect = () => ({
+      top: 0,
+      bottom: opts.clientHeight,
+      left: 0,
+      right: 100,
+      width: 100,
+      height: opts.clientHeight,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    })
     return el
   }
 

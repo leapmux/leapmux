@@ -39,7 +39,17 @@ const TEAM_RUN_WORDS: ReadonlyMap<string, string> = new Map([
 function compactionDetails(metadata: Record<string, unknown> | null, trigger: string): CompactionDetails {
   const pre = tokenCount(pickNumber(metadata, 'tokensBefore'))
   const post = tokenCount(pickNumber(metadata, 'tokensAfter'))
-  return { ...(trigger ? { trigger } : {}), ...(pre !== undefined ? { pre } : {}), ...(post !== undefined ? { post } : {}) }
+  return {
+    ...(trigger
+      ? { trigger }
+      : {}),
+    ...(pre !== undefined
+      ? { pre }
+      : {}),
+    ...(post !== undefined
+      ? { post }
+      : {}),
+  }
 }
 
 /** The entries of one `session.notice`. */
@@ -52,11 +62,31 @@ function noticeEntries(payload: Record<string, unknown>): NotificationEntry[] {
   if (trigger !== undefined) {
     switch (phase) {
       case CLINE_NOTICE_PHASE.Completed:
-        return [{ kind: 'compaction', phase: 'end', detail: compactionDetails(metadata, trigger) }]
+        return [
+          {
+            kind: 'compaction',
+            phase: 'end',
+            detail: compactionDetails(metadata, trigger),
+          },
+        ]
       case CLINE_NOTICE_PHASE.Skipped:
-        return [{ kind: 'compaction', phase: 'end', outcome: 'skipped', detail: { trigger } }]
+        return [
+          {
+            kind: 'compaction',
+            phase: 'end',
+            outcome: 'skipped',
+            detail: { trigger },
+          },
+        ]
       case CLINE_NOTICE_PHASE.Failed:
-        return [{ kind: 'compaction', phase: 'end', outcome: 'failed', detail: { trigger } }]
+        return [
+          {
+            kind: 'compaction',
+            phase: 'end',
+            outcome: 'failed',
+            detail: { trigger },
+          },
+        ]
       default:
         break
     }
@@ -67,23 +97,55 @@ function noticeEntries(payload: Record<string, unknown>): NotificationEntry[] {
       const maxAttempts = pickNumber(metadata, 'maxRetries')
       const delayMs = pickNumber(metadata, 'delayMs')
       const error = pickString(metadata, 'providerError')
-      return [retryEntry('api', {
-        ...(attempt !== null ? { attempt } : {}),
-        ...(maxAttempts !== null ? { maxAttempts } : {}),
-        ...(delayMs !== null ? { delayMs } : {}),
-        ...(error ? { error } : {}),
-      })]
+      return [
+        retryEntry('api', {
+          ...(attempt !== null
+            ? { attempt }
+            : {}),
+          ...(maxAttempts !== null
+            ? { maxAttempts }
+            : {}),
+          ...(delayMs !== null
+            ? { delayMs }
+            : {}),
+          ...(error
+            ? { error }
+            : {}),
+        }),
+      ]
     }
     case CLINE_NOTICE_KIND.CompactionBudgetEmergency:
-      return [{ kind: 'status', text: 'Compaction trimmed the context further to fit the model' }]
+      return [
+        { kind: 'status', text: 'Compaction trimmed the context further to fit the model' },
+      ]
     case CLINE_NOTICE_KIND.ContextOverflowRecovery:
-      return [{ kind: 'status', text: 'The context exceeded the model\'s window; compacting and retrying' }]
+      return [
+        { kind: 'status', text: 'The context exceeded the model\'s window; compacting and retrying' },
+      ]
     case CLINE_NOTICE_KIND.MaxTokensCompaction:
-      return [{ kind: 'status', text: phase === CLINE_NOTICE_PHASE.Started ? 'The answer hit the output limit; compacting and retrying' : message }]
+      return [
+        {
+          kind: 'status',
+          text: phase === CLINE_NOTICE_PHASE.Started
+            ? 'The answer hit the output limit; compacting and retrying'
+            : message,
+        },
+      ]
     case CLINE_NOTICE_KIND.MaxTokensRecovery:
-      return [{ kind: 'status', text: phase === CLINE_NOTICE_PHASE.Failed ? 'Recovery from the output limit failed' : 'The answer hit the output limit; retrying' }]
+      return [
+        {
+          kind: 'status',
+          text: phase === CLINE_NOTICE_PHASE.Failed
+            ? 'Recovery from the output limit failed'
+            : 'The answer hit the output limit; retrying',
+        },
+      ]
     default:
-      return message ? [{ kind: 'status', text: message }] : []
+      return message
+        ? [
+            { kind: 'status', text: message },
+          ]
+        : []
   }
 }
 
@@ -96,8 +158,14 @@ function teamEntries(payload: Record<string, unknown>): NotificationEntry[] {
   const teammate = pickString(last, 'agentId') || 'A teammate'
   const task = pickString(last, 'taskId')
   const error = pickString(last, CLINE_FIELD.Message)
-  const text = `${teammate} ${words}${task ? ` (${task})` : ''}${error ? `: ${error}` : ''}`
-  return [{ kind: 'text', text }]
+  const text = `${teammate} ${words}${task
+    ? ` (${task})`
+    : ''}${error
+    ? `: ${error}`
+    : ''}`
+  return [
+    { kind: 'text', text },
+  ]
 }
 
 /** Read a standalone native notice or one member of a notification thread. */

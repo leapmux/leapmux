@@ -110,7 +110,14 @@ export async function seedManualCompactionConversation(context: NativeScenarioCo
   for (const [index, { prompt, answer }] of COMPACTION_SEED_TURNS.entries()) {
     const stepIndex = await modelScript.queue({
       ...nativeTextStep(context, answer),
-      ...(reportedInputTokens !== undefined ? { usage: { inputTokens: reportedInputTokens + index * 500, outputTokens: Math.max(1, Math.ceil(answer.length / 4)) } } : {}),
+      ...(reportedInputTokens !== undefined
+        ? {
+            usage: {
+              inputTokens: reportedInputTokens + index * 500,
+              outputTokens: Math.max(1, Math.ceil(answer.length / 4)),
+            },
+          }
+        : {}),
     })
     await sendMessage(page, modelScript.prompt(prompt))
     if (index === 1) {
@@ -133,7 +140,13 @@ export async function exerciseFailedNativeCompaction(context: NativeScenarioCont
   await modelScript.waitForSteps(start + 1)
   await waitForAgentIdle(page)
   const name = `failed-native-compaction-${randomUUID()}`
-  await modelScript.rule({ name, when: options.summary.when, respond: { error: { status: 400, message: 'probe compaction refused' } } })
+  await modelScript.rule({
+    name,
+    when: options.summary.when,
+    respond: {
+      error: { status: 400, message: 'probe compaction refused' },
+    },
+  })
   await sendMessage(page, '/compact')
   await expect.poll(async () => (await modelScript.status()).ruleMatches[name] ?? 0, 'the native summarizer received the scripted refusal').toBeGreaterThan(0)
   await waitForAgentIdle(page)
@@ -141,7 +154,9 @@ export async function exerciseFailedNativeCompaction(context: NativeScenarioCont
 
 /** The summary reply of one scenario. It always holds {@link MANUAL_COMPACTION_MARKER}. */
 export function compactionSummaryText(options: Pick<NativeCompactionOptions, 'summaryEnvelope'>): string {
-  const text = options.summaryEnvelope ? options.summaryEnvelope(MANUAL_COMPACTION_SUMMARY) : MANUAL_COMPACTION_SUMMARY
+  const text = options.summaryEnvelope
+    ? options.summaryEnvelope(MANUAL_COMPACTION_SUMMARY)
+    : MANUAL_COMPACTION_SUMMARY
   if (!text.includes(MANUAL_COMPACTION_SUMMARY))
     throw new Error('The summary envelope must keep the whole summary, which holds the summary marker.')
   return text
@@ -157,18 +172,36 @@ export function compactionSummaryText(options: Pick<NativeCompactionOptions, 'su
 export async function exerciseNativeCompaction(context: NativeScenarioContext, options: NativeCompactionOptions): Promise<NativeCompactionResult> {
   validateCompactionHold(options)
   const { page, modelScript } = context
-  const hold = options.summaryGate !== undefined ? { gate: options.summaryGate } : {}
-  const summary = { text: compactionSummaryText(options), ...(options.summaryUsage ? { usage: options.summaryUsage } : {}), ...hold }
+  const hold = options.summaryGate !== undefined
+    ? { gate: options.summaryGate }
+    : {}
+  const summary = {
+    text: compactionSummaryText(options),
+    ...(options.summaryUsage
+      ? { usage: options.summaryUsage }
+      : {}),
+    ...hold,
+  }
   await seedManualCompactionConversation(context, options.reportedInputTokens)
   const route = options.summary
   const ruleName = `native-compaction-summary-${randomUUID()}`
   let summaryStep: number | undefined
-  if (route.route === 'fallback')
+  if (route.route === 'fallback') {
     await modelScript.fallback(summary)
-  else if (route.route === 'rule')
-    await modelScript.rule({ name: ruleName, when: route.when, respond: { ...route.respond ?? summary, ...hold } })
-  else
+  }
+  else if (route.route === 'rule') {
+    await modelScript.rule({
+      name: ruleName,
+      when: route.when,
+      respond: {
+        ...route.respond ?? summary,
+        ...hold,
+      },
+    })
+  }
+  else {
     summaryStep = await modelScript.queue(summary)
+  }
   await requestNativeCompaction(context, options)
 
   let summaryRequest: MockModelRequestRecord | undefined
@@ -210,5 +243,10 @@ export async function exerciseNativeCompaction(context: NativeScenarioContext, o
   // runs, and one stored boundary row ends it.
   await expect(assistantBubbles(page).filter({ hasText: MANUAL_COMPACTION_MARKER })).toHaveCount(0)
   await expect(messageContents(page).filter({ hasText: 'Context compacted' })).toHaveCount(1)
-  return { ...(summaryRequest ? { summaryRequest } : {}), nextRequest }
+  return {
+    ...(summaryRequest
+      ? { summaryRequest }
+      : {}),
+    nextRequest,
+  }
 }

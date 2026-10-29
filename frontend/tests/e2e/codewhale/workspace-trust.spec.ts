@@ -31,7 +31,12 @@ codewhaleTest('keeps project config unloaded and applies the actual global confi
   }, async ({ server }) => {
     await withAgentWorkspace(server, { ...CODEWHALE_AGENT, prefix: 'codewhale-project-config' }, async ({ workspaceId }) => {
       await openWorkspace(page, workspaceId)
-      const context = await nativeContext({ page, modelScript, leapmuxServer: server, workspaceId })
+      const context = await nativeContext({
+        page,
+        modelScript,
+        leapmuxServer: server,
+        workspaceId,
+      })
       const baselineAgent = await currentNativeAgent(context)
       const selectedModel = nativeOptionValue(baselineAgent, 'model')
       if (!selectedModel || !baselineAgent.agentSessionId)
@@ -47,7 +52,9 @@ codewhaleTest('keeps project config unloaded and applies the actual global confi
       const baselineEffort = baseline.body.reasoning_effort
       if (baselineEffort !== undefined && typeof baselineEffort !== 'string')
         throw new Error('The native Codewhale baseline effort must be a string or absent.')
-      const projectEffort = baselineEffort === 'low' ? 'high' : 'low'
+      const projectEffort = baselineEffort === 'low'
+        ? 'high'
+        : 'low'
       expect(baseline.body.model).toBe(selectedModel)
       observed.baseline = { model: selectedModel, effort: baselineEffort, control: projectEffort }
       await exerciseNativeWorkspaceTrustLimit(context, {
@@ -114,7 +121,12 @@ codewhaleTest('keeps project config unloaded and applies the actual global confi
     }, async ({ server }) => {
       await withAgentWorkspace(server, { ...CODEWHALE_AGENT, prefix: 'codewhale-global-config' }, async ({ workspaceId }) => {
         await openWorkspace(page, workspaceId)
-        const context = await nativeContext({ page, modelScript, leapmuxServer: server, workspaceId })
+        const context = await nativeContext({
+          page,
+          modelScript,
+          leapmuxServer: server,
+          workspaceId,
+        })
         await expectNativeOptionValue(context, 'effort', 'auto')
         const global = await sendNativeAnswer(context, 'Reply through the actual private global Codewhale configuration.', 'The native global configuration control completed.')
         expect(global.body).toHaveProperty('model', baseline.model)

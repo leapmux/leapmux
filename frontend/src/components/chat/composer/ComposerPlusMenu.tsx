@@ -114,7 +114,9 @@ export interface ComposerPlusMenuProps {
 
 /** Groups sorted by backend order, dropping empty groups. */
 function sortedGroups(groups: AvailableOptionGroup[] | undefined): AvailableOptionGroup[] {
-  return [...(groups ?? [])]
+  return [
+    ...(groups ?? []),
+  ]
     .filter(hasOptions)
     .sort((a, b) => a.order - b.order)
 }
@@ -170,8 +172,14 @@ function permissionActionsFor(
   const actions: PermissionAction[] = []
   for (const spec of PERMISSION_PRESET_SPECS) {
     const preset = usable[spec.kind]
-    if (preset)
-      actions.push({ kind: spec.kind, label: spec.fullLabel, testId: `composer-${spec.kind}-permissions`, preset })
+    if (preset) {
+      actions.push({
+        kind: spec.kind,
+        label: spec.fullLabel,
+        testId: `composer-${spec.kind}-permissions`,
+        preset,
+      })
+    }
   }
   return actions
 }
@@ -255,7 +263,9 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
   /** The held facts of the branch submenu, or undefined when it draws none. */
   const heldBranch = () => {
     const { branchName: name, branchActions, isWorktree } = structure()
-    return name && branchActions ? { name, actions: branchActions, isWorktree } : undefined
+    return name && branchActions
+      ? { name, actions: branchActions, isWorktree }
+      : undefined
   }
 
   // Whether anything renders BETWEEN the attach item and the view toggles. Both
@@ -327,8 +337,12 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
             groupId={id}
             optionGroups={props.optionGroups}
             optionValues={props.optionValues}
-            {...(props.onSettingChange === undefined ? {} : { onChange: props.onSettingChange })}
-            {...(props.disabledReason === undefined ? {} : { disabledReason: props.disabledReason })}
+            {...(props.onSettingChange === undefined
+              ? {}
+              : { onChange: props.onSettingChange })}
+            {...(props.disabledReason === undefined
+              ? {}
+              : { disabledReason: props.disabledReason })}
           />
         )}
       </For>
@@ -352,7 +366,9 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
             isWorktree={branch().isWorktree}
             workerId={props.branchWorkerId ?? ''}
             actions={branch().actions}
-            {...(props.branchDisabledReason === undefined ? {} : { disabledReason: props.branchDisabledReason })}
+            {...(props.branchDisabledReason === undefined
+              ? {}
+              : { disabledReason: props.branchDisabledReason })}
             data-testid="composer-plus-branch-popover"
             trigger={triggerProps => (
               // The trigger stays enabled — the items inside it are what the
@@ -366,7 +382,9 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
               // item below them while the menu is open; the directory and the
               // badge stay live.
               <WorkingTreeTooltip
-                {...(props.branchDisabledReason === undefined ? {} : { disabledReason: props.branchDisabledReason })}
+                {...(props.branchDisabledReason === undefined
+                  ? {}
+                  : { disabledReason: props.branchDisabledReason })}
                 info={{ ...props.workingTree, isWorktree: branch().isWorktree, name: branch().name }}
               >
                 <button
@@ -422,7 +440,9 @@ export function ComposerPlusMenu(props: ComposerPlusMenuProps): JSX.Element {
               data-testid={action.testId}
               disabled={!props.onSettingChange || !!props.disabledReason || !permissionActionAvailable(action)
                 || permissionPresetActive(action.preset, props.optionGroups, props.optionValues)}
-              onClick={() => props.onSettingChange?.({ sets: { ...action.preset.sets } })}
+              onClick={() => props.onSettingChange?.({
+                sets: { ...action.preset.sets },
+              })}
             >
               {action.label}
             </button>
@@ -467,8 +487,12 @@ function PlusGroupSubmenu(props: {
       groupId={props.groupId}
       optionGroups={props.optionGroups}
       optionValues={props.optionValues}
-      {...(props.onChange === undefined ? {} : { onChange: props.onChange })}
-      {...(props.disabledReason === undefined ? {} : { disabledReason: props.disabledReason })}
+      {...(props.onChange === undefined
+        ? {}
+        : { onChange: props.onChange })}
+      {...(props.disabledReason === undefined
+        ? {}
+        : { disabledReason: props.disabledReason })}
       popoverClass={styles.subPopover}
       // The status-bar chip renders the SAME group with the same per-option
       // test ids, so a locator for an option matches twice. A name on this popover

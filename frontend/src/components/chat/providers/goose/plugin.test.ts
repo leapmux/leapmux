@@ -11,12 +11,22 @@ const MODE_SMART_APPROVE = 'smart_approve'
 describe('goose provider', () => {
   const plugin = providerFor(AgentProvider.GOOSE)!
 
-  describeACPProviderBasics(AgentProvider.GOOSE, { text: true, image: true, pdf: false, audio: false, binary: false })
+  describeACPProviderBasics(AgentProvider.GOOSE, {
+    text: true,
+    image: true,
+    pdf: false,
+    audio: false,
+    binary: false,
+  })
 
   it('maps smart and bypass permissions to Goose modes', () => {
     expect(plugin?.controls?.permissionPresets).toEqual({
-      smart: { sets: { permissionMode: MODE_SMART_APPROVE } },
-      bypass: { sets: { permissionMode: MODE_AUTO } },
+      smart: {
+        sets: { permissionMode: MODE_SMART_APPROVE },
+      },
+      bypass: {
+        sets: { permissionMode: MODE_AUTO },
+      },
     })
   })
 
@@ -41,8 +51,19 @@ describe('goose provider', () => {
     expect(plugin?.controls?.controlResponseDisplay!({
       claimToken: 'claim-1',
       requestId: '7',
-      request: { method: 'session/request_permission', params: { options: [{ optionId: 'proceed_once', name: 'Allow once' }] } },
-      response: { result: { outcome: { optionId: 'proceed_once' } } },
+      request: {
+        method: 'session/request_permission',
+        params: {
+          options: [
+            { optionId: 'proceed_once', name: 'Allow once' },
+          ],
+        },
+      },
+      response: {
+        result: {
+          outcome: { optionId: 'proceed_once' },
+        },
+      },
     })).toEqual({ kind: 'label', text: 'Allow once' })
   })
 })
@@ -81,7 +102,12 @@ describe('native output without a filesystem pointer', () => {
         },
       },
     }
-    const call = providerToolCall(AgentProvider.GOOSE, frame, { spanId: 'native-call', spanType: 'shell', agentSessionId: 'native-session', role: 'result' })
+    const call = providerToolCall(AgentProvider.GOOSE, frame, {
+      spanId: 'native-call',
+      spanType: 'shell',
+      agentSessionId: 'native-session',
+      role: 'result',
+    })
     expect(call).not.toBeNull()
     expect(call?.id).toBe('native-call')
     expect(call?.outputFilePaths).toBeUndefined()

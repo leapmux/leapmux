@@ -48,7 +48,9 @@ export function classifyOhMyPiMessage(input: ClassificationInput): MessageCatego
   if (type === OH_MY_PI_EVENT.ToolExecutionStart) {
     // A turn that ended while the call ran stores this frame AGAIN as the closing row,
     // with the partial result omp reported beside it. That copy is the call's result.
-    return retainedRowIsFinal(input.completion) ? { kind: 'tool_result' } : { kind: 'tool_use' }
+    return retainedRowIsFinal(input.completion)
+      ? { kind: 'tool_result' }
+      : { kind: 'tool_use' }
   }
   if (type === OH_MY_PI_EVENT.ToolExecutionEnd)
     return { kind: 'tool_result' }
@@ -58,8 +60,11 @@ export function classifyOhMyPiMessage(input: ClassificationInput): MessageCatego
     const role = pickString(message, 'role')
     // The reply's TEXT alone. The worker persists its thinking as a reasoning row of
     // its own, before this one, so a reply with no text draws nothing here.
-    if (role === OH_MY_PI_ROLE.Assistant)
-      return ohMyPiContentText(parent).trim() ? { kind: 'assistant_text' } : { kind: 'hidden' }
+    if (role === OH_MY_PI_ROLE.Assistant) {
+      return ohMyPiContentText(parent).trim()
+        ? { kind: 'assistant_text' }
+        : { kind: 'hidden' }
+    }
     if (role === OH_MY_PI_ROLE.Custom) {
       // omp writes a custom message for the model: a job's result, a late diagnostic,
       // the file of a skill the reader called. None of them is the assistant's reply,

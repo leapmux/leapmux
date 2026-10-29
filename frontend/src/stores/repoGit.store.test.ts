@@ -252,15 +252,21 @@ describe('createRepoGitStore', () => {
           .mockResolvedValueOnce({
             repoRoot: '/repo',
             status: { toplevel: '/repo', branch: 'from-toplevel' },
-            files: [{ path: 'toplevel.txt' }],
+            files: [
+              { path: 'toplevel.txt' },
+            ],
           })
 
-        const nested = store.refresh('worker1', '/repo/pkg', { repoKey: repoKey('worker1', '/repo/pkg') })
+        const nested = store.refresh('worker1', '/repo/pkg', {
+          repoKey: repoKey('worker1', '/repo/pkg'),
+        })
         await store.refresh('worker1', '/repo')
         resolveNested({
           repoRoot: '/repo',
           status: { toplevel: '/repo', branch: 'from-nested-stale' },
-          files: [{ path: 'nested.txt' }],
+          files: [
+            { path: 'nested.txt' },
+          ],
         })
         await nested
 
@@ -287,7 +293,9 @@ describe('createRepoGitStore', () => {
           .mockResolvedValueOnce({
             repoRoot: '/repo',
             status: { toplevel: '/repo', branch: 'from-toplevel' },
-            files: [{ path: 'toplevel.txt' }],
+            files: [
+              { path: 'toplevel.txt' },
+            ],
           })
 
         const nested = store.refresh('worker1', '/repo/pkg', { repoKey: probeKey })
@@ -295,7 +303,9 @@ describe('createRepoGitStore', () => {
         resolveNested({
           repoRoot: '/repo',
           status: { toplevel: '/repo', branch: 'from-nested-stale' },
-          files: [{ path: 'nested.txt' }],
+          files: [
+            { path: 'nested.txt' },
+          ],
         })
         await nested
 
@@ -355,15 +365,21 @@ describe('createRepoGitStore', () => {
           .mockResolvedValueOnce({
             repoRoot: '/active',
             status: { toplevel: '/active', branch: 'main' },
-            files: [{ path: 'a.txt' }],
+            files: [
+              { path: 'a.txt' },
+            ],
           })
 
-        const other = store.refresh('worker1', '/other', { repoKey: repoKey('worker1', '/other') })
+        const other = store.refresh('worker1', '/other', {
+          repoKey: repoKey('worker1', '/other'),
+        })
         await store.refresh('worker1', '/active')
         resolveOther({
           repoRoot: '/other',
           status: { toplevel: '/other', branch: 'dev', originUrl: 'o' },
-          files: [{ path: 'b.txt' }],
+          files: [
+            { path: 'b.txt' },
+          ],
         })
         await other
 
@@ -447,8 +463,12 @@ describe('createRepoGitStore', () => {
           .mockReturnValueOnce(nestedRpc)
           .mockRejectedValueOnce(new Error('superseded'))
 
-        const nested = store.refresh('worker1', '/repo/pkg', { repoKey: repoKey('worker1', '/repo/pkg') })
-        await store.refresh('worker1', '/repo/pkg', { repoKey: repoKey('worker1', '/repo/pkg') })
+        const nested = store.refresh('worker1', '/repo/pkg', {
+          repoKey: repoKey('worker1', '/repo/pkg'),
+        })
+        await store.refresh('worker1', '/repo/pkg', {
+          repoKey: repoKey('worker1', '/repo/pkg'),
+        })
         resolveNested({
           repoRoot: '',
           status: undefined,
@@ -645,7 +665,12 @@ describe('createRepoGitStore', () => {
       await createRoot(async (dispose) => {
         const store = createRepoGitStore()
         const key = repoKey('worker1', '/repo')
-        store.upsert(key, { workerId: 'worker1', toplevel: '/repo', branch: 'main', gitStatusSeen: true })
+        store.upsert(key, {
+          workerId: 'worker1',
+          toplevel: '/repo',
+          branch: 'main',
+          gitStatusSeen: true,
+        })
 
         mockGetGitFileStatus.mockResolvedValueOnce({
           repoRoot: '',
@@ -678,7 +703,12 @@ describe('createRepoGitStore', () => {
       await createRoot(async (dispose) => {
         const store = createRepoGitStore()
         const key = repoKey('worker1', '/repo')
-        store.upsert(key, { workerId: 'worker1', toplevel: '/repo', branch: 'main', gitStatusSeen: true })
+        store.upsert(key, {
+          workerId: 'worker1',
+          toplevel: '/repo',
+          branch: 'main',
+          gitStatusSeen: true,
+        })
 
         const notARepo = {
           repoRoot: '',
@@ -706,7 +736,12 @@ describe('createRepoGitStore', () => {
       await createRoot(async (dispose) => {
         const store = createRepoGitStore()
         const key = repoKey('worker1', '/repo')
-        store.upsert(key, { workerId: 'worker1', toplevel: '/repo', branch: 'main', gitStatusSeen: true })
+        store.upsert(key, {
+          workerId: 'worker1',
+          toplevel: '/repo',
+          branch: 'main',
+          gitStatusSeen: true,
+        })
 
         const notARepo = {
           repoRoot: '',
@@ -794,7 +829,9 @@ describe('createRepoGitStore', () => {
         mockGetGitFileStatus.mockResolvedValueOnce({
           repoRoot: '/repo',
           status: { toplevel: '/repo', branch: 'main' },
-          files: [{ path: 'a.txt' }],
+          files: [
+            { path: 'a.txt' },
+          ],
         })
 
         const written = await store.refresh('worker1', '/repo/pkg', { repoKey: probeKey })

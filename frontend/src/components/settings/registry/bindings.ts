@@ -97,7 +97,12 @@ export function dualFontHalf(half: 'enabled' | 'fonts', pref: DualPreference<Fon
   const merge = (base: FontTier, v: unknown): FontTier =>
     half === 'enabled'
       ? { enabled: v === true, fonts: base.fonts }
-      : { enabled: base.enabled, fonts: Array.isArray(v) ? v as string[] : [] }
+      : {
+          enabled: base.enabled,
+          fonts: Array.isArray(v)
+            ? v as string[]
+            : [],
+        }
   const members = dualOverrideMembers(pref)
   return {
     value: () => pref.resolved()[half],

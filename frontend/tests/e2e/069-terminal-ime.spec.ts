@@ -102,8 +102,14 @@ test.describe('Terminal IME input', () => {
     // 안녕. 안 is committed by the keystroke that begins 녕, which is the case
     // that breaks: the commit and the next compositionstart arrive together.
     await composeInTerminal(cdp, [
-      { steps: ['ㅇ', '아', '안'], commit: '안' },
-      { steps: ['ㄴ', '녀', '녕'], commit: '녕' },
+      {
+        steps: ['ㅇ', '아', '안'],
+        commit: '안',
+      },
+      {
+        steps: ['ㄴ', '녀', '녕'],
+        commit: '녕',
+      },
     ])
     await page.keyboard.press('Enter')
 
@@ -121,7 +127,10 @@ test.describe('Terminal IME input', () => {
     // One composition held open across several candidates, then committed --
     // the shape Japanese and Chinese input methods use, unlike Korean.
     await composeInTerminal(cdp, [
-      { steps: ['こ', 'こん', 'こんに', 'こんにち', 'こんにちは'], commit: 'こんにちは' },
+      {
+        steps: ['こ', 'こん', 'こんに', 'こんにち', 'こんにちは'],
+        commit: 'こんにちは',
+      },
     ])
     await page.keyboard.press('Enter')
 
@@ -136,7 +145,12 @@ test.describe('Terminal IME input', () => {
     const cdp = await page.context().newCDPSession(page)
     await page.keyboard.type('echo CANCELLED', { delay: 30 })
     // Build a composition, then retract it the way Escape does.
-    await composeInTerminal(cdp, [{ steps: ['ㅇ', '아', '안'], commit: null }])
+    await composeInTerminal(cdp, [
+      {
+        steps: ['ㅇ', '아', '안'],
+        commit: null,
+      },
+    ])
     await page.keyboard.press('Enter')
 
     await waitForTerminalText(page, 'CANCELLED')

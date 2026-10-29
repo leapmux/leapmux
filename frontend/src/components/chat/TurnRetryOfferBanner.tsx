@@ -68,7 +68,9 @@ export const TurnRetryOfferBanner: Component<TurnRetryOfferBannerProps> = (props
   // only clears the stale turn IDs afterwards.
   const confirmingOffer = () => {
     const offer = props.offer
-    return offer !== undefined && offer.turnId === confirmingTurnId() ? offer : undefined
+    return offer !== undefined && offer.turnId === confirmingTurnId()
+      ? offer
+      : undefined
   }
   const retrying = () => props.offer !== undefined && props.offer.turnId === retriedTurnId()
   const label = () => {
@@ -108,10 +110,14 @@ export const TurnRetryOfferBanner: Component<TurnRetryOfferBannerProps> = (props
   return (
     <>
       <div
-        class={visible() ? styles.banner : srOnly}
+        class={visible()
+          ? styles.banner
+          : srOnly}
         role="status"
         aria-live="polite"
-        data-testid={visible() ? 'turn-retry-offer-banner' : undefined}
+        data-testid={visible()
+          ? 'turn-retry-offer-banner'
+          : undefined}
       >
         <Show when={visible()}>
           <div class={styles.notice}>

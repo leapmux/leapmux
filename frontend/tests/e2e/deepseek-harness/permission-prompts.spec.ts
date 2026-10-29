@@ -14,7 +14,12 @@ import { nativeContext } from './scenarios'
 const ESCALATION_REASON = 'Allow this exact isolated command to use the wider native sandbox.'
 
 deepseekHarnessTest('allows or denies real native escalation before the command changes a file', async ({ askingDeepseekHarnessWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingDeepseekHarnessWorkspace.workspaceId })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: askingDeepseekHarnessWorkspace.workspaceId,
+  })
   const agent = await currentNativeAgent(context)
   // The saved rows of the session, in order: each one reads the native option that its decision selected.
   const saved: string[] = []
@@ -22,7 +27,9 @@ deepseekHarnessTest('allows or denies real native escalation before the command 
     const path = join(agent.workingDir, `native-escalation-${decision}.txt`)
     const id = `native-escalation-${decision}`
     const command = `printf 'ESCALATION%s\n' "$((21 * 2))" > ${quotePosixShellArgument(path)}; cat ${quotePosixShellArgument(path)}`
-    saved.push(decision === 'allow' ? 'Allow once' : 'Deny')
+    saved.push(decision === 'allow'
+      ? 'Allow once'
+      : 'Deny')
     const expectedSaved = [...saved]
     await exerciseNativePermissionDecision(context, {
       toolCall: deepseekHarnessEscalatedBashToolCall(id, command, ESCALATION_REASON),
@@ -47,7 +54,12 @@ deepseekHarnessTest('allows or denies real native escalation before the command 
 // The native approval reply carries no reason. The reason follows as the reader's next message, which opens a turn of
 // its own after the refused turn.
 deepseekHarnessTest('sends the reader\'s typed refusal reason as the next message', async ({ askingDeepseekHarnessWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingDeepseekHarnessWorkspace.workspaceId })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: askingDeepseekHarnessWorkspace.workspaceId,
+  })
   const path = join((await currentNativeAgent(context)).workingDir, 'native-escalation-reason.txt')
   await exerciseNativePermissionReason(context, {
     toolCall: deepseekHarnessEscalatedBashToolCall('native-escalation-reason', `printf refused > ${quotePosixShellArgument(path)}`, ESCALATION_REASON),

@@ -32,7 +32,16 @@ function renderMenu(opts?: { hasTunnels?: boolean, autoRegistered?: boolean }) {
 
   render(() => (
     <WorkerContextMenu
-      workerInfo={{ name: 'test', os: 'linux', arch: 'amd64', homeDir: '/home', version: '1.0', commitHash: '', buildTime: '', updatedAt: Date.now() }}
+      workerInfo={{
+        name: 'test',
+        os: 'linux',
+        arch: 'amd64',
+        homeDir: '/home',
+        version: '1.0',
+        commitHash: '',
+        buildTime: '',
+        updatedAt: Date.now(),
+      }}
       autoRegistered={opts?.autoRegistered ?? false}
       hasTunnels={opts?.hasTunnels ?? false}
       onAddTunnel={onAddTunnel}

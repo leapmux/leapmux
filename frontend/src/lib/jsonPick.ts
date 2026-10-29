@@ -17,7 +17,9 @@ export function pickString(obj: Record<string, unknown> | null | undefined, key:
   const v = obj?.[key]
   if (typeof v === 'string')
     return v
-  return rest.length > 0 ? rest[0] : ''
+  return rest.length > 0
+    ? rest[0]
+    : ''
 }
 
 /**
@@ -30,7 +32,9 @@ export function pickNumber(obj: Record<string, unknown> | null | undefined, key:
   const v = obj?.[key]
   if (typeof v === 'number')
     return v
-  return rest.length > 0 ? rest[0] : null
+  return rest.length > 0
+    ? rest[0]
+    : null
 }
 
 /**
@@ -44,7 +48,9 @@ export function pickNumber(obj: Record<string, unknown> | null | undefined, key:
  */
 export function pickCounter(obj: Record<string, unknown> | null | undefined, key: string): number | undefined {
   const n = pickNumber(obj, key, undefined)
-  return n !== undefined && Number.isFinite(n) && n >= 0 ? n : undefined
+  return n !== undefined && Number.isFinite(n) && n >= 0
+    ? n
+    : undefined
 }
 
 /** Read a strict-boolean property: true iff the value is exactly `true`. */
@@ -67,7 +73,9 @@ export function pickBoolean(obj: Record<string, unknown> | null | undefined, key
   const v = obj?.[key]
   if (typeof v === 'boolean')
     return v
-  return rest.length > 0 ? rest[0] : null
+  return rest.length > 0
+    ? rest[0]
+    : null
 }
 
 /**
@@ -97,7 +105,9 @@ export function assignDefined<T, K extends keyof T>(target: T, key: K, value: T[
  * Claude ToolSearch matches / result-divider errors).
  */
 export function stringArray(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((s): s is string => typeof s === 'string') : []
+  return Array.isArray(value)
+    ? value.filter((s): s is string => typeof s === 'string')
+    : []
 }
 
 /**
@@ -122,7 +132,9 @@ export function pickObject(
   const v = obj?.[key]
   if (isObject(v))
     return v
-  return rest.length > 0 ? rest[0] : null
+  return rest.length > 0
+    ? rest[0]
+    : null
 }
 
 /**

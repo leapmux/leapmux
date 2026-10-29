@@ -24,7 +24,9 @@ export function diracOutputFilePointer(output: unknown): string | undefined {
     return undefined
   }
   const identity = filename.slice(DIRAC_OUTPUT_REFERENCE.FilePrefix.length, -DIRAC_OUTPUT_REFERENCE.FileExtension.length)
-  return /^\d+-[a-z0-9]+$/u.test(identity) ? path : undefined
+  return /^\d+-[a-z0-9]+$/u.test(identity)
+    ? path
+    : undefined
 }
 
 /** Keep the command preview and expose only its declared log path. */
@@ -36,5 +38,7 @@ export function diracOutputFilePaths(input: RowExtractionInput, call: ToolCall):
     return []
   }
   const path = diracOutputFilePointer(pickObject(native, 'rawOutput')?.output)
-  return path === undefined ? [] : [path]
+  return path === undefined
+    ? []
+    : [path]
 }

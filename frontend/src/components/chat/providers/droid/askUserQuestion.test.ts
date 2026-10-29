@@ -14,13 +14,29 @@ interface DroidQuestion {
 
 /** The question request that the worker publishes for one `droid.ask_user` request. */
 function questionRequest(questions: DroidQuestion[]): Record<string, unknown> {
-  return { type: 'ask_user_request', requestId: 'droid-ask-call-1', rpcId: 'rpc-ask-1', toolCallId: 'call-1', questions }
+  return {
+    type: 'ask_user_request',
+    requestId: 'droid-ask-call-1',
+    rpcId: 'rpc-ask-1',
+    toolCallId: 'call-1',
+    questions,
+  }
 }
 
 /** Droid numbers its questions from 1, in order. */
 const COLOR_AND_SIZES = questionRequest([
-  { index: 1, question: 'Which color?', options: ['Blue', 'Red'], multiSelect: false },
-  { index: 2, question: 'Which sizes?', options: ['Small', 'Medium', 'Large'], multiSelect: true },
+  {
+    index: 1,
+    question: 'Which color?',
+    options: ['Blue', 'Red'],
+    multiSelect: false,
+  },
+  {
+    index: 2,
+    question: 'Which sizes?',
+    options: ['Small', 'Medium', 'Large'],
+    multiSelect: true,
+  },
 ])
 
 /**
@@ -48,19 +64,52 @@ async function sentAnswers(payload: Record<string, unknown>, seed: ControlAnswer
 describe('droidQuestionsFromPayload', () => {
   it('reads each question with its options and its kind', () => {
     expect(droidQuestionsFromPayload(COLOR_AND_SIZES)).toStrictEqual([
-      { question: 'Which color?', options: [{ value: 'Blue', label: 'Blue' }, { value: 'Red', label: 'Red' }], multiSelect: false },
+      {
+        question: 'Which color?',
+        options: [
+          { value: 'Blue', label: 'Blue' },
+          { value: 'Red', label: 'Red' },
+        ],
+        multiSelect: false,
+      },
       {
         question: 'Which sizes?',
-        options: [{ value: 'Small', label: 'Small' }, { value: 'Medium', label: 'Medium' }, { value: 'Large', label: 'Large' }],
+        options: [
+          { value: 'Small', label: 'Small' },
+          { value: 'Medium', label: 'Medium' },
+          { value: 'Large', label: 'Large' },
+        ],
         multiSelect: true,
       },
     ])
   })
 
   it('skips a question that is not an object, and an option that is not text', () => {
-    const payload = { ...questionRequest([]), questions: ['not a question', null, { index: 1, question: 'Q', options: ['A', 7, null] }] }
-    expect(droidQuestionsFromPayload(payload)).toStrictEqual([{ question: 'Q', options: [{ value: 'A', label: 'A' }], multiSelect: false }])
-    expect(droidQuestionsFromPayload({ ...questionRequest([]), questions: 'Q' })).toStrictEqual([])
+    const payload = {
+      ...questionRequest([]),
+      questions: [
+        'not a question',
+        null,
+        {
+          index: 1,
+          question: 'Q',
+          options: ['A', 7, null],
+        },
+      ],
+    }
+    expect(droidQuestionsFromPayload(payload)).toStrictEqual([
+      {
+        question: 'Q',
+        options: [
+          { value: 'A', label: 'A' },
+        ],
+        multiSelect: false,
+      },
+    ])
+    expect(droidQuestionsFromPayload({
+      ...questionRequest([]),
+      questions: 'Q',
+    })).toStrictEqual([])
   })
 
   it('recognizes a question request', () => {
@@ -74,7 +123,12 @@ describe('droidControls askUserQuestion sendAnswer', () => {
   // Droid identifies each answer by the `index` of its question. The worker pairs
   // each answer with its question by that number alone.
   it('answers each question by its native index, in the order of the request', async () => {
-    expect(await sentAnswers(COLOR_AND_SIZES, { selections: { 0: ['Red'], 1: ['Large'] } })).toStrictEqual([
+    expect(await sentAnswers(COLOR_AND_SIZES, {
+      selections: {
+        0: ['Red'],
+        1: ['Large'],
+      },
+    })).toStrictEqual([
       { index: 1, answer: 'Red' },
       { index: 2, answer: 'Large' },
     ])
@@ -82,10 +136,23 @@ describe('droidControls askUserQuestion sendAnswer', () => {
 
   it('keeps a native index that does not start at one', async () => {
     const payload = questionRequest([
-      { index: 7, question: 'Seventh?', options: ['Yes', 'No'] },
-      { index: 3, question: 'Third?', options: ['Yes', 'No'] },
+      {
+        index: 7,
+        question: 'Seventh?',
+        options: ['Yes', 'No'],
+      },
+      {
+        index: 3,
+        question: 'Third?',
+        options: ['Yes', 'No'],
+      },
     ])
-    expect(await sentAnswers(payload, { selections: { 0: ['Yes'], 1: ['No'] } })).toStrictEqual([
+    expect(await sentAnswers(payload, {
+      selections: {
+        0: ['Yes'],
+        1: ['No'],
+      },
+    })).toStrictEqual([
       { index: 7, answer: 'Yes' },
       { index: 3, answer: 'No' },
     ])
@@ -94,21 +161,34 @@ describe('droidControls askUserQuestion sendAnswer', () => {
   // Droid's answer is one string. Its own TUI joins the chosen options in the order
   // of the options, then the typed text, with ", ".
   it('sends every pick of a multiple-choice question in the order of the options', async () => {
-    expect(await sentAnswers(COLOR_AND_SIZES, { selections: { 0: ['Blue'], 1: ['Large', 'Small'] } })).toStrictEqual([
+    expect(await sentAnswers(COLOR_AND_SIZES, {
+      selections: {
+        0: ['Blue'],
+        1: ['Large', 'Small'],
+      },
+    })).toStrictEqual([
       { index: 1, answer: 'Blue' },
       { index: 2, answer: 'Small, Large' },
     ])
   })
 
   it('sends the typed text after the picks of a multiple-choice question', async () => {
-    expect(await sentAnswers(COLOR_AND_SIZES, { selections: { 0: ['Blue'], 1: ['Medium'] }, customTexts: { 1: '  Extra large  ' } })).toStrictEqual([
+    expect(await sentAnswers(COLOR_AND_SIZES, {
+      selections: {
+        0: ['Blue'],
+        1: ['Medium'],
+      },
+      customTexts: { 1: '  Extra large  ' },
+    })).toStrictEqual([
       { index: 1, answer: 'Blue' },
       { index: 2, answer: 'Medium, Extra large' },
     ])
   })
 
   it('sends the typed text when nothing is picked', async () => {
-    expect(await sentAnswers(COLOR_AND_SIZES, { customTexts: { 0: ' Green ', 1: 'Huge' } })).toStrictEqual([
+    expect(await sentAnswers(COLOR_AND_SIZES, {
+      customTexts: { 0: ' Green ', 1: 'Huge' },
+    })).toStrictEqual([
       { index: 1, answer: 'Green' },
       { index: 2, answer: 'Huge' },
     ])
@@ -118,14 +198,25 @@ describe('droidControls askUserQuestion sendAnswer', () => {
   // question, as Droid's own TUI does. When both still arrive, the choice is the
   // answer.
   it('answers a single-choice question with its choice when text arrives beside it', async () => {
-    expect(await sentAnswers(COLOR_AND_SIZES, { selections: { 0: ['Red'], 1: ['Small'] }, customTexts: { 0: 'Green' } })).toStrictEqual([
+    expect(await sentAnswers(COLOR_AND_SIZES, {
+      selections: {
+        0: ['Red'],
+        1: ['Small'],
+      },
+      customTexts: { 0: 'Green' },
+    })).toStrictEqual([
       { index: 1, answer: 'Red' },
       { index: 2, answer: 'Small' },
     ])
   })
 
   it('drops a pick that the question does not offer', async () => {
-    expect(await sentAnswers(COLOR_AND_SIZES, { selections: { 0: ['Purple', 'Blue'], 1: ['Huge', 'Medium'] } })).toStrictEqual([
+    expect(await sentAnswers(COLOR_AND_SIZES, {
+      selections: {
+        0: ['Purple', 'Blue'],
+        1: ['Huge', 'Medium'],
+      },
+    })).toStrictEqual([
       { index: 1, answer: 'Blue' },
       { index: 2, answer: 'Medium' },
     ])
@@ -133,7 +224,12 @@ describe('droidControls askUserQuestion sendAnswer', () => {
 
   // Droid's own TUI sends "" for a question that holds no choice.
   it('sends an empty answer for a question with no pick and no text', async () => {
-    expect(await sentAnswers(COLOR_AND_SIZES, { selections: { 0: ['Blue'] }, customTexts: { 1: '   ' } })).toStrictEqual([
+    expect(await sentAnswers(COLOR_AND_SIZES, {
+      selections: {
+        0: ['Blue'],
+      },
+      customTexts: { 1: '   ' },
+    })).toStrictEqual([
       { index: 1, answer: 'Blue' },
       { index: 2, answer: '' },
     ])
@@ -143,11 +239,28 @@ describe('droidControls askUserQuestion sendAnswer', () => {
   // one, and the worker refuses the set, so the reader sees the refusal.
   it('sends no index for a question whose index is not a whole number', async () => {
     const payload = questionRequest([
-      { question: 'No number?', options: ['Yes'] },
-      { index: '2', question: 'Text number?', options: ['Yes'] },
-      { index: 1.5, question: 'Fraction?', options: ['Yes'] },
+      {
+        question: 'No number?',
+        options: ['Yes'],
+      },
+      {
+        index: '2',
+        question: 'Text number?',
+        options: ['Yes'],
+      },
+      {
+        index: 1.5,
+        question: 'Fraction?',
+        options: ['Yes'],
+      },
     ])
-    expect(await sentAnswers(payload, { selections: { 0: ['Yes'], 1: ['Yes'], 2: ['Yes'] } })).toStrictEqual([
+    expect(await sentAnswers(payload, {
+      selections: {
+        0: ['Yes'],
+        1: ['Yes'],
+        2: ['Yes'],
+      },
+    })).toStrictEqual([
       { answer: 'Yes' },
       { answer: 'Yes' },
       { answer: 'Yes' },

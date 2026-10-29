@@ -29,7 +29,9 @@ export function groupRowsByNav(
   const byNav = new Map<string, SettingRowModel[]>()
   for (const group of groups) {
     const source = group.admin
-      ? (args.isAdmin ? args.adminRows : [])
+      ? (args.isAdmin
+          ? args.adminRows
+          : [])
       : args.browserRows
     byNav.set(group.id, source.filter(row =>
       row.descriptor.category === group.category && descriptorVisible(row.descriptor)))

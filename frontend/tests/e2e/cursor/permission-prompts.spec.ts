@@ -14,7 +14,11 @@ const CURSOR_WEB_FETCH_APPROVAL = 'Cursor web fetch approved'
 
 cursorTest('forwards a native web-fetch permission decision', async ({ native }) => {
   const { page, modelScript } = native
-  const start = await modelScript.queue({ toolCalls: [cursorWebFetchPermissionToolCall('cursor-fetch', 'https://example.invalid/cursor-probe')] })
+  const start = await modelScript.queue({
+    toolCalls: [
+      cursorWebFetchPermissionToolCall('cursor-fetch', 'https://example.invalid/cursor-probe'),
+    ],
+  })
   await sendMessage(page, modelScript.prompt('Ask permission to fetch the scripted URL.'))
   await modelScript.waitForSteps(start + 1)
   const banner = await waitForControlBanner(page)
@@ -42,7 +46,11 @@ cursorTest('forwards a native web-fetch Deny decision', async ({ native }) => {
   // The CLI skips the question for a domain on its allowlist, and "Allow always" adds one.
   // A separate reserved domain keeps this question independent of any approval of example.invalid.
   const url = 'https://cursor-denied-probe.invalid/native-web-fetch'
-  const start = await modelScript.queue({ toolCalls: [cursorWebFetchPermissionToolCall('cursor-denied-fetch', url)] })
+  const start = await modelScript.queue({
+    toolCalls: [
+      cursorWebFetchPermissionToolCall('cursor-denied-fetch', url),
+    ],
+  })
   await sendMessage(page, modelScript.prompt('Ask permission to fetch the scripted private URL.'))
   await modelScript.waitForSteps(start + 1)
   const banner = await waitForControlBanner(page)
@@ -96,6 +104,8 @@ cursorTest('an always answer covers a later fetch of the same domain', async ({ 
     secondProof: () => expect(approvals).toHaveCount(2),
     viewProof: () => expect(savedControlAnswer(page)).toHaveText('Allow always'),
     // The CLI keeps its allowlist in its own configuration under the HOME of the run.
-    ruleFiles: [join(home, '.cursor', 'cli-config.json')],
+    ruleFiles: [
+      join(home, '.cursor', 'cli-config.json'),
+    ],
   })
 })

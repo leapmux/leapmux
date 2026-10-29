@@ -44,5 +44,7 @@ export function openCodeSearchLines(text: string, count: number, truncated = fal
     }
     return null
   }
-  return matches.length === count && (!path || pathHasMatch) ? matches : null
+  return matches.length === count && (!path || pathHasMatch)
+    ? matches
+    : null
 }

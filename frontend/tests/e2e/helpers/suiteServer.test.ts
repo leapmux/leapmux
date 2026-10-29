@@ -38,7 +38,11 @@ const START_SUITE_SERVER_TEST_TIMEOUT_MS = 60_000
 describe('startSuiteServer', { timeout: START_SUITE_SERVER_TEST_TIMEOUT_MS }, () => {
   it('rejects when the binary does not exist', async () => {
     const root = scratchRoot()
-    await expect(startSuiteServer({ binaryPath: join(root, 'no-such-leapmux'), tmpDir: root, runRoot: root }))
+    await expect(startSuiteServer({
+      binaryPath: join(root, 'no-such-leapmux'),
+      tmpDir: root,
+      runRoot: root,
+    }))
       .rejects
       .toThrow(/ENOENT|no-such-leapmux/)
   })
@@ -46,7 +50,11 @@ describe('startSuiteServer', { timeout: START_SUITE_SERVER_TEST_TIMEOUT_MS }, ()
   it('removes the data directory it created when the start fails', async () => {
     // Startup creates this directory before it executes the binary. Failure must remove it.
     const root = scratchRoot()
-    await startSuiteServer({ binaryPath: join(root, 'no-such-leapmux'), tmpDir: root, runRoot: root }).catch(() => {})
+    await startSuiteServer({
+      binaryPath: join(root, 'no-such-leapmux'),
+      tmpDir: root,
+      runRoot: root,
+    }).catch(() => {})
     expect(readdirSync(root).filter(entry => entry.startsWith('leapmux-e2e-dev-'))).toEqual([])
   })
 
@@ -54,7 +62,11 @@ describe('startSuiteServer', { timeout: START_SUITE_SERVER_TEST_TIMEOUT_MS }, ()
     // Startup opens the mock listener before it executes the binary. Failure must close it.
     const root = scratchRoot()
     const before = activeServers()
-    await startSuiteServer({ binaryPath: join(root, 'no-such-leapmux'), tmpDir: root, runRoot: root }).catch(() => {})
+    await startSuiteServer({
+      binaryPath: join(root, 'no-such-leapmux'),
+      tmpDir: root,
+      runRoot: root,
+    }).catch(() => {})
     expect(await settledNewServerCount(before)).toBe(0)
   })
 
@@ -147,10 +159,10 @@ exit 0
 function activeServers(): Set<Server> {
   const active = Reflect.get(process, '_getActiveHandles')
   if (typeof active !== 'function')
-    throw new Error('The runtime does not supply process._getActiveHandles.')
+    throw new TypeError('The runtime does not supply process._getActiveHandles.')
   const handles: unknown = Reflect.apply(active, process, [])
   if (!Array.isArray(handles))
-    throw new Error('The runtime returned an invalid active handle list.')
+    throw new TypeError('The runtime returned an invalid active handle list.')
   return new Set(handles.filter((handle): handle is Server => handle instanceof Server))
 }
 
@@ -161,7 +173,9 @@ function activeServers(): Set<Server> {
  */
 async function settledNewServerCount(before: ReadonlySet<Server>, timeoutMs = 30_000): Promise<number> {
   const deadline = Date.now() + timeoutMs
-  const addedCount = () => [...activeServers()].filter(server => !before.has(server)).length
+  const addedCount = () => [
+    ...activeServers(),
+  ].filter(server => !before.has(server)).length
   let count = addedCount()
   while (count !== 0 && Date.now() < deadline) {
     await setImmediate()
@@ -185,7 +199,9 @@ describe('activeServers', () => {
     await withCleanup(async () => {
       expect(activeServers().has(server)).toBe(true)
     }, () => new Promise<void>((resolve, reject) => {
-      server.close(error => error ? reject(error) : resolve())
+      server.close(error => error
+        ? reject(error)
+        : resolve())
     }))
     expect(await settledNewServerCount(before)).toBe(0)
     expect(activeServers().has(server)).toBe(false)
@@ -194,7 +210,10 @@ describe('activeServers', () => {
 
 describe('refusedHostsReport', () => {
   it('states each refused host once, in a stable order, with its count', () => {
-    expect(refusedHostsReport(new Map([['github.com:443', 2], ['app.kiro.dev:443', 1]]))).toEqual([
+    expect(refusedHostsReport(new Map([
+      ['github.com:443', 2],
+      ['app.kiro.dev:443', 1],
+    ]))).toEqual([
       'The mock proxy refused 1 request to app.kiro.dev:443.',
       'The mock proxy refused 2 requests to github.com:443.',
     ])

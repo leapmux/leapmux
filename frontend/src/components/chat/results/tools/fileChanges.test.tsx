@@ -29,8 +29,13 @@ function renderEdit(changes: FileEditDiff[]) {
 
 describe('file change title presentation', () => {
   it('uses one self-contained title layout for single-file and multi-file statistics', () => {
-    const single = renderEdit([edit('/project/a.ts')])
-    const multiple = renderEdit([edit('/project/a.ts'), edit('/project/b.ts')])
+    const single = renderEdit([
+      edit('/project/a.ts'),
+    ])
+    const multiple = renderEdit([
+      edit('/project/a.ts'),
+      edit('/project/b.ts'),
+    ])
 
     const singleBadge = single.getByTestId('git-diff-stats')
     const multipleBadges = multiple.getAllByTestId('git-diff-stats')
@@ -54,7 +59,13 @@ describe('fileChangeFailed', () => {
     expect(fileChangeFailed(status)).toBe(true)
   })
 
-  it.each(['unstated', 'pending', 'in_progress', 'completed', 'incomplete'] as const)('answers false for a %s call, whose changes still stand', (status) => {
+  it.each([
+    'unstated',
+    'pending',
+    'in_progress',
+    'completed',
+    'incomplete',
+  ] as const)('answers false for a %s call, whose changes still stand', (status) => {
     expect(fileChangeFailed(status)).toBe(false)
   })
 

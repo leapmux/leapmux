@@ -24,7 +24,9 @@ export interface LettaEnvironmentOptions {
 
 export const LETTA_CHATGPT_ACCOUNT_ID = 'leapmux-letta-mock-account'
 export const LETTA_CHATGPT_MODEL_ID = 'openai-codex/gpt-5.5'
-export const LETTA_CHATGPT_ACCESS_TOKEN = `${Buffer.from('{}').toString('base64')}.${Buffer.from(JSON.stringify({ 'https://api.openai.com/auth': { chatgpt_account_id: LETTA_CHATGPT_ACCOUNT_ID } })).toString('base64')}.leapmux-mock-signature`
+export const LETTA_CHATGPT_ACCESS_TOKEN = `${Buffer.from('{}').toString('base64')}.${Buffer.from(JSON.stringify({
+  'https://api.openai.com/auth': { chatgpt_account_id: LETTA_CHATGPT_ACCOUNT_ID },
+})).toString('base64')}.leapmux-mock-signature`
 
 /**
  * Letta Code's isolated configuration, and the local backend that its App Server needs before an agent starts.
@@ -79,7 +81,13 @@ function lettaAuth(options: LettaEnvironmentOptions): Record<string, unknown> {
         name: 'openai-codex',
         provider_type: 'chatgpt_oauth',
         provider_category: 'byok',
-        auth: { type: 'oauth', access: LETTA_CHATGPT_ACCESS_TOKEN, refresh: 'leapmux-mock-refresh', expires: Date.now() + 86_400_000, accountId: LETTA_CHATGPT_ACCOUNT_ID },
+        auth: {
+          type: 'oauth',
+          access: LETTA_CHATGPT_ACCESS_TOKEN,
+          refresh: 'leapmux-mock-refresh',
+          expires: Date.now() + 86_400_000,
+          accountId: LETTA_CHATGPT_ACCOUNT_ID,
+        },
       },
       'openai-compatible': {
         auth: { type: 'api', key: options.modelKey },
@@ -117,15 +125,37 @@ async function prepareLettaBackend(lettaHome: string, lettaEnvironment: Record<s
   // direct, or the model-discovery request never arrives and the catalog is
   // empty.
   const base = { ...process.env }
-  for (const key of ['HTTP_PROXY', 'HTTPS_PROXY', 'http_proxy', 'https_proxy', 'ALL_PROXY', 'all_proxy'])
+  for (const key of [
+    'HTTP_PROXY',
+    'HTTPS_PROXY',
+    'http_proxy',
+    'https_proxy',
+    'ALL_PROXY',
+    'all_proxy',
+  ])
     delete base[key]
-  const env = { ...base, ...options.temporaryEnv, ...lettaEnvironment, HOME: lettaHome, PATH: agentSearchPath(process.env.PATH), NO_PROXY: '127.0.0.1,localhost', no_proxy: '127.0.0.1,localhost' }
+  const env = {
+    ...base,
+    ...options.temporaryEnv,
+    ...lettaEnvironment,
+    HOME: lettaHome,
+    PATH: agentSearchPath(process.env.PATH),
+    NO_PROXY: '127.0.0.1,localhost',
+    no_proxy: '127.0.0.1,localhost',
+  }
   const letta = findBinary('letta', env)
   if (letta === null)
     return
   for (const args of [
     ['backend', 'local'],
-    ['connect', 'openai-compatible', '--base-url', options.baseURL, '--api-key', options.modelKey],
+    [
+      'connect',
+      'openai-compatible',
+      '--base-url',
+      options.baseURL,
+      '--api-key',
+      options.modelKey,
+    ],
   ]) {
     try {
       const execution = promisify(execFile)(letta, args, { env, encoding: 'utf8', timeout: 60_000 })

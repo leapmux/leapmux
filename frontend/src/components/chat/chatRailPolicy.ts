@@ -104,7 +104,9 @@ export function resolveScrollbarOwner(inp: ScrollbarOwnerInputs): ScrollbarOwner
     // The rail scrubs the whole seq-space, so it owns scrolling whenever there is any -- it
     // self-hides only when the whole history is loaded AND fits (nothing to scroll anywhere).
     const wholeHistoryLoaded = !inp.hasMoreOlder && !inp.hasMoreNewer
-    return wholeHistoryLoaded && contentFits ? 'none' : 'rail'
+    return wholeHistoryLoaded && contentFits
+      ? 'none'
+      : 'rail'
   }
   // The rail can't scrub (no server row, or a single-seq history): the native bar owns scrolling,
   // needed only when content actually overflows; otherwise nothing scrolls.
@@ -129,7 +131,9 @@ export function dotFraction(seq: bigint, range: RailRange): number | null {
 // seqSpan(range) out of its per-mark loop instead of recomputing it (a bigint subtraction +
 // object alloc) once per mark.
 function dotFractionForSpan(seq: bigint, minSeq: bigint, span: number): number | null {
-  const offset = seq >= minSeq ? safeSeqDeltaNumber(seq - minSeq) : null
+  const offset = seq >= minSeq
+    ? safeSeqDeltaNumber(seq - minSeq)
+    : null
   if (offset === null)
     return null
   return clamp((offset + 0.5) / span, 0, 1)
@@ -204,8 +208,14 @@ export function clusterMarks(
     }
   }
   const out: DotCluster[] = []
-  for (const [px, c] of byPx)
-    out.push({ seq: c.rep.seq, topPx: px, type: c.rep.type, count: c.count })
+  for (const [px, c] of byPx) {
+    out.push({
+      seq: c.rep.seq,
+      topPx: px,
+      type: c.rep.type,
+      count: c.count,
+    })
+  }
   return out
 }
 

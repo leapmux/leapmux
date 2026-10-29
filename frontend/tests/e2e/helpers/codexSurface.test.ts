@@ -13,7 +13,12 @@ describe('codexRateLimitHeaders', () => {
   })
 
   it.each([0, 0.5, 1])('converts utilization %s to the native percent and retains the zero reset', (utilization) => {
-    expect(codexRateLimitHeaders({ type: 'five_hour', status: 'allowed', utilization, resetsAt: 0 })).toEqual({
+    expect(codexRateLimitHeaders({
+      type: 'five_hour',
+      status: 'allowed',
+      utilization,
+      resetsAt: 0,
+    })).toEqual({
       'x-codex-primary-window-minutes': '300',
       'x-codex-limit-name': 'five_hour',
       'x-codex-primary-used-percent': String(utilization * 100),
@@ -25,7 +30,12 @@ describe('codexRateLimitHeaders', () => {
     expect(codexRateLimitHeaders({ type: 'seven_day', status })).toHaveProperty('x-codex-rate-limit-reached-type', 'rate_limit_reached')
   })
 
-  it.each(['allowed', 'allowed_warning', 'rejected', ''])('does not add the reached type for %j', (status) => {
+  it.each([
+    'allowed',
+    'allowed_warning',
+    'rejected',
+    '',
+  ])('does not add the reached type for %j', (status) => {
     expect(codexRateLimitHeaders({ type: 'five_hour', status })).not.toHaveProperty('x-codex-rate-limit-reached-type')
   })
 

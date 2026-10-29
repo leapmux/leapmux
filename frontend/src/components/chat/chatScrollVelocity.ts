@@ -160,7 +160,9 @@ export function createScrollVelocity(deps: {
         return 0
       if (deps.now() - lastTime > deps.idleMs)
         return 0
-      return Number.isFinite(velocity) ? velocity : 0
+      return Number.isFinite(velocity)
+        ? velocity
+        : 0
     },
   }
 }

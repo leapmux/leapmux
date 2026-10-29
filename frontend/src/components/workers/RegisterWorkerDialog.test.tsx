@@ -60,7 +60,9 @@ beforeAll(() => {
 
   // Stub clipboard so useCopyButton can succeed.
   Object.defineProperty(navigator, 'clipboard', {
-    value: { writeText: vi.fn().mockResolvedValue(undefined) },
+    value: {
+      writeText: vi.fn().mockResolvedValue(undefined),
+    },
     configurable: true,
   })
   // jsdom defaults window.location.origin to about:blank in some setups —

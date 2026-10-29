@@ -37,13 +37,18 @@ export function thinkingTurn(context: NativeScenarioContext, marker: string = un
     prompt: `Reason once, then answer with THINKINGPROMPT${marker}.`,
     reasoning,
     answer,
-    step: { ...nativeTextStep(context, answer), reasoning },
+    step: {
+      ...nativeTextStep(context, answer),
+      reasoning,
+    },
   }
 }
 
 /** The texts of a turn in the order in which their rows must appear. */
 export function thoughtRowTexts(turn: Pick<ThinkingTurn, 'reasoning' | 'answer'>, order: ThoughtRowOrder): [string, string] {
-  return order === 'before' ? [turn.reasoning, turn.answer] : [turn.answer, turn.reasoning]
+  return order === 'before'
+    ? [turn.reasoning, turn.answer]
+    : [turn.answer, turn.reasoning]
 }
 
 /**

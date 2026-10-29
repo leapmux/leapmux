@@ -20,5 +20,9 @@ export function droidSpanRole(parsed: ResolvedMessageContent): ToolSpanRole {
 /** The span side one row needs beside it. */
 export function droidRelatedMessages(parsed: ResolvedMessageContent) {
   const role = droidSpanRole(parsed)
-  return role === 'result' ? ['request'] as const : role === 'request' ? ['result'] as const : []
+  return role === 'result'
+    ? ['request'] as const
+    : role === 'request'
+      ? ['result'] as const
+      : []
 }

@@ -56,7 +56,9 @@ function PillOption(props: {
    * What the tooltip says: the reason this option refuses selection, else the
    * option's own name.
    */
-  const tooltipText = () => (props.state.kind === 'option-refused' ? props.state.reason : props.label)
+  const tooltipText = () => (props.state.kind === 'option-refused'
+    ? props.state.reason
+    : props.label)
   /**
    * Show the tooltip on every hover for an icon option or a refused option.
    * Their labels or refusal reasons are not otherwise visible.
@@ -65,7 +67,9 @@ function PillOption(props: {
    * Those labels can include the host or command that distinguishes an option.
    */
   const tooltipShowWhen = (): 'always' | 'clipped' =>
-    (props.state.kind === 'option-refused' || props.icon !== undefined ? 'always' : 'clipped')
+    (props.state.kind === 'option-refused' || props.icon !== undefined
+      ? 'always'
+      : 'clipped')
   /**
    * Pass an icon option's label as its accessible name.
    * Keep that name when the tooltip also reports a refusal reason.
@@ -75,7 +79,9 @@ function PillOption(props: {
    * Do not repeat it through aria-label.
    * A repeated aria-label creates another by-label match, which can collide with a form field such as Password.
    */
-  const tooltipName = () => (props.icon === undefined ? undefined : props.label)
+  const tooltipName = () => (props.icon === undefined
+    ? undefined
+    : props.label)
   const pill = () => (
     <button
       type="button"
@@ -92,14 +98,23 @@ function PillOption(props: {
       }}
       role="radio"
       aria-checked={props.selected}
-      aria-disabled={optionRefused() ? 'true' : undefined}
+      aria-disabled={optionRefused()
+        ? 'true'
+        : undefined}
       disabled={groupRefused()}
-      tabIndex={props.tabStop && !groupRefused() ? 0 : -1}
+      tabIndex={props.tabStop && !groupRefused()
+        ? 0
+        : -1}
       ref={props.ref}
       onClick={props.onClick}
       onFocus={props.onFocus}
     >
-      <PillOptionContent label={props.label} {...(props.icon !== undefined ? { icon: props.icon } : {})} />
+      <PillOptionContent
+        label={props.label}
+        {...(props.icon !== undefined
+          ? { icon: props.icon }
+          : {})}
+      />
     </button>
   )
 
@@ -142,7 +157,9 @@ export function PillGroup<K>(props: {
   const descriptionId = createUniqueId()
   const optionsByKey = createMemo(() => optionMap(props.label, props.options))
   const optionKeys = createMemo(
-    () => [...optionsByKey().keys()],
+    () => [
+      ...optionsByKey().keys(),
+    ],
     [],
     { equals: shallowEqualMapKeyArrays },
   )
@@ -183,12 +200,16 @@ export function PillGroup<K>(props: {
     return ENABLED
   }
 
-  const focusableOptions = () => [...optionsByKey().values()]
+  const focusableOptions = () => [
+    ...optionsByKey().values(),
+  ]
     .filter(option => stateFor(option).kind !== 'group-refused')
 
   const measureSelection = (move: boolean) => {
     const selected = optionsByKey().get(props.selectedKey)
-    const selectedEl = selected === undefined ? undefined : optionEls.get(selected.key)
+    const selectedEl = selected === undefined
+      ? undefined
+      : optionEls.get(selected.key)
     if (!groupEl || !selectedEl?.isConnected || groupEl.clientWidth <= 0) {
       selectionMotionGeneration++
       hasSelectionMetrics = false
@@ -205,11 +226,15 @@ export function PillGroup<K>(props: {
       && selectedRect.width > 0
       && Number.isFinite(layoutWidth)
       && layoutWidth > 0
-    const scaleX = validViewportGeometry ? groupRect.width / layoutWidth : 1
+    const scaleX = validViewportGeometry
+      ? groupRect.width / layoutWidth
+      : 1
     const rawLeft = validViewportGeometry
       ? (selectedRect.left - groupRect.left) / scaleX - groupEl.clientLeft + groupEl.scrollLeft
       : selectedEl.offsetLeft
-    const rawWidth = validViewportGeometry ? selectedRect.width / scaleX : selectedEl.offsetWidth
+    const rawWidth = validViewportGeometry
+      ? selectedRect.width / scaleX
+      : selectedEl.offsetWidth
     const left = Math.max(0, rawLeft)
     const availableWidth = Math.max(0, groupEl.clientWidth - left)
     const width = Math.min(Math.max(0, rawWidth), availableWidth)
@@ -249,7 +274,9 @@ export function PillGroup<K>(props: {
       return { value: selected.key }
 
     const first = focusableOptions()[0]
-    return first === undefined ? undefined : { value: first.key }
+    return first === undefined
+      ? undefined
+      : { value: first.key }
   })
 
   const focus = (key: K) => {
@@ -310,7 +337,9 @@ export function PillGroup<K>(props: {
   let previousSelection: { value: K } | undefined
   createEffect(() => {
     const selected = optionsByKey().get(props.selectedKey)
-    const current = selected === undefined ? undefined : { value: selected.key }
+    const current = selected === undefined
+      ? undefined
+      : { value: selected.key }
     const move = previousSelection !== undefined
       && current !== undefined
       && !sameValueZero(previousSelection.value, current.value)
@@ -378,14 +407,18 @@ export function PillGroup<K>(props: {
                 })
               }}
               class={styles.selectionFill}
-              classList={{ [styles.selectionWindowMoves]: selectionMoves() }}
+              classList={{
+                [styles.selectionWindowMoves]: selectionMoves(),
+              }}
               aria-hidden="true"
               style={selectionStyle(metrics())}
             />
             <div
               data-pill-selection-labels
               class={styles.selectionLabels}
-              classList={{ [styles.selectionWindowMoves]: selectionMoves() }}
+              classList={{
+                [styles.selectionWindowMoves]: selectionMoves(),
+              }}
               aria-hidden="true"
               style={selectionStyle(metrics())}
             >
@@ -401,7 +434,12 @@ export function PillGroup<K>(props: {
                         }}
                         data-label={option().label}
                       >
-                        <PillOptionContent label={option().label} {...(option().icon !== undefined ? { icon: option().icon } : {})} />
+                        <PillOptionContent
+                          label={option().label}
+                          {...(option().icon !== undefined
+                            ? { icon: option().icon }
+                            : {})}
+                        />
                       </span>
                     )}
                   </Show>
@@ -424,7 +462,9 @@ export function PillGroup<K>(props: {
                 separated={index() > 0}
                 small={props.small === true}
                 label={option().label}
-                {...(option().icon !== undefined ? { icon: option().icon } : {})}
+                {...(option().icon !== undefined
+                  ? { icon: option().icon }
+                  : {})}
                 onClick={() => select(key)}
                 onFocus={() => setFocusedKey({ value: key })}
                 ref={(element) => {

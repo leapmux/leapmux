@@ -48,7 +48,9 @@ const streams = vi.hoisted(() => ({ opts: undefined as unknown }))
 vi.mock('~/hooks/useWatchEventsStreams', () => ({
   useWatchEventsStreams: (opts: unknown) => {
     streams.opts = opts
-    return { abortSignalFor: () => undefined }
+    return {
+      abortSignalFor: () => undefined,
+    }
   },
 }))
 
@@ -88,7 +90,13 @@ function mountConnection() {
 
   const place = (type: TabType, id: string) => {
     nextPosition += 1
-    emitAddTab({ type, id, tileId: harness.rootTileId, position: `p${nextPosition}`, workerId: WORKER })
+    emitAddTab({
+      type,
+      id,
+      tileId: harness.rootTileId,
+      position: `p${nextPosition}`,
+      workerId: WORKER,
+    })
   }
   place(TabType.AGENT, 'a1')
   place(TabType.TERMINAL, 't1')
@@ -124,7 +132,13 @@ function mountConnection() {
       getActiveWorkspaceId: () => WS,
     })
   })
-  return { dispose, repoGitStore, chatStore, view, metadata }
+  return {
+    dispose,
+    repoGitStore,
+    chatStore,
+    view,
+    metadata,
+  }
 }
 
 /**

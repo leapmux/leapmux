@@ -114,7 +114,11 @@ export interface GoalObjective {
 export function scriptedObjective(modelScript: Pick<ModelScript, 'id' | 'prompt'>, text: string): GoalObjective {
   if (text.trim() === '')
     throw new Error('A scripted goal objective needs text.')
-  return { input: modelScript.prompt(text), text, marker: `${SCENARIO_MARKER}${modelScript.id}` }
+  return {
+    input: modelScript.prompt(text),
+    text,
+    marker: `${SCENARIO_MARKER}${modelScript.id}`,
+  }
 }
 
 /**
@@ -148,7 +152,9 @@ export async function expectGoalStatus(page: Page, status: string): Promise<void
  * `afterSubmit` runs after the submit and before the checks, for a test that must wait for the first goal turn.
  */
 export async function setGoal(page: Page, objective: string | GoalObjective, afterSubmit?: () => Promise<void>): Promise<void> {
-  await submitGoal(page, typeof objective === 'string' ? objective : objective.input)
+  await submitGoal(page, typeof objective === 'string'
+    ? objective
+    : objective.input)
   await afterSubmit?.()
   await expectGoalObjective(page, objective)
   await expectGoalStatus(page, 'active')

@@ -25,13 +25,25 @@ export function lettaResultDivider(parsed: unknown, completion?: MessageCompleti
     return null
   switch (completion) {
     case MessageCompletion.INTERRUPTED:
-      return { label: turnEndLabel('interrupted') }
+      return {
+        label: turnEndLabel('interrupted'),
+      }
     case MessageCompletion.ERROR: {
       const [head, ...lines] = lettaErrorWords(pickString(parsed, LETTA_DELTA_FIELD.Error)).split('\n')
       const detail = lines.join('\n').trim()
-      return { label: `${turnEndLabel('failed')}${head ? ` — ${head}` : ''}`, isError: true, ...(detail ? { detail } : {}) }
+      return {
+        label: `${turnEndLabel('failed')}${head
+          ? ` — ${head}`
+          : ''}`,
+        isError: true,
+        ...(detail
+          ? { detail }
+          : {}),
+      }
     }
     default:
-      return { label: turnEndLabel('ended') }
+      return {
+        label: turnEndLabel('ended'),
+      }
   }
 }

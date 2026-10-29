@@ -96,7 +96,13 @@ export function OptionGroupPopover(props: OptionGroupPopoverProps): JSX.Element 
       return g.options.map((o) => {
         const alsoSets = optionSideEffectText(props.optionGroups, o)
         const tooltip = [o.description || undefined, alsoSets].filter(Boolean).join(' ')
-        return { label: o.name || o.id, value: o.id, ...(tooltip !== '' ? { tooltip } : {}) }
+        return {
+          label: o.name || o.id,
+          value: o.id,
+          ...(tooltip !== ''
+            ? { tooltip }
+            : {}),
+        }
       })
     },
     [],
@@ -151,7 +157,9 @@ export function OptionGroupPopover(props: OptionGroupPopoverProps): JSX.Element 
   const applyIfStillOffered = (value: string) => {
     if (!items().some(it => it.value === value))
       return
-    props.onChange?.({ sets: { [props.groupId]: value } })
+    props.onChange?.({
+      sets: { [props.groupId]: value },
+    })
   }
 
   // A memo, not a thunk: each option row reads it to mark itself selected, and a resolution scans the whole option
@@ -181,7 +189,9 @@ export function OptionGroupPopover(props: OptionGroupPopoverProps): JSX.Element 
   // `readOnlyReason`, so the branch keeps the narrowed type.
   const readOnlyReasonProps = () => {
     const reason = readOnlyReason()
-    return reason === undefined ? {} : { disabledReason: reason }
+    return reason === undefined
+      ? {}
+      : { disabledReason: reason }
   }
 
   return (
@@ -191,8 +201,12 @@ export function OptionGroupPopover(props: OptionGroupPopoverProps): JSX.Element 
         currentLabel: items().find(i => i.value === current())?.label ?? '',
         mutable: !readOnly(),
       })}
-      {...(props.popoverClass === undefined ? {} : { class: props.popoverClass })}
-      {...(props.popoverTestId === undefined ? {} : { 'data-testid': props.popoverTestId })}
+      {...(props.popoverClass === undefined
+        ? {}
+        : { class: props.popoverClass })}
+      {...(props.popoverTestId === undefined
+        ? {}
+        : { 'data-testid': props.popoverTestId })}
       // The menu holds one named group of radio items, so it needs the group's
       // name. Without it assistive technology announces the values with nothing
       // that says which axis they set.

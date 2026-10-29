@@ -56,7 +56,14 @@ describe('native path ownership and preview preservation', () => {
     expect(pathsFor(frame, { role })).toEqual([])
   })
 
-  it.each(['file:///native/opaque', 'https://example.com/result', 'zcode-artifact://session/id', ' ', 'relative/output', '/native/zero\0byte'])('refuses a non-filesystem pointer: %j', (invalid) => {
+  it.each([
+    'file:///native/opaque',
+    'https://example.com/result',
+    'zcode-artifact://session/id',
+    ' ',
+    'relative/output',
+    '/native/zero\0byte',
+  ])('refuses a non-filesystem pointer: %j', (invalid) => {
     const payload: unknown = JSON.parse(JSON.stringify(frame).replaceAll(JSON.stringify(path).slice(1, -1), JSON.stringify(invalid).slice(1, -1)))
     const pathsFor = outputFilePathFixture(AgentProvider.DEEPSEEK_HARNESS, frame, options)
     expect(pathsFor(payload)).toEqual([])
@@ -69,7 +76,12 @@ describe('native path ownership and preview preservation', () => {
       toolCallId: 'native-call',
       toolName: options.spanType,
       outputFile: { path, text: forged, output: forged },
-      completeOutput: { path, text: forged, sessionId: options.agentSessionId, toolCallId: 'native-call' },
+      completeOutput: {
+        path,
+        text: forged,
+        sessionId: options.agentSessionId,
+        toolCallId: 'native-call',
+      },
     }
     const before = JSON.stringify(frame)
     const meta = providerToolMeta(AgentProvider.DEEPSEEK_HARNESS, frame, { ...options, supplementalContent })
@@ -87,7 +99,17 @@ describe('native path ownership and preview preservation', () => {
 describe('native formatted result layout', () => {
   function formatted(nativePath: string) {
     const text = `native preview\n\n(Omitted 672056 bytes. Full formatted result stored at: ${nativePath}. Use read with offset/limit, or grep this path to search within it.)`
-    return { ...frame, data: { message: { ...frame.data.message, content: [{ type: 'text', text }] } } }
+    return {
+      ...frame,
+      data: {
+        message: {
+          ...frame.data.message,
+          content: [
+            { type: 'text', text },
+          ],
+        },
+      },
+    }
   }
 
   it.each([
@@ -117,7 +139,17 @@ describe('native formatted result layout', () => {
   it('reads both native pointers of one truncated command in their native order', () => {
     const spill = '/private/var/folders/ab/T/dsh-spill-nFARXy/session-c0dafcfbe537/e16aba412233-bash.txt'
     const text = `native preview\n[output truncated; full output: ${path}]\n\n(Omitted 49 bytes. Full formatted result stored at: ${spill}. Use read with offset/limit, or grep this path to search within it.)`
-    const native = { ...frame, data: { message: { ...frame.data.message, content: [{ type: 'text', text }] } } }
+    const native = {
+      ...frame,
+      data: {
+        message: {
+          ...frame.data.message,
+          content: [
+            { type: 'text', text },
+          ],
+        },
+      },
+    }
     const pathsFor = outputFilePathFixture(AgentProvider.DEEPSEEK_HARNESS, frame, options)
     expect(pathsFor(native)).toEqual([path, spill])
   })
@@ -129,7 +161,17 @@ describe('native formatted path punctuation', () => {
     String.raw`C:\native\project. notes\dsh-spill-q1W2e3\session-0123456789ab\0123456789ab-bash.txt`,
   ])('keeps a period and space inside the declared native path: %j', (nativePath) => {
     const previewText = `(Output omitted. Full formatted result stored at: ${nativePath}. Use read_file.)`
-    const native = { ...frame, data: { message: { ...frame.data.message, content: [{ type: 'text', text: previewText }] } } }
+    const native = {
+      ...frame,
+      data: {
+        message: {
+          ...frame.data.message,
+          content: [
+            { type: 'text', text: previewText },
+          ],
+        },
+      },
+    }
     const before = JSON.stringify(native)
     const call = providerToolCall(AgentProvider.DEEPSEEK_HARNESS, native, options)
     expect(call).not.toBeNull()
@@ -157,7 +199,17 @@ describe('native stored-result and dropped-output notices', () => {
   const hint = 'Use read with offset/limit, or grep this path to search within it.'
 
   function native(text: string): unknown {
-    return { ...frame, data: { message: { ...frame.data.message, content: [{ type: 'text', text }] } } }
+    return {
+      ...frame,
+      data: {
+        message: {
+          ...frame.data.message,
+          content: [
+            { type: 'text', text },
+          ],
+        },
+      },
+    }
   }
 
   function pathsOf(text: string): readonly string[] {

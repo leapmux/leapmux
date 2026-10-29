@@ -22,7 +22,9 @@ import { test } from './fixtures'
 test.describe('shared tab isolation', () => {
   test('starts every test with the media emulation reset', async ({ page }) => {
     const media = await page.evaluate(() => ({
-      colorScheme: matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light',
+      colorScheme: matchMedia('(prefers-color-scheme: dark)').matches
+        ? 'dark'
+        : 'light',
       contrastMore: matchMedia('(prefers-contrast: more)').matches,
       forcedColors: matchMedia('(forced-colors: active)').matches,
       print: matchMedia('print').matches,

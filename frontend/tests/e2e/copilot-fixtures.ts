@@ -16,7 +16,9 @@ export const copilotTest = createProviderTest({
   skipReason: COPILOT_E2E_SKIP_REASON,
   workspaceName: 'authenticatedCopilotWorkspace',
   workspaceOptions: {
-    openOptions: { optionValues: { [OPTION_ID_PERMISSION_MODE]: COPILOT_PERMISSION_MODE.Manual } },
+    openOptions: {
+      optionValues: { [OPTION_ID_PERMISSION_MODE]: COPILOT_PERMISSION_MODE.Manual },
+    },
     // Every failed Copilot test keeps the native event and process logs of the isolated runtime.
     onFailure: (testInfo, server) => attachCopilotNativeLogs(server.agentEnv.COPILOT_HOME, testInfo),
   },

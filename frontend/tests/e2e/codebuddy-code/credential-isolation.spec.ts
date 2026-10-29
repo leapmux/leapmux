@@ -11,7 +11,9 @@ codebuddyTest('runs the actual native turn with private configuration and mock c
   await exerciseCredentialIsolation(native, {
     privateDirectories: [home],
     expectedCredential: MODEL_KEY,
-    configurationFiles: [join(home, 'models.json')],
+    configurationFiles: [
+      join(home, 'models.json'),
+    ],
     configurationMarkers: ['deepseek-flash'],
   })
 })

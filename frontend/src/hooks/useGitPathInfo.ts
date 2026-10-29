@@ -80,7 +80,10 @@ export const EMPTY_INFO: GitInfoFields = {
 export function buildInfo(seed?: GitPathInfoSeed): GitInfoFields {
   if (!seed)
     return EMPTY_INFO
-  return { ...EMPTY_INFO, ...seed }
+  return {
+    ...EMPTY_INFO,
+    ...seed,
+  }
 }
 
 export interface GitPathInfo {
@@ -257,7 +260,10 @@ export function useGitPathInfo(
   // wasting work AND creating signal subscriptions on the parent owner
   // that the memo's own equals callback can't dedupe.
   const probeKey = createMemo<readonly [string, string]>(
-    () => [workerId(), path()] as const,
+    () => [
+      workerId(),
+      path(),
+    ] as const,
     EMPTY_PROBE_KEY,
     { equals: shallowEqualArrays },
   )

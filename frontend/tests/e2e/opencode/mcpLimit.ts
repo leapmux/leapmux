@@ -26,10 +26,18 @@ export function opencodeMcpServerConfiguration(original: string, server: McpProb
   const command = [server.command, ...server.args]
   if (command.some(part => part.length === 0))
     throw new Error('The native MCP server requires a complete executable command.')
-  const mcp = value.mcp === undefined ? {} : value.mcp
+  const mcp = value.mcp === undefined
+    ? {}
+    : value.mcp
   if (!isObject(mcp))
     throw new Error('The native MCP configuration must contain a server object.')
-  return JSON.stringify({ ...value, mcp: { ...mcp, [server.name]: { type: 'local', command } } })
+  return JSON.stringify({
+    ...value,
+    mcp: {
+      ...mcp,
+      [server.name]: { type: 'local', command },
+    },
+  })
 }
 
 /** Run the actual OpenCode-family MCP refusal through a private Worker profile. */
@@ -40,7 +48,10 @@ export async function exerciseOpencodeMcpInputLimit(
   const original = context.leapmuxServer.agentEnv?.[options.configurationVariable]
   if (!original)
     throw new Error('The native MCP limit requires its isolated inline configuration.')
-  const launch = resolveNativeStartupLaunch(context.leapmuxServer.agentEnv, { binaryName: options.binaryName, holdWhen: ['acp'] })
+  const launch = resolveNativeStartupLaunch(context.leapmuxServer.agentEnv, {
+    binaryName: options.binaryName,
+    holdWhen: ['acp'],
+  })
   // The agent works in the directory of its form server, which follows the rule of the provider of the context.
   const directory = newNativeWorkingDir(context, 'opencode-family-mcp-limit-')
   const receiptLog = join(directory, 'native-mcp-receipt.json')
@@ -49,7 +60,10 @@ export async function exerciseOpencodeMcpInputLimit(
   await withNativeStartupWorker(context, launch, {
     workerEnvironment: () => ({ [options.configurationVariable]: configuration }),
   }, async (workerId, wrapper) => {
-    const privateContext = { ...context, leapmuxServer: { ...context.leapmuxServer, workerId } }
+    const privateContext = {
+      ...context,
+      leapmuxServer: { ...context.leapmuxServer, workerId },
+    }
     const privateServer = privateContext.leapmuxServer
     await openAgentViaAPI({ hubUrl: privateServer.hubUrl, adminToken: privateServer.adminToken, workerId }, context.workspaceId, directory, agentOpenOptions(context.provider))
     await wrapper.entry
@@ -59,7 +73,12 @@ export async function exerciseOpencodeMcpInputLimit(
     await expectUnsupportedMcpInput(privateContext, {
       receiptLog,
       callId,
-      invoke: () => invokeNativeMcpTool(privateContext, { server: server.name, tool: 'ask', callId, input: {} }),
+      invoke: () => invokeNativeMcpTool(privateContext, {
+        server: server.name,
+        tool: 'ask',
+        callId,
+        input: {},
+      }),
     })
   })
 }

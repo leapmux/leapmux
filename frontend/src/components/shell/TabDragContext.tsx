@@ -32,7 +32,10 @@ export function parseSidebarTabDragId(id: string): { workspaceId: string, tabKey
   const colonIdx = rest.indexOf(':')
   if (colonIdx < 0)
     return null
-  return { workspaceId: rest.slice(0, colonIdx), tabKey: rest.slice(colonIdx + 1) }
+  return {
+    workspaceId: rest.slice(0, colonIdx),
+    tabKey: rest.slice(colonIdx + 1),
+  }
 }
 
 /**

@@ -18,5 +18,10 @@ const frame = {
 }
 
 describe('readCodeBuddyNativeOutput', () => {
-  runNativeOutputReaderCases({ read: readCodeBuddyNativeOutput, frame, path, pointerError: 'The native CodeBuddy result has no filesystem output pointer.' })
+  runNativeOutputReaderCases({
+    read: readCodeBuddyNativeOutput,
+    frame,
+    path,
+    pointerError: 'The native CodeBuddy result has no filesystem output pointer.',
+  })
 })

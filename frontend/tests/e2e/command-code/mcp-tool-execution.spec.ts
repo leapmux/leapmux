@@ -11,14 +11,24 @@ import { withCommandCodeMcp } from './mcpScenarios'
 import { COMMAND_CODE_AGENT, nativeContext } from './scenarios'
 
 commandCodeTest('calls the real native MCP server and uses its result in the next model request', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+  })
   const workingDir = newProviderWorkingDir(COMMAND_CODE_AGENT)
   const receipt = join(workingDir, 'native-mcp-receipt.json')
   const server = writeMcpEchoServer(workingDir, { receiptLog: receipt })
   await withCommandCodeMcp(context, { server, workingDir }, async () => {
     const value = `native-computed-${40 + 2}`
     const callId = 'native-mcp-echo'
-    const request = await invokeNativeMcpTool(context, { server: server.name, tool: 'echo', callId, input: { value } })
+    const request = await invokeNativeMcpTool(context, {
+      server: server.name,
+      tool: 'echo',
+      callId,
+      input: { value },
+    })
     const native = readMcpServerReceipt(receipt)
     expect(native.initializeCapabilities).not.toBeNull()
     expect(native.toolResults).toHaveLength(1)

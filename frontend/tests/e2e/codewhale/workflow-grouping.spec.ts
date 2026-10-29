@@ -8,20 +8,37 @@ codewhaleTest('keeps two actual native workflow units inside one opaque workflow
   await waitForSettingsHydrated(page)
   await applyPermissionPreset(page, 'bypass')
   const children = [
-    { label: 'First native unit', prompt: modelScript.prompt('Reply with FIRSTNATIVEWORKUNIT.') },
-    { label: 'Second native unit', prompt: modelScript.prompt('Reply with SECONDNATIVEWORKUNIT.') },
+    {
+      label: 'First native unit',
+      prompt: modelScript.prompt('Reply with FIRSTNATIVEWORKUNIT.'),
+    },
+    {
+      label: 'Second native unit',
+      prompt: modelScript.prompt('Reply with SECONDNATIVEWORKUNIT.'),
+    },
   ]
   for (const [index, child] of children.entries()) {
     await modelScript.rule({
       name: `native-work-unit-${index}`,
       when: { user: child.prompt },
-      respond: { text: index === 0 ? 'FIRSTNATIVEWORKUNIT' : 'SECONDNATIVEWORKUNIT' },
+      respond: {
+        text: index === 0
+          ? 'FIRSTNATIVEWORKUNIT'
+          : 'SECONDNATIVEWORKUNIT',
+      },
       once: true,
     })
   }
-  await modelScript.queue({ toolCalls: [codewhaleWorkflowToolCall('two-workflow-units', 'Read two independent work units', 'Unused default.', children)] })
+  await modelScript.queue({
+    toolCalls: [
+      codewhaleWorkflowToolCall('two-workflow-units', 'Read two independent work units', 'Unused default.', children),
+    ],
+  })
   await modelScript.fallback({ text: 'Both native workflow units completed.' })
   await sendMessage(page, modelScript.prompt('Run the two scripted native workflow assignments.'))
   await modelScript.waitForSteps()
-  await expectOpaqueNativeWorkflowResult(native, { ruleNames: ['native-work-unit-0', 'native-work-unit-1'], heading: /Read two independent work units/ })
+  await expectOpaqueNativeWorkflowResult(native, {
+    ruleNames: ['native-work-unit-0', 'native-work-unit-1'],
+    heading: /Read two independent work units/,
+  })
 })

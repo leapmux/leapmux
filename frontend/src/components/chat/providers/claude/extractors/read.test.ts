@@ -8,9 +8,18 @@ vi.mock('~/lib/shikiWorkerClient', () => ({
 
 describe('claudeReadFromToolResult', () => {
   it('returns null for non-text variants', () => {
-    for (const type of ['image', 'notebook', 'pdf', 'parts', 'file_unchanged']) {
+    for (const type of [
+      'image',
+      'notebook',
+      'pdf',
+      'parts',
+      'file_unchanged',
+    ]) {
       expect(claudeReadFromToolResult({
-        toolUseResult: { type, file: { filePath: '/a' } },
+        toolUseResult: {
+          type,
+          file: { filePath: '/a' },
+        },
         resultContent: '',
       })).toBeNull()
     }
@@ -42,7 +51,9 @@ describe('claudeReadFromToolResult', () => {
 
   it('returns empty lines when structured content is empty', () => {
     const source = claudeReadFromToolResult({
-      toolUseResult: { file: { filePath: '/a', content: '' } },
+      toolUseResult: {
+        file: { filePath: '/a', content: '' },
+      },
       resultContent: 'fallback',
     })
     expect(source).toEqual({

@@ -7,7 +7,9 @@ export type LettaReturnedData
 
 /** Read the stored native object without changing its shape. */
 export function lettaToolPayload(payload: unknown): Record<string, unknown> | null {
-  return isObject(payload) ? payload : null
+  return isObject(payload)
+    ? payload
+    : null
 }
 
 /** Recognize only the exact native ID for this call's current output window. */
@@ -24,14 +26,19 @@ export function lettaReturnedData(source: Record<string, unknown> | null): Letta
   const topPresent = Object.hasOwn(source, LETTA_DELTA_FIELD.ToolReturn)
   const top = source[LETTA_DELTA_FIELD.ToolReturn]
   const status = pickString(source, LETTA_DELTA_FIELD.Status, undefined)
-  if (!Object.hasOwn(source, LETTA_DELTA_FIELD.ToolReturns))
-    return topPresent && top !== undefined ? { kind: 'present', value: top, status } : { kind: 'absent' }
+  if (!Object.hasOwn(source, LETTA_DELTA_FIELD.ToolReturns)) {
+    return topPresent && top !== undefined
+      ? { kind: 'present', value: top, status }
+      : { kind: 'absent' }
+  }
   const returns = source[LETTA_DELTA_FIELD.ToolReturns]
   const callId = pickString(source, LETTA_DELTA_FIELD.ToolCallID)
   if (!Array.isArray(returns) || !callId)
     return { kind: 'invalid' }
   const matching = returns.filter(isObject).filter(result => pickString(result, LETTA_DELTA_FIELD.ToolCallID) === callId)
-  const selected = matching.length === 1 ? matching[0] : undefined
+  const selected = matching.length === 1
+    ? matching[0]
+    : undefined
   if (!selected)
     return { kind: 'invalid' }
   const selectedStatus = pickString(selected, LETTA_DELTA_FIELD.Status, undefined)
@@ -50,7 +57,9 @@ export function lettaReturnedData(source: Record<string, unknown> | null): Letta
 }
 
 function sameLettaReturn(left: unknown, right: unknown): boolean {
-  const pending: [unknown, unknown][] = [[left, right]]
+  const pending: [unknown, unknown][] = [
+    [left, right],
+  ]
   for (;;) {
     const pair = pending.pop()
     if (!pair)

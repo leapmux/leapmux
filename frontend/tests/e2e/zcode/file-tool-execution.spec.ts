@@ -16,5 +16,8 @@ zcodeTest('renders an applied file edit', async ({ authenticatedZCodeWorkspace, 
 })
 
 zcodeTest('reads and changes actual scratch bytes through native file tools', async ({ native }) => {
-  await exerciseFileToolExecution(native, { prepare: () => bypassToolRequests(native), readAfterCall: (id, path) => zcodeReadRangeToolCall(id, path, { offset: 1, limit: 1 }) })
+  await exerciseFileToolExecution(native, {
+    prepare: () => bypassToolRequests(native),
+    readAfterCall: (id, path) => zcodeReadRangeToolCall(id, path, { offset: 1, limit: 1 }),
+  })
 })

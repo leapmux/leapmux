@@ -28,9 +28,13 @@ function makeResult(toolUseResult: Record<string, unknown> | undefined, content:
     type: 'user',
     message: {
       role: 'user',
-      content: [{ type: 'tool_result', tool_use_id: 'r1', content }],
+      content: [
+        { type: 'tool_result', tool_use_id: 'r1', content },
+      ],
     },
-    ...(toolUseResult ? { tool_use_result: toolUseResult } : {}),
+    ...(toolUseResult
+      ? { tool_use_result: toolUseResult }
+      : {}),
   }
 }
 
@@ -47,10 +51,12 @@ describe('claude WebSearch tool_result rendering', () => {
       tool_name: 'WebSearch',
       query: 'react hooks',
       results: [
-        { content: [
-          { url: 'https://search.example.com/a', title: 'WebSearchTitleA' },
-          { url: 'https://search.example.com/b', title: 'WebSearchTitleB' },
-        ] },
+        {
+          content: [
+            { url: 'https://search.example.com/a', title: 'WebSearchTitleA' },
+            { url: 'https://search.example.com/b', title: 'WebSearchTitleB' },
+          ],
+        },
         'final markdown summary',
       ],
     }, '')

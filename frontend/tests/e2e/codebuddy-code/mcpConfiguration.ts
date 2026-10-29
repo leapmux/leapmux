@@ -12,5 +12,9 @@ export async function withCodebuddyUserMcpServer(environment: Readonly<Record<st
   const configDir = environment.CODEBUDDY_CONFIG_DIR
   if (!configDir)
     throw new Error('The CodeBuddy end-to-end environment requires an isolated config directory.')
-  await withNativeConfigurationFile({ path: join(configDir, '.mcp.json'), content: JSON.stringify(mcpServersConfig(server)), runDir: getGlobalState().tmpDir }, use)
+  await withNativeConfigurationFile({
+    path: join(configDir, '.mcp.json'),
+    content: JSON.stringify(mcpServersConfig(server)),
+    runDir: getGlobalState().tmpDir,
+  }, use)
 }

@@ -46,7 +46,9 @@ export interface ControlRequest {
  * A local request without a token uses its request ID.
  */
 export function requestInstanceId(request: ControlRequest): string {
-  return request.claimToken ? `${request.requestId}:${request.claimToken}` : request.requestId
+  return request.claimToken
+    ? `${request.requestId}:${request.claimToken}`
+    : request.requestId
 }
 
 /** Prefer the provider attached to this request over separately loaded agent metadata. */
@@ -154,7 +156,9 @@ export function createControlStore() {
     }))
     closeQuestionsWithoutOne(agentId)
     if (removed || claimToken) {
-      const key = removalKey(agentId, requestId, claimToken, removed ? canonicalJSON(removed.payload) : '')
+      const key = removalKey(agentId, requestId, claimToken, removed
+        ? canonicalJSON(removed.payload)
+        : '')
       if (removedInstances.get(key) !== ControlResponseState.COMPLETED)
         rememberRemoval(key, responseState)
     }
@@ -203,7 +207,11 @@ export function createControlStore() {
         }
         const entry = {
           ...request,
-          ...(request.originalPayload !== undefined ? { originalPayload: request.originalPayload.slice() } : {}),
+          ...(request.originalPayload !== undefined
+            ? {
+                originalPayload: request.originalPayload.slice(),
+              }
+            : {}),
         }
         if (request.nonBlocking) {
           list.push(entry)
@@ -243,7 +251,9 @@ export function createControlStore() {
       }))
       if (retainForRecording)
         return
-      removeRequest(event.agentId, event.requestId, event.claimToken, event.responseState === ControlResponseState.COMPLETED ? ControlResponseState.COMPLETED : ControlResponseState.CANCELED)
+      removeRequest(event.agentId, event.requestId, event.claimToken, event.responseState === ControlResponseState.COMPLETED
+        ? ControlResponseState.COMPLETED
+        : ControlResponseState.CANCELED)
     },
 
     clearProviderRequests(agentId: string) {

@@ -70,7 +70,12 @@ export function encodeEventStreamMessage(headers: Readonly<Record<string, string
   prelude.writeUInt32BE(encodedHeaders.byteLength, 4)
   const preludeCrc = Buffer.alloc(PRELUDE_CRC_BYTES)
   preludeCrc.writeUInt32BE(crc32(prelude), 0)
-  const body = Buffer.concat([prelude, preludeCrc, encodedHeaders, payload])
+  const body = Buffer.concat([
+    prelude,
+    preludeCrc,
+    encodedHeaders,
+    payload,
+  ])
   const messageCrc = Buffer.alloc(MESSAGE_CRC_BYTES)
   messageCrc.writeUInt32BE(crc32(body), 0)
   return Buffer.concat([body, messageCrc])
@@ -106,7 +111,12 @@ function encodeStringHeader(name: string, value: string): Buffer {
   const typeAndLength = Buffer.alloc(3)
   typeAndLength.writeUInt8(HEADER_TYPE_STRING, 0)
   typeAndLength.writeUInt16BE(encodedValue.byteLength, 1)
-  return Buffer.concat([lengths, encodedName, typeAndLength, encodedValue])
+  return Buffer.concat([
+    lengths,
+    encodedName,
+    typeAndLength,
+    encodedValue,
+  ])
 }
 
 /**

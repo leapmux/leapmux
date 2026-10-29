@@ -36,7 +36,9 @@ export function agentWorkspaceFixture(workspace: WorkspaceFixture, agentId: stri
   return {
     workspaceId: workspace.workspaceId,
     agentId,
-    ...(workingDir === undefined ? {} : { workingDir }),
+    ...(workingDir === undefined
+      ? {}
+      : { workingDir }),
   }
 }
 
@@ -162,8 +164,11 @@ export async function createWorkspaceWithAgentsViaAPI(
   const agentTitles = workspaceAgentTitles(options)
   const workspaceId = await createWorkspaceViaAPI(server.hubUrl, server.adminToken, title)
   const agentIds: string[] = []
-  for (const agentTitle of agentTitles)
-    agentIds.push(await openAgentViaAPI(server, workspaceId, options.workingDir, agentTitle === undefined ? undefined : { title: agentTitle }))
+  for (const agentTitle of agentTitles) {
+    agentIds.push(await openAgentViaAPI(server, workspaceId, options.workingDir, agentTitle === undefined
+      ? undefined
+      : { title: agentTitle }))
+  }
   return { workspaceId, agentIds }
 }
 
@@ -272,7 +277,9 @@ async function attachFailureDiagnostics(
   }
   catch (error) {
     await testInfo.attach('native-diagnostics-error', {
-      body: error instanceof Error ? error.stack ?? error.message : String(error),
+      body: error instanceof Error
+        ? error.stack ?? error.message
+        : String(error),
       contentType: 'text/plain',
     })
   }

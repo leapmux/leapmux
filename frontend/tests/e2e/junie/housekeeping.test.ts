@@ -6,7 +6,13 @@ import { JUNIE_HOUSEKEEPING_RULES, junieCapabilityAnswer } from './housekeeping'
 
 /** A Junie request whose system prompt opens with the given sentence. */
 function turn(systemText: string) {
-  return { protocol: 'openai-chat-completions' as const, path: '/v1/chat/completions', body: {}, systemText, userText: 'Reply once.' }
+  return {
+    protocol: 'openai-chat-completions' as const,
+    path: '/v1/chat/completions',
+    body: {},
+    systemText,
+    userText: 'Reply once.',
+  }
 }
 
 /** The names of the rules that match one request, in registration order. */
@@ -23,9 +29,18 @@ describe('JUNIE_HOUSEKEEPING_RULES', () => {
 
   it('answers the capability filter with no capability, the task namer with a title, and the task summarizer with both tags', () => {
     expect(JUNIE_HOUSEKEEPING_RULES.map(rule => [rule.when, rule.respond])).toEqual([
-      [{ system: 'capability filter agent' }, { text: '' }],
-      [{ system: 'task description summarizer' }, { text: MOCK_SESSION_TITLE }],
-      [{ system: 'You are a task summarizer' }, { text: `<summary>The child task completed.</summary><title>${MOCK_SESSION_TITLE}</title>` }],
+      [
+        { system: 'capability filter agent' },
+        { text: '' },
+      ],
+      [
+        { system: 'task description summarizer' },
+        { text: MOCK_SESSION_TITLE },
+      ],
+      [
+        { system: 'You are a task summarizer' },
+        { text: `<summary>The child task completed.</summary><title>${MOCK_SESSION_TITLE}</title>` },
+      ],
     ])
   })
 
@@ -49,17 +64,28 @@ describe('JUNIE_HOUSEKEEPING_RULES', () => {
       { role: 'system', content: system },
       { role: 'user', content: prompt },
     ])
-    expect(answers).toEqual({ housekeeping: answer, content: CONTENT_RULE_ANSWER, ruleMatches: { [name]: 1, 'content-rule': 1 } })
+    expect(answers).toEqual({
+      housekeeping: answer,
+      content: CONTENT_RULE_ANSWER,
+      ruleMatches: { [name]: 1, 'content-rule': 1 },
+    })
   })
 })
 
 describe('junieCapabilityAnswer', () => {
   // One registration lists the newer rule first, as a later registration of a spec places it.
   it('replaces the empty capability answer of the housekeeping rules, ahead of a content rule for the same task', async () => {
-    const answers = await answerHousekeepingBesideContentRule([junieCapabilityAnswer('junie-mcp-capability', '1'), ...JUNIE_HOUSEKEEPING_RULES], prompt => [
+    const answers = await answerHousekeepingBesideContentRule([
+      junieCapabilityAnswer('junie-mcp-capability', '1'),
+      ...JUNIE_HOUSEKEEPING_RULES,
+    ], prompt => [
       { role: 'system', content: 'You are a capability filter agent. Select the capabilities that the request needs.' },
       { role: 'user', content: prompt },
     ])
-    expect(answers).toEqual({ housekeeping: '1', content: CONTENT_RULE_ANSWER, ruleMatches: { 'junie-mcp-capability': 1, 'content-rule': 1 } })
+    expect(answers).toEqual({
+      housekeeping: '1',
+      content: CONTENT_RULE_ANSWER,
+      ruleMatches: { 'junie-mcp-capability': 1, 'content-rule': 1 },
+    })
   })
 })

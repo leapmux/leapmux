@@ -15,7 +15,9 @@ import { createSignal, onCleanup, onMount } from 'solid-js'
  */
 export function useViewportBelow(px: number): () => boolean {
   const [below, setBelow] = createSignal(
-    typeof window !== 'undefined' ? window.innerWidth < px : false,
+    typeof window !== 'undefined'
+      ? window.innerWidth < px
+      : false,
   )
 
   onMount(() => {

@@ -2,7 +2,17 @@ import { describe, expect, it } from 'vitest'
 import { detectFileViewMode, isBinaryContent, isImageExtension, isLikelyBinaryExtension, isMarkdownExtension, isSvgExtension } from '~/lib/fileType'
 
 describe('isImageExtension', () => {
-  const imageExts = ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'svg', 'ico', 'avif']
+  const imageExts = [
+    'png',
+    'jpg',
+    'jpeg',
+    'gif',
+    'bmp',
+    'webp',
+    'svg',
+    'ico',
+    'avif',
+  ]
   for (const ext of imageExts) {
     it(`returns true for .${ext}`, () => {
       expect(isImageExtension(`test.${ext}`)).toBe(true)
@@ -135,7 +145,11 @@ describe('isBinaryContent', () => {
 
   it('returns true for high ratio of non-printable bytes', () => {
     const bytes = new Uint8Array(100)
-    for (let i = 0; i < 100; i++) bytes[i] = i < 50 ? 0x01 : 0x41
+    for (let i = 0; i < 100; i++) {
+      bytes[i] = i < 50
+        ? 0x01
+        : 0x41
+    }
     expect(isBinaryContent(bytes)).toBe(true)
   })
 

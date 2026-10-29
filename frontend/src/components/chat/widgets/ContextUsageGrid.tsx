@@ -100,12 +100,16 @@ export const ContextUsageGrid: Component<ContextUsageGridProps> = (props) => {
 
   const filled = createMemo(() => {
     const pct = percentage()
-    return pct != null ? filledCount(pct) : 0
+    return pct != null
+      ? filledCount(pct)
+      : 0
   })
 
   const warning = createMemo(() => (percentage() ?? 0) >= 91)
 
-  const activeColor = () => warning() ? 'var(--context-grid-warning)' : 'currentColor'
+  const activeColor = () => warning()
+    ? 'var(--context-grid-warning)'
+    : 'currentColor'
 
   const fills = createMemo(() => {
     // eslint-disable-next-line solid/reactivity -- `active` is read by the Array.from mapper below, in this same memo evaluation
@@ -114,20 +118,26 @@ export const ContextUsageGrid: Component<ContextUsageGridProps> = (props) => {
     const lit = new Set(fillOrder.slice(0, filled()).map(([row, col]) => row * PIP_GRID_COLUMNS + col))
     return Array.from(
       { length: PIP_GRID_PIPS },
-      (_, i) => lit.has(i) ? active : 'var(--context-grid-inactive)',
+      (_, i) => lit.has(i)
+        ? active
+        : 'var(--context-grid-inactive)',
     )
   })
 
   const tooltip = createMemo(() => {
     const pct = percentage()
-    return pct != null ? `Context: ${Math.round(pct)}%` : undefined
+    return pct != null
+      ? `Context: ${Math.round(pct)}%`
+      : undefined
   })
   // Set only when there is a tooltip to show: an explicit `undefined` is not
   // assignable to the optional `text` under exactOptionalPropertyTypes. One
   // read of `tooltip`, so the branch keeps the narrowed type.
   const tooltipProps = () => {
     const text = tooltip()
-    return text === undefined ? {} : { text }
+    return text === undefined
+      ? {}
+      : { text }
   }
 
   return (

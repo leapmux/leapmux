@@ -58,10 +58,18 @@ export function ampGrepResult(text: string): SearchResult {
   const lines: SearchMatch[] = entries.flatMap((entry) => {
     const match = GREP_ENTRY.exec(entry)
     return match?.[1] !== undefined && match[2] !== undefined
-      ? [{ filePath: match[1], lineNumber: Number(match[2]), text: match[3] ?? '' }]
+      ? [
+          {
+            filePath: match[1],
+            lineNumber: Number(match[2]),
+            text: match[3] ?? '',
+          },
+        ]
       : []
   })
-  const filenames = [...new Set(lines.map(line => line.filePath))]
+  const filenames = [
+    ...new Set(lines.map(line => line.filePath)),
+  ]
   return {
     filenames,
     content: entries.join('\n'),

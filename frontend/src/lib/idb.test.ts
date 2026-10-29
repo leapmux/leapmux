@@ -87,14 +87,19 @@ function shapeOf(db: Dexie): Record<string, string[]> {
   const idb = db.backendDB()
   const names = Array.from(idb.objectStoreNames)
   const tx = idb.transaction(names, 'readonly')
-  return Object.fromEntries(names.map(name => [name, Array.from(tx.objectStore(name).indexNames)]))
+  return Object.fromEntries(names.map(name => [
+    name,
+    Array.from(tx.objectStore(name).indexNames),
+  ]))
 }
 
 describe('createIdbConnection', () => {
   it('creates the schema on a first open', async () => {
     const conn = connect('fresh')
     const db = await conn.open()
-    expect(shapeOf(db)).toEqual({ [STORE]: ['at'] })
+    expect(shapeOf(db)).toEqual({
+      [STORE]: ['at'],
+    })
     // Dexie's ×10 encoding of the declared version 1. Every drift case below
     // reads this back, so pin it once here.
     expect(db.backendDB().version).toBe(NATIVE_VERSION)
@@ -103,7 +108,10 @@ describe('createIdbConnection', () => {
 
   it('caches the connection across calls', async () => {
     const conn = connect('cached')
-    const [a, b] = await Promise.all([conn.open(), conn.open()])
+    const [a, b] = await Promise.all([
+      conn.open(),
+      conn.open(),
+    ])
     expect(a).toBe(b)
     conn.reset()
   })
@@ -178,7 +186,9 @@ describe('createIdbConnection schema drift', () => {
   async function expectRebuilt(name: string): Promise<void> {
     const conn = connect(name)
     const db = await conn.open()
-    expect(shapeOf(db)).toEqual({ [STORE]: ['at'] })
+    expect(shapeOf(db)).toEqual({
+      [STORE]: ['at'],
+    })
     expect(db.backendDB().version).toBe(NATIVE_VERSION)
     // The seeded row is gone: a rebuild, not a repair.
     expect(await db.table(STORE).count()).toBe(0)
@@ -276,7 +286,9 @@ describe('createIdbConnection schema drift', () => {
 
     const conn = connect('legacy-conforming')
     const db = await conn.open()
-    expect(shapeOf(db)).toEqual({ [STORE]: ['at'] })
+    expect(shapeOf(db)).toEqual({
+      [STORE]: ['at'],
+    })
     expect(db.backendDB().version).toBe(NATIVE_VERSION)
     expect(await db.table(STORE).count()).toBe(1)
     conn.reset()
@@ -472,7 +484,10 @@ describe('stopWalk', () => {
   it('leaves a walk that never stops to run to exhaustion', async () => {
     const conn = connect('stop-never')
     const db = await conn.open()
-    await db.table(STORE).bulkPut([{ k: 'a', at: 1 }, { k: 'b', at: 2 }])
+    await db.table(STORE).bulkPut([
+      { k: 'a', at: 1 },
+      { k: 'b', at: 2 },
+    ])
 
     const seen: string[] = []
     await db.table(STORE).orderBy('at').each((row) => {
@@ -517,7 +532,12 @@ describe('selectSweepVictims', () => {
   it('counts reserved entries against the cap', () => {
     // Two reserved slots (the sweeping tab plus one live sibling) leave room
     // for one collectable survivor out of three.
-    expect(selectSweepVictims(at(9500, 9600, 9700), { now, ttlMs, maxEntries: 3, reserved: 2 }))
+    expect(selectSweepVictims(at(9500, 9600, 9700), {
+      now,
+      ttlMs,
+      maxEntries: 3,
+      reserved: 2,
+    }))
       .toEqual(at(9500, 9600))
   })
 
@@ -534,7 +554,12 @@ describe('selectSweepVictims', () => {
   })
 
   it('never selects more than the whole list', () => {
-    expect(selectSweepVictims(at(9500, 9600), { now, ttlMs, maxEntries: 0, reserved: 10 }))
+    expect(selectSweepVictims(at(9500, 9600), {
+      now,
+      ttlMs,
+      maxEntries: 0,
+      reserved: 10,
+    }))
       .toEqual(at(9500, 9600))
   })
 

@@ -134,7 +134,9 @@ export const FloatingWindowContainer: Component<FloatingWindowContainerProps> = 
     e.preventDefault()
     if (e.deltaY === 0)
       return
-    const delta = e.deltaY > 0 ? -0.05 : 0.05
+    const delta = e.deltaY > 0
+      ? -0.05
+      : 0.05
     const changed = props.floatingWindowStore.updateOpacityDebounced(props.windowId, props.opacity + delta)
     if (changed)
       props.onGeometryChange?.()

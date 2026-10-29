@@ -46,11 +46,17 @@ function action(
   return focusedBranchAction({
     tab: t,
     workspaceId: 'ws1',
-    workspaceTabs: () => (tabs.length > 0 ? tabs : t ? [t] : []),
+    workspaceTabs: () => (tabs.length > 0
+      ? tabs
+      : t
+        ? [t]
+        : []),
     repoGitStore: store,
     // Omitted while unset, rather than a present-undefined the option's
     // type refuses: an absent gate and a failed-open one read the same.
-    ...(isOnline !== undefined ? { isWorkerKnownOnline: isOnline } : {}),
+    ...(isOnline !== undefined
+      ? { isWorkerKnownOnline: isOnline }
+      : {}),
   })
 }
 
@@ -191,7 +197,13 @@ describe('focusedBranchAction ref', () => {
     seedRepo(store, otherWorker, { branch: 'main' })
     seedRepo(store, otherRepo, { branch: 'main' })
 
-    const ref = action(focused, store, () => true, [focused, sameBranch, otherBranch, otherWorker, otherRepo]).buildRef!()
+    const ref = action(focused, store, () => true, [
+      focused,
+      sameBranch,
+      otherBranch,
+      otherWorker,
+      otherRepo,
+    ]).buildRef!()
 
     expect(ref.tabs.map(t => t.id)).toEqual(['a', 'b'])
   })
@@ -214,7 +226,14 @@ describe('focusedBranchAction ref', () => {
 })
 
 describe('bindBranchActions', () => {
-  const ref = { workspaceId: 'ws1', workerId: 'w1', gitToplevel: '/repo', isWorktree: false, branchName: 'main', tabs: [] } as BranchRef
+  const ref = {
+    workspaceId: 'ws1',
+    workerId: 'w1',
+    gitToplevel: '/repo',
+    isWorktree: false,
+    branchName: 'main',
+    tabs: [],
+  } as BranchRef
 
   it('passes the ref first and the action\'s own arguments after it', () => {
     const actions = stubBranchRefActions()

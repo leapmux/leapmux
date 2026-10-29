@@ -282,5 +282,14 @@ export function createDotPreview(deps: DotPreviewDeps): DotPreviewController {
     warmScrubDot()
   })
 
-  return { activeDot, cardTopPx, openDot, closeSoon, abandonDot, focusDot, blurDot, closeNow }
+  return {
+    activeDot,
+    cardTopPx,
+    openDot,
+    closeSoon,
+    abandonDot,
+    focusDot,
+    blurDot,
+    closeNow,
+  }
 }

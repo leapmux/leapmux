@@ -37,7 +37,9 @@ export async function exercisePiGoalLifecycle(context: NativeScenarioContext): P
       await modelScript.waitForSteps(start + 1)
       await modelScript.waitForGate(gate)
     })
-    await pauseResumeClearGoal(page, objective, { afterClear: () => approvePiGoalClear(page) })
+    await pauseResumeClearGoal(page, objective, {
+      afterClear: () => approvePiGoalClear(page),
+    })
   }, async () => {
     await modelScript.releaseGateIfHeld(gate)
   })
@@ -108,7 +110,10 @@ export async function exercisePiGoalPanel(context: ManagedNativeScenarioContext)
     })
     await expectNoControlBanner(page)
     await expectEmptyGoalCard(page)
-  }, () => finishCleanup([modelScript.releaseGateIfHeld(firstGate), modelScript.releaseGateIfHeld(secondGate)]))
+  }, () => finishCleanup([
+    modelScript.releaseGateIfHeld(firstGate),
+    modelScript.releaseGateIfHeld(secondGate),
+  ]))
   await waitForAgentIdle(page)
   expect((await modelScript.waitForSteps(start + 2)).unexpectedRequests).toEqual([])
 }

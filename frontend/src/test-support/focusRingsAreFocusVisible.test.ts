@@ -58,7 +58,9 @@ function blockAt(source: string, open: number): string {
 /** The `export const NAME` a match sits under, so a failure names the style. */
 function enclosingStyle(source: string, index: number): string {
   const before = source.slice(0, index)
-  const match = [...before.matchAll(/^export const (\w+)/gm)].at(-1)
+  const match = [
+    ...before.matchAll(/^export const (\w+)/gm),
+  ].at(-1)
   return match?.[1] ?? '(module scope)'
 }
 
@@ -73,7 +75,9 @@ describe('focus rings are drawn from :focus-visible', () => {
         // not what this guard is for -- flagging it would push an author
         // toward deleting the suppression rather than toward the right
         // selector.
-        const drawn = [...body.matchAll(RING_DECLARATION)]
+        const drawn = [
+          ...body.matchAll(RING_DECLARATION),
+        ]
           .filter(d => d[2]!.slice(1, -1).trim() !== 'none')
         if (drawn.length === 0)
           continue
@@ -101,7 +105,9 @@ describe('focus rings are drawn from :focus-visible', () => {
     // The guard above is a regex over source text, so a spelling it cannot see
     // is a hole that reads as a pass. Pin both forms, the grouped key, and the
     // two it must NOT claim.
-    const seen = (src: string) => [...src.matchAll(FOCUS_KEY)].map(m => m[2])
+    const seen = (src: string) => [
+      ...src.matchAll(FOCUS_KEY),
+    ].map(m => m[2])
     expect(seen(`':focus': {`)).toEqual([':focus'])
     expect(seen(`'&:focus': {`)).toEqual(['&:focus'])
     expect(seen(`'&:hover, &:focus': {`)).toEqual(['&:hover, &:focus'])

@@ -131,7 +131,9 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
     const activeId = props.activeWorkspaceId
     if (!activeId)
       return null
-    return props.getTabsForWorkspace(activeId).length > 0 ? activeId : null
+    return props.getTabsForWorkspace(activeId).length > 0
+      ? activeId
+      : null
   })
 
   // Auto-expand the active workspace when it changes (if it has tabs).
@@ -189,7 +191,10 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
     // target from -- so dropping a workspace onto a row of another section fell
     // through to the nearest section BODY centre, which for sections of unequal
     // height is not always the section the user aimed at.
-    <SortableProvider ids={canReorder() ? props.workspaces.map(w => `ws-${w.id}`) : []}>
+    <SortableProvider ids={canReorder()
+      ? props.workspaces.map(w => `ws-${w.id}`)
+      : []}
+    >
       <div
         ref={droppable}
         class={styles.sectionItems}
@@ -296,15 +301,21 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                     // row is the only place it is observable from outside. E2E
                     // asserts a switch landed on it; the styling still comes
                     // from `itemActive` above.
-                    data-active={isActive() ? 'true' : 'false'}
+                    data-active={isActive()
+                      ? 'true'
+                      : 'false'}
                     // Collapsing only sets `visibility: hidden` on the children
                     // wrapper, so the leaves stay in the DOM and counting them
                     // cannot tell expanded from collapsed. Expose the bit.
-                    data-expanded={isWorkspaceExpanded(id) ? 'true' : 'false'}
+                    data-expanded={isWorkspaceExpanded(id)
+                      ? 'true'
+                      : 'false'}
                   >
                     <ChevronRight
                       size={14}
-                      class={`${shared.chevron} ${isWorkspaceExpanded(id) ? shared.chevronExpanded : ''}`}
+                      class={`${shared.chevron} ${isWorkspaceExpanded(id)
+                        ? shared.chevronExpanded
+                        : ''}`}
                       data-testid={`workspace-chevron-${id}`}
                       onClick={(e) => {
                         e.stopPropagation()
@@ -369,10 +380,16 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                             currentSectionId={props.sectionId}
                             getTabs={() => tabsFor(id)}
                             repoGitStore={props.repoGitStore}
-                            {...(props.workerInfoFn !== undefined ? { workerInfoFn: props.workerInfoFn } : {})}
-                            {...(props.isWorkerKnownOnline !== undefined ? { isWorkerOnline: props.isWorkerKnownOnline } : {})}
+                            {...(props.workerInfoFn !== undefined
+                              ? { workerInfoFn: props.workerInfoFn }
+                              : {})}
+                            {...(props.isWorkerKnownOnline !== undefined
+                              ? { isWorkerOnline: props.isWorkerKnownOnline }
+                              : {})}
                             isLocalWorkerFn={props.isLocalWorkerFn}
-                            {...(props.startActions !== undefined ? { startActions: props.startActions } : {})}
+                            {...(props.startActions !== undefined
+                              ? { startActions: props.startActions }
+                              : {})}
                             onRename={() => props.onRename(workspace())}
                             onMoveTo={targetSectionId => props.onMoveTo(id, targetSectionId)}
                             onArchive={() => props.onArchive(id)}
@@ -384,7 +401,9 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                     </div>
                   </div>
                   <div
-                    class={`${shared.childrenWrapper} ${isWorkspaceExpanded(id) ? shared.childrenWrapperExpanded : ''}`}
+                    class={`${shared.childrenWrapper} ${isWorkspaceExpanded(id)
+                      ? shared.childrenWrapperExpanded
+                      : ''}`}
                     data-testid={`workspace-children-${id}`}
                   >
                     <div class={shared.childrenInner}>
@@ -404,7 +423,9 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                           if (id !== props.activeWorkspaceId)
                             props.onSelect(id)
                         }}
-                        {...(props.tabItemOps !== undefined ? { tabItemOps: props.tabItemOps } : {})}
+                        {...(props.tabItemOps !== undefined
+                          ? { tabItemOps: props.tabItemOps }
+                          : {})}
                         // Per WORKSPACE, not per sidebar: this section lists
                         // several, and only some of them are archived. The tab
                         // bar derives its own copy the same way, from
@@ -412,10 +433,16 @@ export const WorkspaceSectionContent: Component<WorkspaceSectionContentProps> = 
                         // tabs it renders.
                         archived={props.isArchived(id)}
                         workspaceId={id}
-                        {...(props.workerInfoFn !== undefined ? { workerInfoFn: props.workerInfoFn } : {})}
-                        {...(props.isWorkerKnownOnline !== undefined ? { isWorkerKnownOnline: props.isWorkerKnownOnline } : {})}
+                        {...(props.workerInfoFn !== undefined
+                          ? { workerInfoFn: props.workerInfoFn }
+                          : {})}
+                        {...(props.isWorkerKnownOnline !== undefined
+                          ? { isWorkerKnownOnline: props.isWorkerKnownOnline }
+                          : {})}
                         isLocalWorkerFn={props.isLocalWorkerFn}
-                        {...(props.branchActions !== undefined ? { branchActions: props.branchActions } : {})}
+                        {...(props.branchActions !== undefined
+                          ? { branchActions: props.branchActions }
+                          : {})}
                         repoGitStore={props.repoGitStore}
                       />
                     </div>

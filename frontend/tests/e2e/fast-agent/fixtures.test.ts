@@ -13,13 +13,17 @@ import { FAST_AGENT_AGENT } from './scenarios'
 
 const fixtures = vi.hoisted(() => new Map<string, unknown>())
 vi.mock('../fastagent-fixtures', () => ({
-  fastAgentTest: { extend: (definitions: Record<string, unknown>) => {
-    for (const [name, definition] of Object.entries(definitions))
-      fixtures.set(name, definition)
-    return {}
-  } },
+  fastAgentTest: {
+    extend: (definitions: Record<string, unknown>) => {
+      for (const [name, definition] of Object.entries(definitions))
+        fixtures.set(name, definition)
+      return {}
+    },
+  },
 }))
-vi.mock('../helpers/privateNativeWorkspace', () => ({ withPrivateNativeWorkspace: vi.fn() }))
+vi.mock('../helpers/privateNativeWorkspace', () => ({
+  withPrivateNativeWorkspace: vi.fn(),
+}))
 vi.mock('../helpers/workspace', async original => ({
   ...await original<typeof import('../helpers/workspace')>(),
   openProviderAgent: vi.fn(),
@@ -45,7 +49,10 @@ describe('prepareFastAgentModes', () => {
     mkdirSync(run)
     const prepared = prepareFastAgentModes(run, sharedHome)
     const home = join(run, 'fast-agent-home')
-    expect(prepared).toEqual({ env: { FAST_AGENT_HOME: home }, setup: undefined })
+    expect(prepared).toEqual({
+      env: { FAST_AGENT_HOME: home },
+      setup: undefined,
+    })
     expect(readFileSync(join(home, 'fast-agent.yaml'), 'utf8')).toBe('default_model: mock\n')
     const reader = readFileSync(join(home, 'agent-cards', 'reader.md'), 'utf8')
     const writer = readFileSync(join(home, 'agent-cards', 'writer.md'), 'utf8')
@@ -62,12 +69,17 @@ describe('prepareFastAgentModes', () => {
 })
 
 describe('fastAgentModesWorkspace', () => {
-  const leapmuxServer = { hubUrl: 'http://hub.test', adminToken: 'token', workerId: 'suite-worker', agentEnv: { HOME: '/suite/home', FAST_AGENT_HOME: '' } }
+  const leapmuxServer = {
+    hubUrl: 'http://hub.test',
+    adminToken: 'token',
+    workerId: 'suite-worker',
+    agentEnv: { HOME: '/suite/home', FAST_AGENT_HOME: '' },
+  }
 
   function fixture(): (fixtures: object, use: (value: unknown) => Promise<void>) => Promise<void> {
     const definition = fixtures.get('fastAgentModesWorkspace')
     if (typeof definition !== 'function')
-      throw new Error('The Fast Agent modes fixture definition is absent.')
+      throw new TypeError('The Fast Agent modes fixture definition is absent.')
     return definition as (fixtures: object, use: (value: unknown) => Promise<void>) => Promise<void>
   }
 
@@ -78,13 +90,22 @@ describe('fastAgentModesWorkspace', () => {
     })
     const workingDir = unitWorkingDir('/private/wd')
     vi.mocked(openProviderAgent).mockResolvedValue({ agentId: 'fast-agent', workingDir })
-    await fixture()({ page: {}, leapmuxServer: { ...leapmuxServer, agentEnv: { ...leapmuxServer.agentEnv, FAST_AGENT_HOME: sharedHome } } }, async () => {})
+    await fixture()({
+      page: {},
+      leapmuxServer: {
+        ...leapmuxServer,
+        agentEnv: { ...leapmuxServer.agentEnv, FAST_AGENT_HOME: sharedHome },
+      },
+    }, async () => {})
     if (!options)
       throw new Error('The fixture started no private workspace.')
     expect(options).toMatchObject({ prefix: 'fast-agent-modes', workerName: 'Fast Agent modes', providerAgent: FAST_AGENT_AGENT })
     const server = { ...leapmuxServer, workerId: 'private-worker' }
     await expect(options.openAgent(server, 'private-workspace', workingDir)).resolves.toBe('fast-agent')
-    expect(openProviderAgent).toHaveBeenCalledExactlyOnceWith(server, 'private-workspace', FAST_AGENT_AGENT, { workingDir, optionValues: { permissionMode: 'reader' } })
+    expect(openProviderAgent).toHaveBeenCalledExactlyOnceWith(server, 'private-workspace', FAST_AGENT_AGENT, {
+      workingDir,
+      optionValues: { permissionMode: 'reader' },
+    })
   })
 
   it('refuses a suite environment with no Fast Agent home before it starts a Worker', async () => {

@@ -89,7 +89,9 @@ describe('ToolUseLayout', () => {
     ))
 
     const toolbar = screen.getByTestId('message-toolbar')
-    const ids = [...toolbar.querySelectorAll('[data-testid]')].map(el => el.getAttribute('data-testid'))
+    const ids = [
+      ...toolbar.querySelectorAll('[data-testid]'),
+    ].map(el => el.getAttribute('data-testid'))
     expect(ids).toEqual(['message-copy-json'])
     // The timestamp leads the copy button, as on every left-to-right row.
     const timestamp = toolbar.querySelector(classSelector(toolHeaderTimestamp))

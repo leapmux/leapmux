@@ -15,5 +15,7 @@ export function codebuddyCommandOutput(block: Record<string, unknown> | undefine
     return undefined
   }
   const renderer = pickObject(meta, 'renderer')
-  return renderer?.type === 'text' && typeof renderer.value === 'string' ? renderer.value : undefined
+  return renderer?.type === 'text' && typeof renderer.value === 'string'
+    ? renderer.value
+    : undefined
 }

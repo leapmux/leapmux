@@ -50,8 +50,12 @@ function questionResponseSummary(cr: PersistedControlResponse): ControlResponseS
     return label('Dismissed')
   const answers = pickObject(cr.response, LETTA_QUESTION.FieldAnswers)
   const lines = lettaQuestionsFromPayload(cr.request ?? {}).flatMap((question) => {
-    const line = labeledAnswerLine(question.question, [pickString(answers, question.question)])
-    return line ? [line] : []
+    const line = labeledAnswerLine(question.question, [
+      pickString(answers, question.question),
+    ])
+    return line
+      ? [line]
+      : []
   })
   return label(joinAnswerLines(lines) ?? 'No answer')
 }

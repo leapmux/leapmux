@@ -75,7 +75,9 @@ function axisTransform<T>(transform: T, axis: DragAxis): T | { x: number, y: num
   const point = transform as { x?: number, y?: number } | undefined
   if (axis === 'both' || typeof point?.x !== 'number' || typeof point?.y !== 'number')
     return transform
-  return axis === 'y' ? { x: 0, y: point.y } : { x: point.x, y: 0 }
+  return axis === 'y'
+    ? { x: 0, y: point.y }
+    : { x: point.x, y: 0 }
 }
 
 function guardRow(primitive: DragPrimitive | undefined, axis: DragAxis): GuardedDragRow {
@@ -90,7 +92,9 @@ function guardRow(primitive: DragPrimitive | undefined, axis: DragAxis): Guarded
       if (!primitive)
         return {}
       const { transform } = maybeTransformStyle(axisTransform(primitive.transform, axis) as { x: number, y: number })
-      return transform === undefined ? {} : { transform }
+      return transform === undefined
+        ? {}
+        : { transform }
     },
     get isActiveDraggable() {
       return primitive?.isActiveDraggable ?? false
@@ -110,7 +114,9 @@ export function createGuardedSortableRow(
 ): GuardedDragRow {
   let sortable: DragPrimitive | undefined
   try {
-    sortable = data !== undefined ? createSortable(key, data) : createSortable(key)
+    sortable = data !== undefined
+      ? createSortable(key, data)
+      : createSortable(key)
   }
   catch { /* DnD context not ready */ }
   return guardRow(sortable, axis)
@@ -124,7 +130,9 @@ export function createGuardedDraggableRow(
 ): GuardedDragRow {
   let draggable: DragPrimitive | undefined
   try {
-    draggable = data !== undefined ? createDraggable(key, data) : createDraggable(key)
+    draggable = data !== undefined
+      ? createDraggable(key, data)
+      : createDraggable(key)
   }
   catch { /* DnD context not ready */ }
   return guardRow(draggable, axis)

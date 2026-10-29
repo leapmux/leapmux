@@ -13,7 +13,11 @@ import { askUserQuestionToolCall } from './providerToolCalls'
 const browser = vi.hoisted(() => ({
   events: [] as string[],
   restoredBanner: undefined as Locator | undefined,
-  stored: { selections: { 0: ['native-green'] } } as unknown,
+  stored: {
+    selections: {
+      0: ['native-green'],
+    },
+  } as unknown,
   restoredChecked: true,
   draft: 'Typed answer',
   mobileOwner: false,
@@ -63,7 +67,11 @@ vi.mock('./ui', () => ({
   expectNoControlBanner: async () => {
     browser.events.push('no-banner')
   },
-  assistantBubbles: () => ({ filter: ({ hasText }: { hasText: string }) => ({ first: () => fakeLocator(`answer:${hasText}`) }) }),
+  assistantBubbles: () => ({
+    filter: ({ hasText }: { hasText: string }) => ({
+      first: () => fakeLocator(`answer:${hasText}`),
+    }),
+  }),
   controlButton: (_page: Page, action: string) => ({
     click: async () => {
       browser.events.push(`click:${action}`)
@@ -115,7 +123,10 @@ vi.mock('@playwright/test', async (importOriginal) => {
 const COLOR: QuestionRequest = {
   question: 'Which color should I use?',
   header: 'Color',
-  options: [{ label: 'Blue', description: 'Use blue.' }, { label: 'Green', description: 'Use green.' }],
+  options: [
+    { label: 'Blue', description: 'Use blue.' },
+    { label: 'Green', description: 'Use green.' },
+  ],
 }
 
 /** A Chat Completions request that holds one tool result for `callId`. */
@@ -124,7 +135,12 @@ function toolResultRequest(stepIndex: number, callId: string, content: string): 
     stepIndex,
     protocol: 'openai-chat-completions',
     path: '/v1/chat/completions',
-    body: { messages: [{ role: 'user', content: 'Ask.' }, { role: 'tool', tool_call_id: callId, content }] },
+    body: {
+      messages: [
+        { role: 'user', content: 'Ask.' },
+        { role: 'tool', tool_call_id: callId, content },
+      ],
+    },
   }
 }
 
@@ -145,7 +161,11 @@ function fakeScript(offset: number, records: Record<number, MockModelRequestReco
       browser.events.push('fallback')
       fallbacks.push(step)
     }),
-    status: vi.fn(async () => ({ requests: Object.values(records), nextStep: offset + queued.length, unexpectedRequests: [] })),
+    status: vi.fn(async () => ({
+      requests: Object.values(records),
+      nextStep: offset + queued.length,
+      unexpectedRequests: [],
+    })),
     waitForSteps: vi.fn(async (count?: number) => {
       browser.events.push(`steps:${count ?? 'all'}`)
     }),
@@ -164,13 +184,22 @@ function fakeScript(offset: number, records: Record<number, MockModelRequestReco
 }
 
 function context(script: ReturnType<typeof fakeScript>['script'], extra: Partial<NativeScenarioContext> = {}): NativeScenarioContext {
-  return { page: {} as Page, modelScript: script as unknown as ModelScript, provider: AgentProvider.GITHUB_COPILOT, ...extra }
+  return {
+    page: {} as Page,
+    modelScript: script as unknown as ModelScript,
+    provider: AgentProvider.GITHUB_COPILOT,
+    ...extra,
+  }
 }
 
 beforeEach(() => {
   browser.events.length = 0
   browser.restoredBanner = undefined
-  browser.stored = { selections: { 0: ['native-green'] } }
+  browser.stored = {
+    selections: {
+      0: ['native-green'],
+    },
+  }
   browser.restoredChecked = true
   browser.mobileOwner = false
   browser.ownerId = 'question-agent'
@@ -202,21 +231,32 @@ describe('exerciseQuestionCancellation', () => {
   it('rejects a cancellation that starts another model request', async () => {
     const { script } = fakeScript(3, {})
     script.status.mockResolvedValue({ requests: [], nextStep: 5, unexpectedRequests: [] })
-    await expect(exerciseQuestionCancellation(context(script), { questions: [COLOR], reply: async () => {} })).rejects.toThrow('the agent requested 4 ordered steps and no more')
+    await expect(exerciseQuestionCancellation(context(script), {
+      questions: [COLOR],
+      reply: async () => {},
+    })).rejects.toThrow('the agent requested 4 ordered steps and no more')
   })
 })
 
 describe('restoreQuestionTextDraft', () => {
   function draftContext() {
     return {
-      page: { reload: async () => { browser.events.push('reload') } },
+      page: {
+        reload: async () => { browser.events.push('reload') },
+      },
       leapmuxServer: { adminUserId: 'question-user' },
     } as unknown as ManagedNativeScenarioContext
   }
 
   it('waits for durable storage before reload and checks the restored text', async () => {
     await restoreQuestionTextDraft(draftContext(), 'Typed answer')
-    expect(browser.events).toEqual(['composer text', 'stored-draft', 'reload', 'banner', 'composer text'])
+    expect(browser.events).toEqual([
+      'composer text',
+      'stored-draft',
+      'reload',
+      'banner',
+      'composer text',
+    ])
   })
 
   it('requires the active page to reach storage before restoring a typed answer', async () => {
@@ -228,7 +268,13 @@ describe('restoreQuestionTextDraft', () => {
     expect(browser.events).not.toContain('reload')
   })
 
-  it.each([-1, 0.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1])('rejects an invalid page before reading its draft: %s', async (index) => {
+  it.each([
+    -1,
+    0.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.MAX_SAFE_INTEGER + 1,
+  ])('rejects an invalid page before reading its draft: %s', async (index) => {
     await expect(restoreQuestionTextDraft(draftContext(), 'Typed answer', index)).rejects.toThrow('nonnegative safe integer')
     expect(browser.events).toEqual([])
   })
@@ -251,13 +297,25 @@ describe('restoreQuestionTextDraft', () => {
 
 describe('exerciseQuestionAnswer', () => {
   it('runs one question turn from the queue index and returns the reply of the question call', async () => {
-    const { script, queued } = fakeScript(3, { 4: toolResultRequest(4, 'color-question', 'The user chose Green.') })
+    const { script, queued } = fakeScript(3, {
+      4: toolResultRequest(4, 'color-question', 'The user chose Green.'),
+    })
     const reply = vi.fn(async (banner: Locator) => {
       browser.events.push(`reply:${(banner as unknown as FakeLocator).fake}`)
     })
-    const turn = await exerciseQuestionAnswer(context(script), { questions: [COLOR], reply, callId: 'color-question', answer: 'I used the chosen color.', prompt: 'Ask me.' })
+    const turn = await exerciseQuestionAnswer(context(script), {
+      questions: [COLOR],
+      reply,
+      callId: 'color-question',
+      answer: 'I used the chosen color.',
+      prompt: 'Ask me.',
+    })
     expect(queued).toEqual([
-      { toolCalls: [askUserQuestionToolCall(AgentProvider.GITHUB_COPILOT, 'color-question', [COLOR])] },
+      {
+        toolCalls: [
+          askUserQuestionToolCall(AgentProvider.GITHUB_COPILOT, 'color-question', [COLOR]),
+        ],
+      },
       { text: 'I used the chosen color.' },
     ])
     expect(browser.events).toEqual([
@@ -272,47 +330,86 @@ describe('exerciseQuestionAnswer', () => {
       'answer:I used the chosen color. visible',
       'no-banner',
     ])
-    expect(turn).toEqual({ result: 'The user chose Green.', request: toolResultRequest(4, 'color-question', 'The user chose Green.') })
+    expect(turn).toEqual({
+      result: 'The user chose Green.',
+      request: toolResultRequest(4, 'color-question', 'The user chose Green.'),
+    })
   })
 
   it('reads the reply through the tool result reader of the context', async () => {
-    const { script } = fakeScript(0, { 1: toolResultRequest(1, 'native-question', 'unused') })
+    const { script } = fakeScript(0, {
+      1: toolResultRequest(1, 'native-question', 'unused'),
+    })
     const readToolResult = vi.fn(async () => ({ text: 'The provider reader read Blue.' }))
-    const turn = await exerciseQuestionAnswer(context(script, { readToolResult }), { questions: [COLOR], reply: async () => {} })
+    const turn = await exerciseQuestionAnswer(context(script, { readToolResult }), {
+      questions: [COLOR],
+      reply: async () => {},
+    })
     expect(readToolResult).toHaveBeenCalledWith(turn.request, 'native-question')
     expect(turn.result).toBe('The provider reader read Blue.')
   })
 
   it('reads the reply through the reader of the call when the caller gives one', async () => {
-    const { script } = fakeScript(0, { 1: toolResultRequest(1, 'droid-question', 'unused') })
+    const { script } = fakeScript(0, {
+      1: toolResultRequest(1, 'droid-question', 'unused'),
+    })
     const readToolResult = vi.fn(async () => ({ text: 'The context reader must not run.' }))
     const readResult = vi.fn(async (_request: MockModelRequestRecord, callId: string) => `The call reader read ${callId}.`)
-    const turn = await exerciseQuestionAnswer(context(script, { readToolResult }), { questions: [COLOR], reply: async () => {}, callId: 'droid-question', readResult })
+    const turn = await exerciseQuestionAnswer(context(script, { readToolResult }), {
+      questions: [COLOR],
+      reply: async () => {},
+      callId: 'droid-question',
+      readResult,
+    })
     expect(readToolResult).not.toHaveBeenCalled()
     expect(readResult).toHaveBeenCalledWith(turn.request, 'droid-question')
     expect(turn.result).toBe('The call reader read droid-question.')
   })
 
   it('answers through the text step of a provider that answers with a tool', async () => {
-    const { script, queued } = fakeScript(0, { 1: toolResultRequest(1, 'native-question', 'Red') })
-    const answerStep = { toolCalls: [{ id: 'native-answer', name: 'answer', arguments: { text: 'The provider answered.' } }] }
-    await exerciseQuestionAnswer(context(script, { textStep: () => answerStep }), { questions: [COLOR], reply: async () => {}, answer: 'The provider answered.' })
+    const { script, queued } = fakeScript(0, {
+      1: toolResultRequest(1, 'native-question', 'Red'),
+    })
+    const answerStep = {
+      toolCalls: [
+        {
+          id: 'native-answer',
+          name: 'answer',
+          arguments: { text: 'The provider answered.' },
+        },
+      ],
+    }
+    await exerciseQuestionAnswer(context(script, {
+      textStep: () => answerStep,
+    }), {
+      questions: [COLOR],
+      reply: async () => {},
+      answer: 'The provider answered.',
+    })
     expect(queued[1]).toEqual(answerStep)
   })
 
   it('stops at a failed reply and reads no request', async () => {
-    const { script } = fakeScript(0, { 1: toolResultRequest(1, 'native-question', 'Red') })
+    const { script } = fakeScript(0, {
+      1: toolResultRequest(1, 'native-question', 'Red'),
+    })
     const failure = new Error('The reply found no option.')
-    await expect(exerciseQuestionAnswer(context(script), { questions: [COLOR], reply: async () => {
-      throw failure
-    } })).rejects.toBe(failure)
+    await expect(exerciseQuestionAnswer(context(script), {
+      questions: [COLOR],
+      reply: async () => {
+        throw failure
+      },
+    })).rejects.toBe(failure)
     expect(script.requestAt).not.toHaveBeenCalled()
     expect(browser.events).not.toContain('idle')
   })
 
   it('refuses a turn with no question before it queues or sends anything', async () => {
     const { script } = fakeScript(0, {})
-    await expect(exerciseQuestionAnswer(context(script), { questions: [], reply: async () => {} })).rejects.toThrow('at least one question')
+    await expect(exerciseQuestionAnswer(context(script), {
+      questions: [],
+      reply: async () => {},
+    })).rejects.toThrow('at least one question')
     expect(script.queue).not.toHaveBeenCalled()
     expect(browser.events).toEqual([])
   })
@@ -325,9 +422,18 @@ function questionBanner() {
     click: vi.fn(async () => {
       browser.events.push(`click:${testId}`)
     }),
-    locator: () => ({ fake: 'selected-input', inputValue: async () => 'native-green' }),
+    locator: () => ({
+      fake: 'selected-input',
+      inputValue: async () => 'native-green',
+    }),
   }))
-  return { banner: { getByTestId, page: () => ({}) } as unknown as Locator, getByTestId }
+  return {
+    banner: {
+      getByTestId,
+      page: () => ({}),
+    } as unknown as Locator,
+    getByTestId,
+  }
 }
 
 describe('pickQuestionOption', () => {
@@ -347,11 +453,22 @@ describe('pickQuestionOption', () => {
 
 describe('askQuestions', () => {
   it('queues the native question call after a fallback answer, sends the turn, and waits until the call arrives', async () => {
-    const { script, queued } = fakeScript(2, { 0: toolResultRequest(0, 'earlier', 'one'), 1: toolResultRequest(1, 'earlier', 'two') })
+    const { script, queued } = fakeScript(2, {
+      0: toolResultRequest(0, 'earlier', 'one'),
+      1: toolResultRequest(1, 'earlier', 'two'),
+    })
     const before = await askQuestions(context(script), [COLOR])
     expect(before).toBe(2)
-    expect(queued).toEqual([{ toolCalls: [askUserQuestionToolCall(AgentProvider.GITHUB_COPILOT, ASKED_QUESTIONS_CALL_ID, [COLOR])] }])
-    expect(script.fallbacks).toEqual([{ text: ASKED_QUESTIONS_ANSWER }])
+    expect(queued).toEqual([
+      {
+        toolCalls: [
+          askUserQuestionToolCall(AgentProvider.GITHUB_COPILOT, ASKED_QUESTIONS_CALL_ID, [COLOR]),
+        ],
+      },
+    ])
+    expect(script.fallbacks).toEqual([
+      { text: ASKED_QUESTIONS_ANSWER },
+    ])
     expect(browser.events).toEqual(['fallback', 'send:MARKED:Ask the scripted questions and tell me what I answered.', 'steps:all'])
     expect(script.waitForGate).not.toHaveBeenCalled()
   })
@@ -359,17 +476,29 @@ describe('askQuestions', () => {
   it('holds the question call at the gate and waits for the gate, not for the steps', async () => {
     const { script, queued } = fakeScript(0, {})
     await askQuestions(context(script), [COLOR], { gate: 'question-gate' })
-    expect(queued).toEqual([{
-      toolCalls: [askUserQuestionToolCall(AgentProvider.GITHUB_COPILOT, ASKED_QUESTIONS_CALL_ID, [COLOR])],
-      gate: 'question-gate',
-    }])
+    expect(queued).toEqual([
+      {
+        toolCalls: [
+          askUserQuestionToolCall(AgentProvider.GITHUB_COPILOT, ASKED_QUESTIONS_CALL_ID, [COLOR]),
+        ],
+        gate: 'question-gate',
+      },
+    ])
     expect(browser.events.at(-1)).toBe('gate:question-gate')
     expect(script.waitForSteps).not.toHaveBeenCalled()
   })
 
   it('answers each later request through the text step of a provider that answers with a tool', async () => {
     const { script } = fakeScript(0, {})
-    const answerStep = { toolCalls: [{ id: 'native-answer', name: 'answer', arguments: { text: ASKED_QUESTIONS_ANSWER } }] }
+    const answerStep = {
+      toolCalls: [
+        {
+          id: 'native-answer',
+          name: 'answer',
+          arguments: { text: ASKED_QUESTIONS_ANSWER },
+        },
+      ],
+    }
     const textStep = vi.fn(() => answerStep)
     await askQuestions(context(script, { textStep }), [COLOR])
     expect(textStep).toHaveBeenCalledExactlyOnceWith(ASKED_QUESTIONS_ANSWER)
@@ -404,7 +533,9 @@ describe('chooseQuestionOptionWithNote', () => {
     const { banner } = questionBanner()
     browser.restoredBanner = banner
     const native = {
-      page: { reload: async () => { browser.events.push('reload') } },
+      page: {
+        reload: async () => { browser.events.push('reload') },
+      },
       leapmuxServer: { adminUserId: 'question-user' },
     } as unknown as ManagedNativeScenarioContext
     await chooseQuestionOptionWithNote(native, 'Green', 'Keep this note')(banner)
@@ -415,7 +546,11 @@ describe('chooseQuestionOptionWithNote', () => {
     expect(browser.draft).toBe('Keep this note')
   })
 
-  it.each([{ label: '', note: 'Note' }, { label: 'Green', note: '' }, { label: 'Green', note: ' \t' }])('rejects an incomplete note case: %j', ({ label, note }) => {
+  it.each([
+    { label: '', note: 'Note' },
+    { label: 'Green', note: '' },
+    { label: 'Green', note: ' \t' },
+  ])('rejects an incomplete note case: %j', ({ label, note }) => {
     expect(() => chooseQuestionOptionWithNote({} as ManagedNativeScenarioContext, label, note)).toThrow('label and nonempty note')
     expect(browser.events).toEqual([])
   })
@@ -423,11 +558,20 @@ describe('chooseQuestionOptionWithNote', () => {
 
 describe('restoreQuestionSelection', () => {
   function selection(value = 'native-green') {
-    const input = { fake: 'selected-input', inputValue: async () => value }
-    const banner = { getByTestId: () => ({ locator: () => input }) } as unknown as Locator
+    const input = {
+      fake: 'selected-input',
+      inputValue: async () => value,
+    }
+    const banner = {
+      getByTestId: () => ({
+        locator: () => input,
+      }),
+    } as unknown as Locator
     browser.restoredBanner = banner
     const native = {
-      page: { reload: async () => { browser.events.push('reload') } },
+      page: {
+        reload: async () => { browser.events.push('reload') },
+      },
       leapmuxServer: { adminUserId: 'question-user' },
     } as unknown as ManagedNativeScenarioContext
     return { banner, native }
@@ -442,26 +586,59 @@ describe('restoreQuestionSelection', () => {
   it('waits for the stored native value before reloading and checks the restored selection', async () => {
     const { banner, native } = selection()
     await restoreQuestionSelection(native, banner, 'Green')
-    expect(browser.events).toEqual(['selected-input checked', 'stored', 'reload', 'banner', 'selected-input checked'])
+    expect(browser.events).toEqual([
+      'selected-input checked',
+      'stored',
+      'reload',
+      'banner',
+      'selected-input checked',
+    ])
   })
 
   it('accepts page zero and rejects a matching answer stored on a different page', async () => {
     const { banner, native } = selection()
-    browser.stored = { selections: { 0: ['native-green'] }, currentPage: 0 }
+    browser.stored = {
+      selections: {
+        0: ['native-green'],
+      },
+      currentPage: 0,
+    }
     await restoreQuestionSelection(native, banner, 'Green', 0)
     browser.events.length = 0
-    browser.stored = { selections: { 0: ['native-green'] }, currentPage: 1 }
+    browser.stored = {
+      selections: {
+        0: ['native-green'],
+      },
+      currentPage: 1,
+    }
     await expect(restoreQuestionSelection(native, banner, 'Green', 1)).rejects.toThrow('the stored selection matches the native value')
     expect(browser.events).not.toContain('reload')
   })
 
-  it.each([-1, 0.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1])('rejects an invalid page before reading its selection: %s', async (index) => {
+  it.each([
+    -1,
+    0.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.MAX_SAFE_INTEGER + 1,
+  ])('rejects an invalid page before reading its selection: %s', async (index) => {
     const { banner, native } = selection()
     await expect(restoreQuestionSelection(native, banner, 'Green', index)).rejects.toThrow('nonnegative safe integer')
     expect(browser.events).toEqual([])
   })
 
-  it.each([null, {}, { selections: { 0: ['Green'] } }, { selections: { 0: [] } }])('rejects a missing or incorrect stored selection: %j', async (stored) => {
+  it.each([
+    null,
+    {},
+    {
+      selections: {
+        0: ['Green'],
+      },
+    },
+    {
+      selections: { 0: [] },
+    },
+  ])('rejects a missing or incorrect stored selection: %j', async (stored) => {
     const { banner, native } = selection()
     browser.stored = stored
     await expect(restoreQuestionSelection(native, banner, 'Green')).rejects.toThrow('the stored selection matches the native value')
@@ -503,16 +680,38 @@ describe('chooseQuestionPages', () => {
     expect(() => chooseQuestionPages(native, [COLOR], [])).toThrow('one answer for each question')
   })
 
-  it.each([{ labels: [] }, { labels: ['Blue', 'Blue'] }, { labels: ['Unknown'] }])('rejects absent, repeated, or unoffered selections: %j', ({ labels }) => {
-    expect(() => chooseQuestionPages(native, [COLOR], [{ labels }])).toThrow('distinct offered options')
+  it.each([
+    { labels: [] },
+    {
+      labels: ['Blue', 'Blue'],
+    },
+    {
+      labels: ['Unknown'],
+    },
+  ])('rejects absent, repeated, or unoffered selections: %j', ({ labels }) => {
+    expect(() => chooseQuestionPages(native, [COLOR], [
+      { labels },
+    ])).toThrow('distinct offered options')
   })
 
   it('permits multiple choices only when the native question supports them', () => {
-    expect(() => chooseQuestionPages(native, [COLOR], [{ labels: ['Blue', 'Green'] }])).toThrow('one selected option')
-    expect(chooseQuestionPages(native, [{ ...COLOR, multiSelect: true }], [{ labels: ['Blue', 'Green'] }])).toBeTypeOf('function')
+    expect(() => chooseQuestionPages(native, [COLOR], [
+      {
+        labels: ['Blue', 'Green'],
+      },
+    ])).toThrow('one selected option')
+    expect(chooseQuestionPages(native, [
+      { ...COLOR, multiSelect: true },
+    ], [
+      {
+        labels: ['Blue', 'Green'],
+      },
+    ])).toBeTypeOf('function')
   })
 
   it.each(['', ' \t\n'])('rejects an empty typed answer: %j', (text) => {
-    expect(() => chooseQuestionPages(native, [COLOR], [{ text }])).toThrow('must contain text')
+    expect(() => chooseQuestionPages(native, [COLOR], [
+      { text },
+    ])).toThrow('must contain text')
   })
 })

@@ -27,7 +27,12 @@ export const NEAR_LIMIT_UTILIZATION = 0.92
 export function nearLimitRateLimits(type = 'five_hour'): MockModelRateLimits {
   if (type.trim() === '')
     throw new Error('A rate-limit window needs a type.')
-  return { type, status: 'allowed_warning', utilization: NEAR_LIMIT_UTILIZATION, resetsAt: Math.floor(Date.now() / 1000) + 3600 }
+  return {
+    type,
+    status: 'allowed_warning',
+    utilization: NEAR_LIMIT_UTILIZATION,
+    resetsAt: Math.floor(Date.now() / 1000) + 3600,
+  }
 }
 
 /**
@@ -42,7 +47,10 @@ export async function exerciseRateLimitWindow(
   options: { reload?: boolean } = {},
 ): Promise<MockModelRequestRecord> {
   const answer = uniqueMarker('RATELIMITWINDOW')
-  const start = await context.modelScript.queue({ ...nativeTextStep(context, answer), rateLimits })
+  const start = await context.modelScript.queue({
+    ...nativeTextStep(context, answer),
+    rateLimits,
+  })
   await sendMessage(context.page, context.modelScript.prompt('Reply once near the scripted rate limit.'))
   await context.modelScript.waitForSteps(start + 1)
   await waitForAgentIdle(context.page)
@@ -64,7 +72,9 @@ export async function exerciseRateLimitWindow(
  * here and on the card.
  */
 export function rateLimitWindowLabel(type: string | undefined): string {
-  return rateLimitPopoverLabel(type) ?? (type ? `Rate Limit (${type})` : 'Rate Limit')
+  return rateLimitPopoverLabel(type) ?? (type
+    ? `Rate Limit (${type})`
+    : 'Rate Limit')
 }
 
 /**
@@ -76,7 +86,9 @@ export function rateLimitWindowLabel(type: string | undefined): string {
  * step scripted, so the marker is that phrase.
  */
 export function rateLimitMarkers(rateLimits: MockModelRateLimits): string[] {
-  const markers = [rateLimitWindowLabel(rateLimits.type)]
+  const markers = [
+    rateLimitWindowLabel(rateLimits.type),
+  ]
   if (rateLimits.utilization !== undefined)
     markers.push(`${Math.round(rateLimits.utilization * 100)}% used`)
   return markers

@@ -18,9 +18,24 @@ export function commandCodeResultDivider(parsed: unknown, completion?: MessageCo
   const params = pickObject(parsed, 'params')
   const reason = pickString(params, 'stopReason')
   const durationMs = pickNumber(parsed, MESSAGE_METADATA_FIELD.DurationMs)
-  if (completion === MessageCompletion.INTERRUPTED || reason === 'interrupted')
-    return { label: turnEndLabel('interrupted', { durationMs }) }
-  if (reason === 'run_error')
-    return { label: turnEndLabel('failed', { durationMs, reason: commandCodeError(params?.error) }), isError: true }
-  return { label: turnEndLabel('ended', { durationMs, qualifiers: [reason === 'max_turns' && 'turn limit'] }) }
+  if (completion === MessageCompletion.INTERRUPTED || reason === 'interrupted') {
+    return {
+      label: turnEndLabel('interrupted', { durationMs }),
+    }
+  }
+  if (reason === 'run_error') {
+    return {
+      label: turnEndLabel('failed', {
+        durationMs,
+        reason: commandCodeError(params?.error),
+      }),
+      isError: true,
+    }
+  }
+  return {
+    label: turnEndLabel('ended', {
+      durationMs,
+      qualifiers: [reason === 'max_turns' && 'turn limit'],
+    }),
+  }
 }

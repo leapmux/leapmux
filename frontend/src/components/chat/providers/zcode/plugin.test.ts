@@ -19,7 +19,12 @@ const plugin = providerFor(AgentProvider.ZCODE)!
 
 /** Build a persisted native session event. */
 function event(type: string, payload: Record<string, unknown> = {}): Record<string, unknown> {
-  return { type, payload, sessionId: 's-1', seq: 1 }
+  return {
+    type,
+    payload,
+    sessionId: 's-1',
+    seq: 1,
+  }
 }
 
 /** A `tool.updated` row of the given lifecycle kind. */
@@ -28,7 +33,12 @@ function toolEvent(kind: string, payload: Record<string, unknown> = {}): Record<
 }
 
 function parsedOf(parent: Record<string, unknown>): ResolvedMessageContent {
-  return resolveMessageForRendering({ rawText: '', topLevel: parent, parentObject: parent, wrapper: null }, AgentProvider.ZCODE)
+  return resolveMessageForRendering({
+    rawText: '',
+    topLevel: parent,
+    parentObject: parent,
+    wrapper: null,
+  }, AgentProvider.ZCODE)
 }
 
 describe('zcode plugin metadata', () => {
@@ -51,7 +61,9 @@ describe('zcode plugin metadata', () => {
   it('carries its mode axis on the permission-mode channel', () => {
     expect(plugin?.configuration?.triggerModeGroupKey).toBe('permissionMode')
     expect(plugin?.controls?.permissionPresets).toEqual({
-      bypass: { sets: { permissionMode: ZCODE_MODE.Yolo } },
+      bypass: {
+        sets: { permissionMode: ZCODE_MODE.Yolo },
+      },
     })
   })
 
@@ -65,7 +77,9 @@ describe('zcode plugin metadata', () => {
 
   it('reads the current plan-mode value from the agent option values', () => {
     const currentMode = plugin!.configuration!.planMode!.currentMode
-    expect(currentMode({ optionValues: { permissionMode: ZCODE_MODE.Plan } } as never))
+    expect(currentMode({
+      optionValues: { permissionMode: ZCODE_MODE.Plan },
+    } as never))
       .toBe(ZCODE_MODE.Plan)
   })
 
@@ -105,7 +119,10 @@ describe('zcode plugin metadata', () => {
     expect(compactionContextTokens(input(completed, undefined, AgentProvider.ZCODE), AgentProvider.ZCODE)).toBe(15000)
     expect(compactionContextTokens(input(started, undefined, AgentProvider.ZCODE), AgentProvider.ZCODE)).toBeUndefined()
     // A thread reads from its last member back, past a member with no size.
-    expect(compactionContextTokens(input(completed, { old_seqs: [], messages: [completed, verdict] }, AgentProvider.ZCODE), AgentProvider.ZCODE))
+    expect(compactionContextTokens(input(completed, {
+      old_seqs: [],
+      messages: [completed, verdict],
+    }, AgentProvider.ZCODE), AgentProvider.ZCODE))
       .toBe(15000)
   })
 
@@ -132,7 +149,12 @@ describe('zcode spanRole', () => {
   })
 
   it('reports other for a row with no parent object', () => {
-    expect(plugin?.transcript.spanRole!(resolveMessageForRendering({ rawText: '', topLevel: null, parentObject: undefined, wrapper: null }, AgentProvider.ZCODE)))
+    expect(plugin?.transcript.spanRole!(resolveMessageForRendering({
+      rawText: '',
+      topLevel: null,
+      parentObject: undefined,
+      wrapper: null,
+    }, AgentProvider.ZCODE)))
       .toBe('other')
   })
 
@@ -142,7 +164,10 @@ describe('zcode spanRole', () => {
   it.each([ZCODE_TOOL_KIND.Scheduled, ZCODE_TOOL_KIND.Started, ZCODE_TOOL_KIND.Progress])(
     'routes a retained %s row to result',
     (kind) => {
-      const parsed = resolveMessageForRendering({ ...parsedOf(toolEvent(kind)), completion: MessageCompletion.INTERRUPTED }, AgentProvider.ZCODE)
+      const parsed = resolveMessageForRendering({
+        ...parsedOf(toolEvent(kind)),
+        completion: MessageCompletion.INTERRUPTED,
+      }, AgentProvider.ZCODE)
       expect(plugin?.transcript.spanRole!(parsed)).toBe('result')
     },
   )
@@ -165,9 +190,16 @@ describe('zcode retained tool row', () => {
     }, AgentProvider.ZCODE)
     const row = extractedRow(extractChatRow(AgentProvider.ZCODE, parsed, { kind: 'tool_result' }, {
       spanType: ZCODE_TOOL.Bash,
-      span: { request: undefined, result: parsed, role: 'result', visibleRows: { request: false, result: true } },
+      span: {
+        request: undefined,
+        result: parsed,
+        role: 'result',
+        visibleRows: { request: false, result: true },
+      },
     }))
-    expect(row?.kind === 'tool' ? toolCallMeta(row).copyableContent() : null).toBe('partial \noutput')
+    expect(row?.kind === 'tool'
+      ? toolCallMeta(row).copyableContent()
+      : null).toBe('partial \noutput')
   })
 })
 
@@ -221,7 +253,9 @@ describe('zcode resultDivider', () => {
   })
 
   it('accepts an error that spells its code as a type', () => {
-    expect(plugin?.transcript.extractDivider!(event(ZCODE_EVENT.TurnFailed, { error: { type: 'overloaded' } })))
+    expect(plugin?.transcript.extractDivider!(event(ZCODE_EVENT.TurnFailed, {
+      error: { type: 'overloaded' },
+    })))
       .toEqual({ label: 'Turn failed (overloaded)', isError: true })
   })
 
@@ -237,7 +271,9 @@ describe('zcode resultDivider', () => {
 
   it('draws a failed turn through the shared divider renderer end to end', () => {
     const { text, isError } = renderDivider(
-      event(ZCODE_EVENT.TurnFailed, { error: { message: 'upstream refused' } }),
+      event(ZCODE_EVENT.TurnFailed, {
+        error: { message: 'upstream refused' },
+      }),
       AgentProvider.ZCODE,
     )
     expect(text).toContain('upstream refused')
@@ -280,7 +316,12 @@ describe('zcode contextUsageFromMessage', () => {
   // Usage rides a model response: `content` beside a `stopReason` states the
   // finished generation the counts belong to.
   const usageRow = (usage: Record<string, unknown>, extra: Record<string, unknown> = {}): ResolvedMessageContent =>
-    parsedOf(event(ZCODE_EVENT.SessionUpdated, { content: 'done', stopReason: 'stop', usage, ...extra }))
+    parsedOf(event(ZCODE_EVENT.SessionUpdated, {
+      content: 'done',
+      stopReason: 'stop',
+      usage,
+      ...extra,
+    }))
 
   it('normalizes a usage snapshot onto the shared context-usage shape', () => {
     expect(plugin?.session?.contextUsageFromMessage!(usageRow({
@@ -332,31 +373,54 @@ describe('zcode tool row toolbar metadata', () => {
     toolEvent(ZCODE_TOOL_KIND.Result, { result, ...extra })
 
   it('returns null for a category that is not a tool result', () => {
-    expect(providerToolMeta(AgentProvider.ZCODE, resultRow({ content: 'x' }), { category: { kind: 'assistant_text' }, spanType: ZCODE_TOOL.Bash }))
+    expect(providerToolMeta(AgentProvider.ZCODE, resultRow({ content: 'x' }), {
+      category: { kind: 'assistant_text' },
+      spanType: ZCODE_TOOL.Bash,
+    }))
       .toBeNull()
   })
 
   it('returns null for a row that is not a tool.updated at all', () => {
-    expect(providerToolMeta(AgentProvider.ZCODE, event(ZCODE_EVENT.TurnCompleted), { category: { kind: 'tool_result' }, spanType: ZCODE_TOOL.Bash }))
+    expect(providerToolMeta(AgentProvider.ZCODE, event(ZCODE_EVENT.TurnCompleted), {
+      category: { kind: 'tool_result' },
+      spanType: ZCODE_TOOL.Bash,
+    }))
       .toBeNull()
   })
 
   it('reads a Bash result through the command-output path', () => {
     const output = 'one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\neleven'
-    const meta = providerToolMeta(AgentProvider.ZCODE, resultRow({ content: output, perf: { detail: { kind: 'command', command: { exitCode: 0 } } } }), { category: { kind: 'tool_result' }, spanType: ZCODE_TOOL.Bash })
+    const meta = providerToolMeta(AgentProvider.ZCODE, resultRow({
+      content: output,
+      perf: {
+        detail: {
+          kind: 'command',
+          command: { exitCode: 0 },
+        },
+      },
+    }), {
+      category: { kind: 'tool_result' },
+      spanType: ZCODE_TOOL.Bash,
+    })
     expect(meta).toMatchObject({ collapsible: true, hasDiff: false, hasCopyable: true })
     expect(meta?.copyableContent()).toBe(output)
   })
 
   it('marks a short Bash result uncollapsible and uncopyable when it is empty', () => {
-    const meta = providerToolMeta(AgentProvider.ZCODE, resultRow({ content: '' }), { category: { kind: 'tool_result' }, spanType: ZCODE_TOOL.Bash })
+    const meta = providerToolMeta(AgentProvider.ZCODE, resultRow({ content: '' }), {
+      category: { kind: 'tool_result' },
+      spanType: ZCODE_TOOL.Bash,
+    })
     expect(meta).toMatchObject({ collapsible: false, hasCopyable: false })
     expect(meta?.copyableContent()).toBeNull()
   })
 
   it('measures a Read result by its line count', () => {
     const numbered = Array.from({ length: 40 }, (_, i) => `${i + 1}\tline ${i + 1}`).join('\n')
-    const meta = providerToolMeta(AgentProvider.ZCODE, resultRow({ content: numbered }), { category: { kind: 'tool_result' }, spanType: ZCODE_TOOL.Read })
+    const meta = providerToolMeta(AgentProvider.ZCODE, resultRow({ content: numbered }), {
+      category: { kind: 'tool_result' },
+      spanType: ZCODE_TOOL.Read,
+    })
     expect(meta).toMatchObject({ collapsible: true, hasDiff: false, hasCopyable: true })
     expect(meta?.copyableContent()).toBe(Array.from({ length: 40 }, (_, i) => `line ${i + 1}`).join('\n'))
   })
@@ -367,15 +431,20 @@ describe('zcode tool row toolbar metadata', () => {
       display: {
         kind: 'file_diff',
         filePath: '/tmp/a.ts',
-        structuredPatch: [{
-          oldStart: 1,
-          oldLines: 1,
-          newStart: 1,
-          newLines: 1,
-          lines: ['-zcodeMetaOld', '+zcodeMetaNew'],
-        }],
+        structuredPatch: [
+          {
+            oldStart: 1,
+            oldLines: 1,
+            newStart: 1,
+            newLines: 1,
+            lines: ['-zcodeMetaOld', '+zcodeMetaNew'],
+          },
+        ],
       },
-    }), { category: { kind: 'tool_result' }, spanType: ZCODE_TOOL.Edit })
+    }), {
+      category: { kind: 'tool_result' },
+      spanType: ZCODE_TOOL.Edit,
+    })
     expect(meta).toMatchObject({ collapsible: false, hasDiff: true, hasCopyable: true })
     expect(meta?.copyableContent()).toContain('zcodeMetaNew')
   })
@@ -383,7 +452,12 @@ describe('zcode tool row toolbar metadata', () => {
   // A failed edit renders its error text, not the edit it attempted -- otherwise the
   // toolbar would offer a split/unified toggle over a `<pre>` block.
   it('declares no diff for a failed Edit and copies the error text instead', () => {
-    const meta = providerToolMeta(AgentProvider.ZCODE, toolEvent(ZCODE_TOOL_KIND.Error, { error: { message: 'old_string not found' } }), { category: { kind: 'tool_result' }, spanType: ZCODE_TOOL.Edit })
+    const meta = providerToolMeta(AgentProvider.ZCODE, toolEvent(ZCODE_TOOL_KIND.Error, {
+      error: { message: 'old_string not found' },
+    }), {
+      category: { kind: 'tool_result' },
+      spanType: ZCODE_TOOL.Edit,
+    })
     expect(meta).toMatchObject({ collapsible: false, hasDiff: false, hasCopyable: true })
     expect(meta?.copyableContent()).toBe('old_string not found')
   })
@@ -395,13 +469,19 @@ describe('zcode tool row toolbar metadata', () => {
       toolName: ZCODE_TOOL.Write,
       input: { file_path: '/tmp/new.ts', content: 'zcodeMetaWriteBody\n' },
     })
-    const meta = providerToolMeta(AgentProvider.ZCODE, resultRow({ content: 'Created.' }), { category: { kind: 'tool_result' }, request: parsedOf(scheduled) })
+    const meta = providerToolMeta(AgentProvider.ZCODE, resultRow({ content: 'Created.' }), {
+      category: { kind: 'tool_result' },
+      request: parsedOf(scheduled),
+    })
     expect(meta).toMatchObject({ hasDiff: true, hasCopyable: true })
     expect(meta?.copyableContent()).toContain('zcodeMetaWriteBody')
   })
 
   it('falls back to the plain result text for a tool with no dedicated reader', () => {
-    const meta = providerToolMeta(AgentProvider.ZCODE, resultRow({ content: 'a/b.ts\nc/d.ts' }), { category: { kind: 'tool_result' }, spanType: ZCODE_TOOL.Glob })
+    const meta = providerToolMeta(AgentProvider.ZCODE, resultRow({ content: 'a/b.ts\nc/d.ts' }), {
+      category: { kind: 'tool_result' },
+      spanType: ZCODE_TOOL.Glob,
+    })
     expect(meta).toMatchObject({ collapsible: false, hasDiff: false, hasCopyable: true })
     expect(meta?.copyableContent()).toBe('a/b.ts\nc/d.ts')
   })
@@ -409,15 +489,21 @@ describe('zcode tool row toolbar metadata', () => {
 
 describe('zcode isAskUserQuestion', () => {
   it('recognizes the AskUserQuestion prompt by its recorded tool name', () => {
-    expect(plugin?.controls?.askUserQuestion!.isRequest({ request: { tool_name: ZCODE_TOOL.AskUserQuestion } })).toBe(true)
+    expect(plugin?.controls?.askUserQuestion!.isRequest({
+      request: { tool_name: ZCODE_TOOL.AskUserQuestion },
+    })).toBe(true)
   })
 
   it('rejects the plan approval, which travels over the same method', () => {
-    expect(plugin?.controls?.askUserQuestion!.isRequest({ request: { tool_name: ZCODE_TOOL.ExitPlanMode } })).toBe(false)
+    expect(plugin?.controls?.askUserQuestion!.isRequest({
+      request: { tool_name: ZCODE_TOOL.ExitPlanMode },
+    })).toBe(false)
   })
 
   it('rejects a permission request and an empty payload', () => {
-    expect(plugin?.controls?.askUserQuestion!.isRequest({ request: { tool_name: ZCODE_TOOL.Bash } })).toBe(false)
+    expect(plugin?.controls?.askUserQuestion!.isRequest({
+      request: { tool_name: ZCODE_TOOL.Bash },
+    })).toBe(false)
     expect(plugin?.controls?.askUserQuestion!.isRequest({})).toBe(false)
   })
 })
@@ -425,12 +511,21 @@ describe('zcode isAskUserQuestion', () => {
 describe('zcode todo rows', () => {
   const request = toolEvent(ZCODE_TOOL_KIND.Scheduled, {
     toolName: ZCODE_TOOL.TodoWrite,
-    input: { todos: [{ content: 'A', status: 'pending', activeForm: 'Doing A' }] },
+    input: {
+      todos: [
+        { content: 'A', status: 'pending', activeForm: 'Doing A' },
+      ],
+    },
   })
-  const result = toolEvent(ZCODE_TOOL_KIND.Result, { result: { success: true, content: 'ok' } })
+  const result = toolEvent(ZCODE_TOOL_KIND.Result, {
+    result: { success: true, content: 'ok' },
+  })
 
   function classifyWithSpan(parent: Record<string, unknown>, spanType: string) {
-    return plugin?.transcript.classify({ ...input(parent, null, AgentProvider.ZCODE), spanType })
+    return plugin?.transcript.classify({
+      ...input(parent, null, AgentProvider.ZCODE),
+      spanType,
+    })
   }
 
   it('classifies the TodoWrite request as a tool use', () => {

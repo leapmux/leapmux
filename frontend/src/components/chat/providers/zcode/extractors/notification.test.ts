@@ -13,7 +13,12 @@ import { zcodeCompactionBoundary, zcodeNotificationEntry } from './notification'
 
 /** A persisted `session.updated` row. */
 function sessionUpdated(payload: Record<string, unknown>): Record<string, unknown> {
-  return { type: ZCODE_EVENT.SessionUpdated, payload, sessionId: 's-1', seq: 1 }
+  return {
+    type: ZCODE_EVENT.SessionUpdated,
+    payload,
+    sessionId: 's-1',
+    seq: 1,
+  }
 }
 
 describe('zcodeNotificationEntry', () => {
@@ -24,7 +29,14 @@ describe('zcodeNotificationEntry', () => {
       hookEventName: 'Stop',
       outcome: 'blocked',
       blockReason: 'Continue the work',
-    }))).toEqual([{ kind: 'hook', outcome: 'blocked', event: 'Stop', detail: 'Continue the work' }])
+    }))).toEqual([
+      {
+        kind: 'hook',
+        outcome: 'blocked',
+        event: 'Stop',
+        detail: 'Continue the work',
+      },
+    ])
   })
 
   it('reads compaction outcomes and ignores stored starts', () => {
@@ -32,9 +44,13 @@ describe('zcodeNotificationEntry', () => {
       expect(zcodeNotificationEntry(sessionUpdated({ operationId: 'c1', trigger: 'auto', status }))).toEqual([])
     }
     expect(zcodeNotificationEntry(sessionUpdated({ operationId: 'c1', trigger: 'auto', status: 'interrupted' })))
-      .toEqual([{ kind: 'compaction', phase: 'end', outcome: 'aborted' }])
+      .toEqual([
+        { kind: 'compaction', phase: 'end', outcome: 'aborted' },
+      ])
     expect(zcodeNotificationEntry(sessionUpdated({ operationId: 'c1', trigger: 'auto', status: 'skipped' })))
-      .toEqual([{ kind: 'compaction', phase: 'end', outcome: 'skipped' }])
+      .toEqual([
+        { kind: 'compaction', phase: 'end', outcome: 'skipped' },
+      ])
   })
 })
 
@@ -50,15 +66,23 @@ describe('zcodeNotificationEntry on a session.updated row', () => {
   it('words the goal check verdicts', () => {
     expect(zcodeNotificationEntry(verification(ZCODE_GOAL_VERIFICATION_STATUS.Completed, {
       verification: { passed: true, reason: 'The final commit has a green build.' },
-    }))).toEqual([{ kind: 'text', text: 'Iteration 2 · Goal complete, ending task — The final commit has a green build.' }])
+    }))).toEqual([
+      { kind: 'text', text: 'Iteration 2 · Goal complete, ending task — The final commit has a green build.' },
+    ])
     expect(zcodeNotificationEntry(verification(ZCODE_GOAL_VERIFICATION_STATUS.Completed, {
       verification: { passed: false, reason: 'The tests fail.', nextAction: 'Run the tests' },
-    }))).toEqual([{ kind: 'text', text: 'Iteration 2 · Goal incomplete, continuing — The tests fail. Next: Run the tests' }])
+    }))).toEqual([
+      { kind: 'text', text: 'Iteration 2 · Goal incomplete, continuing — The tests fail. Next: Run the tests' },
+    ])
     expect(zcodeNotificationEntry(verification(ZCODE_GOAL_VERIFICATION_STATUS.FailedClosed, {
       verification: { passed: false, reason: 'The verifier timed out.' },
-    }))).toEqual([{ kind: 'text', text: 'Iteration 2 · The goal check could not run, so the goal ends — The verifier timed out.' }])
+    }))).toEqual([
+      { kind: 'text', text: 'Iteration 2 · The goal check could not run, so the goal ends — The verifier timed out.' },
+    ])
     expect(zcodeNotificationEntry(verification(ZCODE_GOAL_VERIFICATION_STATUS.Cancelled)))
-      .toEqual([{ kind: 'text', text: 'Iteration 2 · Goal check cancelled; the goal is paused' }])
+      .toEqual([
+        { kind: 'text', text: 'Iteration 2 · Goal check cancelled; the goal is paused' },
+      ])
   })
 
   // ZCode continues its goal loop only with a next action. A failed check with no
@@ -67,8 +91,16 @@ describe('zcodeNotificationEntry on a session.updated row', () => {
   it('does not claim that the goal continues when the failed check states no next action', () => {
     for (const nextAction of [undefined, '', '   ', null]) {
       expect(zcodeNotificationEntry(verification(ZCODE_GOAL_VERIFICATION_STATUS.Completed, {
-        verification: { passed: false, reason: 'The tests fail.', ...(nextAction === undefined ? {} : { nextAction }) },
-      })), String(nextAction)).toEqual([{ kind: 'text', text: 'Iteration 2 · Goal incomplete; the goal stays active — The tests fail.' }])
+        verification: {
+          passed: false,
+          reason: 'The tests fail.',
+          ...(nextAction === undefined
+            ? {}
+            : { nextAction }),
+        },
+      })), String(nextAction)).toEqual([
+        { kind: 'text', text: 'Iteration 2 · Goal incomplete; the goal stays active — The tests fail.' },
+      ])
     }
   })
 
@@ -76,15 +108,23 @@ describe('zcodeNotificationEntry on a session.updated row', () => {
   it('omits the reason clause when the check states no reason', () => {
     expect(zcodeNotificationEntry(verification(ZCODE_GOAL_VERIFICATION_STATUS.Completed, {
       verification: { passed: true, reason: '' },
-    }))).toEqual([{ kind: 'text', text: 'Iteration 2 · Goal complete, ending task' }])
+    }))).toEqual([
+      { kind: 'text', text: 'Iteration 2 · Goal complete, ending task' },
+    ])
     expect(zcodeNotificationEntry(verification(ZCODE_GOAL_VERIFICATION_STATUS.Completed, {
       verification: { passed: false, reason: '  ', nextAction: 'Run the tests' },
-    }))).toEqual([{ kind: 'text', text: 'Iteration 2 · Goal incomplete, continuing. Next: Run the tests' }])
+    }))).toEqual([
+      { kind: 'text', text: 'Iteration 2 · Goal incomplete, continuing. Next: Run the tests' },
+    ])
     expect(zcodeNotificationEntry(verification(ZCODE_GOAL_VERIFICATION_STATUS.Completed, {
       verification: { passed: false },
-    }))).toEqual([{ kind: 'text', text: 'Iteration 2 · Goal incomplete; the goal stays active' }])
+    }))).toEqual([
+      { kind: 'text', text: 'Iteration 2 · Goal incomplete; the goal stays active' },
+    ])
     expect(zcodeNotificationEntry(verification(ZCODE_GOAL_VERIFICATION_STATUS.FailedClosed)))
-      .toEqual([{ kind: 'text', text: 'Iteration 2 · The goal check could not run, so the goal ends' }])
+      .toEqual([
+        { kind: 'text', text: 'Iteration 2 · The goal check could not run, so the goal ends' },
+      ])
   })
 
   // ZCode's own client reads an absent iteration as the first one.
@@ -93,9 +133,13 @@ describe('zcodeNotificationEntry on a session.updated row', () => {
       verificationId: 'v1',
       targetId: 'g1',
       status: ZCODE_GOAL_VERIFICATION_STATUS.Cancelled,
-    }))).toEqual([{ kind: 'text', text: 'Iteration 1 · Goal check cancelled; the goal is paused' }])
+    }))).toEqual([
+      { kind: 'text', text: 'Iteration 1 · Goal check cancelled; the goal is paused' },
+    ])
     expect(zcodeNotificationEntry(verification(ZCODE_GOAL_VERIFICATION_STATUS.Cancelled, { goalIteration: -1 })))
-      .toEqual([{ kind: 'text', text: 'Iteration 1 · Goal check cancelled; the goal is paused' }])
+      .toEqual([
+        { kind: 'text', text: 'Iteration 1 · Goal check cancelled; the goal is paused' },
+      ])
   })
 
   it('hides the start of a goal check', () => {
@@ -115,15 +159,32 @@ describe('zcodeNotificationEntry on a session.updated row', () => {
     expect(zcodeNotificationEntry(lifecycle(ZCODE_COMPACTION_STATUS.Retrying, { attempt: 2, maxAttempts: 5 })))
       .toEqual([])
     expect(zcodeNotificationEntry(lifecycle(ZCODE_COMPACTION_STATUS.Skipped)))
-      .toEqual([{ kind: 'compaction', phase: 'end', outcome: 'skipped' }])
+      .toEqual([
+        { kind: 'compaction', phase: 'end', outcome: 'skipped' },
+      ])
     expect(zcodeNotificationEntry(lifecycle(ZCODE_COMPACTION_STATUS.Completed, {
       preCompactTokenCount: 180000,
       postCompactTokenCount: 12000,
-    }))).toEqual([{ kind: 'compaction', phase: 'end', detail: { trigger: 'auto', pre: 180000, post: 12000 } }])
+    }))).toEqual([
+      {
+        kind: 'compaction',
+        phase: 'end',
+        detail: { trigger: 'auto', pre: 180000, post: 12000 },
+      },
+    ])
     expect(zcodeNotificationEntry(lifecycle(ZCODE_COMPACTION_STATUS.Failed)))
-      .toEqual([{ kind: 'compaction', phase: 'end', outcome: 'failed', error: 'the provider reported a failure' }])
+      .toEqual([
+        {
+          kind: 'compaction',
+          phase: 'end',
+          outcome: 'failed',
+          error: 'the provider reported a failure',
+        },
+      ])
     expect(zcodeNotificationEntry(lifecycle(ZCODE_COMPACTION_STATUS.Interrupted)))
-      .toEqual([{ kind: 'compaction', phase: 'end', outcome: 'aborted' }])
+      .toEqual([
+        { kind: 'compaction', phase: 'end', outcome: 'aborted' },
+      ])
   })
 
   // A failed compaction states why it failed. The reason is the error that the
@@ -136,9 +197,23 @@ describe('zcodeNotificationEntry on a session.updated row', () => {
       ...extra,
     })
     expect(zcodeNotificationEntry(failed({ reason: 'The summary model is unavailable.' })))
-      .toEqual([{ kind: 'compaction', phase: 'end', outcome: 'failed', error: 'The summary model is unavailable.' }])
+      .toEqual([
+        {
+          kind: 'compaction',
+          phase: 'end',
+          outcome: 'failed',
+          error: 'The summary model is unavailable.',
+        },
+      ])
     expect(zcodeNotificationEntry(failed({ reason: '  ' })))
-      .toEqual([{ kind: 'compaction', phase: 'end', outcome: 'failed', error: 'the provider reported a failure' }])
+      .toEqual([
+        {
+          kind: 'compaction',
+          phase: 'end',
+          outcome: 'failed',
+          error: 'the provider reported a failure',
+        },
+      ])
   })
 
   // `truePostCompactTokenCount` is the count that ZCode measured after the
@@ -152,24 +227,64 @@ describe('zcodeNotificationEntry on a session.updated row', () => {
       ...extra,
     })
     expect(zcodeNotificationEntry(completed({ postCompactTokenCount: 12000, truePostCompactTokenCount: 15000 })))
-      .toEqual([{ kind: 'compaction', phase: 'end', detail: { trigger: 'auto', pre: 180000, post: 15000 } }])
+      .toEqual([
+        {
+          kind: 'compaction',
+          phase: 'end',
+          detail: { trigger: 'auto', pre: 180000, post: 15000 },
+        },
+      ])
     expect(zcodeNotificationEntry(completed({ postCompactTokenCount: 12000, truePostCompactTokenCount: -1 })))
-      .toEqual([{ kind: 'compaction', phase: 'end', detail: { trigger: 'auto', pre: 180000, post: 12000 } }])
+      .toEqual([
+        {
+          kind: 'compaction',
+          phase: 'end',
+          detail: { trigger: 'auto', pre: 180000, post: 12000 },
+        },
+      ])
     expect(zcodeNotificationEntry(completed({ truePostCompactTokenCount: 0 })))
-      .toEqual([{ kind: 'compaction', phase: 'end', detail: { trigger: 'auto', pre: 180000, post: 0 } }])
+      .toEqual([
+        {
+          kind: 'compaction',
+          phase: 'end',
+          detail: { trigger: 'auto', pre: 180000, post: 0 },
+        },
+      ])
   })
 
   it('words a microcompact as its own boundary', () => {
     expect(zcodeNotificationEntry(sessionUpdated({ strategy: ZCODE_MICROCOMPACT_STRATEGY.LocalToolResultClear, tokensSaved: 4000 })))
-      .toEqual([{ kind: 'compaction', phase: 'end', micro: true }])
+      .toEqual([
+        { kind: 'compaction', phase: 'end', micro: true },
+      ])
   })
 
   it('words the scheduled retry and drops the other network statuses', () => {
     expect(zcodeNotificationEntry(sessionUpdated({
       type: ZCODE_NETWORK_STATUS.RetryScheduled,
       requestId: 'q1',
-      _meta: { zcode: { apiRetry: { kind: 'api_retry', attempt: 2, maxRetries: 5, retryDelayMs: 4000, errorStatus: 529, error: 'overloaded' } } },
-    }))).toEqual([{ kind: 'retry', scope: 'api', attempt: 2, maxAttempts: 5, delayMs: 4000, error: 'overloaded' }])
+      _meta: {
+        zcode: {
+          apiRetry: {
+            kind: 'api_retry',
+            attempt: 2,
+            maxRetries: 5,
+            retryDelayMs: 4000,
+            errorStatus: 529,
+            error: 'overloaded',
+          },
+        },
+      },
+    }))).toEqual([
+      {
+        kind: 'retry',
+        scope: 'api',
+        attempt: 2,
+        maxAttempts: 5,
+        delayMs: 4000,
+        error: 'overloaded',
+      },
+    ])
     expect(zcodeNotificationEntry(sessionUpdated({
       type: 'model_request_started',
       requestId: 'q1',
@@ -184,13 +299,44 @@ describe('zcodeNotificationEntry on a session.updated row', () => {
       type: ZCODE_NETWORK_STATUS.RetryScheduled,
       requestId: 'q1',
       querySource,
-      _meta: { zcode: { apiRetry: { kind: 'api_retry', attempt: 2, maxRetries: 5, error: 'overloaded' } } },
+      _meta: {
+        zcode: {
+          apiRetry: {
+            kind: 'api_retry',
+            attempt: 2,
+            maxRetries: 5,
+            error: 'overloaded',
+          },
+        },
+      },
     })
     expect(zcodeNotificationEntry(retry('main_turn')))
-      .toEqual([{ kind: 'retry', scope: 'api', attempt: 2, maxAttempts: 5, error: 'overloaded' }])
-    for (const querySource of ['target_completion_verification', 'goal_summary_title', 'compact', 5, null]) {
+      .toEqual([
+        {
+          kind: 'retry',
+          scope: 'api',
+          attempt: 2,
+          maxAttempts: 5,
+          error: 'overloaded',
+        },
+      ])
+    for (const querySource of [
+      'target_completion_verification',
+      'goal_summary_title',
+      'compact',
+      5,
+      null,
+    ]) {
       expect(zcodeNotificationEntry(retry(querySource)), String(querySource))
-        .toEqual([{ kind: 'retry', scope: 'api', attempt: 2, maxAttempts: 5, error: 'overloaded' }])
+        .toEqual([
+          {
+            kind: 'retry',
+            scope: 'api',
+            attempt: 2,
+            maxAttempts: 5,
+            error: 'overloaded',
+          },
+        ])
     }
   })
 
@@ -201,7 +347,9 @@ describe('zcodeNotificationEntry on a session.updated row', () => {
       origin: 'registryFallback',
     })
     expect(zcodeNotificationEntry(fallback({ providerId: 'p', modelId: 'glm-6' })))
-      .toEqual([{ kind: 'text', text: 'Switched from glm-6 to glm-5.3' }])
+      .toEqual([
+        { kind: 'text', text: 'Switched from glm-6 to glm-5.3' },
+      ])
     expect(zcodeNotificationEntry(fallback(null))).toEqual([])
   })
 
@@ -216,17 +364,38 @@ describe('zcodeNotificationEntry on a session.updated row', () => {
       outcome: ZCODE_HOOK_RUN_OUTCOME.Failed,
       descriptor: { clientVisible: true, sourceKind: 'user' },
       errorMessage: 'boom',
-    }))).toEqual([{ kind: 'hook', outcome: 'failed', event: 'PreToolUse', detail: 'boom' }])
+    }))).toEqual([
+      {
+        kind: 'hook',
+        outcome: 'failed',
+        event: 'PreToolUse',
+        detail: 'boom',
+      },
+    ])
     expect(zcodeNotificationEntry(hook({
       outcome: ZCODE_HOOK_RUN_OUTCOME.Blocked,
       descriptor: { clientVisible: true, sourceKind: 'user' },
       blockReason: 'policy',
-    }))).toEqual([{ kind: 'hook', outcome: 'blocked', event: 'PreToolUse', detail: 'policy' }])
+    }))).toEqual([
+      {
+        kind: 'hook',
+        outcome: 'blocked',
+        event: 'PreToolUse',
+        detail: 'policy',
+      },
+    ])
     expect(zcodeNotificationEntry(hook({
       outcome: ZCODE_HOOK_RUN_OUTCOME.Failed,
       descriptor: { clientVisible: false, sourceKind: 'internal' },
       errorMessage: 'boom',
-    }))).toEqual([{ kind: 'hook', outcome: 'failed', event: 'PreToolUse', detail: 'boom' }])
+    }))).toEqual([
+      {
+        kind: 'hook',
+        outcome: 'failed',
+        event: 'PreToolUse',
+        detail: 'boom',
+      },
+    ])
   })
 
   // A hook that ran past its time limit did not do its work. A cancelled hook
@@ -241,7 +410,9 @@ describe('zcodeNotificationEntry on a session.updated row', () => {
       errorMessage: 'Hook timed out after 60000ms',
     })
     expect(zcodeNotificationEntry(hook(ZCODE_HOOK_RUN_OUTCOME.TimedOut)))
-      .toEqual([{ kind: 'hook', outcome: 'timed-out', event: 'PreToolUse' }])
+      .toEqual([
+        { kind: 'hook', outcome: 'timed-out', event: 'PreToolUse' },
+      ])
     expect(zcodeNotificationEntry(hook('cancelled'))).toEqual([])
   })
 
@@ -255,28 +426,48 @@ describe('zcodeNotificationEntry on a session.updated row', () => {
       ...payload,
     })
     expect(zcodeNotificationEntry(hook({ hookEventName: 'Stop', outcome: ZCODE_HOOK_RUN_OUTCOME.Failed, errorMessage: '' })))
-      .toEqual([{ kind: 'hook', outcome: 'failed', event: 'Stop' }])
+      .toEqual([
+        { kind: 'hook', outcome: 'failed', event: 'Stop' },
+      ])
     expect(zcodeNotificationEntry(hook({ hookEventName: 'Stop', outcome: ZCODE_HOOK_RUN_OUTCOME.Blocked })))
-      .toEqual([{ kind: 'hook', outcome: 'blocked', event: 'Stop' }])
+      .toEqual([
+        { kind: 'hook', outcome: 'blocked', event: 'Stop' },
+      ])
     expect(zcodeNotificationEntry(hook({ outcome: ZCODE_HOOK_RUN_OUTCOME.Failed, errorMessage: 'boom' })))
-      .toEqual([{ kind: 'hook', outcome: 'failed', detail: 'boom' }])
+      .toEqual([
+        { kind: 'hook', outcome: 'failed', detail: 'boom' },
+      ])
     expect(zcodeNotificationEntry(hook({ outcome: ZCODE_HOOK_RUN_OUTCOME.TimedOut })))
-      .toEqual([{ kind: 'hook', outcome: 'timed-out' }])
+      .toEqual([
+        { kind: 'hook', outcome: 'timed-out' },
+      ])
   })
 
   // The reason is a wire word. A known word reads as a phrase; an unknown word
   // stays off the row rather than showing a raw token.
   it('words a discarded queued input with a phrase for its reason', () => {
-    const discarded = (reason: unknown) => sessionUpdated({ pendingInputIds: ['p1'], reason, targetTurnId: 'turn_1' })
+    const discarded = (reason: unknown) => sessionUpdated({
+      pendingInputIds: ['p1'],
+      reason,
+      targetTurnId: 'turn_1',
+    })
     expect(zcodeNotificationEntry(discarded('user_removed')))
-      .toEqual([{ kind: 'text', text: 'Queued input discarded (you removed it)' }])
+      .toEqual([
+        { kind: 'text', text: 'Queued input discarded (you removed it)' },
+      ])
     expect(zcodeNotificationEntry(discarded('session_resumed')))
-      .toEqual([{ kind: 'text', text: 'Queued input discarded (the session resumed)' }])
+      .toEqual([
+        { kind: 'text', text: 'Queued input discarded (the session resumed)' },
+      ])
     expect(zcodeNotificationEntry(discarded('turn_failed')))
-      .toEqual([{ kind: 'text', text: 'Queued input discarded (the turn failed)' }])
+      .toEqual([
+        { kind: 'text', text: 'Queued input discarded (the turn failed)' },
+      ])
     for (const reason of ['a_reason_from_a_later_release', 'toString', 5]) {
       expect(zcodeNotificationEntry(discarded(reason)), String(reason))
-        .toEqual([{ kind: 'text', text: 'Queued input discarded' }])
+        .toEqual([
+          { kind: 'text', text: 'Queued input discarded' },
+        ])
     }
   })
 
@@ -325,8 +516,13 @@ describe('zcodeNotificationEntry on a session.updated row', () => {
     expect(zcodeNotificationEntry(sessionUpdated({
       modelSelection: { providerId: 'p', modelId: 'glm-5.3' },
       previousModelSelection: { providerId: 'p', modelId: 'glm-6' },
-    }))).toEqual([{ kind: 'text', text: 'Switched from glm-6 to glm-5.3' }])
-    expect(zcodeNotificationEntry(sessionUpdated({ pendingInputIds: ['p1'], targetTurnId: 'turn_1' }))).toEqual([])
+    }))).toEqual([
+      { kind: 'text', text: 'Switched from glm-6 to glm-5.3' },
+    ])
+    expect(zcodeNotificationEntry(sessionUpdated({
+      pendingInputIds: ['p1'],
+      targetTurnId: 'turn_1',
+    }))).toEqual([])
   })
 })
 

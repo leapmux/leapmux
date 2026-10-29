@@ -25,10 +25,20 @@ describe('lettaResultDivider', () => {
   })
 
   it('states the native error on the failed divider with separate detail', () => {
-    const error = JSON.stringify({ error: { error: { message: 'First line.\nSecond line.' } } })
-    expect(lettaResultDivider({ ...turnFinished('error'), error }, MessageCompletion.ERROR))
+    const error = JSON.stringify({
+      error: {
+        error: { message: 'First line.\nSecond line.' },
+      },
+    })
+    expect(lettaResultDivider({
+      ...turnFinished('error'),
+      error,
+    }, MessageCompletion.ERROR))
       .toEqual({ label: 'Turn failed — First line.', detail: 'Second line.', isError: true })
-    expect(lettaResultDivider({ ...turnFinished('error'), error: '  ' }, MessageCompletion.ERROR))
+    expect(lettaResultDivider({
+      ...turnFinished('error'),
+      error: '  ',
+    }, MessageCompletion.ERROR))
       .toEqual({ label: 'Turn failed', isError: true })
   })
 
@@ -46,9 +56,26 @@ describe('lettaResultDivider', () => {
   })
 
   it.each([
-    ['a stream delta', { type: 'stream_delta', delta: { message_type: 'status', message: 'Interrupted', level: 'warning' } }],
-    ['a loop status', { type: 'update_loop_status', loop_status: { status: 'WAITING_ON_INPUT' } }],
-    ['an array', [turnFinished()]],
+    [
+      'a stream delta',
+      {
+        type: 'stream_delta',
+        delta: { message_type: 'status', message: 'Interrupted', level: 'warning' },
+      },
+    ],
+    [
+      'a loop status',
+      {
+        type: 'update_loop_status',
+        loop_status: { status: 'WAITING_ON_INPUT' },
+      },
+    ],
+    [
+      'an array',
+      [
+        turnFinished(),
+      ],
+    ],
     ['a string', 'turn_finished'],
     ['null', null],
   ])('returns null for %s', (_name, frame) => {

@@ -50,6 +50,12 @@ export async function exerciseCopilotPermissionPreset(context: ManagedNativeScen
   if (preset === 'smart')
     await context.modelScript.rule(COPILOT_PERMISSION_JUDGE_RULE)
   await applyPermissionPreset(context.page, preset)
-  await expectNativeOptionValue(context, 'permissionMode', preset === 'smart' ? COPILOT_PERMISSION_MODE.Assisted : COPILOT_PERMISSION_MODE.AllowAll)
-  await exerciseNativeToolWrite(context, { permission: preset === 'smart' ? 'native' : 'absent' })
+  await expectNativeOptionValue(context, 'permissionMode', preset === 'smart'
+    ? COPILOT_PERMISSION_MODE.Assisted
+    : COPILOT_PERMISSION_MODE.AllowAll)
+  await exerciseNativeToolWrite(context, {
+    permission: preset === 'smart'
+      ? 'native'
+      : 'absent',
+  })
 }

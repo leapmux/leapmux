@@ -36,7 +36,9 @@ export const PendingQuestionsBanner: Component<PendingQuestionsBannerProps> = pr
     <Show when={props.shown}>
       <Icon icon={MessageCircleQuestion} size="xs" class={styles.icon} />
       <span class={styles.text}>
-        {props.count === 1 ? 'The agent asked a question.' : `The agent asked ${props.count} questions.`}
+        {props.count === 1
+          ? 'The agent asked a question.'
+          : `The agent asked ${props.count} questions.`}
       </span>
       <button
         class={`outline ${styles.answer}`}

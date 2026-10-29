@@ -11,9 +11,14 @@ lettaTest('ends automatic compaction with one boundary row and no live indicator
     priority: 'high',
     // Letta Code 0.34.15 uses LOCAL_ALL_COMPACTION_PROMPT or LOCAL_SLIDING_WINDOW_COMPACTION_PROMPT as its system prompt.
     when: { system: '(?:Your task is to create a detailed summary of the conversation so far|The following messages are being evicted from the BEGINNING of your context window)' },
-    respond: { text: modelScript.prompt(`${summary} The first task is complete.`) },
+    respond: {
+      text: modelScript.prompt(`${summary} The first task is complete.`),
+    },
   })
-  const first = await modelScript.queue({ text: 'The first task is complete.', usage: { inputTokens: 5_000_000, outputTokens: 20 } })
+  const first = await modelScript.queue({
+    text: 'The first task is complete.',
+    usage: { inputTokens: 5_000_000, outputTokens: 20 },
+  })
   await sendMessage(page, modelScript.prompt('Complete the first scripted task.'))
   await modelScript.waitForSteps(first + 1)
   await waitForAgentIdle(page)

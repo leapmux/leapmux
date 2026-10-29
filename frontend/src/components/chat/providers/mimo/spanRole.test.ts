@@ -12,7 +12,10 @@ describe('mimoSpanRole', () => {
   })
 
   it('reads a retained last frame as the result', () => {
-    const parsed = { ...input(openingFrame('bash', { command: 'ls' }), undefined, AgentProvider.MIMO_CODE), completion: MessageCompletion.INTERRUPTED }
+    const parsed = {
+      ...input(openingFrame('bash', { command: 'ls' }), undefined, AgentProvider.MIMO_CODE),
+      completion: MessageCompletion.INTERRUPTED,
+    }
     expect(mimoSpanRole(parsed)).toBe('result')
   })
 
@@ -41,7 +44,10 @@ describe('mimoRelatedMessages', () => {
 
   // The last frame of a cut call is the span's result, so it pairs with the request.
   it('pairs a retained last frame with its request', () => {
-    const parsed = { ...input(openingFrame('bash', { command: 'ls' }), undefined, AgentProvider.MIMO_CODE), completion: MessageCompletion.INTERRUPTED }
+    const parsed = {
+      ...input(openingFrame('bash', { command: 'ls' }), undefined, AgentProvider.MIMO_CODE),
+      completion: MessageCompletion.INTERRUPTED,
+    }
     expect(mimoRelatedMessages(parsed)).toEqual(['request'])
   })
 })

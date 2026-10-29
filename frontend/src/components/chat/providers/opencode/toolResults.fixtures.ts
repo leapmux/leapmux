@@ -9,30 +9,129 @@ const CALL = 'oc-1'
 /** A finished update whose paired request identifies the tool and the arguments. */
 function update(rawInput: Record<string, unknown>, result: Record<string, unknown> = {}, title = 'bash'): ToolResultFixture {
   return {
-    payload: { sessionUpdate: 'tool_call_update', toolCallId: CALL, status: 'completed', ...result },
+    payload: {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: CALL,
+      status: 'completed',
+      ...result,
+    },
     options: {
       spanType: 'tool_call_update',
-      request: input({ sessionUpdate: 'tool_call', toolCallId: CALL, status: 'pending', title, rawInput }) as ParsedMessageContent,
+      request: input({
+        sessionUpdate: 'tool_call',
+        toolCallId: CALL,
+        status: 'pending',
+        title,
+        rawInput,
+      }) as ParsedMessageContent,
     },
   }
 }
 
-const display = (display: Record<string, unknown>) => ({ rawOutput: { metadata: { display } } })
+function display(display: Record<string, unknown>) {
+  return {
+    rawOutput: {
+      metadata: { display },
+    },
+  }
+}
 
 const FIXTURES: Readonly<Record<string, ToolResultFixture>> = {
-  bash: update({ command: 'ls' }, { kind: 'execute', content: text('a.ts') }),
-  read_file: update({ filePath: '/p/a.ts', offset: 1 }, { kind: 'read', ...display({ type: 'file', path: '/p/a.ts', text: 'alpha', lineStart: 1, totalLines: 1 }) }, 'read'),
-  list: update({ path: '/p' }, { kind: 'read', ...display({ type: 'directory', path: '/p', entries: ['a.ts'] }) }, 'ls'),
-  edit: update({ filePath: '/p/a.ts', oldString: 'x', newY: 'y' }, { kind: 'edit', content: [{ type: 'diff', path: '/p/a.ts', oldText: 'x', newText: 'y' }] }, 'edit'),
-  write: update({ filePath: '/p/n.ts', content: 'new' }, { kind: 'edit', ...display({ type: 'file', path: '/p/n.ts', text: 'new' }) }, 'write'),
-  apply_patch: update({ filePath: '/p/a.ts', oldString: 'before', newString: 'after' }, { kind: 'edit', content: [{ type: 'diff', path: '/p/a.ts', oldText: 'before', newText: 'after' }] }, 'apply_patch'),
-  glob: update({ pattern: '*.ts' }, { kind: 'search', rawOutput: { metadata: { count: 1 } }, content: text('a.ts') }, 'glob'),
-  grep: update({ pattern: 'needle' }, { kind: 'search', rawOutput: { metadata: { matches: 1 } }, content: text('a.ts:1:needle') }, 'grep'),
-  task: update({ description: 'Probe', prompt: 'Run.' }, { kind: 'think', content: text('<task id="t1" state="completed">\n<task_result>\ndone\n</task_result>\n</task>') }, 'task'),
-  todowrite: update({ todos: [{ content: 'One', status: 'pending' }] }, { kind: 'other', content: text('Saved') }, 'todowrite'),
-  question: update({ questions: [{ header: 'Pick', question: 'Which?', options: [] }] }, { kind: 'other', content: text('answered') }, 'question'),
-  webfetch: update({ url: 'https://example.com' }, { kind: 'fetch', content: text('# page') }, 'webfetch'),
-  probe_echo: update({ query: 'needle' }, { kind: 'other', content: [{ type: 'content', content: { type: 'text', text: 'found' } }] }, 'probe_echo'),
+  bash: update({ command: 'ls' }, {
+    kind: 'execute',
+    content: text('a.ts'),
+  }),
+  read_file: update({ filePath: '/p/a.ts', offset: 1 }, {
+    kind: 'read',
+    ...display({
+      type: 'file',
+      path: '/p/a.ts',
+      text: 'alpha',
+      lineStart: 1,
+      totalLines: 1,
+    }),
+  }, 'read'),
+  list: update({ path: '/p' }, {
+    kind: 'read',
+    ...display({
+      type: 'directory',
+      path: '/p',
+      entries: ['a.ts'],
+    }),
+  }, 'ls'),
+  edit: update({ filePath: '/p/a.ts', oldString: 'x', newY: 'y' }, {
+    kind: 'edit',
+    content: [
+      {
+        type: 'diff',
+        path: '/p/a.ts',
+        oldText: 'x',
+        newText: 'y',
+      },
+    ],
+  }, 'edit'),
+  write: update({ filePath: '/p/n.ts', content: 'new' }, {
+    kind: 'edit',
+    ...display({ type: 'file', path: '/p/n.ts', text: 'new' }),
+  }, 'write'),
+  apply_patch: update({ filePath: '/p/a.ts', oldString: 'before', newString: 'after' }, {
+    kind: 'edit',
+    content: [
+      {
+        type: 'diff',
+        path: '/p/a.ts',
+        oldText: 'before',
+        newText: 'after',
+      },
+    ],
+  }, 'apply_patch'),
+  glob: update({ pattern: '*.ts' }, {
+    kind: 'search',
+    rawOutput: {
+      metadata: { count: 1 },
+    },
+    content: text('a.ts'),
+  }, 'glob'),
+  grep: update({ pattern: 'needle' }, {
+    kind: 'search',
+    rawOutput: {
+      metadata: { matches: 1 },
+    },
+    content: text('a.ts:1:needle'),
+  }, 'grep'),
+  task: update({ description: 'Probe', prompt: 'Run.' }, {
+    kind: 'think',
+    content: text('<task id="t1" state="completed">\n<task_result>\ndone\n</task_result>\n</task>'),
+  }, 'task'),
+  todowrite: update({
+    todos: [
+      { content: 'One', status: 'pending' },
+    ],
+  }, {
+    kind: 'other',
+    content: text('Saved'),
+  }, 'todowrite'),
+  question: update({
+    questions: [
+      { header: 'Pick', question: 'Which?', options: [] },
+    ],
+  }, {
+    kind: 'other',
+    content: text('answered'),
+  }, 'question'),
+  webfetch: update({ url: 'https://example.com' }, {
+    kind: 'fetch',
+    content: text('# page'),
+  }, 'webfetch'),
+  probe_echo: update({ query: 'needle' }, {
+    kind: 'other',
+    content: [
+      {
+        type: 'content',
+        content: { type: 'text', text: 'found' },
+      },
+    ],
+  }, 'probe_echo'),
 }
 
 /**
@@ -79,8 +178,16 @@ function failed(kind: ToolKind, name: string, status: ToolFailureFixture['status
   // Every failure pairs by name with a fixture above, so the reads are guarded for the type alone.
   const fixture = FIXTURES[name]
   return {
-    payload: { sessionUpdate: 'tool_call_update', toolCallId: CALL, kind: fixture?.payload.kind, status: 'failed', content: text(ERROR_TEXT) },
-    ...(fixture?.options !== undefined ? { options: fixture.options } : {}),
+    payload: {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: CALL,
+      kind: fixture?.payload.kind,
+      status: 'failed',
+      content: text(ERROR_TEXT),
+    },
+    ...(fixture?.options !== undefined
+      ? { options: fixture.options }
+      : {}),
     kind,
     name,
     status,
@@ -97,8 +204,17 @@ function failed(kind: ToolKind, name: string, status: ToolFailureFixture['status
 function nativeFailure(kind: ToolKind, name: string, status: ToolFailureFixture['status'], error: string): ToolFailureFixture {
   const fixture = FIXTURES[name]
   return {
-    payload: { sessionUpdate: 'tool_call_update', toolCallId: CALL, kind: fixture?.payload.kind, status: 'failed', content: text(error), rawOutput: { error } },
-    ...(fixture?.options !== undefined ? { options: fixture.options } : {}),
+    payload: {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: CALL,
+      kind: fixture?.payload.kind,
+      status: 'failed',
+      content: text(error),
+      rawOutput: { error },
+    },
+    ...(fixture?.options !== undefined
+      ? { options: fixture.options }
+      : {}),
     kind,
     name,
     status,
@@ -160,5 +276,10 @@ export const OPENCODE_TOOL_RESULTS: ToolResultCheck = {
 }
 
 function text(value: string) {
-  return [{ type: 'content', content: { type: 'text', text: value } }]
+  return [
+    {
+      type: 'content',
+      content: { type: 'text', text: value },
+    },
+  ]
 }

@@ -21,7 +21,9 @@ describe('requireLoopbackHttpURL', () => {
   })
 
   it('keeps the parse failure of an invalid URL as the cause', () => {
-    expect(() => requireLoopbackHttpURL('not a URL', 'The endpoint')).toThrow(expect.objectContaining({ cause: expect.any(TypeError) }))
+    expect(() => requireLoopbackHttpURL('not a URL', 'The endpoint')).toThrow(expect.objectContaining({
+      cause: expect.any(TypeError),
+    }))
   })
 
   it('accepts a bare origin and refuses a path when the caller needs an origin', () => {
@@ -41,8 +43,14 @@ describe('LOOPBACK_HOSTNAMES', () => {
 describe('validatedMcpServers', () => {
   it('returns copies of the servers in their order', () => {
     const args = ['/srv/echo.mjs']
-    const servers = validatedMcpServers([{ name: 'echo-probe', command: '/usr/bin/node', args }, { name: 'form_probe', command: '/usr/bin/node', args: [] }], 'Agent', 32)
-    expect(servers).toEqual([{ name: 'echo-probe', command: '/usr/bin/node', args }, { name: 'form_probe', command: '/usr/bin/node', args: [] }])
+    const servers = validatedMcpServers([
+      { name: 'echo-probe', command: '/usr/bin/node', args },
+      { name: 'form_probe', command: '/usr/bin/node', args: [] },
+    ], 'Agent', 32)
+    expect(servers).toEqual([
+      { name: 'echo-probe', command: '/usr/bin/node', args },
+      { name: 'form_probe', command: '/usr/bin/node', args: [] },
+    ])
     expect(servers[0]!.args).not.toBe(args)
   })
 
@@ -53,21 +61,48 @@ describe('validatedMcpServers', () => {
 
   it('applies the name limit that the caller states', () => {
     const name = 'n'.repeat(40)
-    expect(() => validatedMcpServers([{ name, command: '/bin/server', args: [] }], 'Agent', 32)).toThrow('The Agent MCP server names must be valid and distinct.')
-    expect(validatedMcpServers([{ name, command: '/bin/server', args: [] }], 'Agent', 64)).toHaveLength(1)
+    expect(() => validatedMcpServers([
+      { name, command: '/bin/server', args: [] },
+    ], 'Agent', 32)).toThrow('The Agent MCP server names must be valid and distinct.')
+    expect(validatedMcpServers([
+      { name, command: '/bin/server', args: [] },
+    ], 'Agent', 64)).toHaveLength(1)
   })
 
   it.each([
-    { label: 'an empty name', servers: [{ name: '', command: '/bin/server', args: [] }] },
-    { label: 'a name with a space', servers: [{ name: 'echo probe', command: '/bin/server', args: [] }] },
-    { label: 'a name with a dot', servers: [{ name: 'echo.probe', command: '/bin/server', args: [] }] },
-    { label: 'a duplicate name', servers: [{ name: 'echo', command: '/bin/a', args: [] }, { name: 'echo', command: '/bin/b', args: [] }] },
+    {
+      label: 'an empty name',
+      servers: [
+        { name: '', command: '/bin/server', args: [] },
+      ],
+    },
+    {
+      label: 'a name with a space',
+      servers: [
+        { name: 'echo probe', command: '/bin/server', args: [] },
+      ],
+    },
+    {
+      label: 'a name with a dot',
+      servers: [
+        { name: 'echo.probe', command: '/bin/server', args: [] },
+      ],
+    },
+    {
+      label: 'a duplicate name',
+      servers: [
+        { name: 'echo', command: '/bin/a', args: [] },
+        { name: 'echo', command: '/bin/b', args: [] },
+      ],
+    },
   ])('refuses $label', ({ servers }) => {
     expect(() => validatedMcpServers(servers, 'Agent', 32)).toThrow('The Agent MCP server names must be valid and distinct.')
   })
 
   it('refuses a command that is not absolute', () => {
-    expect(() => validatedMcpServers([{ name: 'echo', command: 'node', args: [] }], 'Agent', 32)).toThrow('The Agent MCP command must be absolute.')
+    expect(() => validatedMcpServers([
+      { name: 'echo', command: 'node', args: [] },
+    ], 'Agent', 32)).toThrow('The Agent MCP command must be absolute.')
   })
 
   it.each([0, -1, 1.5, Number.NaN])('refuses the name limit %s', (limit) => {

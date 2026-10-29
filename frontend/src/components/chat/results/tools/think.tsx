@@ -10,7 +10,9 @@ export const thinkRenderer = proseRenderer<'think'>({
   request(call) {
     if (call.result !== undefined)
       return null
-    return typedRequestLine([firstLine(call.request.text)])
+    return typedRequestLine([
+      firstLine(call.request.text),
+    ])
   },
 })
 

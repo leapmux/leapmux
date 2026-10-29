@@ -15,11 +15,22 @@ import '../testMocks'
 // only its content to show, and it must show that rather than a name it never read.
 describe('claude tool rendering', () => {
   it('shows an unmatched completion by its content alone', () => {
-    const parsed = { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_orphan', content: 'recovered output' }] } }
+    const parsed = {
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 'toolu_orphan', content: 'recovered output' },
+        ],
+      },
+    }
     const plugin = providerFor(AgentProvider.CLAUDE_CODE)!
     const { container } = render(() => renderMessageContent(parsed, {
       premeasureMode: true,
-      sources: testMessageSources({ current: () => input(parsed), request: () => undefined }),
+      sources: testMessageSources({
+        current: () => input(parsed),
+        request: () => undefined,
+      }),
     }, plugin?.transcript.classify(input(parsed)), AgentProvider.CLAUDE_CODE))
     expect(container.textContent).toContain('recovered output')
     for (const invented of ['Run command', 'Read file', 'Search'])
@@ -38,12 +49,27 @@ describe('claude tool rendering', () => {
 describe('claude Task rows before their result lands', () => {
   const useRow = (name: string, toolInput: Record<string, unknown>) => ({
     type: 'assistant',
-    message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_1', name, input: toolInput }] },
+    message: {
+      role: 'assistant',
+      content: [
+        {
+          type: 'tool_use',
+          id: 'toolu_1',
+          name,
+          input: toolInput,
+        },
+      ],
+    },
   })
 
   const resultRow = (payload: Record<string, unknown>) => ({
     type: 'user',
-    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: 'ok' }] },
+    message: {
+      role: 'user',
+      content: [
+        { type: 'tool_result', tool_use_id: 'toolu_1', content: 'ok' },
+      ],
+    },
     tool_use_result: payload,
   })
 
@@ -54,8 +80,13 @@ describe('claude Task rows before their result lands', () => {
 
   it('draws the task once the result lands beside it', () => {
     const payload = useRow(CLAUDE_TOOL_NAMES.TASK_GET, { task_id: 7 })
-    const result = resultRow({ task: { id: 7, subject: 'Inspect sample', status: 'pending' } })
-    const row = providerRow(AgentProvider.CLAUDE_CODE, payload, { role: 'request', result: input(result) })
+    const result = resultRow({
+      task: { id: 7, subject: 'Inspect sample', status: 'pending' },
+    })
+    const row = providerRow(AgentProvider.CLAUDE_CODE, payload, {
+      role: 'request',
+      result: input(result),
+    })
     expect(row?.kind).toBe('tool')
     expect(row?.kind === 'tool' && row.call.kind).toBe('todo')
   })
@@ -76,14 +107,34 @@ describe('claude Task rows and a sibling from another call', () => {
   it('ignores a result whose tool-use id names another call', () => {
     const payload = {
       type: 'assistant',
-      message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_mine', name: CLAUDE_TOOL_NAMES.TASK_GET, input: { task_id: 7 } }] },
+      message: {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'toolu_mine',
+            name: CLAUDE_TOOL_NAMES.TASK_GET,
+            input: { task_id: 7 },
+          },
+        ],
+      },
     }
     const stranger = {
       type: 'user',
-      message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_other', content: 'ok' }] },
-      tool_use_result: { task: { id: 99, subject: 'Another call', status: 'pending' } },
+      message: {
+        role: 'user',
+        content: [
+          { type: 'tool_result', tool_use_id: 'toolu_other', content: 'ok' },
+        ],
+      },
+      tool_use_result: {
+        task: { id: 99, subject: 'Another call', status: 'pending' },
+      },
     }
-    const row = providerRow(AgentProvider.CLAUDE_CODE, payload, { role: 'request', result: input(stranger) })
+    const row = providerRow(AgentProvider.CLAUDE_CODE, payload, {
+      role: 'request',
+      result: input(stranger),
+    })
     expect(row).toEqual({ kind: 'hidden' })
   })
 })
@@ -98,12 +149,32 @@ describe('claude Task rows and a sibling from another call', () => {
 describe('claude ExitPlanMode rows', () => {
   const useRow = (name: string, toolInput: Record<string, unknown> = {}) => ({
     type: 'assistant',
-    message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_1', name, input: toolInput }] },
+    message: {
+      role: 'assistant',
+      content: [
+        {
+          type: 'tool_use',
+          id: 'toolu_1',
+          name,
+          input: toolInput,
+        },
+      ],
+    },
   })
 
   const resultRow = (payload: Record<string, unknown>, isError = false) => ({
     type: 'user',
-    message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_1', content: isError ? 'Try a smaller scope.' : 'ok', is_error: isError }] },
+    message: {
+      role: 'user',
+      content: [
+        {
+          type: 'tool_result',
+          tool_use_id: 'toolu_1',
+          content: isError ? 'Try a smaller scope.' : 'ok',
+          is_error: isError,
+        },
+      ],
+    },
     tool_use_result: payload,
   })
 
@@ -112,7 +183,9 @@ describe('claude ExitPlanMode rows', () => {
       role: 'request',
       result: input(resultRow(payload)),
     })
-    return row?.kind === 'tool' ? row.call : null
+    return row?.kind === 'tool'
+      ? row.call
+      : null
   }
 
   it('heads an approved plan with words rather than the mode token', () => {
@@ -123,7 +196,9 @@ describe('claude ExitPlanMode rows', () => {
 
   it('states the plan file the interface wrote', () => {
     expect(approvedCall({ filePath: '/repo/.plans/one.md' })?.metadata)
-      .toEqual([{ label: 'Plan file', value: '/repo/.plans/one.md' }])
+      .toEqual([
+        { label: 'Plan file', value: '/repo/.plans/one.md' },
+      ])
   })
 
   it('states no plan file when the result carries none', () => {
@@ -137,7 +212,9 @@ describe('claude ExitPlanMode rows', () => {
       role: 'request',
       result: input(resultRow({}, true)),
     })
-    const call = row?.kind === 'tool' ? row.call : null
+    const call = row?.kind === 'tool'
+      ? row.call
+      : null
     expect(call?.status).toBe('declined')
     expect(call?.result).toEqual({ text: 'Try a smaller scope.', format: 'plain' })
     expect(call?.metadata).toBeUndefined()
@@ -150,7 +227,9 @@ describe('claude ExitPlanMode rows', () => {
     [CLAUDE_TOOL_NAMES.EXIT_WORKTREE, 'default'],
   ])('keeps the mode and the target of a %s call', (name, mode) => {
     const row = providerRow(AgentProvider.CLAUDE_CODE, useRow(name, { name: 'feature-a' }), { role: 'request' })
-    const call = row?.kind === 'tool' ? row.call : null
+    const call = row?.kind === 'tool'
+      ? row.call
+      : null
     expect(call?.kind === 'switch_mode' && call.request).toEqual({ mode, target: 'feature-a' })
   })
 })

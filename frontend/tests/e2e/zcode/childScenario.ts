@@ -32,7 +32,9 @@ export async function exerciseZCodeChildToolTranscript(context: ManagedNativeSce
     childWhen: ZCODE_CHILD.childTask('printf zcode-tool-ok'),
     childTask: 'Use Bash to run printf zcode-tool-ok, then reply with exactly ZCODE_CHILD_PONG.',
     parentTask: 'Spawn one subagent to run the shell probe, then report what it said.',
-    toolProof: { shell: { command: 'printf zcode-tool-ok' } },
+    toolProof: {
+      shell: { command: 'printf zcode-tool-ok' },
+    },
     childResponse: { text: 'ZCODE_CHILD_PONG' },
     // A ZCode child sends no text of its own to the child tab. Its report closes the transcript.
     finalAnswerInChildTab: false,

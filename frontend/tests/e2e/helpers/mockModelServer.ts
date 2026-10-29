@@ -158,12 +158,21 @@ interface ModelGate {
 /** Capture headers after the native response completes without retaining any request credential. */
 function recordModelResponse(response: ServerResponse, record: MockModelRequestRecord, readError: () => MockModelDeliveredError | undefined): void {
   response.once('finish', () => {
-    const headers = Object.fromEntries(Object.entries(response.getHeaders()).map(([key, value]) => [key, Array.isArray(value) ? value.join(', ') : String(value ?? '')]))
+    const headers = Object.fromEntries(Object.entries(response.getHeaders()).map(([key, value]) => [
+      key,
+      Array.isArray(value)
+        ? value.join(', ')
+        : String(value ?? ''),
+    ]))
     const error = readError()
     record.response = {
       status: response.statusCode,
       headers,
-      ...(error ? { serviceError: { code: error.code, message: error.message } } : {}),
+      ...(error
+        ? {
+            serviceError: { code: error.code, message: error.message },
+          }
+        : {}),
     }
   })
 }
@@ -220,10 +229,17 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
     ancestorInstructionRequests++
     const scenarioID = context.scenarioID ?? selectScenarioID(context.protocol, context.body)
     const scenario = scenarios.get(scenarioID)
-    if (scenario)
-      scenario.unexpectedRequests.push({ protocol: context.protocol, path: context.path, body: context.body, reason })
-    else
+    if (scenario) {
+      scenario.unexpectedRequests.push({
+        protocol: context.protocol,
+        path: context.path,
+        body: context.body,
+        reason,
+      })
+    }
+    else {
       recordUnmatched(unmatched, { ...context, scenarioID, reason })
+    }
   }
 
   const instructionFiles: InstructionFileGuard = {
@@ -258,7 +274,12 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
       throw new Error('A selected model step has no native request record.')
     if (!capabilities?.allowServiceToolMetadata && step.toolCalls?.some(tool => tool.completionGate !== undefined || tool.taskProgress !== undefined || tool.nativeExecution !== undefined)) {
       const reason = 'This native route does not support metadata for provider service tools.'
-      scenario.unexpectedRequests.push({ protocol: context.protocol, path: context.path, body: context.body, reason })
+      scenario.unexpectedRequests.push({
+        protocol: context.protocol,
+        path: context.path,
+        body: context.body,
+        reason,
+      })
       throw new Error(reason)
     }
     return { kind: 'step', step, scenario, record }
@@ -287,14 +308,26 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
       }
     },
   }
-  const copilotOptions = { sessionToken: MOCK_SESSION_TOKEN, defaultModelId: MOCK_MODELS.openai, reasoningModelId: MOCK_MODELS.gooseReasoning, messagesModelId: MOCK_MODELS.anthropic }
-  const qoderOptions = { origin: () => `http://127.0.0.1:${ownPort}`, identityToken: MOCK_IDENTITY_TOKEN }
+  const copilotOptions = {
+    sessionToken: MOCK_SESSION_TOKEN,
+    defaultModelId: MOCK_MODELS.openai,
+    reasoningModelId: MOCK_MODELS.gooseReasoning,
+    messagesModelId: MOCK_MODELS.anthropic,
+  }
+  const qoderOptions = {
+    origin: () => `http://127.0.0.1:${ownPort}`,
+    identityToken: MOCK_IDENTITY_TOKEN,
+  }
   // The native services, in the order that the server offers them a request. A request
   // that no surface claims reaches the model routes below.
   const surfaces: readonly MockSurface[] = [
     createLettaSurface(scriptHost),
-    { handleHttp: (request, response, url) => handleDroidHttp(request, response, url, { modelKey: MODEL_KEY }) },
-    { handleHttp: (request, response, url) => handleCopilotHttp(request, response, url, copilotOptions) },
+    {
+      handleHttp: (request, response, url) => handleDroidHttp(request, response, url, { modelKey: MODEL_KEY }),
+    },
+    {
+      handleHttp: (request, response, url) => handleCopilotHttp(request, response, url, copilotOptions),
+    },
     createQoderSurface(scriptHost, qoderOptions),
     // Before Amp, which claims every `/api/` path: the Kilo cloud procedures sit under `/api/trpc/`.
     createKiloCloudSurface(scriptHost, { identityToken: MOCK_IDENTITY_TOKEN }),
@@ -302,7 +335,9 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
     createAmpSurface(ampScriptOptions(scriptHost, instructionFiles)),
     createCursorSurface(scriptHost, instructionFiles),
     createKiroSurface(scriptHost),
-    { handleHttp: (request, response, url) => handleGoogleModelHttp(request, response, url, scriptHost) },
+    {
+      handleHttp: (request, response, url) => handleGoogleModelHttp(request, response, url, scriptHost),
+    },
   ]
   const clearScenario = (scenarioID: string): void => {
     for (const surface of surfaces)
@@ -348,7 +383,9 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
       }
       const protocol = protocolFor(request.method, url.pathname)
       if (!protocol) {
-        writeJSON(response, 404, { error: { message: `The mock server has no route for ${request.method ?? 'UNKNOWN'} ${url.pathname}.` } })
+        writeJSON(response, 404, {
+          error: { message: `The mock server has no route for ${request.method ?? 'UNKNOWN'} ${url.pathname}.` },
+        })
         return
       }
       const body = await readJSONBody(request)
@@ -362,16 +399,24 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
         ...(request.headers['anthropic-beta'] === undefined
           ? {}
           : {
-              requestHeaders: { 'anthropic-beta': Array.isArray(request.headers['anthropic-beta']) ? request.headers['anthropic-beta'].join(', ') : request.headers['anthropic-beta'] },
+              requestHeaders: {
+                'anthropic-beta': Array.isArray(request.headers['anthropic-beta'])
+                  ? request.headers['anthropic-beta'].join(', ')
+                  : request.headers['anthropic-beta'],
+              },
             }),
       }
       const answer = answerFor(context)
       if (answer.kind === 'missing') {
-        writeJSON(response, 409, { error: { message: answer.message } })
+        writeJSON(response, 409, {
+          error: { message: answer.message },
+        })
         return
       }
       const { step, scenario } = answer
-      recordModelResponse(response, answer.record, () => step.error ? genericModelError(step.error) : undefined)
+      recordModelResponse(response, answer.record, () => step.error
+        ? genericModelError(step.error)
+        : undefined)
       const transport = { request, response }
       const stream = createModelStream(response, step.stream, name => holdGate(scenario, name, transport))
       // Codex reads response.metadata while a step waits.
@@ -394,11 +439,19 @@ export async function createMockModelServer(options: MockModelServerOptions): Pr
       await writeModelResponse(response, protocol, body, step, `mock-response-${responseSequence}`, stream)
     }
     catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      if (!response.headersSent)
-        writeJSON(response, 400, { error: { message } })
-      else
-        response.destroy(error instanceof Error ? error : new Error(message))
+      const message = error instanceof Error
+        ? error.message
+        : String(error)
+      if (!response.headersSent) {
+        writeJSON(response, 400, {
+          error: { message },
+        })
+      }
+      else {
+        response.destroy(error instanceof Error
+          ? error
+          : new Error(message))
+      }
     }
   }
 
@@ -466,7 +519,9 @@ function selectStep(scenario: ScenarioState, context: ModelRequestContext): Mock
     scenario.unexpectedRequests.push({
       protocol: context.protocol,
       path: context.path,
-      reason: error instanceof Error ? error.message : String(error),
+      reason: error instanceof Error
+        ? error.message
+        : String(error),
       body: context.body,
     })
     return undefined
@@ -495,20 +550,35 @@ function chooseStep(scenario: ScenarioState, context: ModelRequestContext): Mock
   if (deliveredChild) {
     const name = deliveredChild.rule
     scenario.ruleMatches.set(name, (scenario.ruleMatches.get(name) ?? 0) + 1)
-    recordScenarioRequest(scenario, { protocol: context.protocol, path: context.path, rule: name, body: context.body }, context)
+    recordScenarioRequest(scenario, {
+      protocol: context.protocol,
+      path: context.path,
+      rule: name,
+      body: context.body,
+    }, context)
     return deliveredChild.step
   }
   const rule = findRule(scenario, context)
   if (rule) {
     scenario.ruleMatches.set(rule.name, (scenario.ruleMatches.get(rule.name) ?? 0) + 1)
-    recordScenarioRequest(scenario, { protocol: context.protocol, path: context.path, rule: rule.name, body: context.body }, context)
+    recordScenarioRequest(scenario, {
+      protocol: context.protocol,
+      path: context.path,
+      rule: rule.name,
+      body: context.body,
+    }, context)
     return rule.respond
   }
   if (scenario.nextStep >= scenario.spec.steps.length) {
     const { fallback } = scenario.spec
     if (fallback && scenario.fallbackAnswers < MAX_FALLBACK_ANSWERS) {
       scenario.fallbackAnswers++
-      recordScenarioRequest(scenario, { protocol: context.protocol, path: context.path, fallback: true, body: context.body }, context)
+      recordScenarioRequest(scenario, {
+        protocol: context.protocol,
+        path: context.path,
+        fallback: true,
+        body: context.body,
+      }, context)
       return fallback
     }
     if (fallback) {
@@ -529,7 +599,12 @@ function chooseStep(scenario: ScenarioState, context: ModelRequestContext): Mock
     return undefined
   }
   const stepIndex = scenario.nextStep++
-  recordScenarioRequest(scenario, { protocol: context.protocol, path: context.path, stepIndex, body: context.body }, context)
+  recordScenarioRequest(scenario, {
+    protocol: context.protocol,
+    path: context.path,
+    stepIndex,
+    body: context.body,
+  }, context)
   return scenario.spec.steps[stepIndex]
 }
 
@@ -537,10 +612,18 @@ function chooseStep(scenario: ScenarioState, context: ModelRequestContext): Mock
 function recordScenarioRequest(scenario: ScenarioState, record: MockModelRequestRecord, context: Pick<ModelRequestContext, 'serverContext' | 'mockCredential' | 'requestHeaders' | 'nativeRequest'>): void {
   scenario.requests.push({
     ...record,
-    ...(context.serverContext ? { serverContext: context.serverContext } : {}),
-    ...(context.mockCredential ? { mockCredential: context.mockCredential } : {}),
-    ...(context.requestHeaders ? { requestHeaders: context.requestHeaders } : {}),
-    ...(context.nativeRequest === undefined ? {} : { nativeRequest: context.nativeRequest }),
+    ...(context.serverContext
+      ? { serverContext: context.serverContext }
+      : {}),
+    ...(context.mockCredential
+      ? { mockCredential: context.mockCredential }
+      : {}),
+    ...(context.requestHeaders
+      ? { requestHeaders: context.requestHeaders }
+      : {}),
+    ...(context.nativeRequest === undefined
+      ? {}
+      : { nativeRequest: context.nativeRequest }),
   })
   if (scenario.requests.length > MAX_SCENARIO_REQUEST_RECORDS)
     scenario.requests.splice(0, scenario.requests.length - MAX_SCENARIO_REQUEST_RECORDS)
@@ -580,7 +663,10 @@ export function holdGate(scenario: Pick<ScenarioState, 'closed' | 'gates'>, name
   }
   let gate = scenario.gates.get(name)
   if (!gate) {
-    gate = { released: false, waiters: new Set() }
+    gate = {
+      released: false,
+      waiters: new Set(),
+    }
     scenario.gates.set(name, gate)
   }
   if (gate.released)
@@ -642,7 +728,9 @@ function handleRequestLog(request: IncomingMessage, response: ServerResponse, lo
     response.writeHead(204).end()
     return
   }
-  writeJSON(response, 405, { error: { message: `The HTTP method ${request.method ?? 'UNKNOWN'} is not allowed.` } })
+  writeJSON(response, 405, {
+    error: { message: `The HTTP method ${request.method ?? 'UNKNOWN'} is not allowed.` },
+  })
 }
 
 function recordHTTPRequest(
@@ -687,11 +775,15 @@ async function handleScenarioControl(
     validateGateName(gateName)
     const scenario = scenarios.get(id)
     if (!scenario) {
-      writeJSON(response, 404, { error: { message: `The model scenario ${id} does not exist.` } })
+      writeJSON(response, 404, {
+        error: { message: `The model scenario ${id} does not exist.` },
+      })
       return
     }
     if (request.method !== 'POST') {
-      writeJSON(response, 405, { error: { message: `The HTTP method ${request.method ?? 'UNKNOWN'} is not allowed.` } })
+      writeJSON(response, 405, {
+        error: { message: `The HTTP method ${request.method ?? 'UNKNOWN'} is not allowed.` },
+      })
       return
     }
     const released = releaseGate(scenario, gateName)
@@ -700,7 +792,9 @@ async function handleScenarioControl(
       return
     }
     if (!released) {
-      writeJSON(response, 409, { error: { message: `The model gate ${gateName} has no waiting request.` } })
+      writeJSON(response, 409, {
+        error: { message: `The model gate ${gateName} has no waiting request.` },
+      })
       return
     }
     response.writeHead(204).end()
@@ -710,11 +804,22 @@ async function handleScenarioControl(
   validateScenarioID(id)
   if (request.method === 'PUT') {
     if (scenarios.has(id)) {
-      writeJSON(response, 409, { error: { message: `The model scenario ${id} already exists.` } })
+      writeJSON(response, 409, {
+        error: { message: `The model scenario ${id} already exists.` },
+      })
       return
     }
     const spec = parseScenarioSpec(await readJSONBody(request))
-    const state: ScenarioState = { spec, nextStep: 0, fallbackAnswers: 0, ruleMatches: new Map(), gates: new Map(), closed: false, requests: [], unexpectedRequests: [] }
+    const state: ScenarioState = {
+      spec,
+      nextStep: 0,
+      fallbackAnswers: 0,
+      ruleMatches: new Map(),
+      gates: new Map(),
+      closed: false,
+      requests: [],
+      unexpectedRequests: [],
+    }
     scenarios.set(id, state)
     writeJSON(response, 201, scenarioStatus(state))
     return
@@ -722,7 +827,9 @@ async function handleScenarioControl(
 
   const scenario = scenarios.get(id)
   if (!scenario) {
-    writeJSON(response, 404, { error: { message: `The model scenario ${id} does not exist.` } })
+    writeJSON(response, 404, {
+      error: { message: `The model scenario ${id} does not exist.` },
+    })
     return
   }
   if (request.method === 'GET') {
@@ -738,12 +845,16 @@ async function handleScenarioControl(
     const force = url.searchParams.get('force') === 'true'
     const allowUnconsumed = url.searchParams.get('allow-unconsumed') === 'true'
     if (force && allowUnconsumed) {
-      writeJSON(response, 400, { error: { message: 'Scenario deletion cannot combine force and allow-unconsumed.' } })
+      writeJSON(response, 400, {
+        error: { message: 'Scenario deletion cannot combine force and allow-unconsumed.' },
+      })
       return
     }
     const status = scenarioStatus(scenario)
     // Verify and remove in one synchronous branch so a later request cannot escape the policy check.
-    const verified = allowUnconsumed ? status.unexpectedRequests.length === 0 : status.complete
+    const verified = allowUnconsumed
+      ? status.unexpectedRequests.length === 0
+      : status.complete
     if (!force && !verified) {
       writeJSON(response, 409, status)
       return
@@ -754,7 +865,9 @@ async function handleScenarioControl(
     response.writeHead(204).end()
     return
   }
-  writeJSON(response, 405, { error: { message: `The HTTP method ${request.method ?? 'UNKNOWN'} is not allowed.` } })
+  writeJSON(response, 405, {
+    error: { message: `The HTTP method ${request.method ?? 'UNKNOWN'} is not allowed.` },
+  })
 }
 
 /**
@@ -773,11 +886,19 @@ function extendScenario(scenario: ScenarioState, addition: MockModelScenarioSpec
     names.add(rule.name)
   }
   scenario.spec = {
-    steps: [...scenario.spec.steps, ...addition.steps],
-    rules: [...addition.rules, ...scenario.spec.rules],
+    steps: [
+      ...scenario.spec.steps,
+      ...addition.steps,
+    ],
+    rules: [
+      ...addition.rules,
+      ...scenario.spec.rules,
+    ],
     // Replace the current fallback only when the addition supplies one.
     // Reuse that response after the ordered queue, up to the fallback limit.
-    ...(addition.fallback ?? scenario.spec.fallback ? { fallback: addition.fallback ?? scenario.spec.fallback } : {}),
+    ...(addition.fallback ?? scenario.spec.fallback
+      ? { fallback: addition.fallback ?? scenario.spec.fallback }
+      : {}),
   }
 }
 
@@ -848,23 +969,44 @@ async function writeModelResponse(response: ServerResponse, protocol: MockModelP
 }
 
 async function writeOpenAIChatCompletion(response: ServerResponse, requestBody: unknown, step: MockModelStep, id: string, stream: ModelStream): Promise<void> {
-  const stopReason = step.stopReason === undefined ? undefined : stopReasonToken('openai-chat-completions', step.stopReason)
+  const stopReason = step.stopReason === undefined
+    ? undefined
+    : stopReasonToken('openai-chat-completions', step.stopReason)
   const model = modelFrom(requestBody)
   const toolCalls = step.toolCalls?.length
     ? step.toolCalls.map((tool, index) => ({
         index,
         id: tool.id,
         ...(tool.input !== undefined
-          ? { type: 'custom', custom: { name: tool.name, input: tool.input } }
-          : { type: 'function', function: { name: tool.name, arguments: JSON.stringify(tool.arguments) } }),
+          ? {
+              type: 'custom',
+              custom: { name: tool.name, input: tool.input },
+            }
+          : {
+              type: 'function',
+              function: {
+                name: tool.name,
+                arguments: JSON.stringify(tool.arguments),
+              },
+            }),
       }))
     : undefined
   const message = {
     role: 'assistant',
-    ...(step.reasoning !== undefined ? { reasoning_content: step.reasoning } : {}),
-    ...(step.reasoning !== undefined ? copilotReasoningFields(model, step.reasoning, MOCK_MODELS.openai) : {}),
-    ...(step.text !== undefined ? { content: step.text } : { content: null }),
-    ...(toolCalls ? { tool_calls: toolCalls.map(({ index: _index, ...tool }) => tool) } : {}),
+    ...(step.reasoning !== undefined
+      ? { reasoning_content: step.reasoning }
+      : {}),
+    ...(step.reasoning !== undefined
+      ? copilotReasoningFields(model, step.reasoning, MOCK_MODELS.openai)
+      : {}),
+    ...(step.text !== undefined
+      ? { content: step.text }
+      : { content: null }),
+    ...(toolCalls
+      ? {
+          tool_calls: toolCalls.map(({ index: _index, ...tool }) => tool),
+        }
+      : {}),
   }
   if (!streamRequested(requestBody)) {
     if (step.stream && !await bufferModelOutput(stream, step))
@@ -874,7 +1016,9 @@ async function writeOpenAIChatCompletion(response: ServerResponse, requestBody: 
       object: 'chat.completion',
       created: 1,
       model,
-      choices: [{ index: 0, message, finish_reason: stopReason ?? (toolCalls ? 'tool_calls' : 'stop') }],
+      choices: [
+        { index: 0, message, finish_reason: stopReason ?? (toolCalls ? 'tool_calls' : 'stop') },
+      ],
       usage: usage('prompt_tokens', 'completion_tokens', step),
     }, step)
     return
@@ -888,12 +1032,27 @@ async function writeOpenAIChatCompletion(response: ServerResponse, requestBody: 
       object: 'chat.completion.chunk',
       created: 1,
       model,
-      choices: [{ index: 0, delta: { ...(!emitted ? { role: 'assistant' } : {}), ...delta }, finish_reason: null }],
+      choices: [
+        {
+          index: 0,
+          delta: {
+            ...(!emitted
+              ? { role: 'assistant' }
+              : {}),
+            ...delta,
+          },
+          finish_reason: null,
+        },
+      ],
     })
     emitted = true
   }
-  for await (const chunk of stream.chunks(step.reasoning))
-    emit({ reasoning_content: chunk, ...copilotReasoningFields(model, chunk, MOCK_MODELS.openai) })
+  for await (const chunk of stream.chunks(step.reasoning)) {
+    emit({
+      reasoning_content: chunk,
+      ...copilotReasoningFields(model, chunk, MOCK_MODELS.openai),
+    })
+  }
   for await (const chunk of stream.chunks(step.text))
     emit({ content: chunk })
   if (!stream.active)
@@ -909,7 +1068,9 @@ async function writeOpenAIChatCompletion(response: ServerResponse, requestBody: 
     object: 'chat.completion.chunk',
     created: 1,
     model,
-    choices: [{ index: 0, delta: {}, finish_reason: stopReason ?? (toolCalls ? 'tool_calls' : 'stop') }],
+    choices: [
+      { index: 0, delta: {}, finish_reason: stopReason ?? (toolCalls ? 'tool_calls' : 'stop') },
+    ],
   })
   writeSSEData(response, {
     id,
@@ -930,14 +1091,28 @@ async function writeOpenAIChatCompletion(response: ServerResponse, requestBody: 
  * Otherwise, it runs before the JSON body. A caller that already applied the hold omits this argument.
  */
 async function writeOpenAIResponse(response: ServerResponse, requestBody: unknown, step: MockModelStep, id: string, stream: ModelStream, hold?: () => Promise<boolean>): Promise<void> {
-  const stopReason = step.stopReason === undefined ? undefined : stopReasonToken('openai-responses', step.stopReason)
+  const stopReason = step.stopReason === undefined
+    ? undefined
+    : stopReasonToken('openai-responses', step.stopReason)
   const output = responseItems(step, id)
   const model = modelFrom(requestBody)
-  const responseBase = { id, object: 'response', created_at: 1, model, tools: [] }
+  const responseBase = {
+    id,
+    object: 'response',
+    created_at: 1,
+    model,
+    tools: [],
+  }
   const completed = {
     ...responseBase,
-    status: stopReason === undefined ? 'completed' : 'incomplete',
-    ...(stopReason === undefined ? {} : { incomplete_details: { reason: stopReason } }),
+    status: stopReason === undefined
+      ? 'completed'
+      : 'incomplete',
+    ...(stopReason === undefined
+      ? {}
+      : {
+          incomplete_details: { reason: stopReason },
+        }),
     output,
     usage: responseUsage(step),
   }
@@ -955,7 +1130,10 @@ async function writeOpenAIResponse(response: ServerResponse, requestBody: unknow
   const emit = (event: { type: string } & Record<string, unknown>) => {
     writeSSEEvent(response, { ...event, sequence_number: sequenceNumber++ })
   }
-  emit({ type: 'response.created', response: { ...responseBase, status: 'in_progress', output: [] } })
+  emit({
+    type: 'response.created',
+    response: { ...responseBase, status: 'in_progress', output: [] },
+  })
   for (const entry of step.responseMetadata ?? [])
     emit({ type: 'response.metadata', metadata: entry })
   if (hold && !await hold())
@@ -964,23 +1142,59 @@ async function writeOpenAIResponse(response: ServerResponse, requestBody: unknow
     const startItem = item.type === 'message'
       ? { ...item, status: 'in_progress', content: [] }
       : item.type === 'reasoning'
-        ? { ...item, status: 'in_progress', summary: [], content: [] }
+        ? {
+            ...item,
+            status: 'in_progress',
+            summary: [],
+            content: [],
+          }
         : item.type === 'function_call'
           ? { ...item, status: 'in_progress', arguments: '' }
           : { ...item, status: 'in_progress' }
     emit({ type: 'response.output_item.added', output_index: outputIndex, item: startItem })
 
     if (item.type === 'reasoning') {
-      emit({ type: 'response.reasoning_summary_part.added', output_index: outputIndex, item_id: item.id, summary_index: 0, part: { type: 'summary_text', text: '' } })
-      for await (const chunk of stream.chunks(step.reasoning))
-        emit({ type: 'response.reasoning_summary_text.delta', output_index: outputIndex, item_id: item.id, summary_index: 0, delta: chunk })
+      emit({
+        type: 'response.reasoning_summary_part.added',
+        output_index: outputIndex,
+        item_id: item.id,
+        summary_index: 0,
+        part: { type: 'summary_text', text: '' },
+      })
+      for await (const chunk of stream.chunks(step.reasoning)) {
+        emit({
+          type: 'response.reasoning_summary_text.delta',
+          output_index: outputIndex,
+          item_id: item.id,
+          summary_index: 0,
+          delta: chunk,
+        })
+      }
       if (!stream.active)
         return
-      emit({ type: 'response.reasoning_summary_text.done', output_index: outputIndex, item_id: item.id, summary_index: 0, text: step.reasoning })
-      emit({ type: 'response.reasoning_summary_part.done', output_index: outputIndex, item_id: item.id, summary_index: 0, part: { type: 'summary_text', text: step.reasoning } })
+      emit({
+        type: 'response.reasoning_summary_text.done',
+        output_index: outputIndex,
+        item_id: item.id,
+        summary_index: 0,
+        text: step.reasoning,
+      })
+      emit({
+        type: 'response.reasoning_summary_part.done',
+        output_index: outputIndex,
+        item_id: item.id,
+        summary_index: 0,
+        part: { type: 'summary_text', text: step.reasoning },
+      })
     }
     if (item.type === 'message') {
-      emit({ type: 'response.content_part.added', output_index: outputIndex, item_id: item.id, content_index: 0, part: { type: 'output_text', text: '', annotations: [] } })
+      emit({
+        type: 'response.content_part.added',
+        output_index: outputIndex,
+        item_id: item.id,
+        content_index: 0,
+        part: { type: 'output_text', text: '', annotations: [] },
+      })
       for await (const chunk of stream.chunks(step.text)) {
         emit({
           type: 'response.output_text.delta',
@@ -999,15 +1213,38 @@ async function writeOpenAIResponse(response: ServerResponse, requestBody: unknow
         content_index: 0,
         text: step.text ?? '',
       })
-      emit({ type: 'response.content_part.done', output_index: outputIndex, item_id: item.id, content_index: 0, part: { type: 'output_text', text: step.text ?? '', annotations: [] } })
+      emit({
+        type: 'response.content_part.done',
+        output_index: outputIndex,
+        item_id: item.id,
+        content_index: 0,
+        part: { type: 'output_text', text: step.text ?? '', annotations: [] },
+      })
     }
     if (item.type === 'function_call') {
-      emit({ type: 'response.function_call_arguments.delta', output_index: outputIndex, item_id: item.id, call_id: item.call_id, delta: item.arguments })
-      emit({ type: 'response.function_call_arguments.done', output_index: outputIndex, item_id: item.id, call_id: item.call_id, arguments: item.arguments })
+      emit({
+        type: 'response.function_call_arguments.delta',
+        output_index: outputIndex,
+        item_id: item.id,
+        call_id: item.call_id,
+        delta: item.arguments,
+      })
+      emit({
+        type: 'response.function_call_arguments.done',
+        output_index: outputIndex,
+        item_id: item.id,
+        call_id: item.call_id,
+        arguments: item.arguments,
+      })
     }
     emit({ type: 'response.output_item.done', output_index: outputIndex, item })
   }
-  emit({ type: stopReason === undefined ? 'response.completed' : 'response.incomplete', response: completed })
+  emit({
+    type: stopReason === undefined
+      ? 'response.completed'
+      : 'response.incomplete',
+    response: completed,
+  })
   response.end()
 }
 
@@ -1019,8 +1256,12 @@ function responseItems(step: MockModelStep, responseID: string): Record<string, 
     items.push({
       type: 'reasoning',
       id: `${responseID}-reasoning`,
-      summary: [{ type: 'summary_text', text: step.reasoning }],
-      content: [{ type: 'reasoning_text', text: step.reasoning }],
+      summary: [
+        { type: 'summary_text', text: step.reasoning },
+      ],
+      content: [
+        { type: 'reasoning_text', text: step.reasoning },
+      ],
       encrypted_content: null,
     })
   }
@@ -1030,7 +1271,9 @@ function responseItems(step: MockModelStep, responseID: string): Record<string, 
       role: 'assistant',
       id: `${responseID}-message`,
       status: 'completed',
-      content: [{ type: 'output_text', text: step.text, annotations: [] }],
+      content: [
+        { type: 'output_text', text: step.text, annotations: [] },
+      ],
     })
   }
   for (const tool of step.toolCalls ?? []) {
@@ -1043,7 +1286,9 @@ function responseItems(step: MockModelStep, responseID: string): Record<string, 
           call_id: tool.id,
           // Write namespace beside the tool name. Codex reads item.namespace.
           // A missing namespace makes a namespaced call fail with "unsupported call: <name>".
-          ...(tool.namespace === undefined ? {} : { namespace: tool.namespace }),
+          ...(tool.namespace === undefined
+            ? {}
+            : { namespace: tool.namespace }),
           name: tool.name,
           arguments: JSON.stringify(tool.arguments),
           status: 'completed',
@@ -1075,7 +1320,12 @@ async function writeAnthropicMessage(response: ServerResponse, requestBody: unkn
       throw new Error(`Anthropic Messages cannot send raw input for tool ${tool.name}.`)
     if (tool.namespace !== undefined)
       throw new Error(`Anthropic Messages cannot send a tool namespace for ${tool.name}.`)
-    content.push({ type: 'tool_use', id: tool.id, name: tool.name, input: tool.arguments })
+    content.push({
+      type: 'tool_use',
+      id: tool.id,
+      name: tool.name,
+      input: tool.arguments,
+    })
   }
   const stopReason = step.stopReason === undefined
     ? (step.toolCalls?.length ? 'tool_use' : 'end_turn')
@@ -1114,20 +1364,41 @@ async function writeAnthropicMessage(response: ServerResponse, requestBody: unkn
   })
   let index = 0
   if (step.reasoning !== undefined) {
-    writeSSEEvent(response, { type: 'content_block_start', index, content_block: { type: 'thinking', thinking: '' } })
-    for await (const chunk of stream.chunks(step.reasoning))
-      writeSSEEvent(response, { type: 'content_block_delta', index, delta: { type: 'thinking_delta', thinking: chunk } })
+    writeSSEEvent(response, {
+      type: 'content_block_start',
+      index,
+      content_block: { type: 'thinking', thinking: '' },
+    })
+    for await (const chunk of stream.chunks(step.reasoning)) {
+      writeSSEEvent(response, {
+        type: 'content_block_delta',
+        index,
+        delta: { type: 'thinking_delta', thinking: chunk },
+      })
+    }
     if (!stream.active)
       return
-    writeSSEEvent(response, { type: 'content_block_delta', index, delta: { type: 'signature_delta', signature: 'leapmux-e2e-signature' } })
+    writeSSEEvent(response, {
+      type: 'content_block_delta',
+      index,
+      delta: { type: 'signature_delta', signature: 'leapmux-e2e-signature' },
+    })
     writeSSEEvent(response, { type: 'content_block_stop', index })
     index++
   }
   const chunks = textChunks(step)
   if (chunks.length > 0) {
-    writeSSEEvent(response, { type: 'content_block_start', index, content_block: { type: 'text', text: '' } })
+    writeSSEEvent(response, {
+      type: 'content_block_start',
+      index,
+      content_block: { type: 'text', text: '' },
+    })
     for await (const chunk of stream.chunks(step.text)) {
-      writeSSEEvent(response, { type: 'content_block_delta', index, delta: { type: 'text_delta', text: chunk } })
+      writeSSEEvent(response, {
+        type: 'content_block_delta',
+        index,
+        delta: { type: 'text_delta', text: chunk },
+      })
     }
     if (!stream.active)
       return
@@ -1135,12 +1406,32 @@ async function writeAnthropicMessage(response: ServerResponse, requestBody: unkn
     index++
   }
   for (const tool of step.toolCalls ?? []) {
-    writeSSEEvent(response, { type: 'content_block_start', index, content_block: { type: 'tool_use', id: tool.id, name: tool.name, input: {} } })
-    writeSSEEvent(response, { type: 'content_block_delta', index, delta: { type: 'input_json_delta', partial_json: JSON.stringify(tool.arguments) } })
+    writeSSEEvent(response, {
+      type: 'content_block_start',
+      index,
+      content_block: {
+        type: 'tool_use',
+        id: tool.id,
+        name: tool.name,
+        input: {},
+      },
+    })
+    writeSSEEvent(response, {
+      type: 'content_block_delta',
+      index,
+      delta: {
+        type: 'input_json_delta',
+        partial_json: JSON.stringify(tool.arguments),
+      },
+    })
     writeSSEEvent(response, { type: 'content_block_stop', index })
     index++
   }
-  writeSSEEvent(response, { type: 'message_delta', delta: { stop_reason: stopReason, stop_sequence: null }, usage: { output_tokens: outputTokens } })
+  writeSSEEvent(response, {
+    type: 'message_delta',
+    delta: { stop_reason: stopReason, stop_sequence: null },
+    usage: { output_tokens: outputTokens },
+  })
   writeSSEEvent(response, { type: 'message_stop' })
   response.end()
 }
@@ -1156,10 +1447,15 @@ function writeModelError(response: ServerResponse, protocol: MockModelProtocol, 
   }
   const delivered = genericModelError(error)
   if (protocol === 'anthropic-messages') {
-    writeJSON(response, error.status, { type: 'error', error: { type: delivered.code, message: delivered.message } })
+    writeJSON(response, error.status, {
+      type: 'error',
+      error: { type: delivered.code, message: delivered.message },
+    })
     return
   }
-  writeJSON(response, error.status, { error: { type: delivered.code, code: error.code, message: delivered.message } })
+  writeJSON(response, error.status, {
+    error: { type: delivered.code, code: error.code, message: delivered.message },
+  })
 }
 
 /**
@@ -1175,24 +1471,81 @@ function writeMidStreamModelError(response: ServerResponse, protocol: MockModelP
   writeSSEHeaders(response)
   const id = 'mock-mid-stream-error'
   if (protocol === 'openai-responses') {
-    const nativeResponse = { id, object: 'response', created_at: 1, model: modelFrom(requestBody), status: 'in_progress', output: [] }
-    const item = { id: `${id}-message`, type: 'message', role: 'assistant', status: 'in_progress', content: [] }
+    const nativeResponse = {
+      id,
+      object: 'response',
+      created_at: 1,
+      model: modelFrom(requestBody),
+      status: 'in_progress',
+      output: [],
+    }
+    const item = {
+      id: `${id}-message`,
+      type: 'message',
+      role: 'assistant',
+      status: 'in_progress',
+      content: [],
+    }
     const position = { output_index: 0, item_id: item.id, content_index: 0 }
     writeSSEEvent(response, { type: 'response.created', sequence_number: 0, response: nativeResponse })
-    writeSSEEvent(response, { type: 'response.output_item.added', sequence_number: 1, output_index: 0, item })
-    writeSSEEvent(response, { type: 'response.content_part.added', sequence_number: 2, ...position, part: { type: 'output_text', text: '', annotations: [] } })
-    writeSSEEvent(response, { type: 'response.output_text.delta', sequence_number: 3, ...position, delta: 'partial ' })
-    if (error.midStream !== 'truncate')
-      writeSSEEvent(response, { type: 'response.failed', sequence_number: 4, response: { ...nativeResponse, status: 'failed', error: delivered } })
+    writeSSEEvent(response, {
+      type: 'response.output_item.added',
+      sequence_number: 1,
+      output_index: 0,
+      item,
+    })
+    writeSSEEvent(response, {
+      type: 'response.content_part.added',
+      sequence_number: 2,
+      ...position,
+      part: { type: 'output_text', text: '', annotations: [] },
+    })
+    writeSSEEvent(response, {
+      type: 'response.output_text.delta',
+      sequence_number: 3,
+      ...position,
+      delta: 'partial ',
+    })
+    if (error.midStream !== 'truncate') {
+      writeSSEEvent(response, {
+        type: 'response.failed',
+        sequence_number: 4,
+        response: { ...nativeResponse, status: 'failed', error: delivered },
+      })
+    }
     response.end()
     return
   }
   if (protocol === 'anthropic-messages') {
-    writeSSEEvent(response, { type: 'message_start', message: { id, type: 'message', role: 'assistant', model: modelFrom(requestBody), content: [], stop_reason: null, stop_sequence: null, usage: { input_tokens: 1, output_tokens: 0 } } })
-    writeSSEEvent(response, { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } })
-    writeSSEEvent(response, { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'partial ' } })
-    if (error.midStream !== 'truncate')
-      writeSSEEvent(response, { type: 'error', error: { type: delivered.code, message: delivered.message } })
+    writeSSEEvent(response, {
+      type: 'message_start',
+      message: {
+        id,
+        type: 'message',
+        role: 'assistant',
+        model: modelFrom(requestBody),
+        content: [],
+        stop_reason: null,
+        stop_sequence: null,
+        usage: { input_tokens: 1, output_tokens: 0 },
+      },
+    })
+    writeSSEEvent(response, {
+      type: 'content_block_start',
+      index: 0,
+      content_block: { type: 'text', text: '' },
+    })
+    writeSSEEvent(response, {
+      type: 'content_block_delta',
+      index: 0,
+      delta: { type: 'text_delta', text: 'partial ' },
+    })
+    if (error.midStream !== 'truncate') {
+      writeSSEEvent(response, {
+        type: 'error',
+        error: { type: delivered.code, message: delivered.message },
+      })
+    }
     response.end()
     return
   }
@@ -1201,15 +1554,26 @@ function writeMidStreamModelError(response: ServerResponse, protocol: MockModelP
     object: 'chat.completion.chunk',
     created: 1,
     model: modelFrom(requestBody),
-    choices: [{ index: 0, delta: { role: 'assistant', content: 'partial ' }, finish_reason: null }],
+    choices: [
+      {
+        index: 0,
+        delta: { role: 'assistant', content: 'partial ' },
+        finish_reason: null,
+      },
+    ],
   })
-  if (error.midStream !== 'truncate')
-    writeSSEData(response, { error: { message: delivered.message, code: delivered.code } })
+  if (error.midStream !== 'truncate') {
+    writeSSEData(response, {
+      error: { message: delivered.message, code: delivered.code },
+    })
+  }
   response.end()
 }
 
 function modelFrom(body: unknown): string {
-  return isObject(body) && typeof body.model === 'string' ? body.model : 'mock-model'
+  return isObject(body) && typeof body.model === 'string'
+    ? body.model
+    : 'mock-model'
 }
 
 /**

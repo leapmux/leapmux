@@ -24,9 +24,18 @@ const PLAN_WINDOW_TYPES = ['five_hour', 'seven_day', 'one_month'] as const
 function planWindows(fiveHour: number, weekly: number, monthly: number): KimiPlanWindows {
   const now = Date.now()
   return {
-    limit_5h: { used_ratio: fiveHour, reset_time: new Date(now + 3 * 3_600_000).toISOString() },
-    limit_7d: { used_ratio: weekly, reset_time: new Date(now + 5 * 86_400_000).toISOString() },
-    limit_month_total: { used_ratio: monthly, reset_time: new Date(now + 20 * 86_400_000).toISOString() },
+    limit_5h: {
+      used_ratio: fiveHour,
+      reset_time: new Date(now + 3 * 3_600_000).toISOString(),
+    },
+    limit_7d: {
+      used_ratio: weekly,
+      reset_time: new Date(now + 5 * 86_400_000).toISOString(),
+    },
+    limit_month_total: {
+      used_ratio: monthly,
+      reset_time: new Date(now + 20 * 86_400_000).toISOString(),
+    },
     limit_month_code: { used_ratio: monthly / 2 },
   }
 }
@@ -36,7 +45,11 @@ function controlURL(scenarioId: string): URL {
 }
 
 async function configureUsage(scenarioId: string, profile: MockQuotaHTTPResponse): Promise<void> {
-  const response = await fetch(controlURL(scenarioId), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(profile) })
+  const response = await fetch(controlURL(scenarioId), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(profile),
+  })
   expect(response.status, await response.text()).toBe(200)
 }
 

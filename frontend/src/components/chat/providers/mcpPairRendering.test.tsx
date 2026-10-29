@@ -14,32 +14,101 @@ import './testMocks'
 
 function mcpMessages(provider: AgentProvider) {
   const args = { query: 'rendering' }
-  const content = [{ type: 'text', text: '**Result:** Tool rendering.' }]
+  const content = [
+    { type: 'text', text: '**Result:** Tool rendering.' },
+  ]
   // The literal above holds one block, so the indexed read never misses at runtime.
   const firstText = content[0]?.text ?? ''
   if (provider === AgentProvider.CLAUDE_CODE) {
     return {
       spanType: 'mcp__Docs__lookup',
-      request: { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'call', name: 'mcp__Docs__lookup', input: args }] } },
-      result: { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'call', content }] } },
+      request: {
+        type: 'assistant',
+        message: {
+          content: [
+            {
+              type: 'tool_use',
+              id: 'call',
+              name: 'mcp__Docs__lookup',
+              input: args,
+            },
+          ],
+        },
+      },
+      result: {
+        type: 'user',
+        message: {
+          content: [
+            { type: 'tool_result', tool_use_id: 'call', content },
+          ],
+        },
+      },
     }
   }
   if (provider === AgentProvider.CODEX) {
-    const item = { id: 'call', type: 'mcpToolCall', server: 'Docs', tool: 'lookup', arguments: args }
-    return { spanType: 'mcpToolCall', request: { item: { ...item, status: 'inProgress' } }, result: { item: { ...item, status: 'completed', result: { content } } } }
+    const item = {
+      id: 'call',
+      type: 'mcpToolCall',
+      server: 'Docs',
+      tool: 'lookup',
+      arguments: args,
+    }
+    return {
+      spanType: 'mcpToolCall',
+      request: {
+        item: { ...item, status: 'inProgress' },
+      },
+      result: {
+        item: {
+          ...item,
+          status: 'completed',
+          result: { content },
+        },
+      },
+    }
   }
   if (provider === AgentProvider.PI) {
     return {
       spanType: 'lookup',
-      request: { type: 'tool_execution_start', toolCallId: 'call', toolName: 'lookup', args },
-      result: { type: 'tool_execution_end', toolCallId: 'call', toolName: 'lookup', result: { content }, isError: false },
+      request: {
+        type: 'tool_execution_start',
+        toolCallId: 'call',
+        toolName: 'lookup',
+        args,
+      },
+      result: {
+        type: 'tool_execution_end',
+        toolCallId: 'call',
+        toolName: 'lookup',
+        result: { content },
+        isError: false,
+      },
     }
   }
   if (provider === AgentProvider.ZCODE) {
     return {
       spanType: 'mcp__Docs__lookup',
-      request: { type: 'tool.updated', payload: { kind: 'scheduled', toolCallId: 'call', toolName: 'mcp__Docs__lookup', input: args } },
-      result: { type: 'tool.updated', payload: { kind: 'result', toolCallId: 'call', result: { success: true, content: firstText, display: { kind: 'mcp_tool', serverName: 'Docs', toolName: 'lookup' } } } },
+      request: {
+        type: 'tool.updated',
+        payload: {
+          kind: 'scheduled',
+          toolCallId: 'call',
+          toolName: 'mcp__Docs__lookup',
+          input: args,
+        },
+      },
+      result: {
+        type: 'tool.updated',
+        payload: {
+          kind: 'result',
+          toolCallId: 'call',
+          result: {
+            success: true,
+            content: firstText,
+            display: { kind: 'mcp_tool', serverName: 'Docs', toolName: 'lookup' },
+          },
+        },
+      },
     }
   }
   if (provider === AgentProvider.MIMO_CODE) {
@@ -55,7 +124,9 @@ function mcpMessages(provider: AgentProvider) {
     return {
       spanType: 'Docs__lookup',
       request: copilotToolStart('call', 'Docs__lookup', args),
-      result: copilotToolComplete('call', { result: { content: firstText, contents: content } }),
+      result: copilotToolComplete('call', {
+        result: { content: firstText, contents: content },
+      }),
     }
   }
   return {
@@ -65,15 +136,42 @@ function mcpMessages(provider: AgentProvider) {
       toolCallId: 'call',
       kind: 'other',
       status: 'pending',
-      title: provider === AgentProvider.REASONIX ? 'mcp__Docs__lookup' : provider === AgentProvider.KIRO ? '@Docs/lookup' : 'lookup',
+      title: provider === AgentProvider.REASONIX
+        ? 'mcp__Docs__lookup'
+        : provider === AgentProvider.KIRO
+          ? '@Docs/lookup'
+          : 'lookup',
       rawInput: args,
-      ...(provider === AgentProvider.GOOSE ? { _meta: { goose: { toolCall: { toolName: 'Docs__lookup', extensionName: 'Docs' } } } } : {}),
+      ...(provider === AgentProvider.GOOSE
+        ? {
+            _meta: {
+              goose: {
+                toolCall: { toolName: 'Docs__lookup', extensionName: 'Docs' },
+              },
+            },
+          }
+        : {}),
       // Grok states an MCP tool as `server__tool` in its identity, and Qwen as
       // `mcp__server__tool` in its own `_meta`.
-      ...(provider === AgentProvider.GROK_BUILD ? { _meta: { 'x.ai/tool': { version: 1, name: 'Docs__lookup', namespace: 'mcp' } } } : {}),
-      ...(provider === AgentProvider.QWEN_CODE ? { _meta: { toolName: 'mcp__Docs__lookup' } } : {}),
+      ...(provider === AgentProvider.GROK_BUILD
+        ? {
+            _meta: {
+              'x.ai/tool': { version: 1, name: 'Docs__lookup', namespace: 'mcp' },
+            },
+          }
+        : {}),
+      ...(provider === AgentProvider.QWEN_CODE
+        ? {
+            _meta: { toolName: 'mcp__Docs__lookup' },
+          }
+        : {}),
     },
-    result: { sessionUpdate: 'tool_call_update', toolCallId: 'call', status: 'completed', content: content.map(content => ({ type: 'content', content })) },
+    result: {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'call',
+      status: 'completed',
+      content: content.map(content => ({ type: 'content', content })),
+    },
   }
 }
 
@@ -104,8 +202,16 @@ describe.each([
       visibleRows: () => ({ request: true, result: true }),
     })
     const { container } = render(() => [
-      renderMessageContent(request, { premeasureMode: true, spanType, sources: sources(request, 'request') }, plugin?.transcript.classify(input(request)), provider),
-      renderMessageContent(result, { premeasureMode: true, spanType, sources: sources(result, 'result') }, plugin?.transcript.classify(input(result)), provider),
+      renderMessageContent(request, {
+        premeasureMode: true,
+        spanType,
+        sources: sources(request, 'request'),
+      }, plugin?.transcript.classify(input(request)), provider),
+      renderMessageContent(result, {
+        premeasureMode: true,
+        spanType,
+        sources: sources(result, 'result'),
+      }, plugin?.transcript.classify(input(result)), provider),
     ])
     expect(container.querySelectorAll(`.${toolUseHeader}`)).toHaveLength(1)
     expect(container.textContent?.match(/Arguments/g)).toHaveLength(1)
@@ -125,12 +231,18 @@ it('identifies Codex request and result roles before either counterpart loads', 
 
 it('does not use arguments from a different Pi tool call', () => {
   const { request, result, spanType } = mcpMessages(AgentProvider.PI)
-  const other = { ...request, toolCallId: 'other-call', args: { query: 'foreign argument' } }
+  const other = {
+    ...request,
+    toolCallId: 'other-call',
+    args: { query: 'foreign argument' },
+  }
   const plugin = providerFor(AgentProvider.PI)!
   const { container } = render(() => renderMessageContent(result, {
     premeasureMode: true,
     spanType,
-    sources: testMessageSources({ request: () => input(other) }),
+    sources: testMessageSources({
+      request: () => input(other),
+    }),
   }, plugin?.transcript.classify(input(result)), AgentProvider.PI))
   expect(container.textContent).not.toContain('foreign argument')
   expect(container.querySelector(`.${toolUseHeader}`)?.textContent).toContain('lookup')
@@ -138,12 +250,26 @@ it('does not use arguments from a different Pi tool call', () => {
 
 it('does not use a Claude request from another call', () => {
   const { result, spanType } = mcpMessages(AgentProvider.CLAUDE_CODE)
-  const other = { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'other-call', name: spanType, input: { query: 'foreign argument' } }] } }
+  const other = {
+    type: 'assistant',
+    message: {
+      content: [
+        {
+          type: 'tool_use',
+          id: 'other-call',
+          name: spanType,
+          input: { query: 'foreign argument' },
+        },
+      ],
+    },
+  }
   const plugin = providerFor(AgentProvider.CLAUDE_CODE)!
   const { container } = render(() => renderMessageContent(result, {
     premeasureMode: true,
     spanType,
-    sources: testMessageSources({ request: () => input(other) }),
+    sources: testMessageSources({
+      request: () => input(other),
+    }),
   }, plugin?.transcript.classify(input(result)), AgentProvider.CLAUDE_CODE))
   expect(container.textContent).not.toContain('foreign argument')
   expect(container.querySelector(`.${toolUseHeader}`)?.textContent).toContain('lookup')
@@ -152,25 +278,72 @@ it('does not use a Claude request from another call', () => {
 it.each([AgentProvider.PI, AgentProvider.ZCODE])('does not repeat a synthetic failure message (%s)', (provider) => {
   const { request, spanType } = mcpMessages(provider)
   const result = provider === AgentProvider.PI
-    ? { type: 'tool_execution_end', toolCallId: 'call', toolName: 'lookup', isError: true, result: { content: [{ type: 'text', text: 'Access denied' }] } }
-    : { type: 'tool.updated', payload: { kind: 'result', toolCallId: 'call', result: { success: false, content: 'Access denied', display: { kind: 'mcp_tool', serverName: 'Docs', toolName: 'lookup' } } } }
+    ? {
+        type: 'tool_execution_end',
+        toolCallId: 'call',
+        toolName: 'lookup',
+        isError: true,
+        result: {
+          content: [
+            { type: 'text', text: 'Access denied' },
+          ],
+        },
+      }
+    : {
+        type: 'tool.updated',
+        payload: {
+          kind: 'result',
+          toolCallId: 'call',
+          result: {
+            success: false,
+            content: 'Access denied',
+            display: { kind: 'mcp_tool', serverName: 'Docs', toolName: 'lookup' },
+          },
+        },
+      }
   const plugin = providerFor(provider)!
-  const { container } = render(() => renderMessageContent(result, { premeasureMode: true, spanType, sources: testMessageSources({ request: () => input(request) }) }, plugin?.transcript.classify(input(result)), provider))
+  const { container } = render(() => renderMessageContent(result, {
+    premeasureMode: true,
+    spanType,
+    sources: testMessageSources({
+      request: () => input(request),
+    }),
+  }, plugin?.transcript.classify(input(result)), provider))
   expect(container.textContent).toContain(toolOutcomeLabel('failed'))
   expect(container.textContent).toContain('Access denied')
   expect(container.textContent).not.toContain('Tool call failed')
 })
 
 describe('retained MCP completion', () => {
-  it.each([AgentProvider.CODEX, AgentProvider.OPENCODE, AgentProvider.KILO, AgentProvider.GOOSE, AgentProvider.REASONIX, AgentProvider.CURSOR, AgentProvider.GITHUB_COPILOT, AgentProvider.PI, AgentProvider.ZCODE, AgentProvider.GROK_BUILD, AgentProvider.KIRO, AgentProvider.QWEN_CODE, AgentProvider.MIMO_CODE])('renders one interruption header for provider %s', (provider) => {
+  it.each([
+    AgentProvider.CODEX,
+    AgentProvider.OPENCODE,
+    AgentProvider.KILO,
+    AgentProvider.GOOSE,
+    AgentProvider.REASONIX,
+    AgentProvider.CURSOR,
+    AgentProvider.GITHUB_COPILOT,
+    AgentProvider.PI,
+    AgentProvider.ZCODE,
+    AgentProvider.GROK_BUILD,
+    AgentProvider.KIRO,
+    AgentProvider.QWEN_CODE,
+    AgentProvider.MIMO_CODE,
+  ])('renders one interruption header for provider %s', (provider) => {
     const { request, result, spanType } = mcpMessages(provider)
     const original = JSON.stringify(result)
-    const parsed = { ...input(result, null, provider), completion: MessageCompletion.INTERRUPTED }
+    const parsed = {
+      ...input(result, null, provider),
+      completion: MessageCompletion.INTERRUPTED,
+    }
     const plugin = providerFor(provider)!
     const { container } = render(() => renderMessageContent(result, {
       premeasureMode: true,
       spanType,
-      sources: testMessageSources({ current: () => parsed, request: () => input(request) }),
+      sources: testMessageSources({
+        current: () => parsed,
+        request: () => input(request),
+      }),
     }, plugin?.transcript.classify(parsed), provider, MessageCompletion.INTERRUPTED))
     expect(container.textContent?.match(/Interrupted/g)).toHaveLength(1)
     expect(container.textContent).not.toContain('Text truncated')

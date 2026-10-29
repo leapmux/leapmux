@@ -313,7 +313,10 @@ export function GuardedPointerSensor() {
   }
 
   onMount(() => {
-    addSensor({ id: SENSOR_ID, activators: { pointerdown: attach } })
+    addSensor({
+      id: SENSOR_ID,
+      activators: { pointerdown: attach },
+    })
   })
 
   onCleanup(() => {

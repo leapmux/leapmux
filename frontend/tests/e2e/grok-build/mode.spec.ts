@@ -44,7 +44,11 @@ grokTest.describe('Grok Build settings, folder trust and MCP forms', () => {
 
     const written = join(workingDir, 'plan-denied-proof.txt')
     const planStep = await modelScript.queue(
-      { toolCalls: [writeToolCall(AgentProvider.GROK_BUILD, 'plan-write-proof', { path: written, content: 'GROK_PLAN_WRITE_42\n' })] },
+      {
+        toolCalls: [
+          writeToolCall(AgentProvider.GROK_BUILD, 'plan-write-proof', { path: written, content: 'GROK_PLAN_WRITE_42\n' }),
+        ],
+      },
       { text: 'The Plan turn ended.' },
     )
     await sendMessage(page, modelScript.prompt('Try the scripted file write in Plan mode.'))
@@ -58,7 +62,11 @@ grokTest.describe('Grok Build settings, folder trust and MCP forms', () => {
     await expectSettingsChip(page, 'Plan')
     await expectSettingsOptionChosen(page, 'reasoning_effort-high')
     const restoredPlanStep = await modelScript.queue(
-      { toolCalls: [writeToolCall(AgentProvider.GROK_BUILD, 'restored-plan-write-proof', { path: written, content: 'GROK_RESTORED_PLAN_WRITE_42\n' })] },
+      {
+        toolCalls: [
+          writeToolCall(AgentProvider.GROK_BUILD, 'restored-plan-write-proof', { path: written, content: 'GROK_RESTORED_PLAN_WRITE_42\n' }),
+        ],
+      },
       { text: 'The restored Plan restriction held.' },
     )
     await sendMessage(page, modelScript.prompt('Try the scripted file write after restoring Plan mode.'))
@@ -79,7 +87,11 @@ grokTest.describe('Grok Build settings, folder trust and MCP forms', () => {
 
     const autoProof = join(workingDir, 'grok-auto-proof.txt')
     const touchStep = await modelScript.queue(
-      { toolCalls: [bashToolCall(AgentProvider.GROK_BUILD, 'smart-touch', 'touch grok-auto-proof.txt')] },
+      {
+        toolCalls: [
+          bashToolCall(AgentProvider.GROK_BUILD, 'smart-touch', 'touch grok-auto-proof.txt'),
+        ],
+      },
       { text: 'The Smart command ended.' },
     )
     await sendMessage(page, modelScript.prompt('Try the scripted command under Smart permissions.'))
@@ -91,12 +103,18 @@ grokTest.describe('Grok Build settings, folder trust and MCP forms', () => {
     await modelScript.rule({
       name: 'grok-smart-removal',
       when: { system: '^You review a command that a coding agent wants to run' },
-      respond: { text: JSON.stringify({ thinking: 'The command removes a file.', shouldBlock: true, reason: 'Ask the user before removal.' }) },
+      respond: {
+        text: JSON.stringify({ thinking: 'The command removes a file.', shouldBlock: true, reason: 'Ask the user before removal.' }),
+      },
       once: true,
     })
     const removeProof = 'rm -rf grok-auto-proof.txt'
     const smartStep = await modelScript.queue(
-      { toolCalls: [bashToolCall(AgentProvider.GROK_BUILD, 'smart-remove', removeProof)] },
+      {
+        toolCalls: [
+          bashToolCall(AgentProvider.GROK_BUILD, 'smart-remove', removeProof),
+        ],
+      },
       { text: 'The Smart removal was blocked.' },
     )
     await sendMessage(page, modelScript.prompt('Try the scripted removal under Smart permissions.'))
@@ -113,7 +131,11 @@ grokTest.describe('Grok Build settings, folder trust and MCP forms', () => {
     await expectSettingsOptionChosen(page, 'approvalMode-always-approve')
 
     const bypassStep = await modelScript.queue(
-      { toolCalls: [bashToolCall(AgentProvider.GROK_BUILD, 'bypass-remove', removeProof)] },
+      {
+        toolCalls: [
+          bashToolCall(AgentProvider.GROK_BUILD, 'bypass-remove', removeProof),
+        ],
+      },
       { text: 'The Bypass removal ended.' },
     )
     await sendMessage(page, modelScript.prompt('Run the scripted removal under Bypass permissions.'))
@@ -130,7 +152,11 @@ grokTest.describe('Grok Build settings, folder trust and MCP forms', () => {
     await expectSettingsOptionChosen(page, 'approvalMode-always-approve')
 
     const restoredStep = await modelScript.queue(
-      { toolCalls: [bashToolCall(AgentProvider.GROK_BUILD, 'restored-calculated-write', 'echo "GROK_RESTORED_$((40 + 2))" > grok-restored-proof.txt; cat grok-restored-proof.txt')] },
+      {
+        toolCalls: [
+          bashToolCall(AgentProvider.GROK_BUILD, 'restored-calculated-write', 'echo "GROK_RESTORED_$((40 + 2))" > grok-restored-proof.txt; cat grok-restored-proof.txt'),
+        ],
+      },
       { text: 'The restored native command ended.' },
     )
     await sendMessage(page, modelScript.prompt('Run the calculated write under the restored permissions.'))

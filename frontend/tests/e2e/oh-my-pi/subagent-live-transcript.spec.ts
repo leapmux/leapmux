@@ -16,7 +16,11 @@ ohMyPiTest.describe('Oh My Pi subagent registry', () => {
       childWhen: ohMyPiChildTurn(),
       childTask: 'Reply with CHILD_LIVE_DONE.',
       parentTask: 'Delegate the live child task.',
-      childResponse: { toolCalls: [ohMyPiYieldToolCall('yield-live-report', 'CHILD_LIVE_DONE')] },
+      childResponse: {
+        toolCalls: [
+          ohMyPiYieldToolCall('yield-live-report', 'CHILD_LIVE_DONE'),
+        ],
+      },
     })
   })
 
@@ -30,8 +34,14 @@ ohMyPiTest.describe('Oh My Pi subagent registry', () => {
       childWhen: ohMyPiChildTurn(),
       childTask: 'Read the assigned file in the live child.',
       parentTask: 'Delegate the live child file read.',
-      toolProof: { read: { workingDir } },
-      childResponse: { toolCalls: [ohMyPiYieldToolCall('yield-live-read-report', 'CHILD_LIVE_DONE')] },
+      toolProof: {
+        read: { workingDir },
+      },
+      childResponse: {
+        toolCalls: [
+          ohMyPiYieldToolCall('yield-live-read-report', 'CHILD_LIVE_DONE'),
+        ],
+      },
     })
   })
 })

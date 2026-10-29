@@ -35,7 +35,9 @@ describe('codewhaleMessageText', () => {
   })
 
   it('answers null for any other row', () => {
-    expect(codewhaleMessageText(codewhaleEvent(CODEWHALE_EVENT.ItemStarted, { item: { kind: CODEWHALE_ITEM_KIND.AgentMessage, detail: '' } }))).toBeNull()
+    expect(codewhaleMessageText(codewhaleEvent(CODEWHALE_EVENT.ItemStarted, {
+      item: { kind: CODEWHALE_ITEM_KIND.AgentMessage, detail: '' },
+    }))).toBeNull()
     expect(codewhaleMessageText(itemFinished(CODEWHALE_ITEM_KIND.Status, 'x'))).toBeNull()
     expect(codewhaleMessageText(childBlock(CODEWHALE_TRANSCRIPT_ROLE.User, { type: CODEWHALE_BLOCK_TYPE.Text, text: 'x' }))).toBeNull()
     expect(codewhaleMessageText(childBlock(CODEWHALE_TRANSCRIPT_ROLE.Assistant, { type: 'image' }))).toBeNull()

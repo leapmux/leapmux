@@ -109,7 +109,11 @@ describe('resolveSyntaxVariant', () => {
     // A user on Macchiato must not get code on Mocha's background.
     expect(resolveSyntaxVariant(
       MATCH_BOTH,
-      { name: 'catppuccin', mode: 'dark', variant: { dark: 'catppuccin-macchiato' } },
+      {
+        name: 'catppuccin',
+        mode: 'dark',
+        variant: { dark: 'catppuccin-macchiato' },
+      },
       'dark',
       'dark',
     ).id).toBe('catppuccin-macchiato')
@@ -125,7 +129,11 @@ describe('resolveSyntaxVariant', () => {
 
   it('honours a pinned contrast level', () => {
     expect(resolveSyntaxVariant(
-      { name: 'gruvbox', mode: 'dark', variant: { dark: 'gruvbox-dark-soft' } },
+      {
+        name: 'gruvbox',
+        mode: 'dark',
+        variant: { dark: 'gruvbox-dark-soft' },
+      },
       { name: 'default', mode: 'light' },
       'light',
       'light',
@@ -154,19 +162,36 @@ describe('resolveSyntaxVariant', () => {
   })
 
   it.each([
-    ['match-ui', { name: 'match-ui', mode: 'match-ui' } as const],
-    ['a pinned dark palette', { name: 'gruvbox', mode: 'dark' } as const],
-    ['a pinned light palette', { name: 'rose-pine', mode: 'light' } as const],
-    ['a pinned palette on system', { name: 'nord', mode: 'system' } as const],
+    [
+      'match-ui',
+      { name: 'match-ui', mode: 'match-ui' } as const,
+    ],
+    [
+      'a pinned dark palette',
+      { name: 'gruvbox', mode: 'dark' } as const,
+    ],
+    [
+      'a pinned light palette',
+      { name: 'rose-pine', mode: 'light' } as const,
+    ],
+    [
+      'a pinned palette on system',
+      { name: 'nord', mode: 'system' } as const,
+    ],
   ])('names a syntax theme the pair also tokenizes with, under %s', (_label, pref) => {
     // THE INVARIANT THAT TIES THE TWO. `resolveSyntaxPair` says what to tokenize
     // with; `resolveSyntaxVariant` says what the result sits on. If the variant
     // ever named a theme outside the pair, the surface would be painted for one
     // look and the tokens baked for another -- unreadable, and invisible to
     // every other case in this file.
-    for (const ui of [{ name: 'catppuccin', mode: 'light' } as const, { name: 'default', mode: 'dark' } as const]) {
+    for (const ui of [
+      { name: 'catppuccin', mode: 'light' } as const,
+      { name: 'default', mode: 'dark' } as const,
+    ]) {
       for (const os of ['light', 'dark'] as const) {
-        const uiMode = ui.mode === 'light' ? 'light' : 'dark'
+        const uiMode = ui.mode === 'light'
+          ? 'light'
+          : 'dark'
         const pair = resolveSyntaxPair(pref, ui, os)
         const worn = resolveSyntaxVariant(pref, ui, os, uiMode)
         expect([pair.light, pair.dark], `${worn.id} is outside the pair`).toContain(worn.syntax)

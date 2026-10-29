@@ -50,7 +50,10 @@ export const SCOPE_CATEGORIES: readonly ScopeCategory[] = GENERATED_CATEGORIES.m
 // of numbers would never match one -- so each key is parsed once, here,
 // rather than on every walk of the table.
 const IMPLIED_BY_ENTRIES = Object.entries(IMPLIED_BY)
-  .map(([key, implied]) => [Number(key) as Scope, implied] as const)
+  .map(([key, implied]) => [
+    Number(key) as Scope,
+    implied,
+  ] as const)
 
 /**
  * The closure of `selected`: the ticked scopes plus everything they imply,
@@ -97,5 +100,7 @@ export function impliedScopes(selected: readonly Scope[]): Set<Scope> {
  * reads the same as the stored ceiling it becomes.
  */
 export function closeScopes(selected: readonly Scope[]): Scope[] {
-  return [...closure(selected)].sort((a, b) => a - b)
+  return [
+    ...closure(selected),
+  ].sort((a, b) => a - b)
 }

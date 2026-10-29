@@ -37,7 +37,9 @@ export interface NativeStartupLaunch {
  * word that is also a hold word, which would leave no launch to hold.
  */
 function passThroughWords(launch: NativeStartupLaunch): string[] {
-  const words = [...launch.passThroughWhen ?? []]
+  const words = [
+    ...launch.passThroughWhen ?? [],
+  ]
   if (words.includes(''))
     throw new Error('The startup wrapper pass-through words must be nonempty.')
   if (words.some(word => launch.holdWhen?.includes(word)))
@@ -101,13 +103,15 @@ function observationKeys(value: unknown): string[] | undefined {
   if (value === undefined)
     return undefined
   if (!Array.isArray(value))
-    throw new Error('The startup environment observation requires an array of keys.')
+    throw new TypeError('The startup environment observation requires an array of keys.')
   const keys: string[] = []
   const seen = new Set<string>()
   for (const key of value) {
     if (typeof key !== 'string' || !/^[A-Z_]\w*$/i.test(key))
       throw new Error('The startup environment observation contains an invalid key.')
-    const identity = process.platform === 'win32' ? key.toLowerCase() : key
+    const identity = process.platform === 'win32'
+      ? key.toLowerCase()
+      : key
     if (seen.has(identity))
       throw new Error('The startup environment observation contains a duplicate key.')
     seen.add(identity)
@@ -131,12 +135,17 @@ function startupObservation(value: unknown, keys: readonly string[]): NativeStar
       return undefined
     entries.push([key, entry])
   }
-  return { workingDir: value.workingDir, environment: Object.fromEntries(entries) }
+  return {
+    workingDir: value.workingDir,
+    environment: Object.fromEntries(entries),
+  }
 }
 
 /** Await listener cleanup and retain its reported error. */
 function closeStartupServer(server: Server): Promise<void> {
-  return new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()))
+  return new Promise<void>((resolve, reject) => server.close(error => error
+    ? reject(error)
+    : resolve()))
 }
 
 /** Keep both startup and listener cleanup failures. */
@@ -206,14 +215,22 @@ export async function createNativeStartupWrapper(
         socket.end('{"error":"The startup handshake was refused."}\n')
         return
       }
-      const observation = selectedKeys === undefined ? undefined : startupObservation(value.observation, selectedKeys)
+      const observation = selectedKeys === undefined
+        ? undefined
+        : startupObservation(value.observation, selectedKeys)
       if (selectedKeys !== undefined && observation === undefined) {
         socket.end('{"error":"The startup environment observation was refused."}\n')
         return
       }
       completed = true
       held = socket
-      resolveEntry({ pid: value.pid, argv: value.argv, ...(observation === undefined ? {} : { observation }) })
+      resolveEntry({
+        pid: value.pid,
+        argv: value.argv,
+        ...(observation === undefined
+          ? {}
+          : { observation }),
+      })
     }
     socket.on('data', readHandshake)
   })
@@ -231,10 +248,16 @@ export async function createNativeStartupWrapper(
   const configuration = {
     ...endpoint,
     executable: launch.executable,
-    args: [...launch.args ?? []],
-    holdWhen: [...launch.holdWhen ?? []],
+    args: [
+      ...launch.args ?? [],
+    ],
+    holdWhen: [
+      ...launch.holdWhen ?? [],
+    ],
     passThroughWhen,
-    failedExecutable: options.failRuntime ? join(directory, 'missing-native-executable') : null,
+    failedExecutable: options.failRuntime
+      ? join(directory, 'missing-native-executable')
+      : null,
     observeEnvironment: selectedKeys ?? null,
   }
   const scriptPath = join(directory, `${launch.binaryName}.startup.cjs`)
@@ -271,7 +294,10 @@ if(!runtime){run()}else{
 `
   try {
     writeFileSync(scriptPath, source, { mode: 0o600 })
-    writeNodeLauncher(resolve(directory), launch.binaryName, { node: process.execPath, script: resolve(scriptPath) })
+    writeNodeLauncher(resolve(directory), launch.binaryName, {
+      node: process.execPath,
+      script: resolve(scriptPath),
+    })
   }
   catch (error) {
     return failStartup(server, error)
@@ -287,7 +313,9 @@ if(!runtime){run()}else{
         throw new Error('The native startup process no longer waits for release.')
       const socket = held
       await new Promise<void>((resolve, reject) => {
-        socket.write('{"release":true}\n', error => error ? reject(error) : resolve())
+        socket.write('{"release":true}\n', error => error
+          ? reject(error)
+          : resolve())
       })
     },
     async dispose() {

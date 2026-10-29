@@ -151,7 +151,9 @@ claudeTest('returns from Plan to Default with one notice and native proof after 
   const initialMode = nativeOptionGroup(await currentNativeAgent(native), 'permissionMode')?.currentValue
   if (initialMode !== CLAUDE_MODE.Auto && initialMode !== CLAUDE_MODE.Default)
     throw new Error('The native Claude mode proof requires Auto Mode or Default at startup.')
-  const initialLabel = initialMode === CLAUDE_MODE.Auto ? 'Auto Mode' : 'Default'
+  const initialLabel = initialMode === CLAUDE_MODE.Auto
+    ? 'Auto Mode'
+    : 'Default'
   await expectSettingsChip(page, initialLabel)
   // Consecutive changes to one option keep the first old value in their notice.
   // Start from the native startup mode so the Plan change has no earlier setup change to merge.
@@ -165,7 +167,9 @@ claudeTest('returns from Plan to Default with one notice and native proof after 
       const instructions = systemText(request.protocol, request.body)
       expect(instructions).not.toBe('')
       // Claude retains earlier mode reminders. The latest native reminder states the current mode.
-      const modeReminders = [...instructions.matchAll(/^(?:Plan mode is active\.|## Exited Plan Mode\n\nYou have exited plan mode\. You can now make edits, run tools, and take actions\.)/gm)]
+      const modeReminders = [
+        ...instructions.matchAll(/^(?:Plan mode is active\.|## Exited Plan Mode\n\nYou have exited plan mode\. You can now make edits, run tools, and take actions\.)/gm),
+      ]
       expect(modeReminders.at(-1)?.[0]).toBe(change.value === CLAUDE_MODE.Plan
         ? 'Plan mode is active.'
         : '## Exited Plan Mode\n\nYou have exited plan mode. You can now make edits, run tools, and take actions.')
@@ -182,7 +186,9 @@ claudeTest('returns from Plan to Default with one notice and native proof after 
 const notificationTest = claudeTest.extend({
   providerWorkspace: authenticatedAgentWorkspace({
     ...CLAUDE_AGENT,
-    openOptions: { optionValues: { permissionMode: 'default' } },
+    openOptions: {
+      optionValues: { permissionMode: 'default' },
+    },
   }),
 })
 

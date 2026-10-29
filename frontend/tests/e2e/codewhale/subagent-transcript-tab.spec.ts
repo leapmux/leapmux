@@ -24,10 +24,12 @@ codewhaleTest.describe('Codewhale subagent registry', () => {
       respond: { text: 'PONG' },
     })
     const start = await modelScript.queue({
-      toolCalls: [spawnSubagentToolCall(native.provider, 'spawn-codewhale', {
-        description: 'Ask for one word',
-        prompt: modelScript.prompt('Reply with the single word PONG.'),
-      })],
+      toolCalls: [
+        spawnSubagentToolCall(native.provider, 'spawn-codewhale', {
+          description: 'Ask for one word',
+          prompt: modelScript.prompt('Reply with the single word PONG.'),
+        }),
+      ],
     })
     // The runtime controls the number of parent turns after the spawn.
     // If the child finishes before the next parent request, that request carries its answer.

@@ -539,7 +539,9 @@ export function createChatStore() {
       const previousById = new Map(prevRows.map(message => [message.id, message]))
       const finalMessages = messages.map((message) => {
         const previous = previousById.get(message.id)
-        return previous ? preferNewerSupplement(previous, message) : message
+        return previous
+          ? preferNewerSupplement(previous, message)
+          : message
       })
       invalidateNewSupplements(prevRows, finalMessages)
       // Reclaim content versions for rows that leave the window.
@@ -580,7 +582,9 @@ export function createChatStore() {
 
     getSpanMessage(agentId: string, identity: MessageSpanIdentity, side: ToolSpanSide): AgentChatMessage | undefined {
       void state.messageVersion[agentId]
-      return side === 'request' ? spanIdx.getRequestMessage(agentId, identity) : spanIdx.getResultMessage(agentId, identity)
+      return side === 'request'
+        ? spanIdx.getRequestMessage(agentId, identity)
+        : spanIdx.getResultMessage(agentId, identity)
     },
 
     getMessages(agentId: string): AgentChatMessage[] {
@@ -889,7 +893,9 @@ export function createChatStore() {
     getResumeAfterSeq(agentId: string): bigint {
       const lastSeq = this.getLastSeq(agentId)
       const liveSeq = liveTail.get(agentId)
-      return liveSeq > lastSeq ? liveSeq : lastSeq
+      return liveSeq > lastSeq
+        ? liveSeq
+        : lastSeq
     },
 
     /** Get the first sequence in the current window. */
@@ -1015,7 +1021,14 @@ export function createChatStore() {
         windowLastSeq,
         hasOlderMessages: state.hasMoreOlder[agentId] ?? false,
       })
-      return { loaded: marks.loaded, minSeq, maxSeq, marks: marks.marks, windowFirstSeq, windowLastSeq }
+      return {
+        loaded: marks.loaded,
+        minSeq,
+        maxSeq,
+        marks: marks.marks,
+        windowFirstSeq,
+        windowLastSeq,
+      }
     },
     /**
      * Load the agent's scroll-rail marks through createMessageMarkSeeder.
@@ -1039,7 +1052,9 @@ export function createChatStore() {
         // A missing mark message requires no scan through every loaded row.
         const idx = lowerBoundBySeq(messages, seq)
         const hit = messages[idx]
-        return hit?.seq === seq ? hit : undefined
+        return hit?.seq === seq
+          ? hit
+          : undefined
       })
     },
     /**

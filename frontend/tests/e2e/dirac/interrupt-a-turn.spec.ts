@@ -14,7 +14,12 @@ diracTest('stops an actual native tool and accepts the next queued turn', async 
 // Dirac's question operation raises an elicitation form, and the form waits in the same banner. The default agent
 // runs in YOLO mode, which answers the question itself, so the agent asks as the agent-questions spec does.
 diracTest('withdraws a waiting question form and accepts the next queued turn', async ({ askingDiracWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingDiracWorkspace.workspaceId })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: askingDiracWorkspace.workspaceId,
+  })
   await exerciseControlInterrupt(context, { control: 'question' })
 })
 

@@ -44,7 +44,10 @@ export interface KimiAccountOptions {
  * that order and without a trailing slash. A file under another name is a signed-out account, whose usage read fails.
  */
 export function kimiAccountCredentialKey(oauthHost: string, serviceURL: string): string {
-  const scope = JSON.stringify({ oauthHost: oauthHost.trim().replace(/\/+$/, ''), baseUrl: serviceURL.replace(/\/+$/, '') })
+  const scope = JSON.stringify({
+    oauthHost: oauthHost.trim().replace(/\/+$/, ''),
+    baseUrl: serviceURL.replace(/\/+$/, ''),
+  })
   return `kimi-code-env-${createHash('sha256').update(scope).digest('hex').slice(0, 16)}`
 }
 
@@ -97,7 +100,12 @@ export function createKimiEnvironment(options: KimiEnvironmentOptions): Record<s
   writeFileSync(hook, `#!/bin/sh\nprintf '%s\\n' ${quotePosixShellArgument(KIMI_BLOCKED_PROMPT_REASON)} >&2\nexit 2\n`, { mode: 0o700 })
   writeFileSync(join(kimiHome, 'config.toml'), kimiConfig(options, quotePosixShellArgument(hook)), { mode: 0o600 })
   writePrivateJSON(join(kimiHome, 'mcp.json'), {
-    mcpServers: { [options.mcpEchoServer.name]: { command: options.mcpEchoServer.command, args: [...options.mcpEchoServer.args] } },
+    mcpServers: {
+      [options.mcpEchoServer.name]: {
+        command: options.mcpEchoServer.command,
+        args: [...options.mcpEchoServer.args],
+      },
+    },
   })
   // Kimi Code keeps its configuration, sessions, and server token here. The
   // two switches stop the telemetry upload and the update. `kimi web` makes no

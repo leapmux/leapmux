@@ -77,7 +77,9 @@ export function mergeKeybindings(
         result.push({
           key: o.key,
           command: def.command,
-          ...(when !== undefined ? { when } : {}),
+          ...(when !== undefined
+            ? { when }
+            : {}),
           args: def.args,
         })
       }
@@ -99,7 +101,9 @@ export function mergeKeybindings(
       result.push({
         key: o.key,
         command: o.command,
-        ...(o.when !== undefined ? { when: o.when } : {}),
+        ...(o.when !== undefined
+          ? { when: o.when }
+          : {}),
       })
     }
   }
@@ -214,7 +218,9 @@ function toTinykeysKey(key: string): string {
           const alias = PHYSICAL_KEY_ALIASES[part.toLowerCase()]
           if (alias !== undefined)
             return alias
-          return SINGLE_LETTER_RE.test(part) ? `Key${part.toUpperCase()}` : part
+          return SINGLE_LETTER_RE.test(part)
+            ? `Key${part.toUpperCase()}`
+            : part
         })
         .join('+'),
     )
@@ -300,7 +306,10 @@ export function activateBindings(bindings: readonly Keybinding[], slot: BindingS
   // every shortcut before it reaches us. We already do focus-aware filtering in
   // resolve() (and skip IME composition in the handler above), so disable the
   // built-in ignore and let every event through.
-  const unsubscribe = tinykeys(window, keyMap, { capture: true, ignore: () => false })
+  const unsubscribe = tinykeys(window, keyMap, {
+    capture: true,
+    ignore: () => false,
+  })
   slotState.set(slot, { unsubscribe, bindings })
   recomputeActiveBindings()
   log.debug(`Bound ${groups.length} key groups (${bindings.length} bindings) for slot=${slot}`)
@@ -337,5 +346,7 @@ export function getBindingsForCommand(commandId: string): string[] {
         addUnique(fallback, b.key)
     }
   }
-  return active.length > 0 ? active : fallback
+  return active.length > 0
+    ? active
+    : fallback
 }

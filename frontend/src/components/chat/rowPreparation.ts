@@ -92,14 +92,24 @@ export function prepareMessage(message: AgentChatMessage, options: PrepareMessag
   const resolved = options.resolved ?? resolveMessageForRendering(original, message.agentProvider)
   const category = classifyMessage(
     toClassificationInput(resolved, message),
-    ...(options.isChildTranscript === undefined ? [] : [{ isChildTranscript: options.isChildTranscript }]),
+    ...(options.isChildTranscript === undefined
+      ? []
+      : [
+          { isChildTranscript: options.isChildTranscript },
+        ]),
   )
   const nativeStart = providerFor(message.agentProvider)?.transcript.compactionStart
   const members = resolved.wrapper?.messages ?? [resolved.parentObject]
   const compactionStartOnly = (message.source === MessageSource.AGENT || message.source === MessageSource.LEAPMUX)
     && members.length > 0
     && members.every(member => isObject(member) && nativeStart?.(member) === true)
-  return { message, original, resolved, category, compactionStartOnly }
+  return {
+    message,
+    original,
+    resolved,
+    category,
+    compactionStartOnly,
+  }
 }
 
 /**
@@ -126,5 +136,8 @@ export function prepareChatRow(
   options: PrepareMessageOptions & PreparedRowOptions = {},
 ): { prepared: PreparedMessage, extraction: ChatRowExtraction } {
   const prepared = prepareMessage(message, options)
-  return { prepared, extraction: extractPreparedRow(prepared, options) }
+  return {
+    prepared,
+    extraction: extractPreparedRow(prepared, options),
+  }
 }

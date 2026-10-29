@@ -96,7 +96,12 @@ describe('postAuthNavigate', () => {
   })
 
   it('refuses a target that could leave the origin, on BOTH branches', () => {
-    for (const hostile of ['https://evil.example/', '//evil.example/', '/\\evil.example/', '/\t/evil.example']) {
+    for (const hostile of [
+      'https://evil.example/',
+      '//evil.example/',
+      '/\\evil.example/',
+      '/\t/evil.example',
+    ]) {
       vi.clearAllMocks()
       postAuthNavigate(navigate, hostile, '/')
       expect(navigate).toHaveBeenCalledWith('/', { replace: true })

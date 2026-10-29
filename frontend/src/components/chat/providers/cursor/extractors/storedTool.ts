@@ -18,7 +18,12 @@ import { DEFAULT_TOOL_REQUESTS } from '../../defaultToolRequests'
 import { cursorAgentCall } from './agent'
 
 function fileInWorkspace(workspace: string, path: string): string {
-  return isAbsolute(path) ? path : join([workspace, path.replace(/^\.[/\\]/, '')])
+  return isAbsolute(path)
+    ? path
+    : join([
+        workspace,
+        path.replace(/^\.[/\\]/, ''),
+      ])
 }
 
 /** What one row's saved tool result restored, beside the payload it may have fully built. */
@@ -35,8 +40,12 @@ export interface CursorStoredRestore {
 
 /** Cursor stores both standard content blocks and native protobuf content variants. */
 function cursorMcpContent(saved: Record<string, unknown>, success: Record<string, unknown> | null, output: string): McpContentItem[] {
-  const standard = Array.isArray(saved.experimental_content) ? saved.experimental_content : []
-  const native = Array.isArray(success?.content) ? success.content : []
+  const standard = Array.isArray(saved.experimental_content)
+    ? saved.experimental_content
+    : []
+  const native = Array.isArray(success?.content)
+    ? success.content
+    : []
   const blocks = standard.length
     ? standard
     : native.map((entry) => {
@@ -46,15 +55,27 @@ function cursorMcpContent(saved: Record<string, unknown>, success: Record<string
         if (text)
           return { ...text, type: 'text' }
         const image = pickObject(entry, 'image')
-        return image ? { ...image, type: 'image' } : entry
+        return image
+          ? { ...image, type: 'image' }
+          : entry
       })
-  if (!blocks.length)
-    return output ? [{ type: 'text', text: output }] : []
+  if (!blocks.length) {
+    return output
+      ? [
+          { type: 'text', text: output },
+        ]
+      : []
+  }
   const descriptions = pickObject(pickObject(pickObject(saved, CURSOR_STORED_TOOL.ProviderOptions), 'cursor'), 'imageDescriptions')
   return blocks.map((block, index) => {
     const item = parseMcpContentItem(block)
     const description = pickString(descriptions, String(index))
-    return item.type === 'image' && description ? { ...item, source: { ...item.source, description } } : item
+    return item.type === 'image' && description
+      ? {
+          ...item,
+          source: { ...item.source, description },
+        }
+      : item
   })
 }
 
@@ -78,7 +99,13 @@ function cursorSearchSource(success: Record<string, unknown>, output: string, gl
             if (!isObject(line) || typeof line.content !== 'string')
               continue
             const number = pickNumber(line, 'lineNumber', undefined)
-            lines.push({ filePath: path, ...(number !== undefined ? { lineNumber: number } : {}), text: line.content })
+            lines.push({
+              filePath: path,
+              ...(number !== undefined
+                ? { lineNumber: number }
+                : {}),
+              text: line.content,
+            })
             numMatches++
           }
         }
@@ -96,9 +123,13 @@ function cursorSearchSource(success: Record<string, unknown>, output: string, gl
     const path = pickString(success, 'path')
     filenames.push(...success.files.filter((file): file is string => typeof file === 'string').map(file => fileInWorkspace(path, file)))
   }
-  const uniqueFiles = [...new Set(filenames)]
+  const uniqueFiles = [
+    ...new Set(filenames),
+  ]
   return {
-    filenames: glob || lines.length === 0 ? uniqueFiles : [],
+    filenames: glob || lines.length === 0
+      ? uniqueFiles
+      : [],
     // NO second spelling of the matches. `searchResultText` builds this exact string
     // from `lines`, relativized, and reads `content` only when `lines` is empty --
     // where this join answered `''` anyway. The copy was dead on both branches.
@@ -124,7 +155,9 @@ function cursorSearchSource(success: Record<string, unknown>, output: string, gl
  * did produce, and the partial output alone reads as a call that succeeded.
  */
 function failureText(reason: string, output: string): string {
-  return reason && output && reason !== output ? `${reason}\n\n${output}` : reason || output
+  return reason && output && reason !== output
+    ? `${reason}\n\n${output}`
+    : reason || output
 }
 
 /**
@@ -140,7 +173,9 @@ function failureText(reason: string, output: string): string {
  * call's arguments may spell a relative one.
  */
 function storedEditRequest(kind: 'edit' | 'write' | 'delete', args: Record<string, unknown>, path: string): FileChangeRequest {
-  return DEFAULT_TOOL_REQUESTS[kind](path ? { ...args, path } : args)
+  return DEFAULT_TOOL_REQUESTS[kind](path
+    ? { ...args, path }
+    : args)
 }
 
 /**
@@ -168,8 +203,12 @@ export function cursorStoredToolOutput(supplement: ACPToolSupplement | undefined
   const providerOptions = pickObject(raw, CURSOR_STORED_TOOL.ProviderOptions, undefined)
   return {
     content,
-    ...(toolArguments !== undefined ? { toolArguments } : {}),
-    ...(providerOptions !== undefined ? { providerOptions } : {}),
+    ...(toolArguments !== undefined
+      ? { toolArguments }
+      : {}),
+    ...(providerOptions !== undefined
+      ? { providerOptions }
+      : {}),
   }
 }
 
@@ -194,16 +233,32 @@ export function cursorStoredRestore(facts: ACPToolFacts): CursorStoredRestore | 
   const native = pickObject(pickObject(raw.providerOptions, 'cursor'), 'highLevelToolCallResult')
   const success = pickObject(pickObject(native, 'output'), 'success')
   const name = pickString(saved, CURSOR_STORED_BLOCK.ToolName)
-  const output = typeof saved.result === 'string' ? saved.result : saved.result !== undefined ? prettifyJson(saved.result) : facts.text
+  const output = typeof saved.result === 'string'
+    ? saved.result
+    : saved.result !== undefined
+      ? prettifyJson(saved.result)
+      : facts.text
   const toolArguments = raw.toolArguments
-  const args = { ...facts.args, ...toolArguments }
-  const restore: CursorStoredRestore = { args, name: name || undefined, output, payload: null }
+  const args = {
+    ...facts.args,
+    ...toolArguments,
+  }
+  const restore: CursorStoredRestore = {
+    args,
+    name: name || undefined,
+    output,
+    payload: null,
+  }
 
   // A launch states its own outcome: `cursorAgentCall` reads the frame's status and
   // the native error, and reports the run as failed or stopped with the reason as its
   // body. It therefore sits ABOVE the guard below on purpose.
-  if (name === 'Task')
-    return { ...restore, payload: cursorAgentCall(facts, args, native, output) }
+  if (name === 'Task') {
+    return {
+      ...restore,
+      payload: cursorAgentCall(facts, args, native, output),
+    }
+  }
   if (name.startsWith('mcp_')) {
     const server = pickString(args, 'providerIdentifier')
     const toolName = pickString(args, 'toolName') || name
@@ -219,13 +274,19 @@ export function cursorStoredRestore(facts: ACPToolFacts): CursorStoredRestore | 
     // content it saved for the same reason -- the part of the answer that arrived is
     // what they asked to see.
     const unanswered = facts.status === 'failed' || native?.isError === true
-    const result = unanswered ? failedResult(failureText(facts.text, output)) : { content: cursorMcpContent(saved, success, output) }
+    const result = unanswered
+      ? failedResult(failureText(facts.text, output))
+      : {
+          content: cursorMcpContent(saved, success, output),
+        }
     return {
       ...restore,
       payload: {
         ...mcpToolCallRequest(server, toolName, toolArguments ?? pickObject(args, 'args') ?? {}),
         name,
-        ...(facts.finished ? { result } : {}),
+        ...(facts.finished
+          ? { result }
+          : {}),
       },
     }
   }
@@ -248,17 +309,23 @@ export function cursorStoredRestore(facts: ACPToolFacts): CursorStoredRestore | 
     const fallbackContent = refused ? output : undefined
     const source = readFileResultFromContent({
       content: success.content,
-      ...(startLine !== undefined ? { startLine } : {}),
+      ...(startLine !== undefined
+        ? { startLine }
+        : {}),
       // The reason reaches the reader where the file would have been. A read that
       // returned nothing AND said nothing keeps the shared empty notice.
-      ...(fallbackContent !== undefined ? { fallbackContent } : {}),
+      ...(fallbackContent !== undefined
+        ? { fallbackContent }
+        : {}),
     })
     return {
       ...restore,
       payload: {
         kind: 'read',
         request: { path },
-        ...(facts.finished ? { result: source } : {}),
+        ...(facts.finished
+          ? { result: source }
+          : {}),
       },
     }
   }
@@ -266,13 +333,22 @@ export function cursorStoredRestore(facts: ACPToolFacts): CursorStoredRestore | 
     // Each of the three states its OWN kind. Folding the removal into `edit` drew a
     // deleted file under the pencil and the word "Edit"; `deleteRenderer` exists, and
     // `DeleteRequest` and `DeleteResult` are the same two shapes the edit pair uses.
-    const kind = name === 'Write' ? 'write' as const : name === 'Delete' ? 'delete' as const : 'edit' as const
+    const kind = name === 'Write'
+      ? 'write' as const
+      : name === 'Delete'
+        ? 'delete' as const
+        : 'edit' as const
     const path = pickString(success, 'path') || pickString(args, 'path') || ''
     const patch = parseUnifiedDiffCached(pickString(success, 'diffString'))
     const source = patch
       ? fileEditDiffFromHunks(path, patch.hunks)
       : typeof success.afterFullFileContent === 'string'
-        ? { filePath: path, structuredPatch: null, oldStr: pickString(success, 'beforeFullFileContent'), newStr: success.afterFullFileContent }
+        ? {
+            filePath: path,
+            structuredPatch: null,
+            oldStr: pickString(success, 'beforeFullFileContent'),
+            newStr: success.afterFullFileContent,
+          }
         : null
     if (fileEditHasDiff(source)) {
       const originalFile = pickString(success, 'beforeFullFileContent', undefined)
@@ -281,14 +357,22 @@ export function cursorStoredRestore(facts: ACPToolFacts): CursorStoredRestore | 
         payload: {
           kind,
           request: storedEditRequest(kind, args, path),
-          result: { changes: [originalFile !== undefined ? { ...source, originalFile } : source] },
+          result: {
+            changes: [
+              originalFile !== undefined
+                ? { ...source, originalFile }
+                : source,
+            ],
+          },
         },
       }
     }
     return restore
   }
   if (name === 'Grep' || name === 'Glob') {
-    const kind = name === 'Glob' ? 'glob' as const : 'grep' as const
+    const kind = name === 'Glob'
+      ? 'glob' as const
+      : 'grep' as const
     return {
       ...restore,
       payload: {
@@ -298,7 +382,11 @@ export function cursorStoredRestore(facts: ACPToolFacts): CursorStoredRestore | 
           pattern: pickString(args, 'pattern') || pickString(args, 'glob_pattern') || '',
           paths: [pickString(args, 'path') || pickString(args, 'target_directory') || ''].filter(Boolean),
         },
-        ...(facts.finished ? { result: cursorSearchSource(success, output, name === 'Glob') } : {}),
+        ...(facts.finished
+          ? {
+              result: cursorSearchSource(success, output, name === 'Glob'),
+            }
+          : {}),
       },
     }
   }
@@ -306,7 +394,9 @@ export function cursorStoredRestore(facts: ACPToolFacts): CursorStoredRestore | 
     const protocolOutput = pickObject(tool, ACP_SUPPLEMENT.RawOutput)
     const stdout = pickString(success, 'stdout') || pickString(protocolOutput, 'stdout')
     const stderr = pickString(success, 'stderr') || pickString(protocolOutput, 'stderr')
-    const text = pickString(success, 'interleavedOutput') || [stdout, stderr].filter(Boolean).join(stdout.endsWith('\n') ? '' : '\n')
+    const text = pickString(success, 'interleavedOutput') || [stdout, stderr].filter(Boolean).join(stdout.endsWith('\n')
+      ? ''
+      : '\n')
     const exitCode = pickNumber(protocolOutput, 'exitCode', undefined) ?? pickNumber(success, 'exitCode', undefined)
     const durationMs = pickNumber(success, 'localExecutionTimeMs', undefined) ?? pickNumber(success, 'executionTime', undefined)
     const description = pickString(args, 'description')
@@ -314,18 +404,31 @@ export function cursorStoredRestore(facts: ACPToolFacts): CursorStoredRestore | 
       ...restore,
       payload: {
         kind: 'execute',
-        request: { command: pickString(args, 'command') || '', ...(description ? { description } : {}) },
+        request: {
+          command: pickString(args, 'command') || '',
+          ...(description
+            ? { description }
+            : {}),
+        },
         title: pickString(args, 'description'),
         ...(facts.finished
-          ? { result: {
-              commands: [{
-                output: text,
-                ...(exitCode !== undefined ? { exitCode } : {}),
-                ...(durationMs !== undefined ? { durationMs } : {}),
-                truncated: pickBoolean(success, 'outputTruncated') ?? false,
-              }],
-              unresolvedTerminals: [],
-            } }
+          ? {
+              result: {
+                commands: [
+                  {
+                    output: text,
+                    ...(exitCode !== undefined
+                      ? { exitCode }
+                      : {}),
+                    ...(durationMs !== undefined
+                      ? { durationMs }
+                      : {}),
+                    truncated: pickBoolean(success, 'outputTruncated') ?? false,
+                  },
+                ],
+                unresolvedTerminals: [],
+              },
+            }
           : {}),
       },
     }

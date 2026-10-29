@@ -19,5 +19,14 @@ export function resolveZCodeMessage(parsed: ParsedMessageContent): Record<string
   const input = pickObject(supplemental.payload, ZCODE_SUPPLEMENT_PAYLOAD.Input)
   if (!input || !Object.keys(input).some(key => !current || !Object.hasOwn(current, key)))
     return original
-  return { ...original, payload: { ...event.payload, input: { ...input, ...current } } }
+  return {
+    ...original,
+    payload: {
+      ...event.payload,
+      input: {
+        ...input,
+        ...current,
+      },
+    },
+  }
 }

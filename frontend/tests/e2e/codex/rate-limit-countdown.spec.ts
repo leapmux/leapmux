@@ -12,7 +12,7 @@ codexTest('refreshes an open rate-limit countdown and removes it at expiry', asy
   const card = await openAgentInfoCard(native.page)
   const resetsAt = rateLimits.resetsAt
   if (typeof resetsAt !== 'number')
-    throw new Error('The countdown scenario requires an exact reset time.')
+    throw new TypeError('The countdown scenario requires an exact reset time.')
 
   // Move to three minutes before the native reset. Each interval tick then
   // updates the same open card without another provider message or reload.

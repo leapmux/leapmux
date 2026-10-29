@@ -29,7 +29,12 @@ function listing(path: string, names: string[] = []) {
 describe('ancestorChain', () => {
   it('walks from the root down to the target, outermost first', () => {
     expect(ancestorChain('/', '/home/alice/proj', 'posix'))
-      .toEqual(['/', '/home', '/home/alice', '/home/alice/proj'])
+      .toEqual([
+        '/',
+        '/home',
+        '/home/alice',
+        '/home/alice/proj',
+      ])
   })
 
   it('answers the root alone when the target is not under it', () => {
@@ -71,7 +76,11 @@ describe('ancestorChain', () => {
 
 describe('loadListings', () => {
   it('asks for one directory when no root is given', async () => {
-    listDirectory.mockResolvedValue({ listings: [listing('/a', ['x'])] })
+    listDirectory.mockResolvedValue({
+      listings: [
+        listing('/a', ['x']),
+      ],
+    })
 
     const resp = await loadListings('w1', '/a', true)
 
@@ -81,7 +90,12 @@ describe('loadListings', () => {
   })
 
   it('sends from_root for a chain, and dirs_only when files are hidden', async () => {
-    listDirectory.mockResolvedValue({ listings: [listing('/'), listing('/a')] })
+    listDirectory.mockResolvedValue({
+      listings: [
+        listing('/'),
+        listing('/a'),
+      ],
+    })
 
     const resp = await loadListings('w1', '/a', false, '/')
 
@@ -93,13 +107,19 @@ describe('loadListings', () => {
   // completed carries nothing, so a tree cannot render a stale reason.
   it('carries the unreadable directory through, and omits it when absent', async () => {
     listDirectory.mockResolvedValueOnce({
-      listings: [listing('/')],
+      listings: [
+        listing('/'),
+      ],
       unreadable: { path: '/blocked', reason: 'permission denied' },
     })
     expect((await loadListings('w1', '/blocked/x', false, '/')).unreadable)
       .toEqual({ path: '/blocked', reason: 'permission denied' })
 
-    listDirectory.mockResolvedValueOnce({ listings: [listing('/')] })
+    listDirectory.mockResolvedValueOnce({
+      listings: [
+        listing('/'),
+      ],
+    })
     expect((await loadListings('w1', '/', false)).unreadable).toBeUndefined()
   })
 
@@ -107,7 +127,21 @@ describe('loadListings', () => {
   // JSON.stringify over this value -- which throws on a bigint.
   it('converts the wire bigint size to a number', async () => {
     listDirectory.mockResolvedValue({
-      listings: [{ ...listing('/a'), entries: [{ name: 'x', path: '/a/x', isDir: false, hidden: false, size: 42n, modTime: '' }] }],
+      listings: [
+        {
+          ...listing('/a'),
+          entries: [
+            {
+              name: 'x',
+              path: '/a/x',
+              isDir: false,
+              hidden: false,
+              size: 42n,
+              modTime: '',
+            },
+          ],
+        },
+      ],
     })
 
     const [only] = (await loadListings('w1', '/a', true)).listings
@@ -119,13 +153,21 @@ describe('loadListings', () => {
 
 describe('loadChildren', () => {
   it('answers the single listing the worker sent', async () => {
-    listDirectory.mockResolvedValue({ listings: [listing('/a', ['x', 'y'])] })
+    listDirectory.mockResolvedValue({
+      listings: [
+        listing('/a', ['x', 'y']),
+      ],
+    })
 
     expect((await loadChildren('w1', '/a', true)).entries.map(e => e.displayName)).toEqual(['x', 'y'])
   })
 
   it('answers an empty directory as a listing with no entries', async () => {
-    listDirectory.mockResolvedValue({ listings: [listing('/a')] })
+    listDirectory.mockResolvedValue({
+      listings: [
+        listing('/a'),
+      ],
+    })
 
     const only = await loadChildren('w1', '/a', true)
 

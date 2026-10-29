@@ -167,7 +167,9 @@ const RECREATE_ON_OPEN_ERROR: ReadonlySet<string> = new Set([
 function keyPathText(keyPath: string | readonly string[] | null | undefined): string {
   if (keyPath == null)
     return ''
-  return Array.isArray(keyPath) ? `[${keyPath.join('+')}]` : String(keyPath)
+  return Array.isArray(keyPath)
+    ? `[${keyPath.join('+')}]`
+    : String(keyPath)
 }
 
 /** One object store's shape, in the form both sides of the check can produce. */
@@ -480,7 +482,9 @@ export function createIdbConnection<T extends Dexie = Dexie>(
             throw err
           return { ok: false } as const
         })
-        .then(async result => (result.ok ? result.db : await recreate()))
+        .then(async result => (result.ok
+          ? result.db
+          : await recreate()))
         .then((db) => {
           // Registered only now, AFTER the repair path above, so the deliberate
           // closes in it cannot invalidate a cache entry they do not own.

@@ -45,7 +45,11 @@ export function lettaNotificationEntry(message: Record<string, unknown>): Notifi
   const kind = pickString(message, LETTA_DELTA_FIELD.MessageType)
   if (pickString(message, 'type') === LETTA_MESSAGE.ExecuteCommandResponse) {
     const text = pickString(message, LETTA_DELTA_FIELD.Output).trim()
-    return text ? [{ kind: 'text', text }] : []
+    return text
+      ? [
+          { kind: 'text', text },
+        ]
+      : []
   }
   if (kind === LETTA_DELTA_KIND.SlashCommandEnd) {
     const command = lettaCompactCommand(message)
@@ -53,33 +57,68 @@ export function lettaNotificationEntry(message: Record<string, unknown>): Notifi
     if (command === null || typeof success !== 'boolean')
       return []
     const text = pickString(message, LETTA_DELTA_FIELD.Output).trim()
-    if (command === 'help')
-      return text ? [{ kind: 'text', text }] : []
-    if (success)
-      return [{ kind: 'compaction', phase: 'end', detail: { trigger: 'manual' } }]
-    const entry: NotificationEntry = { kind: 'compaction', phase: 'end', detail: { trigger: 'manual' }, outcome: 'failed' }
+    if (command === 'help') {
+      return text
+        ? [
+            { kind: 'text', text },
+          ]
+        : []
+    }
+    if (success) {
+      return [
+        {
+          kind: 'compaction',
+          phase: 'end',
+          detail: { trigger: 'manual' },
+        },
+      ]
+    }
+    const entry: NotificationEntry = {
+      kind: 'compaction',
+      phase: 'end',
+      detail: { trigger: 'manual' },
+      outcome: 'failed',
+    }
     assignDefined(entry, 'error', text || undefined)
     return [entry]
   }
-  if (kind === LETTA_DELTA_KIND.SummaryMessage)
-    return [{ kind: 'compaction', phase: 'end', detail: lettaCompactionDetails(message) }]
+  if (kind === LETTA_DELTA_KIND.SummaryMessage) {
+    return [
+      {
+        kind: 'compaction',
+        phase: 'end',
+        detail: lettaCompactionDetails(message),
+      },
+    ]
+  }
   if (kind === LETTA_DELTA_KIND.Status) {
     const text = pickString(message, LETTA_DELTA_FIELD.Message).trim()
-    return text ? [{ kind: 'status', text }] : []
+    return text
+      ? [
+          { kind: 'status', text },
+        ]
+      : []
   }
   if (kind === LETTA_DELTA_KIND.Retry || (kind === LETTA_DELTA_KIND.EventMessage && message[LETTA_DELTA_FIELD.EventType] === LETTA_EVENT_TYPE.Retry)) {
-    const data = kind === LETTA_DELTA_KIND.Retry ? message : pickObject(message, LETTA_DELTA_FIELD.EventData)
+    const data = kind === LETTA_DELTA_KIND.Retry
+      ? message
+      : pickObject(message, LETTA_DELTA_FIELD.EventData)
     const facts: RetryFacts = {}
     assignDefined(facts, 'attempt', pickNumber(data, 'attempt', undefined))
     assignDefined(facts, 'maxAttempts', pickNumber(data, 'max_attempts', undefined))
     assignDefined(facts, 'delayMs', pickNumber(data, 'delay_ms', undefined))
     assignDefined(facts, 'error', pickString(data, LETTA_DELTA_FIELD.Message))
-    return [retryEntry('api', facts)]
+    return [
+      retryEntry('api', facts),
+    ]
   }
   if (pickString(message, LETTA_DELTA_FIELD.MessageType) === LETTA_DELTA_KIND.LoopError) {
     const words = lettaLoopErrorWords(message)
-    if (words)
-      return [{ kind: 'text', text: words }]
+    if (words) {
+      return [
+        { kind: 'text', text: words },
+      ]
+    }
   }
   return []
 }
@@ -120,5 +159,7 @@ function lettaCompactCommand(message: Record<string, unknown>): 'help' | 'compac
   const words = pickString(message, LETTA_DELTA_FIELD.Input).trim().split(/\s+/u)
   if (words[0] !== `/${LETTA_COMPACTION.CommandID}`)
     return null
-  return words[1] === LETTA_COMPACTION.HelpArgument ? 'help' : 'compaction'
+  return words[1] === LETTA_COMPACTION.HelpArgument
+    ? 'help'
+    : 'compaction'
 }

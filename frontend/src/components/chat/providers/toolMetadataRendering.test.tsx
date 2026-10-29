@@ -9,13 +9,21 @@ import './testMocks'
 function claudeResult(content: unknown[], toolUseResult?: Record<string, unknown>) {
   return {
     type: 'user',
-    message: { content: [{ type: 'tool_result', tool_use_id: 'call', content }] },
+    message: {
+      content: [
+        { type: 'tool_result', tool_use_id: 'call', content },
+      ],
+    },
     tool_use_result: toolUseResult,
   }
 }
 
 function claudeMeta(payload: Record<string, unknown>, spanType: string, options: ProviderRowOptions = {}) {
-  return providerToolMeta(AgentProvider.CLAUDE_CODE, payload, { category: { kind: 'tool_result' }, spanType, ...options })
+  return providerToolMeta(AgentProvider.CLAUDE_CODE, payload, {
+    category: { kind: 'tool_result' },
+    spanType,
+    ...options,
+  })
 }
 
 function codexMeta(payload: Record<string, unknown>, spanType: string) {
@@ -25,7 +33,9 @@ function codexMeta(payload: Record<string, unknown>, spanType: string) {
 describe('tool metadata matches rendered output', () => {
   it('measures the displayed Claude file list without its raw summary line', () => {
     const meta = claudeMeta(
-      claudeResult([{ type: 'text', text: 'Found 3 files\n/project/a\n/project/b\n/project/c' }]),
+      claudeResult([
+        { type: 'text', text: 'Found 3 files\n/project/a\n/project/b\n/project/c' },
+      ]),
       'Glob',
     )
     expect(meta?.collapsible).toBe(false)
@@ -34,7 +44,15 @@ describe('tool metadata matches rendered output', () => {
   it('keeps valid Codex file changes when an array contains malformed entries', () => {
     const diff = '@@ -1 +1 @@\n-before\n+after'
     const meta = codexMeta({
-      item: { type: 'fileChange', status: 'completed', changes: [null, 'invalid', { path: '/project/file.ts', diff }] },
+      item: {
+        type: 'fileChange',
+        status: 'completed',
+        changes: [
+          null,
+          'invalid',
+          { path: '/project/file.ts', diff },
+        ],
+      },
     }, 'fileChange')
     expect(meta).toMatchObject({ hasDiff: true, hasCopyable: true })
     // The shared unified-diff format every provider's diff body copies, headed by
@@ -44,15 +62,37 @@ describe('tool metadata matches rendered output', () => {
   })
 
   it('allows expansion of long Claude MCP arguments from the linked request', () => {
-    const args = Object.fromEntries(Array.from({ length: 8 }, (_, index) => [`field${index}`, 'long argument value '.repeat(4)]))
-    const request = input({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 'call', name: 'mcp__docs__read', input: args }] } })
+    const args = Object.fromEntries(Array.from({ length: 8 }, (_, index) => [
+      `field${index}`,
+      'long argument value '.repeat(4),
+    ]))
+    const request = input({
+      type: 'assistant',
+      message: {
+        content: [
+          {
+            type: 'tool_use',
+            id: 'call',
+            name: 'mcp__docs__read',
+            input: args,
+          },
+        ],
+      },
+    })
     const meta = claudeMeta(claudeResult([]), 'mcp__docs__read', { request })
     expect(meta?.collapsible).toBe(true)
   })
 
   it('copies Claude MCP resource text and structured zero values', () => {
     const meta = claudeMeta(
-      claudeResult([{ type: 'resource', resource: { uri: 'probe://note', text: 'Resource contents' } }], { structuredContent: { count: 0 } }),
+      claudeResult([
+        {
+          type: 'resource',
+          resource: { uri: 'probe://note', text: 'Resource contents' },
+        },
+      ], {
+        structuredContent: { count: 0 },
+      }),
       'mcp__docs__read',
     )
     expect(meta?.hasCopyable).toBe(true)
@@ -62,7 +102,17 @@ describe('tool metadata matches rendered output', () => {
 
   it('offers a copy action for a structured-only Codex MCP result', () => {
     const meta = codexMeta({
-      item: { type: 'mcpToolCall', id: 'call', status: 'completed', server: 'docs', tool: 'read', result: { content: [], structuredContent: { count: 0 } } },
+      item: {
+        type: 'mcpToolCall',
+        id: 'call',
+        status: 'completed',
+        server: 'docs',
+        tool: 'read',
+        result: {
+          content: [],
+          structuredContent: { count: 0 },
+        },
+      },
     }, 'mcpToolCall')
     expect(meta?.hasCopyable).toBe(true)
     expect(meta?.copyableContent()).toMatch(/"count"\s*:\s*0/)
@@ -72,8 +122,19 @@ describe('tool metadata matches rendered output', () => {
     const output = 'first\nsecond\nthird\nfourth'
     const meta = providerToolMeta(AgentProvider.ZCODE, {
       type: 'tool.updated',
-      payload: { kind: 'result', toolCallId: 'call', result: { success: true, content: '', display: { kind: 'task_output', output, taskStatus: 'completed' } } },
-    }, { category: { kind: 'tool_result' }, spanType: 'TaskOutput' })
+      payload: {
+        kind: 'result',
+        toolCallId: 'call',
+        result: {
+          success: true,
+          content: '',
+          display: { kind: 'task_output', output, taskStatus: 'completed' },
+        },
+      },
+    }, {
+      category: { kind: 'tool_result' },
+      spanType: 'TaskOutput',
+    })
     expect(meta).toMatchObject({ collapsible: true, hasCopyable: true })
     expect(meta?.copyableContent()).toBe(output)
   })

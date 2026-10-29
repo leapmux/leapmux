@@ -18,7 +18,10 @@ import * as processRegistry from '../tests/e2e/helpers/processRegistry'
 // stream of the watcher starts. Every other watch is the real one.
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>()
-  return { ...actual, watch: vi.fn(actual.watch) }
+  return {
+    ...actual,
+    watch: vi.fn(actual.watch),
+  }
 })
 
 const INTEGRATION_DEADLINE_MS = 120_000
@@ -51,7 +54,11 @@ type SilentWatcher = FSWatcher & { close: Mock<() => void> }
 
 /** Make the next watch report no event, and return that watcher. */
 function silenceNextWatch(): SilentWatcher {
-  const watcher = Object.assign(new EventEmitter(), { close: vi.fn<() => void>(), ref: vi.fn(), unref: vi.fn() }) as unknown as SilentWatcher
+  const watcher = Object.assign(new EventEmitter(), {
+    close: vi.fn<() => void>(),
+    ref: vi.fn(),
+    unref: vi.fn(),
+  }) as unknown as SilentWatcher
   vi.mocked(watch).mockImplementationOnce(() => watcher)
   return watcher
 }
@@ -69,12 +76,20 @@ interface RepeatedFixture {
 }
 
 function executeFixture(workers: 1 | 2, failCases?: readonly string[], repeated?: RepeatedFixture): Promise<FixtureRun> {
-  const root = repeated?.root ?? createFixture(failCases === undefined ? {} : { failCases })
+  const root = repeated?.root ?? createFixture(failCases === undefined
+    ? {}
+    : { failCases })
   return runLauncherFixtureProject(root, {
     workers,
-    ...(failCases === undefined ? {} : { failCases }),
-    ...(repeated?.args === undefined ? {} : { args: repeated.args }),
-    ...(repeated?.reportPath === undefined ? {} : { reportPath: repeated.reportPath }),
+    ...(failCases === undefined
+      ? {}
+      : { failCases }),
+    ...(repeated?.args === undefined
+      ? {}
+      : { args: repeated.args }),
+    ...(repeated?.reportPath === undefined
+      ? {}
+      : { reportPath: repeated.reportPath }),
   })
 }
 
@@ -215,7 +230,9 @@ function requireFixtureCleanupAndArtifacts(run: FixtureRun, setupCount: number):
     expect(state.workers).toBe(1)
     const runDir = fixtureStringField(state, 'runDir')
     expect(state.runDirIsSymlink).toBe(false)
-    const runRoot = setupCount === 1 ? runDir : dirname(runDir)
+    const runRoot = setupCount === 1
+      ? runDir
+      : dirname(runDir)
     expect(basename(runRoot)).toMatch(/^leapmux-e2e-[A-Za-z0-9]{6}$/)
     if (setupCount > 1)
       expect(basename(runDir)).toMatch(/^[1-9]\d*$/)
@@ -243,7 +260,9 @@ function requireFixtureCleanupAndArtifacts(run: FixtureRun, setupCount: number):
     if (!isObject(attachment))
       throw new Error('The fixture result has no isolation receipt.')
     const path = fixtureStringField(attachment, 'path')
-    const retainedPath = isAbsolute(path) ? path : resolve(run.root, 'frontend', path)
+    const retainedPath = isAbsolute(path)
+      ? path
+      : resolve(run.root, 'frontend', path)
     expect(readFileSync(retainedPath, 'utf8')).toBe(`fixture-case-${test.title.slice('executes '.length)}`)
   }
   for (const label of ['alpha', 'beta']) {
@@ -284,7 +303,9 @@ function retainedArtifactFiles(root: string): Map<string, Buffer> {
 describe('waitForFixtureFiles', () => {
   /** Start a wait on a watch that reports no event. The test advances the interval check itself. */
   function silentWait(files: string[], completion: Promise<LauncherCompletion> = new Promise(() => {})) {
-    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] })
+    vi.useFakeTimers({
+      toFake: ['setInterval', 'clearInterval'],
+    })
     const records = join(createFixture(), 'records')
     const watcher = silenceNextWatch()
     const wait = waitForFixtureFiles(records, files, completion, AbortSignal.timeout(CANCELLATION_PHASE_DEADLINE_MS))
@@ -336,7 +357,9 @@ describe('stopPrivateRunner', () => {
     vi.spyOn(processRegistry, 'stopTrackedProcesses').mockRejectedValueOnce(cleanup)
     const runner = {
       child: new ChildProcess(),
-      completion: stage === 'completion' ? Promise.reject(original) : Promise.resolve({ code: 0, signal: null }),
+      completion: stage === 'completion'
+        ? Promise.reject(original)
+        : Promise.resolve({ code: 0, signal: null }),
       log: join(root, 'unused-console.log'),
     }
     const failure: unknown = await stopPrivateRunner(root, join(root, 'records'), runner).catch((error: unknown) => error)
@@ -407,21 +430,39 @@ describe('runE2E Playwright integration', () => {
 
   it('selects only the failed parallel case when a serial run uses last-failed', async () => {
     const root = createFixture()
-    const failed = await executeFixture(2, ['beta'], { root, reportPath: join(root, 'first-report.json') })
+    const failed = await executeFixture(2, ['beta'], {
+      root,
+      reportPath: join(root, 'first-report.json'),
+    })
     expect(failed.code).not.toBe(0)
     expect(failed.cases.map(test => test.status), launcherFixtureDiagnostics(failed)).toEqual(['expected', 'unexpected'])
     requireFixtureCleanupAndArtifacts(failed, 2)
     const precedingArtifacts = retainedArtifactFiles(root)
-    expect([...precedingArtifacts.keys()].filter(path => path.endsWith('receipt.txt'))).toHaveLength(2)
-    expect([...precedingArtifacts.keys()].some(path => path.endsWith('report.json'))).toBe(true)
-    expect([...precedingArtifacts.keys()].some(path => path.endsWith('.zip'))).toBe(true)
+    expect([
+      ...precedingArtifacts.keys(),
+    ].filter(path => path.endsWith('receipt.txt'))).toHaveLength(2)
+    expect([
+      ...precedingArtifacts.keys(),
+    ].some(path => path.endsWith('report.json'))).toBe(true)
+    expect([
+      ...precedingArtifacts.keys(),
+    ].some(path => path.endsWith('.zip'))).toBe(true)
 
-    const resumed = await executeFixture(1, undefined, { root, args: ['--last-failed'], reportPath: join(root, 'second-report.json') })
+    const resumed = await executeFixture(1, undefined, {
+      root,
+      args: ['--last-failed'],
+      reportPath: join(root, 'second-report.json'),
+    })
     expect(resumed.code, launcherFixtureDiagnostics(resumed)).toBe(0)
     expect(resumed.cases.map(test => test.title)).toEqual(['executes beta'])
     expect(resumed.cases[0]?.results).toHaveLength(1)
     expect(resumed.cases[0]?.status).toBe('expected')
-    expect(resumed.report.stats).toMatchObject({ expected: 1, unexpected: 0, skipped: 0, flaky: 0 })
+    expect(resumed.report.stats).toMatchObject({
+      expected: 1,
+      unexpected: 0,
+      skipped: 0,
+      flaky: 0,
+    })
     expect(existsSync(join(root, 'records', 'entry-alpha.json'))).toBe(false)
     expect(existsSync(join(root, 'records', 'entry-beta.json'))).toBe(true)
     expect(readFileSync(join(root, 'build-count'), 'utf8')).toBe('2')
@@ -434,22 +475,45 @@ describe('runE2E Playwright integration', () => {
 
   it('clears prior parallel failures after a complete passing parallel run', async () => {
     const root = createFixture()
-    const failed = await executeFixture(2, ['beta'], { root, reportPath: join(root, 'first-report.json') })
+    const failed = await executeFixture(2, ['beta'], {
+      root,
+      reportPath: join(root, 'first-report.json'),
+    })
     expect(failed.code).not.toBe(0)
     const beta = failed.cases.find(test => test.title === 'executes beta')
     expect(beta?.status).toBe('unexpected')
-    expect(readFixtureRecord(join(root, 'retained-artifacts', '.last-run.json'))).toEqual({ status: 'failed', failedTests: [beta?.id] })
+    expect(readFixtureRecord(join(root, 'retained-artifacts', '.last-run.json'))).toEqual({
+      status: 'failed',
+      failedTests: [beta?.id],
+    })
 
-    const passed = await executeFixture(2, undefined, { root, reportPath: join(root, 'second-report.json') })
+    const passed = await executeFixture(2, undefined, {
+      root,
+      reportPath: join(root, 'second-report.json'),
+    })
     expect(passed.code, launcherFixtureDiagnostics(passed)).toBe(0)
     expect(passed.cases.map(test => test.title)).toEqual(['executes alpha', 'executes beta'])
-    expect(passed.report.stats).toMatchObject({ expected: 2, unexpected: 0, skipped: 0, flaky: 0 })
+    expect(passed.report.stats).toMatchObject({
+      expected: 2,
+      unexpected: 0,
+      skipped: 0,
+      flaky: 0,
+    })
     expect(readFixtureRecord(join(root, 'retained-artifacts', '.last-run.json'))).toEqual({ status: 'passed', failedTests: [] })
 
-    const empty = await executeFixture(1, undefined, { root, args: ['--last-failed', '--pass-with-no-tests'], reportPath: join(root, 'third-report.json') })
+    const empty = await executeFixture(1, undefined, {
+      root,
+      args: ['--last-failed', '--pass-with-no-tests'],
+      reportPath: join(root, 'third-report.json'),
+    })
     expect(empty.code, launcherFixtureDiagnostics(empty)).toBe(0)
     expect(empty.cases).toEqual([])
-    expect(empty.report.stats).toMatchObject({ expected: 0, unexpected: 0, skipped: 0, flaky: 0 })
+    expect(empty.report.stats).toMatchObject({
+      expected: 0,
+      unexpected: 0,
+      skipped: 0,
+      flaky: 0,
+    })
     expect(existsSync(join(root, 'records', 'entry-alpha.json'))).toBe(false)
     expect(existsSync(join(root, 'records', 'entry-beta.json'))).toBe(false)
     expect(readFileSync(join(root, 'build-count'), 'utf8')).toBe('3')
@@ -460,7 +524,12 @@ describe('runE2E Playwright integration', () => {
     const run = await executeFixture(2)
     expect(run.code, launcherFixtureDiagnostics(run)).toBe(0)
     expect(run.parallelRelease).toBe(true)
-    expect(run.report.stats).toMatchObject({ expected: 2, unexpected: 0, flaky: 0, skipped: 0 })
+    expect(run.report.stats).toMatchObject({
+      expected: 2,
+      unexpected: 0,
+      flaky: 0,
+      skipped: 0,
+    })
     expect(run.cases.map(test => test.status), launcherFixtureDiagnostics(run)).toEqual(['expected', 'expected'])
     requireFixtureCleanupAndArtifacts(run, 2)
     const entries = ['alpha', 'beta'].map(label => readFixtureRecord(join(run.records, `entry-${label}.json`)))
@@ -471,7 +540,12 @@ describe('runE2E Playwright integration', () => {
     const run = await executeFixture(1)
     expect(run.code, launcherFixtureDiagnostics(run)).toBe(0)
     expect(run.parallelRelease).toBe(false)
-    expect(run.report.stats).toMatchObject({ expected: 2, unexpected: 0, flaky: 0, skipped: 0 })
+    expect(run.report.stats).toMatchObject({
+      expected: 2,
+      unexpected: 0,
+      flaky: 0,
+      skipped: 0,
+    })
     requireFixtureCleanupAndArtifacts(run, 1)
     const alpha = readFixtureRecord(join(run.records, 'entry-alpha.json'))
     const beta = readFixtureRecord(join(run.records, 'entry-beta.json'))
@@ -496,17 +570,30 @@ describe('runE2E Playwright integration', () => {
     const run = await executeFixture(2, ['beta'])
     expect(run.code).not.toBe(0)
     expect(run.parallelRelease).toBe(true)
-    expect(run.report.stats).toMatchObject({ expected: 1, unexpected: 1, flaky: 0, skipped: 0 })
+    expect(run.report.stats).toMatchObject({
+      expected: 1,
+      unexpected: 1,
+      flaky: 0,
+      skipped: 0,
+    })
     expect(run.cases.map(test => test.status), launcherFixtureDiagnostics(run)).toEqual(['expected', 'unexpected'])
     requireFixtureCleanupAndArtifacts(run, 2)
     const failed = run.cases.find(test => test.status === 'unexpected')
     expect(failed?.title).toBe('executes beta')
-    expect(failed?.results[0]).toMatchObject({ status: 'failed', error: { message: expect.stringContaining('intentional fixture failure') } })
+    expect(failed?.results[0]).toMatchObject({
+      status: 'failed',
+      error: {
+        message: expect.stringContaining('intentional fixture failure'),
+      },
+    })
   }, INTEGRATION_DEADLINE_MS)
 
   it('balances parallel shards from the recorded duration history', async () => {
     const root = createFixture()
-    const first = await executeFixture(2, undefined, { root, reportPath: join(root, 'first-report.json') })
+    const first = await executeFixture(2, undefined, {
+      root,
+      reportPath: join(root, 'first-report.json'),
+    })
     expect(first.code, launcherFixtureDiagnostics(first)).toBe(0)
     const history = readFixtureRecord(join(root, 'retained-artifacts', '.file-durations.json'))
     expect(history.version).toBe(1)
@@ -514,7 +601,10 @@ describe('runE2E Playwright integration', () => {
       throw new Error('The duration history has no file map.')
     expect(Object.keys(history.files).sort()).toEqual(['alpha.spec.ts', 'beta.spec.ts'])
 
-    const balanced = await executeFixture(2, undefined, { root, reportPath: join(root, 'second-report.json') })
+    const balanced = await executeFixture(2, undefined, {
+      root,
+      reportPath: join(root, 'second-report.json'),
+    })
     expect(balanced.code, launcherFixtureDiagnostics(balanced)).toBe(0)
     expect(balanced.cases.map(test => test.status)).toEqual(['expected', 'expected'])
     const log = readFileSync(balanced.consolePath, 'utf8')
@@ -522,7 +612,11 @@ describe('runE2E Playwright integration', () => {
     expect(log).toContain('    alpha.spec.ts:')
     expect(log).toContain('    beta.spec.ts:')
 
-    const staticSplit = await executeFixture(2, undefined, { root, args: ['--balance=off'], reportPath: join(root, 'third-report.json') })
+    const staticSplit = await executeFixture(2, undefined, {
+      root,
+      args: ['--balance=off'],
+      reportPath: join(root, 'third-report.json'),
+    })
     expect(staticSplit.code, launcherFixtureDiagnostics(staticSplit)).toBe(0)
     expect(readFileSync(staticSplit.consolePath, 'utf8')).toContain('Playwright\'s own --shard=i/2 split. Reason: --balance=off selects it')
     expect(readFileSync(join(root, 'build-count'), 'utf8')).toBe('3')
@@ -531,13 +625,26 @@ describe('runE2E Playwright integration', () => {
 
   it('reruns the failed tests of the last parallel run in parallel shards', async () => {
     const root = createFixture()
-    const failed = await executeFixture(2, ['beta'], { root, reportPath: join(root, 'first-report.json') })
+    const failed = await executeFixture(2, ['beta'], {
+      root,
+      reportPath: join(root, 'first-report.json'),
+    })
     expect(failed.code, launcherFixtureDiagnostics(failed)).not.toBe(0)
 
-    const rerun = await runLauncherFixtureProject(root, { workers: 2, args: ['--last-failed'], expectedCases: ['beta'], reportPath: join(root, 'second-report.json') })
+    const rerun = await runLauncherFixtureProject(root, {
+      workers: 2,
+      args: ['--last-failed'],
+      expectedCases: ['beta'],
+      reportPath: join(root, 'second-report.json'),
+    })
     expect(rerun.code, launcherFixtureDiagnostics(rerun)).toBe(0)
     expect(rerun.cases.map(test => test.title)).toEqual(['executes beta'])
-    expect(rerun.report.stats).toMatchObject({ expected: 1, unexpected: 0, skipped: 0, flaky: 0 })
+    expect(rerun.report.stats).toMatchObject({
+      expected: 1,
+      unexpected: 0,
+      skipped: 0,
+      flaky: 0,
+    })
     expect(existsSync(join(root, 'records', 'entry-alpha.json'))).toBe(false)
     expect(existsSync(join(root, 'records', 'entry-beta.json'))).toBe(true)
     // The merged shards replace the caller's last-run state.
@@ -547,11 +654,19 @@ describe('runE2E Playwright integration', () => {
 
   it('reruns the complete failed files of the last parallel run', async () => {
     const root = createFixture()
-    const failed = await executeFixture(2, ['beta'], { root, reportPath: join(root, 'first-report.json') })
+    const failed = await executeFixture(2, ['beta'], {
+      root,
+      reportPath: join(root, 'first-report.json'),
+    })
     expect(failed.code, launcherFixtureDiagnostics(failed)).not.toBe(0)
     expect(existsSync(join(root, 'retained-artifacts', '.last-run-report.json'))).toBe(true)
 
-    const rerun = await runLauncherFixtureProject(root, { workers: 2, args: ['--failed-files'], expectedCases: ['beta'], reportPath: join(root, 'second-report.json') })
+    const rerun = await runLauncherFixtureProject(root, {
+      workers: 2,
+      args: ['--failed-files'],
+      expectedCases: ['beta'],
+      reportPath: join(root, 'second-report.json'),
+    })
     expect(rerun.code, launcherFixtureDiagnostics(rerun)).toBe(0)
     expect(rerun.cases.map(test => test.title)).toEqual(['executes beta'])
     expect(readFileSync(rerun.consolePath, 'utf8')).toContain('E2E --failed-files: 1 file from')

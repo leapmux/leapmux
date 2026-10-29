@@ -4,7 +4,9 @@ import { kiroCurrentUserInput } from './kiroSurface'
 import { requestRows } from './modelRequestBody'
 
 function objectItems(value: unknown): Record<string, unknown>[] {
-  return Array.isArray(value) ? value.filter(isObject) : []
+  return Array.isArray(value)
+    ? value.filter(isObject)
+    : []
 }
 
 /** Where one protocol keeps the result entries of a request, and which field of an entry holds the content. */
@@ -46,7 +48,9 @@ const RESULT_LOCATIONS: Readonly<Record<MockModelRequestRecord['protocol'], Resu
   'aws-event-stream': {
     entries: (request, callId) => {
       const context = kiroCurrentUserInput(request.body)?.userInputMessageContext
-      return objectItems(isObject(context) ? context.toolResults : undefined).filter(result => result.toolUseId === callId)
+      return objectItems(isObject(context)
+        ? context.toolResults
+        : undefined).filter(result => result.toolUseId === callId)
     },
     content: 'content',
   },
@@ -85,7 +89,9 @@ export function nativeToolResultContent(request: MockModelRequestRecord | undefi
 /** Serialize one exact native result. The call arguments can repeat every offered answer. */
 export function nativeToolResult(request: MockModelRequestRecord | undefined, callId: string): string {
   const content = nativeToolResultContent(request, callId)
-  return typeof content === 'string' ? content : JSON.stringify(content)
+  return typeof content === 'string'
+    ? content
+    : JSON.stringify(content)
 }
 
 /** Whether the request carries a result for the call, in its protocol's result location. */
@@ -109,13 +115,27 @@ const CALL_LOCATIONS: Readonly<Record<MockModelRequestRecord['protocol'], (reque
   'openai-chat-completions': request => objectItems(requestRows(request.protocol, request.body))
     .filter(message => message.role === 'assistant')
     .flatMap(message => objectItems(message.tool_calls))
-    .map(call => ({ id: call.id, name: isObject(call.function) ? call.function.name : undefined, encoded: isObject(call.function) ? call.function.arguments : undefined })),
+    .map(call => ({
+      id: call.id,
+      name: isObject(call.function)
+        ? call.function.name
+        : undefined,
+      encoded: isObject(call.function)
+        ? call.function.arguments
+        : undefined,
+    })),
   'openai-responses': request => objectItems(requestRows(request.protocol, request.body)).flatMap((item): RawToolCall[] => {
-    if (item.type === 'function_call')
-      return [{ id: item.call_id, name: item.name, encoded: item.arguments }]
+    if (item.type === 'function_call') {
+      return [
+        { id: item.call_id, name: item.name, encoded: item.arguments },
+      ]
+    }
     // A custom tool takes free text, not JSON.
-    if (item.type === 'custom_tool_call')
-      return [{ id: item.call_id, name: item.name, value: item.input }]
+    if (item.type === 'custom_tool_call') {
+      return [
+        { id: item.call_id, name: item.name, value: item.input },
+      ]
+    }
     return []
   }),
   'google-generative-language': request => objectItems(requestRows(request.protocol, request.body))
@@ -131,8 +151,12 @@ const CALL_LOCATIONS: Readonly<Record<MockModelRequestRecord['protocol'], (reque
     .map(block => ({ id: block.id, name: block.name, value: block.input })),
   // Kiro's service keeps the tool uses of earlier turns in the conversation history.
   'aws-event-stream': (request) => {
-    const state = isObject(request.body) ? request.body.conversationState : undefined
-    return objectItems(isObject(state) ? state.history : undefined)
+    const state = isObject(request.body)
+      ? request.body.conversationState
+      : undefined
+    return objectItems(isObject(state)
+      ? state.history
+      : undefined)
       .map(entry => entry.assistantResponseMessage)
       .filter(isObject)
       .flatMap(message => objectItems(message.toolUses))
@@ -148,9 +172,13 @@ const CALL_LOCATIONS: Readonly<Record<MockModelRequestRecord['protocol'], (reque
 export function nativeToolCallArguments(
   request: MockModelRequestRecord,
   matches: string | ((id: string) => boolean),
-  label: string = typeof matches === 'string' ? matches : 'the selected call',
+  label: string = typeof matches === 'string'
+    ? matches
+    : 'the selected call',
 ): NativeToolCallRecord {
-  const selected = typeof matches === 'string' ? (id: string) => id === matches : matches
+  const selected = typeof matches === 'string'
+    ? (id: string) => id === matches
+    : matches
   const calls = CALL_LOCATIONS[request.protocol](request).filter(call => typeof call.id === 'string' && selected(call.id))
   if (calls.length !== 1)
     throw new Error(`The native request contains ${calls.length} tool calls for ${label}. Exactly one call is required.`)
@@ -160,9 +188,13 @@ export function nativeToolCallArguments(
   if ('value' in call)
     return { id: call.id, name: call.name, arguments: call.value }
   if (typeof call.encoded !== 'string')
-    throw new Error(`The native tool call ${call.id} has no JSON argument text.`)
+    throw new TypeError(`The native tool call ${call.id} has no JSON argument text.`)
   try {
-    return { id: call.id, name: call.name, arguments: JSON.parse(call.encoded) }
+    return {
+      id: call.id,
+      name: call.name,
+      arguments: JSON.parse(call.encoded),
+    }
   }
   catch (error) {
     throw new Error(`The native tool call ${call.id} contains invalid JSON arguments.`, { cause: error })

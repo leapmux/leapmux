@@ -39,7 +39,12 @@ describe('goals and to-dos locators', () => {
     const locators = selectorsIn(source)
     // Require selectors so a parser or helper change cannot pass through an empty scan.
     expect(locators.length).toBeGreaterThan(10)
-    const duplicated = ['goal-', 'section-header-', 'goals-and-todos', 'set-goal-']
+    const duplicated = [
+      'goal-',
+      'section-header-',
+      'goals-and-todos',
+      'set-goal-',
+    ]
     const offenders = locators.filter(selector =>
       duplicated.some(id => selector.includes(`data-testid="${id}`)) && !selector.includes(':visible'),
     )
@@ -48,7 +53,10 @@ describe('goals and to-dos locators', () => {
 })
 
 describe('scriptedObjective', () => {
-  const script = { id: 'goal-unit-script', prompt: (text: string) => `${text}\n\n${SCENARIO_MARKER}goal-unit-script` }
+  const script = {
+    id: 'goal-unit-script',
+    prompt: (text: string) => `${text}\n\n${SCENARIO_MARKER}goal-unit-script`,
+  }
 
   it('types the prompt of the script and keeps the text and the marker apart', () => {
     const objective = scriptedObjective(script, 'Keep the build green.')
@@ -76,10 +84,14 @@ vi.mock('./ui', async importOriginal => ({
   stableBox: async () => ({ x: 0, y: 0, width: 1, height: 1 }),
 }))
 
-const reads = vi.hoisted(() => ({ messages: vi.fn<() => Promise<AgentChatMessage[]>>() }))
+const reads = vi.hoisted(() => ({
+  messages: vi.fn<() => Promise<AgentChatMessage[]>>(),
+}))
 vi.mock('./nativeMessages', () => ({ readAllAgentMessages: reads.messages }))
 
-const answers = vi.hoisted(() => ({ send: vi.fn() }))
+const answers = vi.hoisted(() => ({
+  send: vi.fn(),
+}))
 vi.mock('./nativeConversation', () => ({ sendNativeAnswer: answers.send }))
 
 /** A fake locator records its actions. A click on a goal action changes the status that the status dot reports. */
@@ -152,14 +164,22 @@ beforeEach(() => {
 describe('submitGoal', () => {
   it('expands the section, opens the editor from the set action, fills it, and submits', async () => {
     await submitGoal(fakePage(), 'Keep the build green.')
-    expect(recorded.events).toEqual(['expand', action('set'), `fill ${EDITOR} Keep the build green.`, SUBMIT])
+    expect(recorded.events).toEqual([
+      'expand',
+      action('set'),
+      `fill ${EDITOR} Keep the build green.`,
+      SUBMIT,
+    ])
   })
 })
 
 describe('clearGoal', () => {
   it('clears through the goal menu', async () => {
     await clearGoal(fakePage())
-    expect(recorded.events).toEqual([MENU, action('clear')])
+    expect(recorded.events).toEqual([
+      MENU,
+      action('clear'),
+    ])
   })
 })
 
@@ -243,8 +263,13 @@ describe('pauseResumeClearGoal', () => {
 })
 
 describe('countGoalTransitions', () => {
-  const context = { leapmuxServer: { hubUrl: 'http://unit.invalid', adminToken: 'unit-token', workerId: 'worker' } }
-  const message = (body: string) => ({ content: new TextEncoder().encode(body), contentCompression: ContentCompression.NONE }) as AgentChatMessage
+  const context = {
+    leapmuxServer: { hubUrl: 'http://unit.invalid', adminToken: 'unit-token', workerId: 'worker' },
+  }
+  const message = (body: string) => ({
+    content: new TextEncoder().encode(body),
+    contentCompression: ContentCompression.NONE,
+  }) as AgentChatMessage
 
   it('counts the transitions of every message that the paged read returns', async () => {
     reads.messages.mockResolvedValue([
@@ -272,7 +297,10 @@ describe('nativeGoalProbeTurn', () => {
     const request = { protocol: 'openai-chat-completions', path: '/v1/chat/completions', body: {} }
     answers.send.mockReset()
     answers.send.mockResolvedValueOnce(request)
-    const context = { page: fakePage(), provider: 0 } as unknown as Parameters<typeof nativeGoalProbeTurn>[0]
+    const context = {
+      page: fakePage(),
+      provider: 0,
+    } as unknown as Parameters<typeof nativeGoalProbeTurn>[0]
     expect(await nativeGoalProbeTurn(context)).toBe(request)
     expect(answers.send).toHaveBeenCalledTimes(1)
     expect(answers.send).toHaveBeenCalledWith(context, 'Complete before the native goal refusal.', 'The native goal probe completed.')

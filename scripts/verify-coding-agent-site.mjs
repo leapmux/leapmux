@@ -120,7 +120,10 @@ function textVariants(nodes) {
 function detailPieces(detail) {
   const paragraphs = markdownBlockTexts(detail).map(normalizeText).filter(Boolean)
   const sentences = paragraphs.flatMap(paragraph => paragraph.split(/(?<=[.!?])\s+/))
-  return new Set([...paragraphs, ...sentences].filter(text => text.length >= MIN_PIECE_LENGTH))
+  return new Set([
+    ...paragraphs,
+    ...sentences,
+  ].filter(text => text.length >= MIN_PIECE_LENGTH))
 }
 
 /**
@@ -128,7 +131,10 @@ function detailPieces(detail) {
  * text of the Markdown. A whole note counts from 15 characters.
  */
 function wholeDetailNotes(detail) {
-  return new Set([normalizeText(detail), normalizeText(markdownText(detail))].filter(text => text.length >= MIN_NOTE_LENGTH))
+  return new Set([
+    normalizeText(detail),
+    normalizeText(markdownText(detail)),
+  ].filter(text => text.length >= MIN_NOTE_LENGTH))
 }
 
 /**

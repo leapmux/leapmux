@@ -4,9 +4,27 @@ import { gooseTerminalOutputFileLimit } from './terminalOutputLimit'
 function fixture() {
   const original = { sessionUpdate: 'tool_call_update', toolCallId: 'call', status: 'completed' }
   const reference = { type: 'terminal', terminalId: 'terminal' }
-  const protocol = { _meta: { goose: { toolCall: { toolName: 'shell', extensionName: 'developer' } } }, content: [reference] }
-  const provider = { ...original, protocol, terminals: { terminal: { output: 'native retained tail42', truncated: true, exitCode: 0 } } }
-  return { original, provider, reference, supplemental: { provider } }
+  const protocol = {
+    _meta: {
+      goose: {
+        toolCall: { toolName: 'shell', extensionName: 'developer' },
+      },
+    },
+    content: [reference],
+  }
+  const provider = {
+    ...original,
+    protocol,
+    terminals: {
+      terminal: { output: 'native retained tail42', truncated: true, exitCode: 0 },
+    },
+  }
+  return {
+    original,
+    provider,
+    reference,
+    supplemental: { provider },
+  }
 }
 
 describe('gooseTerminalOutputFileLimit', () => {
@@ -18,7 +36,9 @@ describe('gooseTerminalOutputFileLimit', () => {
   it('rejects another original or supplement identity', () => {
     const f = fixture()
     expect(() => gooseTerminalOutputFileLimit(f.original, f.supplemental, 'foreign')).toThrow('completed')
-    expect(() => gooseTerminalOutputFileLimit(f.original, { provider: { ...f.provider, toolCallId: 'foreign' } }, 'call')).toThrow('another')
+    expect(() => gooseTerminalOutputFileLimit(f.original, {
+      provider: { ...f.provider, toolCallId: 'foreign' },
+    }, 'call')).toThrow('another')
     expect(() => gooseTerminalOutputFileLimit(f.original, undefined, 'call')).toThrow('record')
   })
 
@@ -38,6 +58,11 @@ describe('gooseTerminalOutputFileLimit', () => {
     { output: 'tail', truncated: true, exitCode: null },
   ])('rejects another retained output or exit state: %j', (terminal) => {
     const f = fixture()
-    expect(() => gooseTerminalOutputFileLimit(f.original, { provider: { ...f.provider, terminals: { terminal } } }, 'call')).toThrow('exit state')
+    expect(() => gooseTerminalOutputFileLimit(f.original, {
+      provider: {
+        ...f.provider,
+        terminals: { terminal },
+      },
+    }, 'call')).toThrow('exit state')
   })
 })

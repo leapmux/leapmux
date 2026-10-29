@@ -40,7 +40,12 @@ import { enclosingFunctionName, lineOf } from '~/test-support/syntaxSite'
 // `platformModifierKeys.test.ts` beside it.
 
 /** The key names that the guard refuses in place of `PLATFORM_MOD`: each name of the Meta key, and `ControlOrMeta`. */
-export const REFUSED_MODIFIER_KEYS: readonly string[] = ['Meta', 'MetaLeft', 'MetaRight', 'ControlOrMeta']
+export const REFUSED_MODIFIER_KEYS: readonly string[] = [
+  'Meta',
+  'MetaLeft',
+  'MetaRight',
+  'ControlOrMeta',
+]
 
 /** The methods whose first argument is a key or a chord. */
 const KEY_METHODS: ReadonlySet<string> = new Set(['press', 'down', 'up'])
@@ -66,12 +71,18 @@ export interface RefusedModifierKey {
 /** Return the refused key name in the literal text of `node`, or undefined when it spells none. */
 function refusedKey(node: TypeScript.Node): string | undefined {
   let texts: string[]
-  if (isStringLiteral(node) || isNoSubstitutionTemplateLiteral(node))
+  if (isStringLiteral(node) || isNoSubstitutionTemplateLiteral(node)) {
     texts = [node.text]
-  else if (isTemplateExpression(node))
-    texts = [node.head.text, ...node.templateSpans.map(span => span.literal.text)]
-  else
+  }
+  else if (isTemplateExpression(node)) {
+    texts = [
+      node.head.text,
+      ...node.templateSpans.map(span => span.literal.text),
+    ]
+  }
+  else {
     return undefined
+  }
   for (const text of texts) {
     // A chord joins its keys with `+`, as in `Shift+Meta+ArrowLeft`.
     const key = text.split('+').find(part => REFUSED_MODIFIER_KEYS.includes(part))
@@ -98,8 +109,14 @@ export function refusedModifierKeys(inputs: readonly ModifierSourceFile[]): Refu
     const visit = (node: TypeScript.Node): void => {
       for (const argument of keyArguments(node)) {
         const key = refusedKey(argument)
-        if (key !== undefined)
-          findings.push({ path: input.path, line: lineOf(file, argument), enclosingFunction: enclosingFunctionName(argument), key })
+        if (key !== undefined) {
+          findings.push({
+            path: input.path,
+            line: lineOf(file, argument),
+            enclosingFunction: enclosingFunctionName(argument),
+            key,
+          })
+        }
       }
       forEachChild(node, visit)
     }

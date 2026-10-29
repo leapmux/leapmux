@@ -28,7 +28,9 @@ describe('FilterableListbox', () => {
   it('leaves every option unselected when current is absent', () => {
     render(() => FilterableListbox({
       ariaLabel: 'Test options',
-      items: [{ label: 'Alpha', value: 'alpha' }],
+      items: [
+        { label: 'Alpha', value: 'alpha' },
+      ],
       onSelect: () => {},
     }))
 
@@ -129,7 +131,9 @@ describe('FilterableListbox', () => {
     // Typing routes through the caller's setter (so the caller can reset it across
     // reuse, e.g. the always-mounted code-language popover resets it on open).
     const input = screen.getByTestId('f-filter')
-    await fireEvent.input(input, { target: { value: 'ban' } })
+    await fireEvent.input(input, {
+      target: { value: 'ban' },
+    })
     // eslint-disable-next-line solid/reactivity -- an assertion reads the value once; there is nothing to re-run.
     expect(filter()).toBe('ban')
 
@@ -187,7 +191,9 @@ describe('FilterableListbox', () => {
     }))
 
     const input = screen.getByTestId('f-filter') as HTMLInputElement
-    await fireEvent.input(input, { target: { value: 'alph' } })
+    await fireEvent.input(input, {
+      target: { value: 'alph' },
+    })
     expect(screen.queryByTestId('f-bravo')).toBeNull()
 
     setResetKey(1)

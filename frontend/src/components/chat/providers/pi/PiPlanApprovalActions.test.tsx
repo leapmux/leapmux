@@ -26,7 +26,12 @@ const PLAN_OPTIONS = [
 function renderActions(onRespond = vi.fn(async () => {})) {
   const request = {
     requestId: 'req-1',
-    payload: { type: 'extension_ui_request', method: 'select', title: 'Proposed plan ready. What next?', options: PLAN_OPTIONS },
+    payload: {
+      type: 'extension_ui_request',
+      method: 'select',
+      title: 'Proposed plan ready. What next?',
+      options: PLAN_OPTIONS,
+    },
   }
   render(() => (
     <PiPlanApprovalActions

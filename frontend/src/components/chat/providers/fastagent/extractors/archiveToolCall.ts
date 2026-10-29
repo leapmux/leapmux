@@ -10,10 +10,16 @@ import { fastAgentArchiveSource, fastAgentNativeResultText, sameFastAgentArchive
 import { FAST_AGENT_SHELL } from '../protocol'
 
 function structuredExit(result: Record<string, unknown> | undefined): number | undefined {
-  const meta = result ? pickObject(result, '_meta') : undefined
-  const execution = meta ? pickObject(meta, FAST_AGENT_SHELL.Metadata) : undefined
+  const meta = result
+    ? pickObject(result, '_meta')
+    : undefined
+  const execution = meta
+    ? pickObject(meta, FAST_AGENT_SHELL.Metadata)
+    : undefined
   const code = execution?.[FAST_AGENT_SHELL.ExitCode]
-  return typeof code === 'number' && Number.isSafeInteger(code) ? code : undefined
+  return typeof code === 'number' && Number.isSafeInteger(code)
+    ? code
+    : undefined
 }
 function commandResult(output: string, code: number | undefined, failed: boolean): CommandResult {
   if (code !== undefined)
@@ -28,41 +34,91 @@ export function fastAgentArchiveToolCall(input: RowExtractionInput): ToolCall | 
     return null
   if (input.spanId !== undefined && input.spanId !== own.spanId)
     return null
-  const sibling = input.span.result ? fastAgentArchiveSource(input.span.result) : undefined
+  const sibling = input.span.result
+    ? fastAgentArchiveSource(input.span.result)
+    : undefined
   const resultSource = own.kind === 'result'
     ? own
-    : sibling?.kind === 'result' && sameFastAgentArchiveCall(own, sibling) ? sibling : undefined
+    : sibling?.kind === 'result' && sameFastAgentArchiveCall(own, sibling)
+      ? sibling
+      : undefined
   const result = resultSource?.result
   const shellTool = own.request.name === FASTAGENT_TOOL.Bash || own.request.name === FASTAGENT_TOOL.Process
-  const code = shellTool ? structuredExit(result) : undefined
+  const code = shellTool
+    ? structuredExit(result)
+    : undefined
   const failed = resultSource?.failed === true || (code !== undefined && code !== 0)
   const lifecycle: ToolCallLifecycleFacts = {
-    frameStatus: result ? failed ? 'failed' : 'completed' : 'in_progress',
-    providerOutcome: result ? failed ? 'failed' : 'succeeded' : null,
+    frameStatus: result
+      ? failed ? 'failed' : 'completed'
+      : 'in_progress',
+    providerOutcome: result
+      ? failed ? 'failed' : 'succeeded'
+      : null,
     retainedOutcome: retainedOutcome(input.completion ?? input.resolved.completion),
     rowFinal: result !== undefined,
     resultFrameLanded: result !== undefined,
   }
   const envelope: ToolCallEnvelope = { id: own.spanId, name: own.request.name, lifecycle }
   const args = own.request.args
-  const output = result ? fastAgentNativeResultText(result) : ''
-  const content = result && Array.isArray(result.content) ? result.content.map(parseMcpContentItem) : []
+  const output = result
+    ? fastAgentNativeResultText(result)
+    : ''
+  const content = result && Array.isArray(result.content)
+    ? result.content.map(parseMcpContentItem)
+    : []
   if (own.request.name === FASTAGENT_TOOL.Bash && typeof args.command === 'string') {
-    const description = typeof args.description === 'string' ? args.description : undefined
-    const cwd = typeof args.cwd === 'string' ? args.cwd : undefined
+    const description = typeof args.description === 'string'
+      ? args.description
+      : undefined
+    const cwd = typeof args.cwd === 'string'
+      ? args.cwd
+      : undefined
     const artifacts = content.filter(block => block.type !== 'text')
     return createToolCall(envelope, {
       kind: 'execute',
       label: 'Shell',
-      request: { command: args.command, language: 'bash', ...(description !== undefined ? { description } : {}), ...(cwd !== undefined ? { cwd } : {}) },
-      ...(result ? { result: { commands: [commandResult(output, code, failed)], unresolvedTerminals: [] }, ...(artifacts.length ? { extraContent: artifacts } : {}) } : {}),
+      request: {
+        command: args.command,
+        language: 'bash',
+        ...(description !== undefined
+          ? { description }
+          : {}),
+        ...(cwd !== undefined
+          ? { cwd }
+          : {}),
+      },
+      ...(result
+        ? {
+            result: {
+              commands: [
+                commandResult(output, code, failed),
+              ],
+              unresolvedTerminals: [],
+            },
+            ...(artifacts.length
+              ? { extraContent: artifacts }
+              : {}),
+          }
+        : {}),
     })
   }
-  const structured = result && isObject(result.structuredContent) ? JSON.stringify(result.structuredContent, null, 2) : undefined
+  const structured = result && isObject(result.structuredContent)
+    ? JSON.stringify(result.structuredContent, null, 2)
+    : undefined
   return createToolCall(envelope, {
     kind: 'other',
     label: own.request.name,
     request: { args },
-    ...(result ? { result: { content, ...(structured !== undefined ? { structuredJson: structured } : {}) } } : {}),
+    ...(result
+      ? {
+          result: {
+            content,
+            ...(structured !== undefined
+              ? { structuredJson: structured }
+              : {}),
+          },
+        }
+      : {}),
   })
 }

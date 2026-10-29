@@ -57,9 +57,19 @@ export function buildAllowResponse(
  * and each provider maps the id onto its own answer. The input is not changed.
  */
 export function withControlChoice(envelope: Record<string, unknown>, choice: string): Record<string, unknown> {
-  const outer = isObject(envelope.response) ? envelope.response : {}
-  const inner = isObject(outer.response) ? outer.response : {}
-  return { ...envelope, response: { ...outer, response: { ...inner, choice } } }
+  const outer = isObject(envelope.response)
+    ? envelope.response
+    : {}
+  const inner = isObject(outer.response)
+    ? outer.response
+    : {}
+  return {
+    ...envelope,
+    response: {
+      ...outer,
+      response: { ...inner, choice },
+    },
+  }
 }
 
 /**
@@ -97,7 +107,9 @@ export function buildDenyResponse(
  */
 export function normalizeRejectionMessage(message: string): string {
   const trimmed = message.trim()
-  return trimmed === CONTROL_REJECTED_BY_USER_MESSAGE ? '' : trimmed
+  return trimmed === CONTROL_REJECTED_BY_USER_MESSAGE
+    ? ''
+    : trimmed
 }
 
 /**
@@ -115,8 +127,12 @@ export function decodeControlBehaviorEnvelope(
 ): { requestId: string, behavior: 'allow' | 'deny', message: string } | null {
   if (!isObject(obj))
     return null
-  const outer = isObject(obj.response) ? obj.response : undefined
-  const inner = isObject(outer?.response) ? outer.response as Record<string, unknown> : undefined
+  const outer = isObject(obj.response)
+    ? obj.response
+    : undefined
+  const inner = isObject(outer?.response)
+    ? outer.response as Record<string, unknown>
+    : undefined
   const behavior = pickString(inner, 'behavior', '').trim()
   if (behavior !== 'allow' && behavior !== 'deny')
     return null

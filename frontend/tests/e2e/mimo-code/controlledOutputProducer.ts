@@ -54,7 +54,11 @@ export function observeMiMoNativeOutputSize(expected: string, previous: Readonly
   }
   const closeSubscriptions = () => {
     const failures: unknown[] = []
-    const stops = [...subscriptions.values()].flatMap(value => value.stop ? [value.stop] : [])
+    const stops = [
+      ...subscriptions.values(),
+    ].flatMap(value => value.stop
+      ? [value.stop]
+      : [])
     subscriptions.clear()
     if (directoryStop) {
       stops.push(directoryStop)
@@ -82,7 +86,9 @@ export function observeMiMoNativeOutputSize(expected: string, previous: Readonly
     catch (closeError) {
       failure = new AggregateError([error, closeError], 'The native MiMo observation and cleanup failed.')
     }
-    failureMessage = failure instanceof Error ? failure.message : String(failure)
+    failureMessage = failure instanceof Error
+      ? failure.message
+      : String(failure)
     reject(failure)
   }
   const closeLateSubscription = (stop: () => void) => {
@@ -181,7 +187,10 @@ export function observeMiMoNativeOutputSize(expected: string, previous: Readonly
       finished,
       released,
       inspections,
-      lastFiles: lastFiles.map(file => ({ ...file, prior: previous.has(file.path) })),
+      lastFiles: lastFiles.map(file => ({
+        ...file,
+        prior: previous.has(file.path),
+      })),
       failureMessage,
     }),
     close: () => {
@@ -204,7 +213,13 @@ export function controlledMiMoOutputFileProducer(directory: string, releaseFile:
   const files = () => readdirSync(directory).filter(name => /^tool_[A-Za-z0-9]+$/.test(name)).map((name) => {
     const path = join(directory, name)
     const info = lstatSync(path)
-    return { path, byteLength: info.isFile() && !info.isSymbolicLink() ? info.size : -1, identity: `${info.dev}:${info.ino}` }
+    return {
+      path,
+      byteLength: info.isFile() && !info.isSymbolicLink()
+        ? info.size
+        : -1,
+      identity: `${info.dev}:${info.ino}`,
+    }
   })
   const initialDirectory = lstatSync(directory)
   const previous = new Set(files().map(file => file.path))
@@ -215,8 +230,16 @@ export function controlledMiMoOutputFileProducer(directory: string, releaseFile:
     subscribe: (changed, failed) => {
       const watcher = watch(directory, (kind, filename) => {
         notificationCount++
-        if (notifications.length < 100)
-          notifications.push({ scope: 'directory', path: directory, kind, filename: filename === null ? null : filename.toString() })
+        if (notifications.length < 100) {
+          notifications.push({
+            scope: 'directory',
+            path: directory,
+            kind,
+            filename: filename === null
+              ? null
+              : filename.toString(),
+          })
+        }
         changed()
       })
       watcher.on('error', failed)
@@ -225,8 +248,16 @@ export function controlledMiMoOutputFileProducer(directory: string, releaseFile:
     subscribeFile: (path, changed, failed) => {
       const watcher = watch(path, (kind, filename) => {
         notificationCount++
-        if (notifications.length < 100)
-          notifications.push({ scope: 'file', path, kind, filename: filename === null ? null : filename.toString() })
+        if (notifications.length < 100) {
+          notifications.push({
+            scope: 'file',
+            path,
+            kind,
+            filename: filename === null
+              ? null
+              : filename.toString(),
+          })
+        }
         changed()
       })
       watcher.on('error', failed)
@@ -239,10 +270,22 @@ export function controlledMiMoOutputFileProducer(directory: string, releaseFile:
     const describeDirectory = () => {
       try {
         const current = lstatSync(directory)
-        return { path: directory, realpath: realpathSync(directory), initialDevice: initialDirectory.dev, initialInode: initialDirectory.ino, currentDevice: current.dev, currentInode: current.ino }
+        return {
+          path: directory,
+          realpath: realpathSync(directory),
+          initialDevice: initialDirectory.dev,
+          initialInode: initialDirectory.ino,
+          currentDevice: current.dev,
+          currentInode: current.ino,
+        }
       }
       catch (error) {
-        return { path: directory, failure: error instanceof Error ? error.message : String(error) }
+        return {
+          path: directory,
+          failure: error instanceof Error
+            ? error.message
+            : String(error),
+        }
       }
     }
     let currentFiles: object[]
@@ -250,13 +293,34 @@ export function controlledMiMoOutputFileProducer(directory: string, releaseFile:
       currentFiles = readdirSync(directory).map((name) => {
         const path = join(directory, name)
         const info = lstatSync(path)
-        return { path, bytes: info.size, identity: `${info.dev}:${info.ino}`, selected: /^tool_[A-Za-z0-9]+$/.test(name), prior: previous.has(path), regular: info.isFile() && !info.isSymbolicLink() }
+        return {
+          path,
+          bytes: info.size,
+          identity: `${info.dev}:${info.ino}`,
+          selected: /^tool_[A-Za-z0-9]+$/.test(name),
+          prior: previous.has(path),
+          regular: info.isFile() && !info.isSymbolicLink(),
+        }
       })
     }
     catch (error) {
-      currentFiles = [{ failure: error instanceof Error ? error.message : String(error) }]
+      currentFiles = [
+        {
+          failure: error instanceof Error
+            ? error.message
+            : String(error),
+        },
+      ]
     }
-    return { observer: control.diagnostic(), notificationCount, notifications, directory: describeDirectory(), releaseFile, releaseFileExists: existsSync(releaseFile), currentFiles }
+    return {
+      observer: control.diagnostic(),
+      notificationCount,
+      notifications,
+      directory: describeDirectory(),
+      releaseFile,
+      releaseFileExists: existsSync(releaseFile),
+      currentFiles,
+    }
   }
   return { ...control, diagnostic, command: `node -e ${quotePosixShellArgument(source)}` }
 }

@@ -56,7 +56,9 @@ function binaryDiffMessageFromGit(
 ): string | null {
   if (!entry)
     return null
-  const newSide = diffBase === 'head-vs-staged' ? 'staged copy' : 'working copy'
+  const newSide = diffBase === 'head-vs-staged'
+    ? 'staged copy'
+    : 'working copy'
 
   if (diffBase === 'head-vs-staged') {
     // HEAD vs INDEX: only the staged-side codes matter.
@@ -90,7 +92,9 @@ function binaryDiffMessageFromGit(
 /** Parse the wrapped scroll-position value, returning null when stale or malformed. */
 function readScrollEntry(key: string): number | null {
   const scroll = sessionStorageGet<number>(key)
-  return scroll !== undefined && Number.isFinite(scroll) ? scroll : null
+  return scroll !== undefined && Number.isFinite(scroll)
+    ? scroll
+    : null
 }
 
 export const FileViewer: Component<{
@@ -281,8 +285,17 @@ export const FileViewer: Component<{
         // Images use the shared byte limit and paging helper. Text keeps its smaller preview limit.
         // Oversized images return metadata only, so the viewer does not fetch bytes that it cannot display.
         const readResp = isImageExt(fileExt)
-          ? await readWorkerFile({ workerId, path: filePath, maxBytes: MAX_FILE_IMAGE_BYTES, signal: controller.signal })
-          : await workerRpc.readFile(workerId, { workerId, path: filePath, limit: BigInt(MAX_FILE_SIZE) })
+          ? await readWorkerFile({
+              workerId,
+              path: filePath,
+              maxBytes: MAX_FILE_IMAGE_BYTES,
+              signal: controller.signal,
+            })
+          : await workerRpc.readFile(workerId, {
+              workerId,
+              path: filePath,
+              limit: BigInt(MAX_FILE_SIZE),
+            })
         if (!active)
           return
         const respTotalSize = Number(readResp.totalSize)
@@ -331,13 +344,19 @@ export const FileViewer: Component<{
       return 'working'
     if (fv === 'head' || fv === 'staged')
       return fv
-    const base = props.fileDiffBase === 'head-vs-staged' ? 'head-vs-staged' : 'head-vs-working'
+    const base = props.fileDiffBase === 'head-vs-staged'
+      ? 'head-vs-staged'
+      : 'head-vs-working'
     return `diff:${base}`
   })
 
   // Load diff content when in diff or ref mode.
   createEffect(on(
-    () => [props.workerId, props.filePath, diffSourceMode()] as const,
+    () => [
+      props.workerId,
+      props.filePath,
+      diffSourceMode(),
+    ] as const,
     async ([workerId, filePath, mode]) => {
       if (mode === 'working') {
         setDiffOldContent(null)
@@ -348,7 +367,9 @@ export const FileViewer: Component<{
       setDiffLoading(true)
       try {
         if (mode === 'head' || mode === 'staged') {
-          const ref = mode === 'head' ? GitFileRef.HEAD : GitFileRef.STAGED
+          const ref = mode === 'head'
+            ? GitFileRef.HEAD
+            : GitFileRef.STAGED
           const resp = await workerRpc.readGitFile(workerId, { workerId, path: filePath, ref })
           if (resp.exists) {
             setDiffOldContent(new TextDecoder().decode(resp.content))
@@ -385,7 +406,9 @@ export const FileViewer: Component<{
               path: filePath,
               ref: GitFileRef.STAGED,
             })
-            newText = stagedResp.exists ? decoder.decode(stagedResp.content) : ''
+            newText = stagedResp.exists
+              ? decoder.decode(stagedResp.content)
+              : ''
           }
           else {
             // head-vs-working: prefer the working-copy bytes loaded by
@@ -404,7 +427,9 @@ export const FileViewer: Component<{
             }
           }
           const headResp = await headPromise
-          setDiffOldContent(headResp.exists ? decoder.decode(headResp.content) : '')
+          setDiffOldContent(headResp.exists
+            ? decoder.decode(headResp.content)
+            : '')
           setDiffNewContent(newText)
         }
       }
@@ -499,7 +524,9 @@ export const FileViewer: Component<{
   })
 
   const diffViewPref = (): DiffViewPreference =>
-    props.fileViewMode === 'split-diff' ? 'split' : 'unified'
+    props.fileViewMode === 'split-diff'
+      ? 'split'
+      : 'unified'
 
   let contentRef: HTMLDivElement | undefined
 
@@ -532,7 +559,13 @@ export const FileViewer: Component<{
 
   // Restore saved scroll position or scroll to first diff entry.
   createEffect(on(
-    () => [loading(), diffLoading(), isDiffMode(), diffHunks().length, props.fileViewMode] as const,
+    () => [
+      loading(),
+      diffLoading(),
+      isDiffMode(),
+      diffHunks().length,
+      props.fileViewMode,
+    ] as const,
     ([fileLoading, dLoading, diffMode, hunkCount, _fvMode]) => {
       if (fileLoading || dLoading || !contentRef)
         return
@@ -558,7 +591,9 @@ export const FileViewer: Component<{
 
       requestAnimationFrame(() => {
         const container = contentRef!
-        const diffElements = [...container.querySelectorAll(`.${diffAdded}, .${diffRemoved}`)]
+        const diffElements = [
+          ...container.querySelectorAll(`.${diffAdded}, .${diffRemoved}`),
+        ]
         if (diffElements.length === 0)
           return
 
@@ -588,7 +623,9 @@ export const FileViewer: Component<{
       <Show when={showToolbar()}>
         <DiffModeToolbar
           mode={props.fileViewMode!}
-          {...(props.fileDiffBase !== undefined ? { diffBase: props.fileDiffBase } : {})}
+          {...(props.fileDiffBase !== undefined
+            ? { diffBase: props.fileDiffBase }
+            : {})}
           {...(props.hasStagedAndUnstaged !== undefined
             ? { hasStagedAndUnstaged: props.hasStagedAndUnstaged }
             : {})}
@@ -606,15 +643,31 @@ export const FileViewer: Component<{
             workerId={props.workerId}
             path={props.filePath}
             flavor={flavor()}
-            {...(props.rootPath !== undefined ? { rootPath: props.rootPath } : {})}
-            {...(props.homeDir !== undefined ? { homeDir: props.homeDir } : {})}
+            {...(props.rootPath !== undefined
+              ? { rootPath: props.rootPath }
+              : {})}
+            {...(props.homeDir !== undefined
+              ? { homeDir: props.homeDir }
+              : {})}
             // The size the viewer already loaded, so its own three-dot menu
             // shows the Size row the identical menu shows in the sidebar tree.
             // Omitted when 0, because 0 here means "not loaded yet", not "an
             // empty file" -- the signal starts at 0 before the read resolves.
-            {...(totalSize() > 0 ? { size: totalSize() } : {})}
-            {...(modTime() ? { modTime: modTime() } : {})}
-            {...(props.onMention !== undefined ? { onMention: () => props.onMention?.() } : {})}
+            {...(totalSize() > 0
+              ? {
+                  size: totalSize(),
+                }
+              : {})}
+            {...(modTime()
+              ? {
+                  modTime: modTime(),
+                }
+              : {})}
+            {...(props.onMention !== undefined
+              ? {
+                  onMention: () => props.onMention?.(),
+                }
+              : {})}
             triggerClass={styles.viewToggleButton}
             triggerTestId="file-actions-trigger"
             actions={saveActions}
@@ -623,7 +676,9 @@ export const FileViewer: Component<{
       </Show>
       <div
         class={styles.content}
-        classList={{ [styles.hasFloatingToolbar]: hasTopChrome() }}
+        classList={{
+          [styles.hasFloatingToolbar]: hasTopChrome(),
+        }}
         ref={contentRef}
       >
         <Show when={loading() || diffLoading()}>
@@ -639,7 +694,9 @@ export const FileViewer: Component<{
               content={new TextEncoder().encode(diffOldContent()!)}
               filePath={props.filePath}
               totalSize={diffOldContent()!.length}
-              {...(props.onQuote !== undefined ? { onQuote: props.onQuote } : {})}
+              {...(props.onQuote !== undefined
+                ? { onQuote: props.onQuote }
+                : {})}
             />
           </Show>
           <Show when={isRefMode() && !diffLoading() && diffOldContent() === null}>
@@ -657,7 +714,11 @@ export const FileViewer: Component<{
               hunks={diffHunks()}
               view={diffViewPref()}
               filePath={props.filePath}
-              {...(diffOldContent() !== null ? { originalFile: diffOldContent()! } : {})}
+              {...(diffOldContent() !== null
+                ? {
+                    originalFile: diffOldContent()!,
+                  }
+                : {})}
             />
           </Show>
 
@@ -695,7 +756,9 @@ export const FileViewer: Component<{
                       content={content()!}
                       filePath={props.filePath}
                       totalSize={totalSize()}
-                      {...(props.onQuote !== undefined ? { onQuote: props.onQuote } : {})}
+                      {...(props.onQuote !== undefined
+                        ? { onQuote: props.onQuote }
+                        : {})}
                     />
                   </Match>
                   <Match when={viewMode() === 'markdown' && content()}>
@@ -704,7 +767,9 @@ export const FileViewer: Component<{
                       filePath={props.filePath}
                       totalSize={totalSize()}
                       mode={displayMode()}
-                      {...(props.onQuote !== undefined ? { onQuote: props.onQuote } : {})}
+                      {...(props.onQuote !== undefined
+                        ? { onQuote: props.onQuote }
+                        : {})}
                     />
                   </Match>
                   <Match when={viewMode() === 'image' && content()}>
@@ -713,7 +778,9 @@ export const FileViewer: Component<{
                       filePath={props.filePath}
                       totalSize={totalSize()}
                       mode={displayMode()}
-                      {...(props.onQuote !== undefined ? { onQuote: props.onQuote } : {})}
+                      {...(props.onQuote !== undefined
+                        ? { onQuote: props.onQuote }
+                        : {})}
                     />
                   </Match>
                 </Switch>
@@ -723,7 +790,9 @@ export const FileViewer: Component<{
                 <HexView
                   content={content()!}
                   totalSize={totalSize()}
-                  topOffset={hasTopChrome() ? TOOLBAR_CLEARANCE_PX : 0}
+                  topOffset={hasTopChrome()
+                    ? TOOLBAR_CLEARANCE_PX
+                    : 0}
                 />
               </Show>
             </Show>

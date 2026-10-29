@@ -93,7 +93,10 @@ export const PreferencesDialog: Component<PreferencesDialogProps> = (props) => {
   const adminRows = createMemo(() => {
     if (!isAdmin())
       return []
-    return [...buildProtoRows(adminStore.state.descriptors, adminStore), ...ADMIN_ROWS]
+    return [
+      ...buildProtoRows(adminStore.state.descriptors, adminStore),
+      ...ADMIN_ROWS,
+    ]
   })
 
   /**
@@ -163,10 +166,16 @@ export const PreferencesDialog: Component<PreferencesDialogProps> = (props) => {
         groupTitle: group.title,
         navId: group.id,
         label: descriptor.label,
-        ...(descriptor.help === undefined ? {} : { help: descriptor.help }),
-        ...(descriptor.keywords === undefined ? {} : { keywords: descriptor.keywords }),
+        ...(descriptor.help === undefined
+          ? {}
+          : { help: descriptor.help }),
+        ...(descriptor.keywords === undefined
+          ? {}
+          : { keywords: descriptor.keywords }),
         ...(descriptor.control.kind === 'enum'
-          ? { optionLabels: descriptor.control.options.map(o => o.label) }
+          ? {
+              optionLabels: descriptor.control.options.map(o => o.label),
+            }
           : {}),
       })),
     )
@@ -307,7 +316,9 @@ export const PreferencesDialog: Component<PreferencesDialogProps> = (props) => {
               restartGroup={restartGroups().has(activeGroup()?.id ?? '')}
               elevationGroup={elevationGroups().has(activeGroup()?.id ?? '')}
               writeErrors={activeGroup()?.admin
-                ? (adminStore.state.writeError ? [adminStore.state.writeError] : [])
+                ? (adminStore.state.writeError
+                    ? [adminStore.state.writeError]
+                    : [])
                 : desktopShellRefusals()}
             />
           </Show>

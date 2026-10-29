@@ -17,23 +17,50 @@ describe('codewhale-protocol.schema.json', () => {
     expect(validate(mediaContract())).toBe(true)
   })
 
-  it.each([0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, '8192', null])('rejects an invalid native image limit: %j', (value) => {
+  it.each([
+    0,
+    -1,
+    1.5,
+    Number.MAX_SAFE_INTEGER + 1,
+    '8192',
+    null,
+  ])('rejects an invalid native image limit: %j', (value) => {
     const data = mediaContract()
     data.mediaRules.MaxDimension = value
     expect(validate(data)).toBe(false)
   })
 
-  it.each(['mediaFields', 'supplementFields', 'mediaTypes', 'mediaRules'])('rejects a missing native image table: %s', (key) => {
+  it.each([
+    'mediaFields',
+    'supplementFields',
+    'mediaTypes',
+    'mediaRules',
+  ])('rejects a missing native image table: %s', (key) => {
     const data = mediaContract()
     delete data[key]
     expect(validate(data)).toBe(false)
   })
 
   it('rejects empty native image tables and invalid dispatch field values', () => {
-    expect(validate({ ...mediaContract(), mediaFields: {} })).toBe(false)
-    expect(validate({ ...mediaContract(), supplementFields: {} })).toBe(false)
-    expect(validate({ ...mediaContract(), mediaRules: {} })).toBe(false)
-    expect(validate({ ...mediaContract(), mediaFields: { Version: 1 } })).toBe(false)
-    expect(validate({ ...mediaContract(), supplementFields: { OutputFiles: '' } })).toBe(false)
+    expect(validate({
+      ...mediaContract(),
+      mediaFields: {},
+    })).toBe(false)
+    expect(validate({
+      ...mediaContract(),
+      supplementFields: {},
+    })).toBe(false)
+    expect(validate({
+      ...mediaContract(),
+      mediaRules: {},
+    })).toBe(false)
+    expect(validate({
+      ...mediaContract(),
+      mediaFields: { Version: 1 },
+    })).toBe(false)
+    expect(validate({
+      ...mediaContract(),
+      supplementFields: { OutputFiles: '' },
+    })).toBe(false)
   })
 })

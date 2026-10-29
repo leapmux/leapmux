@@ -13,7 +13,15 @@ export const grepRenderer: ToolKindRenderer<'grep'> = {
     return pathLines(view, call.request.paths)
   },
   result(call, view) {
-    return <SearchResultBody source={call.result} kind="grep" {...(view.context !== undefined ? { context: view.context } : {})} />
+    return (
+      <SearchResultBody
+        source={call.result}
+        kind="grep"
+        {...(view.context !== undefined
+          ? { context: view.context }
+          : {})}
+      />
+    )
   },
   resultMeta(call) {
     return {

@@ -5,7 +5,13 @@ import { isAbsolute, resolve } from 'node:path'
 
 const requireRenovate = createRequire(new URL('../.github/renovate/package.json', import.meta.url))
 const requireRenderer = createRequire(requireRenovate.resolve('renovate/dist/util/template/index.js'))
-const contentFields = ['header', 'table', 'warnings', 'notes', 'changelogs']
+const contentFields = [
+  'header',
+  'table',
+  'warnings',
+  'notes',
+  'changelogs',
+]
 export const DETAIL_FIELDS = ['warnings', 'notes', 'changelogs']
 export const COMMENT_MARKER = '<!-- leapmux-renovate-details:v1 part='
 
@@ -18,7 +24,7 @@ export function validateDetailRecord(record) {
   }
   for (const field of DETAIL_FIELDS) {
     if (typeof record[field] !== 'string')
-      throw new Error(`PR details require a string ${field} field.`)
+      throw new TypeError(`PR details require a string ${field} field.`)
   }
   return record
 }
@@ -35,7 +41,12 @@ export function configureDetailsCapture(trusted, template, { write = record => a
     if (this !== root || !contentFields.every(field => Object.hasOwn(root ?? {}, field) && typeof root[field] === 'string'))
       throw new Error('PR details can only be captured from the PR body renderer.')
     const identity = JSON.parse(root.header.trim())
-    const record = validateDetailRecord({ version: 1, repository: identity.repository, branchName: identity.branchName, ...Object.fromEntries(DETAIL_FIELDS.map(field => [field, root[field]])) })
+    const record = validateDetailRecord({
+      version: 1,
+      repository: identity.repository,
+      branchName: identity.branchName,
+      ...Object.fromEntries(DETAIL_FIELDS.map(field => [field, root[field]])),
+    })
     mkdirSync(resolve(trusted, '.tmp'), { recursive: true })
     write(record)
     return ''
@@ -63,8 +74,14 @@ function findDetailMarkup(text) {
     if (node.type === 'html') {
       const source = text.slice(start, end)
       for (const match of source.matchAll(/<!--[\s\S]*?(?:-->|$)|<\/?([a-z][\w-]*)\b(?:[^"'<>]|"[^"]*"|'[^']*')*>/gi)) {
-        if (['details', 'summary'].includes(match[1]?.toLowerCase()))
-          tags.push({ start: start + match.index, end: start + match.index + match[0].length, kind: match[1].toLowerCase(), opening: !match[0].startsWith('</') })
+        if (['details', 'summary'].includes(match[1]?.toLowerCase())) {
+          tags.push({
+            start: start + match.index,
+            end: start + match.index + match[0].length,
+            kind: match[1].toLowerCase(),
+            opening: !match[0].startsWith('</'),
+          })
+        }
       }
     }
     else if (node.type === 'code') {
@@ -72,12 +89,29 @@ function findDetailMarkup(text) {
       const marker = /^ {0,3}(`{3,}|~{3,})/.exec(source)?.[1]
       if (marker) {
         const newline = source.indexOf('\n')
-        const openingEnd = newline < 0 ? source.length : newline + 1
+        const openingEnd = newline < 0
+          ? source.length
+          : newline + 1
         const firstLine = source.slice(0, openingEnd).trimEnd()
-        spans.push({ start, end: start + openingEnd, kind: 'fence', opening: true, prefix: `${firstLine}\n`, suffix: `\n${marker}` })
+        spans.push({
+          start,
+          end: start + openingEnd,
+          kind: 'fence',
+          opening: true,
+          prefix: `${firstLine}\n`,
+          suffix: `\n${marker}`,
+        })
         const last = /(?:^|\n) {0,3}(`{3,}|~{3,})[ \t]*$/.exec(source)
-        if (last && last.index >= firstLine.length && last[1][0] === marker[0] && last[1].length >= marker.length)
-          spans.push({ start: start + last.index + (source[last.index] === '\n' ? 1 : 0), end, kind: 'fence', opening: false })
+        if (last && last.index >= firstLine.length && last[1][0] === marker[0] && last[1].length >= marker.length) {
+          spans.push({
+            start: start + last.index + (source[last.index] === '\n'
+              ? 1
+              : 0),
+            end,
+            kind: 'fence',
+            opening: false,
+          })
+        }
       }
     }
     for (const child of node.children ?? []) visit(child)
@@ -98,8 +132,15 @@ function findDetailMarkup(text) {
         index += 2
       }
       const header = text.slice(tag.start, end)
-      const fallbackSummary = end === tag.end ? '\n<summary>More information</summary>' : ''
-      spans.push({ ...tag, end, prefix: `${header}${fallbackSummary}\n\n`, suffix: '\n\n</details>' })
+      const fallbackSummary = end === tag.end
+        ? '\n<summary>More information</summary>'
+        : ''
+      spans.push({
+        ...tag,
+        end,
+        prefix: `${header}${fallbackSummary}\n\n`,
+        suffix: '\n\n</details>',
+      })
     }
     else {
       spans.push(tag)
@@ -136,7 +177,11 @@ export function splitDetailText(text, limit = 46000) {
   const flush = () => {
     if (!raw)
       return
-    chunks.push({ raw, prefix, suffix: closing() })
+    chunks.push({
+      raw,
+      prefix,
+      suffix: closing(),
+    })
     raw = ''
     rawBytes = 0
     prefix = opening()
@@ -180,7 +225,9 @@ export function splitDetailText(text, limit = 46000) {
         continue
       }
     }
-    appendMarkup(text.slice(span.start, span.end), span.opening ? [...containers, span] : containers.slice(0, -1))
+    appendMarkup(text.slice(span.start, span.end), span.opening
+      ? [...containers, span]
+      : containers.slice(0, -1))
     position = span.end
   }
   appendText(text.slice(position))
@@ -201,7 +248,9 @@ export function renderDetailComments(record) {
 
 /** Migrate the existing bot description only when its fixed Result text still matches. */
 export function partitionLegacyBody(body, template) {
-  const headings = [...body.matchAll(/^## (Motivation|Modifications|Result)\s*$/gm)]
+  const headings = [
+    ...body.matchAll(/^## (Motivation|Modifications|Result)\s*$/gm),
+  ]
   if (headings.map(match => match[1]).join(',') !== 'Motivation,Modifications,Result')
     throw new Error('The existing PR must contain the three core Renovate sections.')
   const resultText = template.slice(template.indexOf('## Result') + '## Result'.length).trim()
@@ -214,5 +263,10 @@ export function partitionLegacyBody(body, template) {
   const debug = suffix.match(/<!--renovate-debug:[\s\S]*?-->/g) ?? []
   const details = suffix.replace(/<!--renovate-debug:[\s\S]*?-->/g, '').trim()
   const core = `${body.slice(headings[0].index, resultStart).trimEnd()}\n\n${resultText}`
-  return { body: `${core}${debug.length ? `\n${debug.join('\n')}` : ''}\n`, details: [prefix, details].filter(Boolean).join('\n\n') }
+  return {
+    body: `${core}${debug.length
+      ? `\n${debug.join('\n')}`
+      : ''}\n`,
+    details: [prefix, details].filter(Boolean).join('\n\n'),
+  }
 }

@@ -11,6 +11,10 @@ describe('LETTA_TITLE_RULE', () => {
       { role: 'system', content: 'Reply with the session title of this conversation.' },
       { role: 'user', content: prompt },
     ])
-    expect(answers).toEqual({ housekeeping: MOCK_SESSION_TITLE, content: CONTENT_RULE_ANSWER, ruleMatches: { 'title-letta': 1, 'content-rule': 1 } })
+    expect(answers).toEqual({
+      housekeeping: MOCK_SESSION_TITLE,
+      content: CONTENT_RULE_ANSWER,
+      ruleMatches: { 'title-letta': 1, 'content-rule': 1 },
+    })
   })
 })

@@ -7,7 +7,13 @@ import { parseReadContent, readFileResultFromContent } from '../../../model/read
 import { claudeToolFailureResult } from './failure'
 
 /** Non-text Read variants that the catch-all renderer continues to handle. */
-const NON_TEXT_READ_TYPES = new Set(['image', 'notebook', 'pdf', 'parts', 'file_unchanged'])
+const NON_TEXT_READ_TYPES = new Set([
+  'image',
+  'notebook',
+  'pdf',
+  'parts',
+  'file_unchanged',
+])
 
 interface ClaudeReadInputArg {
   toolUseResult?: Record<string, unknown> | null
@@ -71,13 +77,21 @@ export function claudeReadSpec(request: ReadRequest, result: ClaudeToolRow | und
   if (!result)
     return { kind: 'read', request }
   const failure = claudeToolFailureResult(result)
-  if (failure)
-    return { kind: 'read', request, result: failure, images: result.images }
+  if (failure) {
+    return {
+      kind: 'read',
+      request,
+      result: failure,
+      images: result.images,
+    }
+  }
   // A non-text read -- an image, a notebook, a PDF -- states no lines, and the
   // result keeps the text it carried beside the pictures in `images`. The
   // record rides only when the result row carries one.
   const source = claudeReadFromToolResult({
-    ...(result.toolUseResult !== undefined ? { toolUseResult: result.toolUseResult } : {}),
+    ...(result.toolUseResult !== undefined
+      ? { toolUseResult: result.toolUseResult }
+      : {}),
     resultContent: result.resultContent,
   }) ?? { lines: null, fallbackContent: result.resultContent }
   return {

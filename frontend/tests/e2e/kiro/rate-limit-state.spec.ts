@@ -15,12 +15,25 @@ const RESET_DATE = '2026-11-25'
 const QUOTA_LABEL = 'Native Probe Plan — Credits'
 
 function usageResponse(used: number | null): MockQuotaHTTPResponse {
-  return { status: 200, body: {
-    subscriptionInfo: { subscriptionTitle: 'Native Probe Plan', overageCapability: 'OVERAGE_CAPABLE' },
-    nextDateReset: Date.UTC(2026, 10, 25) / 1000,
-    usageBreakdownList: used === null ? [] : [{ resourceType: 'CREDIT', displayName: 'Credit', displayNamePlural: 'Credits', currentUsageWithPrecision: used, usageLimitWithPrecision: 100 }],
-    overageConfiguration: { overageStatus: 'DISABLED' },
-  } }
+  return {
+    status: 200,
+    body: {
+      subscriptionInfo: { subscriptionTitle: 'Native Probe Plan', overageCapability: 'OVERAGE_CAPABLE' },
+      nextDateReset: Date.UTC(2026, 10, 25) / 1000,
+      usageBreakdownList: used === null
+        ? []
+        : [
+            {
+              resourceType: 'CREDIT',
+              displayName: 'Credit',
+              displayNamePlural: 'Credits',
+              currentUsageWithPrecision: used,
+              usageLimitWithPrecision: 100,
+            },
+          ],
+      overageConfiguration: { overageStatus: 'DISABLED' },
+    },
+  }
 }
 
 function controlURL(scenario: string): URL {
@@ -28,7 +41,11 @@ function controlURL(scenario: string): URL {
 }
 
 async function configureUsage(scenario: string, response: MockQuotaHTTPResponse): Promise<void> {
-  const result = await fetch(controlURL(scenario), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(response) })
+  const result = await fetch(controlURL(scenario), {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(response),
+  })
   expect(result.status, await result.text()).toBe(200)
 }
 
@@ -57,10 +74,18 @@ kiroTest('reads native plan usage at startup and after turns, preserves failed r
     await openProviderAgent(leapmuxServer, workspaceId, KIRO_AGENT)
     await loginViaToken(page, leapmuxServer.adminToken)
     await openWorkspace(page, workspaceId)
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId,
+    })
     await expectAccountQuota(page, 'Allowed', 26)
 
-    for (const [used, status, utilization] of [[85, 'Warning', 85], [105, 'Exceeded', undefined]] as const) {
+    for (const [used, status, utilization] of [
+      [85, 'Warning', 85],
+      [105, 'Exceeded', undefined],
+    ] as const) {
       await configureUsage(modelScript.id, usageResponse(used))
       await sendNativeAnswer(context, `Complete the turn with ${used} credits used.`, `The ${used}-credit turn ended.`)
       await expectAccountQuota(page, status, utilization)
@@ -69,7 +94,10 @@ kiroTest('reads native plan usage at startup and after turns, preserves failed r
     await waitForAgentIdle(page)
     await expectAccountQuota(page, 'Exceeded')
 
-    await configureUsage(modelScript.id, { status: 403, body: { __type: 'AccessDeniedException', message: 'The isolated account quota is temporarily unavailable.' } })
+    await configureUsage(modelScript.id, {
+      status: 403,
+      body: { __type: 'AccessDeniedException', message: 'The isolated account quota is temporarily unavailable.' },
+    })
     await sendNativeAnswer(context, 'Finish a turn while the account service refuses the usage read.', 'The turn completed despite the account-service refusal.')
     await expect.poll(async () => (await usageReceipts(modelScript.id)).some(receipt => receipt.status === 403)).toBe(true)
     await expectAccountQuota(page, 'Exceeded')
@@ -92,9 +120,18 @@ kiroTest('reads native plan usage at startup and after turns, preserves failed r
 
 kiroTest('keeps a model-service busy notice separate from account quota windows', async ({ native }) => {
   const error = { status: 429, code: 'ThrottlingException', message: 'The isolated native quota is exhausted.' }
-  await expectNoRateLimitState(native, { relatedProof: () => exerciseNativeQuotaRefusal(native, { error, queueAfterFailure: 'running', receiptProof: (request) => {
-    expect(request.response).toMatchObject({ status: 429, serviceError: { code: error.code, message: error.message } })
-  } }) })
+  await expectNoRateLimitState(native, {
+    relatedProof: () => exerciseNativeQuotaRefusal(native, {
+      error,
+      queueAfterFailure: 'running',
+      receiptProof: (request) => {
+        expect(request.response).toMatchObject({
+          status: 429,
+          serviceError: { code: error.code, message: error.message },
+        })
+      },
+    }),
+  })
 })
 
 // Track the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/513.

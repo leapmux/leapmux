@@ -16,7 +16,10 @@ beforeEach(() => {
 afterEach(() => rmSync(directory, { recursive: true, force: true }))
 
 async function runHook(scriptPath: string, workingDirectory: string, input: string) {
-  const child = spawn(process.execPath, [scriptPath], { cwd: workingDirectory, stdio: ['pipe', 'pipe', 'pipe'] })
+  const child = spawn(process.execPath, [scriptPath], {
+    cwd: workingDirectory,
+    stdio: ['pipe', 'pipe', 'pipe'],
+  })
   let stdout = ''
   let stderr = ''
   child.stdout.on('data', bytes => stdout += String(bytes))
@@ -34,7 +37,14 @@ async function runHook(scriptPath: string, workingDirectory: string, input: stri
 describe('writeNativeProjectHook', () => {
   it('records actual native input with zero false empty and whitespace values', async () => {
     const hook = writeNativeProjectHook(directory, 'marker')
-    const input = { count: 0, enabled: false, text: '', whitespace: ' \t\n', nested: { value: null }, values: [] }
+    const input = {
+      count: 0,
+      enabled: false,
+      text: '',
+      whitespace: ' \t\n',
+      nested: { value: null },
+      values: [],
+    }
     const output = await runHook(hook.scriptPath, directory, JSON.stringify(input))
     expect(output).toEqual({ exitCode: 0, stdout: '{"continue":true}', stderr: '' })
     expect(JSON.parse(readFileSync(hook.receiptPath, 'utf8'))).toEqual({ marker: 'marker', workingDirectory: directory, input })
@@ -52,7 +62,15 @@ describe('writeNativeProjectHook', () => {
     expect(existsSync(join(workingDirectory, 'expanded'))).toBe(false)
   })
 
-  it.each(['', '{', 'null', '[]', '0', 'false', '"text"'])('rejects invalid native object input %j without a receipt', async (input) => {
+  it.each([
+    '',
+    '{',
+    'null',
+    '[]',
+    '0',
+    'false',
+    '"text"',
+  ])('rejects invalid native object input %j without a receipt', async (input) => {
     const hook = writeNativeProjectHook(directory, 'marker')
     const output = await runHook(hook.scriptPath, directory, input)
     expect(output.exitCode).toBe(1)

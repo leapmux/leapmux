@@ -66,7 +66,13 @@ describe('claudeFileEditFromToolUseInput', () => {
 
 describe('claudeFileEditFromToolUseResult', () => {
   const PATCH: StructuredPatchHunk[] = [
-    { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-old', '+new'] },
+    {
+      oldStart: 1,
+      oldLines: 1,
+      newStart: 1,
+      newLines: 1,
+      lines: ['-old', '+new'],
+    },
   ]
 
   it('returns null for null/undefined input', () => {
@@ -136,7 +142,13 @@ describe('claudeFileEditFromToolUseResult', () => {
     expect(claudeFileEditFromToolUseResult({
       filePath: '/tmp/a.ts',
       structuredPatch: [
-        { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-old', 42] },
+        {
+          oldStart: 1,
+          oldLines: 1,
+          newStart: 1,
+          newLines: 1,
+          lines: ['-old', 42],
+        },
       ],
       oldString: 'old',
       newString: 'new',

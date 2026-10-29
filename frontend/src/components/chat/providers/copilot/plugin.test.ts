@@ -13,14 +13,27 @@ import { WORKSPACE_TRUST_OPTION } from '../workspaceTrust'
 import './plugin'
 
 function frame(type: string, data: Record<string, unknown> = {}): Record<string, unknown> {
-  return { jsonrpc: '2.0', method: 'session.event', params: { sessionId: 'session-1', event: { id: 'event-1', type, data } } }
+  return {
+    jsonrpc: '2.0',
+    method: 'session.event',
+    params: {
+      sessionId: 'session-1',
+      event: { id: 'event-1', type, data },
+    },
+  }
 }
 
 describe('copilot provider', () => {
   const plugin = providerFor(AgentProvider.GITHUB_COPILOT)!
 
   it('accepts text, image and PDF attachments, and refuses a binary file', () => {
-    expect(plugin?.configuration?.attachments).toEqual({ text: true, image: true, pdf: true, audio: false, binary: false })
+    expect(plugin?.configuration?.attachments).toEqual({
+      text: true,
+      image: true,
+      pdf: true,
+      audio: false,
+      binary: false,
+    })
   })
 
   // The tool result already states the completion, so the Worker drops this announcement.
@@ -37,7 +50,12 @@ describe('copilot provider', () => {
   it('classifies each plain notification type as a notification', () => {
     const notifications = [
       { type: 'interrupted' },
-      { type: 'settings_changed', changes: { model: { old: 'a', new: 'b' } } },
+      {
+        type: 'settings_changed',
+        changes: {
+          model: { old: 'a', new: 'b' },
+        },
+      },
       { type: 'context_cleared' },
       { type: 'agent_error', error: 'failed' },
       { type: 'plan_updated', plan_title: 'Plan' },
@@ -52,8 +70,12 @@ describe('copilot provider', () => {
       planValue: COPILOT_MODE.Plan,
       defaultValue: COPILOT_MODE.Interactive,
     })
-    expect(plugin?.configuration?.planMode?.currentMode({ optionValues: { [COPILOT_OPTION.SessionMode]: COPILOT_MODE.Plan } })).toBe(COPILOT_MODE.Plan)
-    expect(plugin?.configuration?.planMode?.currentMode({ optionValues: { [COPILOT_OPTION.SessionMode]: '' } })).toBe(COPILOT_MODE.Interactive)
+    expect(plugin?.configuration?.planMode?.currentMode({
+      optionValues: { [COPILOT_OPTION.SessionMode]: COPILOT_MODE.Plan },
+    })).toBe(COPILOT_MODE.Plan)
+    expect(plugin?.configuration?.planMode?.currentMode({
+      optionValues: { [COPILOT_OPTION.SessionMode]: '' },
+    })).toBe(COPILOT_MODE.Interactive)
     expect(plugin?.configuration?.triggerModeGroupKey).toBe(COPILOT_OPTION.SessionMode)
   })
 
@@ -61,8 +83,12 @@ describe('copilot provider', () => {
   // session mode where the user put it.
   it('maps the permission presets onto the native permission modes', () => {
     expect(plugin?.controls?.permissionPresets).toEqual({
-      smart: { sets: { permissionMode: COPILOT_PERMISSION_MODE.Assisted } },
-      bypass: { sets: { permissionMode: COPILOT_PERMISSION_MODE.AllowAll } },
+      smart: {
+        sets: { permissionMode: COPILOT_PERMISSION_MODE.Assisted },
+      },
+      bypass: {
+        sets: { permissionMode: COPILOT_PERMISSION_MODE.AllowAll },
+      },
     })
   })
 
@@ -137,8 +163,12 @@ describe('copilot provider', () => {
 
   it('quotes the assistant text a row carries', () => {
     const row = frame(COPILOT_EVENT.AssistantMessage, { content: 'Quotable' })
-    expect(providerQuotableText(AgentProvider.GITHUB_COPILOT, row, { category: { kind: 'assistant_text' } })).toBe('Quotable')
-    expect(providerQuotableText(AgentProvider.GITHUB_COPILOT, { content: 'Typed' }, { category: { kind: 'user_content' } })).toBe('Typed')
+    expect(providerQuotableText(AgentProvider.GITHUB_COPILOT, row, {
+      category: { kind: 'assistant_text' },
+    })).toBe('Quotable')
+    expect(providerQuotableText(AgentProvider.GITHUB_COPILOT, { content: 'Typed' }, {
+      category: { kind: 'user_content' },
+    })).toBe('Typed')
   })
 })
 
@@ -150,12 +180,18 @@ describe('a copilot tool row the turn interrupted', () => {
   const start = copilotToolStart('tool-1', COPILOT_TOOL.Bash, { command: 'bun test' })
 
   it('reads the retained start frame as the call result', () => {
-    expect(plugin?.transcript.spanRole!({ ...input(start), completion: MessageCompletion.INTERRUPTED })).toBe('result')
+    expect(plugin?.transcript.spanRole!({
+      ...input(start),
+      completion: MessageCompletion.INTERRUPTED,
+    })).toBe('result')
     expect(plugin?.transcript.spanRole!(input(start))).toBe('request')
   })
 
   it('classifies the retained copy as a result and the first copy as a request', () => {
-    expect(plugin?.transcript.classify({ ...input(start), completion: MessageCompletion.INTERRUPTED }))
+    expect(plugin?.transcript.classify({
+      ...input(start),
+      completion: MessageCompletion.INTERRUPTED,
+    }))
       .toEqual({ kind: 'tool_result' })
     expect(plugin?.transcript.classify(input(start))).toMatchObject({ kind: 'tool_use' })
   })
@@ -168,13 +204,25 @@ describe('copilot relatedMessages', () => {
   const plugin = providerFor(AgentProvider.GITHUB_COPILOT)!
 
   it('a result wants its request', () => {
-    expect(plugin?.transcript.relatedMessages!(input(frame(COPILOT_EVENT.ToolCompleted, { toolCallId: 'call', success: true, result: { content: 'ok' } })))).toEqual(['request'])
+    expect(plugin?.transcript.relatedMessages!(input(frame(COPILOT_EVENT.ToolCompleted, {
+      toolCallId: 'call',
+      success: true,
+      result: { content: 'ok' },
+    })))).toEqual(['request'])
   })
 
   it('a request wants its result only when the body comes from there', () => {
     expect(plugin?.transcript.relatedMessages!(input(frame(COPILOT_EVENT.ToolStarted, { toolCallId: 'call', toolName: COPILOT_TOOL.Bash, arguments: {} })))).toEqual(['result'])
-    expect(plugin?.transcript.relatedMessages!(input(frame(COPILOT_EVENT.ToolStarted, { toolCallId: 'call', toolName: COPILOT_TOOL.Bash, arguments: { command: 'ls' } })))).toEqual([])
-    expect(plugin?.transcript.relatedMessages!(input(frame(COPILOT_EVENT.ToolStarted, { toolCallId: 'call', toolName: COPILOT_TOOL.Task, arguments: { prompt: 'x' } })))).toEqual(['result'])
+    expect(plugin?.transcript.relatedMessages!(input(frame(COPILOT_EVENT.ToolStarted, {
+      toolCallId: 'call',
+      toolName: COPILOT_TOOL.Bash,
+      arguments: { command: 'ls' },
+    })))).toEqual([])
+    expect(plugin?.transcript.relatedMessages!(input(frame(COPILOT_EVENT.ToolStarted, {
+      toolCallId: 'call',
+      toolName: COPILOT_TOOL.Task,
+      arguments: { prompt: 'x' },
+    })))).toEqual(['result'])
   })
 })
 
@@ -183,8 +231,23 @@ describe('copilot relatedMessages', () => {
 // envelope, which carries a scope or an answer that neither shared builder can hold.
 describe('copilot question answers', () => {
   const plugin = providerFor(AgentProvider.GITHUB_COPILOT)!
-  const request = { requestId: 'req-1', agentId: 'agent-1', payload: frame(COPILOT_EVENT.UserInputRequested, { question: 'Which one?', choices: ['A', 'B'] }) }
-  const questions = [{ question: 'Which one?', options: [{ label: 'A' }, { label: 'B' }] }]
+  const request = {
+    requestId: 'req-1',
+    agentId: 'agent-1',
+    payload: frame(COPILOT_EVENT.UserInputRequested, {
+      question: 'Which one?',
+      choices: ['A', 'B'],
+    }),
+  }
+  const questions = [
+    {
+      question: 'Which one?',
+      options: [
+        { label: 'A' },
+        { label: 'B' },
+      ],
+    },
+  ]
 
   async function sent(state: ControlAnswerState) {
     const onRespond = vi.fn().mockResolvedValue(undefined)
@@ -194,9 +257,27 @@ describe('copilot question answers', () => {
   }
 
   it.each([
-    ['a selected choice', { selections: { 0: ['B'] } }, { behavior: 'allow', answer: 'B', wasFreeform: false }],
-    ['a typed answer', { customTexts: { 0: '  neither  ' } }, { behavior: 'allow', answer: 'neither', wasFreeform: true }],
-    ['an explicit empty answer', {}, { behavior: 'allow', answer: '', wasFreeform: true }],
+    [
+      'a selected choice',
+      {
+        selections: {
+          0: ['B'],
+        },
+      },
+      { behavior: 'allow', answer: 'B', wasFreeform: false },
+    ],
+    [
+      'a typed answer',
+      {
+        customTexts: { 0: '  neither  ' },
+      },
+      { behavior: 'allow', answer: 'neither', wasFreeform: true },
+    ],
+    [
+      'an explicit empty answer',
+      {},
+      { behavior: 'allow', answer: '', wasFreeform: true },
+    ],
   ])('sends %s inside the control-response envelope', async (_label, seed, answer) => {
     expect(await sent(createControlAnswerState(seed))).toEqual({
       type: 'control_response',
@@ -208,7 +289,11 @@ describe('copilot question answers', () => {
 // The Worker asks Copilot's folder-trust question itself, in LeapMux's neutral shape.
 describe('copilotControls workspace trust', () => {
   const plugin = providerFor(AgentProvider.GITHUB_COPILOT)!
-  const question = { type: WORKSPACE_TRUST_CONTROL_TYPE.Question, path: '/work/project', configuration: ['MCP servers'] }
+  const question = {
+    type: WORKSPACE_TRUST_CONTROL_TYPE.Question,
+    path: '/work/project',
+    configuration: ['MCP servers'],
+  }
 
   it('draws the question with the name of the agent', () => {
     expect(plugin.controls?.extractControl?.({ payload: question })).toEqual({
@@ -225,8 +310,18 @@ describe('copilotControls workspace trust', () => {
   })
 
   it('still draws a native permission request', () => {
-    const permission = frame(COPILOT_EVENT.PermissionRequested, { requestId: 'r-1', permissionRequest: { kind: 'read', path: '/work/project/a.go' } })
-    expect(plugin.controls?.extractControl?.({ payload: permission })).toMatchObject({ kind: 'permission', permission: { options: expect.arrayContaining([expect.objectContaining({ name: 'Allow once' })]) } })
+    const permission = frame(COPILOT_EVENT.PermissionRequested, {
+      requestId: 'r-1',
+      permissionRequest: { kind: 'read', path: '/work/project/a.go' },
+    })
+    expect(plugin.controls?.extractControl?.({ payload: permission })).toMatchObject({
+      kind: 'permission',
+      permission: {
+        options: expect.arrayContaining([
+          expect.objectContaining({ name: 'Allow once' }),
+        ]),
+      },
+    })
   })
 
   it('sends Trust as an allow decision, and a native option through its own envelope', async () => {
@@ -234,12 +329,20 @@ describe('copilotControls workspace trust', () => {
     await plugin.controls?.sendPermissionOption?.(onRespond, 'workspace-trust:session-1', WORKSPACE_TRUST_OPTION.Trust)
     expect(JSON.parse(new TextDecoder().decode(onRespond.mock.calls[0]?.[0] as Uint8Array))).toEqual({
       type: 'control_response',
-      response: { subtype: 'success', request_id: 'workspace-trust:session-1', response: { behavior: 'allow' } },
+      response: {
+        subtype: 'success',
+        request_id: 'workspace-trust:session-1',
+        response: { behavior: 'allow' },
+      },
     })
     await plugin.controls?.sendPermissionOption?.(onRespond, 'copilot-request', 'session')
     expect(JSON.parse(new TextDecoder().decode(onRespond.mock.calls[1]?.[0] as Uint8Array))).toEqual({
       type: 'control_response',
-      response: { subtype: 'success', request_id: 'copilot-request', response: { behavior: 'allow', scope: 'session' } },
+      response: {
+        subtype: 'success',
+        request_id: 'copilot-request',
+        response: { behavior: 'allow', scope: 'session' },
+      },
     })
   })
 
@@ -248,7 +351,13 @@ describe('copilotControls workspace trust', () => {
       requestId: 'workspace-trust:session-1',
       claimToken: '',
       request: question,
-      response: { type: 'control_response', response: { request_id: 'workspace-trust:session-1', response: { decision: WORKSPACE_TRUST_DECISION.Reject } } },
+      response: {
+        type: 'control_response',
+        response: {
+          request_id: 'workspace-trust:session-1',
+          response: { decision: WORKSPACE_TRUST_DECISION.Reject },
+        },
+      },
     })).toEqual({ kind: 'label', text: 'Did not trust this folder' })
   })
 })

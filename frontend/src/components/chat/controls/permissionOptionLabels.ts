@@ -29,6 +29,8 @@ export function permissionOptionLabel(option: PermissionOption): string {
   // that spells an `Object.prototype` member resolves to that function -- a truthy value,
   // so the two fallbacks below never ran and the function's source text became the
   // decision button's LABEL.
-  const fallback = Object.hasOwn(KIND_FALLBACK_LABELS, option.kind) ? KIND_FALLBACK_LABELS[option.kind] : undefined
+  const fallback = Object.hasOwn(KIND_FALLBACK_LABELS, option.kind)
+    ? KIND_FALLBACK_LABELS[option.kind]
+    : undefined
   return fallback ?? option.name ?? option.optionId
 }

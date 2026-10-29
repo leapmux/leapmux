@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import { acpExtractControl, acpPermissionSpanId } from './extractControl'
 
-const TOOL_CALL = { toolCallId: 'call-1', kind: 'execute', title: 'Run', rawInput: { command: 'ls -al' } }
+const TOOL_CALL = {
+  toolCallId: 'call-1',
+  kind: 'execute',
+  title: 'Run',
+  rawInput: { command: 'ls -al' },
+}
 const OPTIONS = [
   { optionId: 'once', kind: 'allow_once', name: 'Allow once' },
   { optionId: 'reject', kind: 'reject_once', name: 'Reject' },
@@ -9,10 +14,19 @@ const OPTIONS = [
 
 describe('acpExtractControl', () => {
   it('reads the tool call and the options of a full permission request', () => {
-    const surface = acpExtractControl({ payload: { params: { toolCall: TOOL_CALL, options: OPTIONS } } })
+    const surface = acpExtractControl({
+      payload: {
+        params: { toolCall: TOOL_CALL, options: OPTIONS },
+      },
+    })
     expect(surface).toEqual({
       kind: 'permission',
-      permission: { title: 'Run', input: { command: 'ls -al' }, command: 'ls -al', options: OPTIONS },
+      permission: {
+        title: 'Run',
+        input: { command: 'ls -al' },
+        command: 'ls -al',
+        options: OPTIONS,
+      },
     })
   })
 
@@ -23,7 +37,11 @@ describe('acpExtractControl', () => {
    * so an Allow would refuse the call.
    */
   it('reads a request that states options and no tool call', () => {
-    const surface = acpExtractControl({ payload: { params: { options: OPTIONS } } })
+    const surface = acpExtractControl({
+      payload: {
+        params: { options: OPTIONS },
+      },
+    })
     if (surface?.kind !== 'permission')
       throw new Error('an option list is a permission')
     expect(surface.permission.options).toEqual(OPTIONS)
@@ -32,7 +50,11 @@ describe('acpExtractControl', () => {
   })
 
   it('reads a tool call that states no options at all', () => {
-    const surface = acpExtractControl({ payload: { params: { toolCall: TOOL_CALL } } })
+    const surface = acpExtractControl({
+      payload: {
+        params: { toolCall: TOOL_CALL },
+      },
+    })
     if (surface?.kind !== 'permission')
       throw new Error('a tool call is a permission')
     expect(surface.permission.options).toEqual([])
@@ -40,7 +62,11 @@ describe('acpExtractControl', () => {
 
   // Neither half means it is some other request, and the caller draws the payload.
   it('reads nothing out of a payload with neither half', () => {
-    expect(acpExtractControl({ payload: { params: { sessionId: 's' } } })).toBeNull()
+    expect(acpExtractControl({
+      payload: {
+        params: { sessionId: 's' },
+      },
+    })).toBeNull()
     expect(acpExtractControl({ payload: {} })).toBeNull()
   })
 
@@ -53,26 +79,48 @@ describe('acpExtractControl', () => {
   it.each([
     ['a string', 'allow_once'],
     ['a number', 7],
-    ['an object', { optionId: 'once' }],
+    [
+      'an object',
+      { optionId: 'once' },
+    ],
     ['a boolean', true],
   ])('reads no permission out of an options field that holds %s', (_shape, options) => {
-    expect(acpExtractControl({ payload: { params: { options } } })).toBeNull()
+    expect(acpExtractControl({
+      payload: {
+        params: { options },
+      },
+    })).toBeNull()
   })
 
   // An element that is no object states no kind, and every reader of the layout
   // dereferences `option.kind` with no guard of its own.
   it('drops an element that cannot state a kind and keeps the ones that can', () => {
-    const surface = acpExtractControl({ payload: { params: { options: [null, 'allow_once', 42, OPTIONS[0], []] } } })
+    const surface = acpExtractControl({
+      payload: {
+        params: {
+          options: [null, 'allow_once', 42, OPTIONS[0], []],
+        },
+      },
+    })
     if (surface?.kind !== 'permission')
       throw new Error('one readable option is a permission')
-    expect(surface.permission.options).toStrictEqual([{ optionId: 'once', kind: 'allow_once', name: 'Allow once' }])
+    expect(surface.permission.options).toStrictEqual([
+      { optionId: 'once', kind: 'allow_once', name: 'Allow once' },
+    ])
   })
 
   // A tool call carries the request on its own, so a whole option list of unreadable
   // elements still leaves a permission -- with no option, which the shared Allow/Deny
   // pair answers.
   it('reads a tool call whose every option is unreadable', () => {
-    const surface = acpExtractControl({ payload: { params: { toolCall: TOOL_CALL, options: [null, 'reject'] } } })
+    const surface = acpExtractControl({
+      payload: {
+        params: {
+          toolCall: TOOL_CALL,
+          options: [null, 'reject'],
+        },
+      },
+    })
     if (surface?.kind !== 'permission')
       throw new Error('a tool call is a permission')
     expect(surface.permission.options).toStrictEqual([])
@@ -83,7 +131,18 @@ describe('acpExtractControl', () => {
   // fallback states the truthful words instead.
   it('reads each option field and drops a name that states nothing', () => {
     const surface = acpExtractControl({
-      payload: { params: { options: [{ optionId: 'once', kind: 'allow_once', name: '' }, { optionId: 7, kind: null, name: { text: 'x' } }] } },
+      payload: {
+        params: {
+          options: [
+            { optionId: 'once', kind: 'allow_once', name: '' },
+            {
+              optionId: 7,
+              kind: null,
+              name: { text: 'x' },
+            },
+          ],
+        },
+      },
     })
     if (surface?.kind !== 'permission')
       throw new Error('an option list is a permission')
@@ -97,8 +156,17 @@ describe('acpExtractControl', () => {
   // the banner loads and passes back in. Without it the banner showed a title alone.
   it('merges the arguments of the row the request points at', () => {
     const surface = acpExtractControl({
-      payload: { params: { toolCall: { toolCallId: 'call-1', kind: 'execute', title: 'Run' } } },
-      request: { parentObject: { toolCallId: 'call-1', rawInput: { command: 'ls -al' } } } as never,
+      payload: {
+        params: {
+          toolCall: { toolCallId: 'call-1', kind: 'execute', title: 'Run' },
+        },
+      },
+      request: {
+        parentObject: {
+          toolCallId: 'call-1',
+          rawInput: { command: 'ls -al' },
+        },
+      } as never,
     })
     if (surface?.kind !== 'permission')
       throw new Error('a tool call is a permission')
@@ -108,10 +176,14 @@ describe('acpExtractControl', () => {
 
 describe('acpPermissionSpanId', () => {
   it('states the id of the tool call the banner must load', () => {
-    expect(acpPermissionSpanId({ params: { toolCall: TOOL_CALL } })).toBe('call-1')
+    expect(acpPermissionSpanId({
+      params: { toolCall: TOOL_CALL },
+    })).toBe('call-1')
   })
 
   it('states an empty id for a request that carries no tool call', () => {
-    expect(acpPermissionSpanId({ params: { options: OPTIONS } })).toBe('')
+    expect(acpPermissionSpanId({
+      params: { options: OPTIONS },
+    })).toBe('')
   })
 })

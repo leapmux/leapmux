@@ -33,7 +33,10 @@ describe('moreHorizontalTrigger', () => {
   // menu refuse to open, and a size-only suite stays green through that.
   it('forwards the menu handlers and the expanded state', () => {
     let attached: HTMLElement | undefined
-    const props = triggerProps({ 'aria-expanded': true, 'ref': el => (attached = el) })
+    const props = triggerProps({
+      'aria-expanded': true,
+      'ref': el => (attached = el),
+    })
     render(() => moreHorizontalTrigger({ title: 'More actions' })(props))
 
     const button = screen.getByRole('button', { name: 'More actions' })

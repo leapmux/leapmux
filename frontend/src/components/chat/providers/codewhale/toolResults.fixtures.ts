@@ -35,7 +35,16 @@ export const MEDIA_DATA_URI = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAEA
 
 /** One runtime event envelope. */
 export function codewhaleEvent(event: string, payload: Record<string, unknown>, itemId = 'item-1'): Record<string, unknown> {
-  return { schema_version: 1, seq: 1, event, kind: event, thread_id: THREAD, turn_id: TURN, item_id: itemId, payload }
+  return {
+    schema_version: 1,
+    seq: 1,
+    event,
+    kind: event,
+    thread_id: THREAD,
+    turn_id: TURN,
+    item_id: itemId,
+    payload,
+  }
 }
 
 /** The hidden shell tools that the runtime's heuristic gives their own item kind. */
@@ -49,7 +58,9 @@ function itemKindFor(toolName: string): string {
   const lower = toolName.toLowerCase()
   if (COMMAND_EXECUTION_TOOLS.has(lower))
     return CODEWHALE_ITEM_KIND.CommandExecution
-  return /write|edit|patch/.test(lower) ? CODEWHALE_ITEM_KIND.FileChange : CODEWHALE_ITEM_KIND.ToolCall
+  return /write|edit|patch/.test(lower)
+    ? CODEWHALE_ITEM_KIND.FileChange
+    : CODEWHALE_ITEM_KIND.ToolCall
 }
 
 /** The `item.started` of one tool call, with its arguments in both of their shapes. */
@@ -78,7 +89,11 @@ export function toolFinished(
   metadata: Record<string, unknown> = {},
   callId = CALL,
 ): Record<string, unknown> {
-  const status = event === CODEWHALE_EVENT.ItemCompleted ? 'completed' : event === CODEWHALE_EVENT.ItemFailed ? 'failed' : 'interrupted'
+  const status = event === CODEWHALE_EVENT.ItemCompleted
+    ? 'completed'
+    : event === CODEWHALE_EVENT.ItemFailed
+      ? 'failed'
+      : 'interrupted'
   return codewhaleEvent(event, {
     item: {
       id: 'item-1',
@@ -87,7 +102,12 @@ export function toolFinished(
       status,
       summary: `${toolName}: ${detail}`.slice(0, 280),
       detail,
-      metadata: { ...metadata, tool_use_id: callId, tool_name: toolName, tool_input: JSON.stringify(args) },
+      metadata: {
+        ...metadata,
+        tool_use_id: callId,
+        tool_name: toolName,
+        tool_input: JSON.stringify(args),
+      },
     },
   })
 }
@@ -105,19 +125,42 @@ export function toolFailed(toolName: string, args: Record<string, unknown>, deta
 /** The final event of a non-tool item: a message, a reasoning step, a status, an error. */
 export function itemFinished(kind: string, detail: string, extra: Record<string, unknown> = {}, event: string = CODEWHALE_EVENT.ItemCompleted): Record<string, unknown> {
   return codewhaleEvent(event, {
-    item: { id: 'item-2', turn_id: TURN, kind, status: 'completed', summary: detail.slice(0, 280), detail },
+    item: {
+      id: 'item-2',
+      turn_id: TURN,
+      kind,
+      status: 'completed',
+      summary: detail.slice(0, 280),
+      detail,
+    },
     ...extra,
   }, 'item-2')
 }
 
 /** The `turn.completed` that ends a turn. */
 export function turnCompleted(status: string, fields: Record<string, unknown> = {}): Record<string, unknown> {
-  return codewhaleEvent(CODEWHALE_EVENT.TurnCompleted, { turn: { id: TURN, thread_id: THREAD, status, input_summary: 'Say hello.', ...fields } }, '')
+  return codewhaleEvent(CODEWHALE_EVENT.TurnCompleted, {
+    turn: {
+      id: TURN,
+      thread_id: THREAD,
+      status,
+      input_summary: 'Say hello.',
+      ...fields,
+    },
+  }, '')
 }
 
 /** One content block of a subagent transcript, as the worker stores it. */
 export function childBlock(role: string, block: Record<string, unknown>, index = 1): Record<string, unknown> {
-  return { kind: CODEWHALE_TRANSCRIPT_KIND.Message, index, block: 0, message: { role, content: [block] } }
+  return {
+    kind: CODEWHALE_TRANSCRIPT_KIND.Message,
+    index,
+    block: 0,
+    message: {
+      role,
+      content: [block],
+    },
+  }
 }
 
 /** The parsed request side of one call, as the message store hands it to a row. */
@@ -129,20 +172,35 @@ export function requestSide(frame: Record<string, unknown>): ResolvedMessageCont
 function done(toolName: string, args: Record<string, unknown>, detail: string, metadata: Record<string, unknown> = {}): ToolResultFixture {
   return {
     payload: toolCompleted(toolName, args, detail, metadata),
-    options: { spanType: toolName, request: requestSide(toolStarted(toolName, args)) },
+    options: {
+      spanType: toolName,
+      request: requestSide(toolStarted(toolName, args)),
+    },
   }
 }
 
 /** The runtime's mutation record for one file, with the unified diff it states. */
 function mutation(path: string, outcome: string, diff: string): Record<string, unknown> {
-  return { event: 'file.mutation', mutation: { diff, files: [{ path, outcome }], renames: [] } }
+  return {
+    event: 'file.mutation',
+    mutation: {
+      diff,
+      files: [
+        { path, outcome },
+      ],
+      renames: [],
+    },
+  }
 }
 
 const EDIT_DIFF = '--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-before\n+after\n'
 const WRITE_DIFF = '--- a/a.ts\n+++ b/a.ts\n@@ -0,0 +1 @@\n+hi\n'
 const PATCH = '--- a/a.ts\n+++ b/a.ts\n@@ -1 +1 @@\n-before\n+after\n'
 const COMMAND = { exit_code: 0, duration_ms: 12 }
-const TODOS = [{ content: 'Read the code', status: 'completed' }, { content: 'Write the fix', status: 'in_progress' }]
+const TODOS = [
+  { content: 'Read the code', status: 'completed' },
+  { content: 'Write the fix', status: 'in_progress' },
+]
 
 const FIXTURES: Readonly<Record<string, ToolResultFixture>> = {
   // Files.
@@ -156,14 +214,35 @@ const FIXTURES: Readonly<Record<string, ToolResultFixture>> = {
   [CODEWHALE_TOOL.RetrieveToolResult]: done(CODEWHALE_TOOL.RetrieveToolResult, { ref: 'art_1' }, 'stored output'),
   [CODEWHALE_TOOL.Write]: done(CODEWHALE_TOOL.Write, { path: 'a.ts', content: 'hi\n' }, 'Successfully wrote 3 bytes to a.ts', mutation('a.ts', 'created', WRITE_DIFF)),
   [CODEWHALE_TOOL.WriteFile]: done(CODEWHALE_TOOL.WriteFile, { path: 'a.ts', content: 'hi\n' }, 'Wrote a.ts', mutation('a.ts', 'created', WRITE_DIFF)),
-  [CODEWHALE_TOOL.Edit]: done(CODEWHALE_TOOL.Edit, { path: 'a.ts', edits: [{ oldText: 'before', newText: 'after' }] }, 'Successfully replaced 1 block(s) in a.ts.', mutation('a.ts', 'updated', EDIT_DIFF)),
+  [CODEWHALE_TOOL.Edit]: done(CODEWHALE_TOOL.Edit, {
+    path: 'a.ts',
+    edits: [
+      { oldText: 'before', newText: 'after' },
+    ],
+  }, 'Successfully replaced 1 block(s) in a.ts.', mutation('a.ts', 'updated', EDIT_DIFF)),
   [CODEWHALE_TOOL.EditFile]: done(CODEWHALE_TOOL.EditFile, { path: 'a.ts', old_string: 'before', new_string: 'after' }, 'Edited a.ts', mutation('a.ts', 'updated', EDIT_DIFF)),
   [CODEWHALE_TOOL.ApplyPatch]: done(CODEWHALE_TOOL.ApplyPatch, { patch: PATCH }, 'Applied the patch to 1 file', mutation('a.ts', 'updated', EDIT_DIFF)),
   [CODEWHALE_TOOL.FimEdit]: done(CODEWHALE_TOOL.FimEdit, { path: 'a.ts', prefix: 'const a = ', suffix: '\n' }, 'Filled a.ts', mutation('a.ts', 'updated', EDIT_DIFF)),
-  [CODEWHALE_TOOL.ListDir]: done(CODEWHALE_TOOL.ListDir, { path: '.' }, JSON.stringify([{ name: 'src', is_dir: true }, { name: 'a.ts', is_dir: false }])),
-  [CODEWHALE_TOOL.ProjectMap]: done(CODEWHALE_TOOL.ProjectMap, { max_depth: 2 }, JSON.stringify({ tree: 'src/\n  a.ts', summary: 'A TypeScript project', key_files: ['package.json'] })),
-  [CODEWHALE_TOOL.FileSearch]: done(CODEWHALE_TOOL.FileSearch, { query: 'a.ts' }, JSON.stringify([{ path: 'src/a.ts', name: 'a.ts', score: 1 }])),
-  [CODEWHALE_TOOL.GrepFiles]: done(CODEWHALE_TOOL.GrepFiles, { pattern: 'alpha' }, JSON.stringify({ matches: [{ file: 'src/a.ts', line_number: 3, line: 'const alpha = 1' }], total_matches: 1, files_searched: 4, truncated: false })),
+  [CODEWHALE_TOOL.ListDir]: done(CODEWHALE_TOOL.ListDir, { path: '.' }, JSON.stringify([
+    { name: 'src', is_dir: true },
+    { name: 'a.ts', is_dir: false },
+  ])),
+  [CODEWHALE_TOOL.ProjectMap]: done(CODEWHALE_TOOL.ProjectMap, { max_depth: 2 }, JSON.stringify({
+    tree: 'src/\n  a.ts',
+    summary: 'A TypeScript project',
+    key_files: ['package.json'],
+  })),
+  [CODEWHALE_TOOL.FileSearch]: done(CODEWHALE_TOOL.FileSearch, { query: 'a.ts' }, JSON.stringify([
+    { path: 'src/a.ts', name: 'a.ts', score: 1 },
+  ])),
+  [CODEWHALE_TOOL.GrepFiles]: done(CODEWHALE_TOOL.GrepFiles, { pattern: 'alpha' }, JSON.stringify({
+    matches: [
+      { file: 'src/a.ts', line_number: 3, line: 'const alpha = 1' },
+    ],
+    total_matches: 1,
+    files_searched: 4,
+    truncated: false,
+  })),
 
   // Commands.
   [CODEWHALE_TOOL.Bash]: done(CODEWHALE_TOOL.Bash, { command: 'ls -1' }, 'a.ts\n', COMMAND),
@@ -197,7 +276,17 @@ const FIXTURES: Readonly<Record<string, ToolResultFixture>> = {
   [CODEWHALE_TOOL.SendLater]: done(CODEWHALE_TOOL.SendLater, { message: 'Check the build', delay: '10m' }, 'Scheduled'),
 
   // Subagents.
-  [CODEWHALE_TOOL.Agent]: done(CODEWHALE_TOOL.Agent, { action: 'start', prompt: 'Count the files.', type: 'explore', name: 'counter' }, JSON.stringify({ name: 'counter', agent_id: 'agent_1', status: 'running', terminal: false })),
+  [CODEWHALE_TOOL.Agent]: done(CODEWHALE_TOOL.Agent, {
+    action: 'start',
+    prompt: 'Count the files.',
+    type: 'explore',
+    name: 'counter',
+  }, JSON.stringify({
+    name: 'counter',
+    agent_id: 'agent_1',
+    status: 'running',
+    terminal: false,
+  })),
   [CODEWHALE_TOOL.AgentsCoordinate]: done(CODEWHALE_TOOL.AgentsCoordinate, { plan: 'split' }, 'Coordinated 2 agents'),
   [CODEWHALE_TOOL.AgentsList]: done(CODEWHALE_TOOL.AgentsList, {}, 'agent_1 running'),
   [CODEWHALE_TOOL.AgentsInterrupt]: done(CODEWHALE_TOOL.AgentsInterrupt, { agent_id: 'agent_1' }, 'Interrupted agent_1'),
@@ -207,23 +296,48 @@ const FIXTURES: Readonly<Record<string, ToolResultFixture>> = {
   [CODEWHALE_TOOL.Notify]: done(CODEWHALE_TOOL.Notify, { title: 'Done', body: 'The build passed.' }, 'Notified'),
 
   // Checklists and plans.
-  [CODEWHALE_TOOL.TodoWrite]: done(CODEWHALE_TOOL.TodoWrite, { todos: TODOS }, 'Todo list updated (2 items, 50% settled)', { task_updates: { checklist: { items: [{ id: 1, ...TODOS[0] }, { id: 2, ...TODOS[1] }] } } }),
+  [CODEWHALE_TOOL.TodoWrite]: done(CODEWHALE_TOOL.TodoWrite, { todos: TODOS }, 'Todo list updated (2 items, 50% settled)', {
+    task_updates: {
+      checklist: {
+        items: [
+          { id: 1, ...TODOS[0] },
+          { id: 2, ...TODOS[1] },
+        ],
+      },
+    },
+  }),
   [CODEWHALE_TOOL.LegacyTodoWrite]: done(CODEWHALE_TOOL.LegacyTodoWrite, { todos: TODOS }, 'Todo list updated'),
   [CODEWHALE_TOOL.Todo]: done(CODEWHALE_TOOL.Todo, { todos: TODOS }, 'Todo list updated'),
   [CODEWHALE_TOOL.ChecklistWrite]: done(CODEWHALE_TOOL.ChecklistWrite, { todos: TODOS }, 'Todo list updated'),
   [CODEWHALE_TOOL.ChecklistUpdate]: done(CODEWHALE_TOOL.ChecklistUpdate, { todos: TODOS }, 'Todo list updated'),
   [CODEWHALE_TOOL.WorkUpdate]: done(CODEWHALE_TOOL.WorkUpdate, { todos: TODOS }, 'Todo list updated'),
-  [CODEWHALE_TOOL.UpdatePlan]: done(CODEWHALE_TOOL.UpdatePlan, { explanation: 'Plan', plan: [{ step: 'Investigate', status: 'completed' }, { step: 'Implement', status: 'in_progress' }] }, 'Plan updated'),
+  [CODEWHALE_TOOL.UpdatePlan]: done(CODEWHALE_TOOL.UpdatePlan, {
+    explanation: 'Plan',
+    plan: [
+      { step: 'Investigate', status: 'completed' },
+      { step: 'Implement', status: 'in_progress' },
+    ],
+  }, 'Plan updated'),
 
   // The web.
   [CODEWHALE_TOOL.FetchURL]: done(CODEWHALE_TOOL.FetchURL, { url: 'https://example.com' }, '# Example Domain', { duration_ms: 40 }),
   [CODEWHALE_TOOL.WebSearch]: done(CODEWHALE_TOOL.WebSearch, { query: 'codewhale' }, '1. Codewhale - https://example.com'),
   [CODEWHALE_TOOL.Web]: done(CODEWHALE_TOOL.Web, { action: 'search', query: 'codewhale' }, '1. Codewhale'),
-  [CODEWHALE_TOOL.WebRun]: done(CODEWHALE_TOOL.WebRun, { search_query: [{ q: 'codewhale' }] }, '1. Codewhale'),
+  [CODEWHALE_TOOL.WebRun]: done(CODEWHALE_TOOL.WebRun, {
+    search_query: [
+      { q: 'codewhale' },
+    ],
+  }, '1. Codewhale'),
   [CODEWHALE_TOOL.WaitForDevServer]: done(CODEWHALE_TOOL.WaitForDevServer, { url: 'http://localhost:3000' }, 'Ready after 2s'),
 
   // Searches of a corpus that is not the file tree.
-  [CODEWHALE_TOOL.ToolSearch]: done(CODEWHALE_TOOL.ToolSearch, { query: 'ask the user' }, JSON.stringify({ type: 'tool_search_tool_search_result', tool_references: [{ type: 'tool_reference', tool_name: 'request_user_input' }], unavailable_tool_references: [] })),
+  [CODEWHALE_TOOL.ToolSearch]: done(CODEWHALE_TOOL.ToolSearch, { query: 'ask the user' }, JSON.stringify({
+    type: 'tool_search_tool_search_result',
+    tool_references: [
+      { type: 'tool_reference', tool_name: 'request_user_input' },
+    ],
+    unavailable_tool_references: [],
+  })),
   [CODEWHALE_TOOL.Lsp]: done(CODEWHALE_TOOL.Lsp, { action: 'definition', path: 'a.ts', line: 3 }, 'src/b.ts:10'),
 
   // Memory.
@@ -268,13 +382,17 @@ const ERROR_TEXT = 'The tool reported an error.'
 function failed(kind: ToolKind, name: string, status: ToolFailureFixture['status'] = 'failed'): ToolFailureFixture {
   const fixture = FIXTURES[name]
   const request = fixture?.options?.request?.parentObject
-  const args = request ? (((request.payload as Record<string, unknown>).tool as Record<string, unknown>).input as Record<string, unknown>) : {}
+  const args = request
+    ? (((request.payload as Record<string, unknown>).tool as Record<string, unknown>).input as Record<string, unknown>)
+    : {}
   const payload = status === 'cancelled'
     ? toolFinished(CODEWHALE_EVENT.ItemInterrupted, name, args, ERROR_TEXT)
     : toolFailed(name, args, ERROR_TEXT)
   return {
     payload,
-    ...(fixture?.options !== undefined ? { options: fixture.options } : {}),
+    ...(fixture?.options !== undefined
+      ? { options: fixture.options }
+      : {}),
     kind,
     name,
     status,

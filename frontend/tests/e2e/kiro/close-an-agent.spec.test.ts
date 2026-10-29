@@ -82,11 +82,16 @@ beforeEach(() => {
 async function runActualCloseCase(): Promise<void> {
   const run = calls.registered.get('stops the whole process tree when the agent closes')
   if (typeof run !== 'function')
-    throw new Error('The retained Kiro close callback is absent.')
+    throw new TypeError('The retained Kiro close callback is absent.')
   await run({
     page: {},
     authenticatedEmptyWorkspace: { workspaceId: 'selected-workspace' },
-    leapmuxServer: { hubUrl: 'http://localhost:30001', adminToken: 'private-token', workerId: 'selected-worker', agentEnv: { KIRO_DATA_DIR: '/private/shard-1/kiro-data' } },
+    leapmuxServer: {
+      hubUrl: 'http://localhost:30001',
+      adminToken: 'private-token',
+      workerId: 'selected-worker',
+      agentEnv: { KIRO_DATA_DIR: '/private/shard-1/kiro-data' },
+    },
     modelScript: {
       queue: vi.fn(async () => {}),
       prompt: (text: string) => text,
@@ -105,13 +110,17 @@ describe('kiro close process ownership', () => {
   })
 
   it('refuses a missing owned relay even when another shard has a relay', async () => {
-    rows = rows.map(row => row.pid === 21 ? { ...row, command: '/installed/unrelated-driver' } : row)
+    rows = rows.map(row => row.pid === 21
+      ? { ...row, command: '/installed/unrelated-driver' }
+      : row)
     await expect(runActualCloseCase()).rejects.toThrow(/relay/)
     expect(calls.close).not.toHaveBeenCalled()
   })
 
   it('refuses a missing owned engine even when another shard has an engine', async () => {
-    rows = rows.map(row => row.pid === 22 ? { ...row, command: '/installed/unrelated-helper' } : row)
+    rows = rows.map(row => row.pid === 22
+      ? { ...row, command: '/installed/unrelated-helper' }
+      : row)
     await expect(runActualCloseCase()).rejects.toThrow(/engine/)
     expect(calls.close).not.toHaveBeenCalled()
   })

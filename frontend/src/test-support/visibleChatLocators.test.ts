@@ -56,7 +56,9 @@ const UNSCOPED_STARTUP_OVERLAY = /page\s*\.\s*getByTestId\(\s*(['"`])agent-start
 
 /** Return each page-root chat locator of `source` that has no `:visible` filter, with its offset in `source`. */
 function unscopedChatLocators(source: string): RegExpMatchArray[] {
-  return [...source.matchAll(UNSCOPED)].filter(match => !match[0].includes(':visible'))
+  return [
+    ...source.matchAll(UNSCOPED),
+  ].filter(match => !match[0].includes(':visible'))
 }
 
 describe('e2e chat locators', () => {
@@ -70,7 +72,9 @@ describe('e2e chat locators', () => {
     expect('context.page.getByTestId(\'agent-startup-overlay\')'.match(UNSCOPED_STARTUP_OVERLAY)).toHaveLength(1)
     expect('context.page.getByTestId(\'agent-startup-overlay\').filter({ visible: true })'.match(UNSCOPED_STARTUP_OVERLAY)).toBeNull()
     const scoped = 'visibleOnly(context.page.getByTestId(\'agent-startup-overlay\'))'
-    const match = [...scoped.matchAll(UNSCOPED_STARTUP_OVERLAY)][0]
+    const match = [
+      ...scoped.matchAll(UNSCOPED_STARTUP_OVERLAY),
+    ][0]
     expect(match).toBeDefined()
     if (!match)
       throw new Error('The startup scope sample contains no test-ID locator.')

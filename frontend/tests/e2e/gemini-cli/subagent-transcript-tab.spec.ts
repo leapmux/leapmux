@@ -10,11 +10,13 @@ geminiTest('stores the original native child prompt and results in its distinct 
   const child = await openGeminiRunningChild(native)
   await withCleanup(async () => {
     await expectGeminiLiveChild(native, child)
-    await finishGeminiChildWithReload(native, child, { beforeReload: async () => {
-      const parent = await nativeAgentById(native, child.parentId)
-      if (!parent)
-        throw new Error('The stored native child lost its parent identity.')
-      unlinkSync(join(geminiNativeProject(native, parent), 'chats', parent.agentSessionId, `${child.nativeChildId}.jsonl`))
-    } })
+    await finishGeminiChildWithReload(native, child, {
+      beforeReload: async () => {
+        const parent = await nativeAgentById(native, child.parentId)
+        if (!parent)
+          throw new Error('The stored native child lost its parent identity.')
+        unlinkSync(join(geminiNativeProject(native, parent), 'chats', parent.agentSessionId, `${child.nativeChildId}.jsonl`))
+      },
+    })
   }, child.finish)
 })

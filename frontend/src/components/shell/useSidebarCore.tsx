@@ -156,8 +156,11 @@ export function useSidebarCore(props: SidebarCommonProps, side: Sidebar) {
         const probeCtx = { gitToplevel: props.gitToplevel, workingDir: props.workingDir }
         const path = gitStatusProbePath(probeCtx)
         const key = focusedRepoKeyFromTab(tab, probeCtx, props.gitStatusStore)
-        if (props.workerId && path)
-          void props.gitStatusStore.refresh(props.workerId, path, key !== undefined ? { repoKey: key } : {})
+        if (props.workerId && path) {
+          void props.gitStatusStore.refresh(props.workerId, path, key !== undefined
+            ? { repoKey: key }
+            : {})
+        }
         handle.refresh()
       },
       toggleHiddenFiles: () => handle.toggleShowHiddenFiles(),
@@ -174,9 +177,15 @@ export function useSidebarCore(props: SidebarCommonProps, side: Sidebar) {
     onSelectWorkspace: props.onSelectWorkspace,
     onRefreshWorkspaces: props.onRefreshWorkspaces,
     onDeleteWorkspace: props.onDeleteWorkspace,
-    ...(props.onConfirmDelete !== undefined ? { onConfirmDelete: props.onConfirmDelete } : {}),
-    ...(props.onConfirmArchive !== undefined ? { onConfirmArchive: props.onConfirmArchive } : {}),
-    ...(props.onConfirmEmptyArchive !== undefined ? { onConfirmEmptyArchive: props.onConfirmEmptyArchive } : {}),
+    ...(props.onConfirmDelete !== undefined
+      ? { onConfirmDelete: props.onConfirmDelete }
+      : {}),
+    ...(props.onConfirmArchive !== undefined
+      ? { onConfirmArchive: props.onConfirmArchive }
+      : {}),
+    ...(props.onConfirmEmptyArchive !== undefined
+      ? { onConfirmEmptyArchive: props.onConfirmEmptyArchive }
+      : {}),
     // The `recent` sort ranks a workspace by its most recently activated tab.
     getTabsForWorkspace: (wsId: string) => props.view?.forWorkspace(wsId) ?? [],
     onPostArchiveWorkspace: (workspaceId) => {

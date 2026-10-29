@@ -38,19 +38,41 @@ export function mimoRequestedChanges(tool: string, input: Record<string, unknown
     }
     case MIMO_TOOL.NotebookEdit: {
       const notebook = pickString(input, 'notebook_path')
-      return notebook ? [{ filePath: notebook, operation: 'edit', oldStr: '', newStr: pickString(input, 'new_source'), structuredPatch: null }] : []
+      return notebook
+        ? [
+            {
+              filePath: notebook,
+              operation: 'edit',
+              oldStr: '',
+              newStr: pickString(input, 'new_source'),
+              structuredPatch: null,
+            },
+          ]
+        : []
     }
     case MIMO_TOOL.Write:
-      return filePath ? [{ filePath, operation: 'add', oldStr: '', newStr: pickString(input, 'content'), structuredPatch: null }] : []
+      return filePath
+        ? [
+            {
+              filePath,
+              operation: 'add',
+              oldStr: '',
+              newStr: pickString(input, 'content'),
+              structuredPatch: null,
+            },
+          ]
+        : []
     default:
       return filePath
-        ? [{
-            filePath,
-            operation: 'edit',
-            oldStr: pickFirstString(input, TOOL_OLD_TEXT_KEYS) ?? '',
-            newStr: pickFirstString(input, TOOL_NEW_TEXT_KEYS) ?? '',
-            structuredPatch: null,
-          }]
+        ? [
+            {
+              filePath,
+              operation: 'edit',
+              oldStr: pickFirstString(input, TOOL_OLD_TEXT_KEYS) ?? '',
+              newStr: pickFirstString(input, TOOL_NEW_TEXT_KEYS) ?? '',
+              structuredPatch: null,
+            },
+          ]
         : []
   }
 }
@@ -77,8 +99,13 @@ function patchOperation(type: string, movePath: string): FileChangeEntry['operat
 function statedDiff(metadata: Record<string, unknown>, requestedPath: string): FileEditDiff | null {
   const filediff = pickObject(metadata, 'filediff')
   const diffPath = pickString(filediff, 'file') || pickString(metadata, 'filepath') || requestedPath
-  for (const patch of [pickString(filediff, 'patch'), pickString(metadata, 'diff')]) {
-    const source = patch ? fileEditDiffFromUnifiedPatch(diffPath, patch) : null
+  for (const patch of [
+    pickString(filediff, 'patch'),
+    pickString(metadata, 'diff'),
+  ]) {
+    const source = patch
+      ? fileEditDiffFromUnifiedPatch(diffPath, patch)
+      : null
     if (source && fileEditHasDiff(source))
       return source
   }
@@ -111,12 +138,18 @@ export function mimoLandedChanges(part: MiMoToolPart, requestedPath: string): Fi
       if (!target)
         return []
       const patch = pickString(entry, 'patch') || pickString(entry, 'diff')
-      return [{
-        filePath: target,
-        ...(movePath ? { previousPath: oldPath } : {}),
-        operation: patchOperation(pickString(entry, 'type'), movePath),
-        ...(patch ? { patch } : {}),
-      }]
+      return [
+        {
+          filePath: target,
+          ...(movePath
+            ? { previousPath: oldPath }
+            : {}),
+          operation: patchOperation(pickString(entry, 'type'), movePath),
+          ...(patch
+            ? { patch }
+            : {}),
+        },
+      ]
     }))
     if (changes.length > 0)
       return changes
@@ -125,10 +158,21 @@ export function mimoLandedChanges(part: MiMoToolPart, requestedPath: string): Fi
     // Each replacement's own diff, in the order MiMo applied them. A run that states
     // no diff is skipped rather than drawn as an empty change.
     const changes = metadata.results.filter(isObject).flatMap(result => statedDiff(result, requestedPath) ?? [])
-    return changes.length > 0 ? changes : null
+    return changes.length > 0
+      ? changes
+      : null
   }
   const source = statedDiff(metadata, requestedPath)
   if (!source)
     return null
-  return [part.tool === MIMO_TOOL.Write ? { ...source, operation: metadata.exists === true ? 'edit' : 'add' } : source]
+  return [
+    part.tool === MIMO_TOOL.Write
+      ? {
+          ...source,
+          operation: metadata.exists === true
+            ? 'edit'
+            : 'add',
+        }
+      : source,
+  ]
 }

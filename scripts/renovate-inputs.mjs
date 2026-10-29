@@ -38,7 +38,14 @@ export async function dependencyIgnorePaths(files, configuration = policy) {
   const exclusions = candidates.filter(file => !isGithubActionSource(file)).map((file) => {
     // ignorePaths also matches substrings. An escaped glob preserves sibling metadata files.
     const literal = file.replace(/([\\*?[\]{}()!+@])/g, '\\$1')
-    return literal.startsWith('\\') ? literal : `\\${literal}`
+    return literal.startsWith('\\')
+      ? literal
+      : `\\${literal}`
   })
-  return [...new Set([...(effective.ignorePaths ?? []), ...exclusions])]
+  return [
+    ...new Set([
+      ...(effective.ignorePaths ?? []),
+      ...exclusions,
+    ]),
+  ]
 }

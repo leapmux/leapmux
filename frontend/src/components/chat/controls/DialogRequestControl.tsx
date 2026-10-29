@@ -51,7 +51,9 @@ export function createDialogText(props: Pick<ContentProps, 'answerState'>, prefi
  * 500 ms, which tells the reader the dialog already expired.
  */
 export function dialogTimeoutHint(dialog: DialogPrompt): string | null {
-  return dialog.timeoutMs === undefined ? null : `Auto-resolves in ${formatShortWait(dialog.timeoutMs)} if no response.`
+  return dialog.timeoutMs === undefined
+    ? null
+    : `Auto-resolves in ${formatShortWait(dialog.timeoutMs)} if no response.`
 }
 
 /**
@@ -82,7 +84,14 @@ export const DialogRequestContent: Component<ContentProps & { dialog: DialogProm
           data-testid="dialog-editor"
           rows={6}
           wrap="off"
-          style={{ 'width': '100%', 'min-width': '0', 'max-width': '100%', 'max-height': '24rem', 'resize': 'vertical', 'font-family': 'var(--font-mono)' }}
+          style={{
+            'width': '100%',
+            'min-width': '0',
+            'max-width': '100%',
+            'max-height': '24rem',
+            'resize': 'vertical',
+            'font-family': 'var(--font-mono)',
+          }}
         />
       </Show>
       <Show when={dialogTimeoutHint(props.dialog)}>
@@ -135,8 +144,16 @@ export const DialogRequestActions: Component<ActionsProps & { dialog: DialogProm
     <ControlDecisionFooter
       hasEditorContent={false}
       onSendFeedback={props.onTriggerSend}
-      negativeAction={{ label: buttons().negativeLabel, testId: 'control-deny-btn', onSelect: () => send(buttons().negative()) }}
-      positiveAction={{ label: buttons().positiveLabel, testId: 'control-allow-btn', onSelect: () => send(buttons().positive()) }}
+      negativeAction={{
+        label: buttons().negativeLabel,
+        testId: 'control-deny-btn',
+        onSelect: () => send(buttons().negative()),
+      }}
+      positiveAction={{
+        label: buttons().positiveLabel,
+        testId: 'control-allow-btn',
+        onSelect: () => send(buttons().positive()),
+      }}
       leading={(
         <Show when={props.dialog.variant === 'input'}>
           <input

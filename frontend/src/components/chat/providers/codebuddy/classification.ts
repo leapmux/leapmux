@@ -44,7 +44,9 @@ export function classifyCodebuddyMessage(input: ClassificationInput): MessageCat
     case CODEBUDDY_FRAME_KIND.System: {
       const subtype = pickString(parent, 'subtype')
       // A subtype that this build does not know stays an unrecognized row, so the reader can still inspect it.
-      return CODEBUDDY_NOTIFICATION_SYSTEM_SUBTYPES.has(subtype) ? notification([parent], 'hidden') : { kind: 'unknown' }
+      return CODEBUDDY_NOTIFICATION_SYSTEM_SUBTYPES.has(subtype)
+        ? notification([parent], 'hidden')
+        : { kind: 'unknown' }
     }
     case CODEBUDDY_FRAME_KIND.Assistant:
       return classifyAssistant(parent)
@@ -58,7 +60,9 @@ export function classifyCodebuddyMessage(input: ClassificationInput): MessageCat
     case 'function_call_result':
       if (!storedFunctionCallID(parent))
         return { kind: 'unknown' }
-      return storedFunctionIsProgress(parent) ? { kind: 'hidden' } : { kind: 'tool_result' }
+      return storedFunctionIsProgress(parent)
+        ? { kind: 'hidden' }
+        : { kind: 'tool_result' }
     case CODEBUDDY_FRAME_KIND.User:
       return { kind: 'tool_result' }
     case CODEBUDDY_FRAME_KIND.Result:
@@ -75,16 +79,24 @@ export function classifyCodebuddyMessage(input: ClassificationInput): MessageCat
 function classifyStoredMessage(parent: Record<string, unknown>): MessageCategory {
   if (pickString(parent, 'role') !== 'assistant')
     return { kind: 'unknown' }
-  const content = Array.isArray(parent.content) ? parent.content : []
+  const content = Array.isArray(parent.content)
+    ? parent.content
+    : []
   const hasText = content.some(
     block => isObject(block) && pickString(block, 'type') === 'output_text' && typeof block.text === 'string' && block.text.length > 0,
   )
-  return { kind: hasText ? 'assistant_text' : 'hidden' }
+  return {
+    kind: hasText ? 'assistant_text' : 'hidden',
+  }
 }
 
 function classifyAssistant(parent: Record<string, unknown>): MessageCategory {
-  const message = isObject(parent.message) ? parent.message : undefined
-  const content = message && Array.isArray(message.content) ? message.content : []
+  const message = isObject(parent.message)
+    ? parent.message
+    : undefined
+  const content = message && Array.isArray(message.content)
+    ? message.content
+    : []
   const hasToolUse = content.some(
     block => isObject(block) && pickString(block, 'type') === 'tool_use',
   )

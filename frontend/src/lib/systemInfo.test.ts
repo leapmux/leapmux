@@ -103,7 +103,10 @@ describe('loadSystemInfo', () => {
   // value. External providers keep working on HTTP.
   it('reports an unsolvable ALTCHA page without changing what the hub requires', async () => {
     const desc = Object.getOwnPropertyDescriptor(window, 'isSecureContext')
-    Object.defineProperty(window, 'isSecureContext', { configurable: true, get: () => false })
+    Object.defineProperty(window, 'isSecureContext', {
+      configurable: true,
+      get: () => false,
+    })
     try {
       mockGetSystemInfo.mockResolvedValue(systemInfoResponse({
         captchaEnabled: true,
@@ -261,10 +264,15 @@ describe('passkeyBlocker', () => {
   }
 
   function setSecureContext(value: boolean | undefined): void {
-    if (value === undefined)
+    if (value === undefined) {
       Reflect.deleteProperty(window, 'isSecureContext')
-    else
-      Object.defineProperty(window, 'isSecureContext', { configurable: true, get: () => value })
+    }
+    else {
+      Object.defineProperty(window, 'isSecureContext', {
+        configurable: true,
+        get: () => value,
+      })
+    }
   }
 
   const originalCredential = Object.getOwnPropertyDescriptor(globalThis, credentialKey)

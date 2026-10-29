@@ -18,7 +18,11 @@ describe('createSharedInputQueues', () => {
       if (batches.length === 1)
         await gate.promise
     })
-    const drain = { resolve: () => null, send, sendDeadlineMs: noDeadline }
+    const drain = {
+      resolve: () => null,
+      send,
+      sendDeadlineMs: noDeadline,
+    }
 
     const first = queues.enqueue('t-1', enc('a'), drain)
     await Promise.resolve()
@@ -42,7 +46,11 @@ describe('createSharedInputQueues', () => {
       if (send.mock.calls.length === 1)
         await gate.promise
     })
-    const drain = { resolve: () => null, send, sendDeadlineMs: noDeadline }
+    const drain = {
+      resolve: () => null,
+      send,
+      sendDeadlineMs: noDeadline,
+    }
 
     const first = queues.enqueue('t-1', enc('a'), drain)
     let joinerDone = false
@@ -69,7 +77,11 @@ describe('createSharedInputQueues', () => {
       batches.push(dec(batch))
     }
     let alive = true
-    const drain = { resolve: () => (alive ? null : undefined), send, sendDeadlineMs: noDeadline }
+    const drain = {
+      resolve: () => (alive ? null : undefined),
+      send,
+      sendDeadlineMs: noDeadline,
+    }
 
     const first = queues.enqueue('t-1', enc('a'), drain)
     alive = false // target exits mid-burst
@@ -99,7 +111,11 @@ describe('createSharedInputQueues', () => {
     expect(send).not.toHaveBeenCalled()
 
     // The queue is gone: a later enqueue starts fresh.
-    const ok = { resolve: () => null, send, sendDeadlineMs: noDeadline }
+    const ok = {
+      resolve: () => null,
+      send,
+      sendDeadlineMs: noDeadline,
+    }
     await queues.enqueue('t-1', enc('b'), ok)
     expect(send).toHaveBeenCalledTimes(1)
   })
@@ -116,7 +132,11 @@ describe('createSharedInputQueues', () => {
         })
       }
     })
-    const drain = { resolve: () => null, send, sendDeadlineMs: noDeadline }
+    const drain = {
+      resolve: () => null,
+      send,
+      sendDeadlineMs: noDeadline,
+    }
 
     const first = queues.enqueue('t-1', enc('a'), drain)
     await Promise.resolve()
@@ -145,7 +165,11 @@ describe('createSharedInputQueues', () => {
       if (calls === 2)
         throw new Error('worker offline')
     }
-    const drain = { resolve: () => null, send, sendDeadlineMs: noDeadline }
+    const drain = {
+      resolve: () => null,
+      send,
+      sendDeadlineMs: noDeadline,
+    }
 
     const first = queues.enqueue('t-1', enc('a'), drain)
     await Promise.resolve()
@@ -168,7 +192,11 @@ describe('createSharedInputQueues', () => {
       if (batches.length === 1)
         await gate.promise // black-holed: never settles
     })
-    const drain = { resolve: () => null, send, sendDeadlineMs: () => 0 }
+    const drain = {
+      resolve: () => null,
+      send,
+      sendDeadlineMs: () => 0,
+    }
 
     const first = queues.enqueue('t-1', enc('a'), drain)
     void queues.enqueue('t-1', enc('b'), drain)
@@ -190,8 +218,16 @@ describe('createSharedInputQueues', () => {
         await gate.promise
     })
     const sendB = vi.fn(async (_key: string, _ctx: 'A' | 'B', _batch: Uint8Array) => {})
-    const drainA = { resolve: () => 'A' as const, send: sendA, sendDeadlineMs: noDeadline }
-    const drainB = { resolve: () => 'B' as const, send: sendB, sendDeadlineMs: noDeadline }
+    const drainA = {
+      resolve: () => 'A' as const,
+      send: sendA,
+      sendDeadlineMs: noDeadline,
+    }
+    const drainB = {
+      resolve: () => 'B' as const,
+      send: sendB,
+      sendDeadlineMs: noDeadline,
+    }
 
     const first = queues.enqueue('t-1', enc('a'), drainA)
     await Promise.resolve()

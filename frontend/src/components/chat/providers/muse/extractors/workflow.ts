@@ -40,8 +40,13 @@ export function museWorkflowResult(input: RowExtractionInput): ToolCall<'other'>
   let result: ToolResult<'other'> | undefined
   if (facts.providerOutcome === 'succeeded') {
     const summary = pickObject(reconciled, 'final_summary')
-    if (summary?.status === 'completed' && typeof summary.summary === 'string')
-      result = { content: [{ type: 'text', text: summary.summary }] }
+    if (summary?.status === 'completed' && typeof summary.summary === 'string') {
+      result = {
+        content: [
+          { type: 'text', text: summary.summary },
+        ],
+      }
+    }
   }
   else if (facts.providerOutcome === 'failed' || facts.providerOutcome === 'declined') {
     const failure = pickObject(reconciled, 'latest_failure')
@@ -49,10 +54,18 @@ export function museWorkflowResult(input: RowExtractionInput): ToolCall<'other'>
       result = failedResult(failure.error)
   }
   const title = pickString(item, 'entryId')
-  return createToolCall({ id: pickString(item, 'itemId'), name: MUSE_TOOL.Workflow, lifecycle: facts }, {
+  return createToolCall({
+    id: pickString(item, 'itemId'),
+    name: MUSE_TOOL.Workflow,
+    lifecycle: facts,
+  }, {
     kind: 'other',
     request: { args: {} },
-    ...(title ? { title } : {}),
-    ...(result !== undefined ? { result } : {}),
+    ...(title
+      ? { title }
+      : {}),
+    ...(result !== undefined
+      ? { result }
+      : {}),
   })
 }

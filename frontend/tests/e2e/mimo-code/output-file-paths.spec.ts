@@ -29,19 +29,28 @@ async function runMiMoOutputFile(context: ManagedNativeScenarioContext, testInfo
   const nativeHome = leapmuxServer.agentEnv?.MIMOCODE_HOME
   if (!nativeHome)
     throw new Error('The MiMo output path requires the isolated native data directory.')
-  const producer = mode === 'observed-size' ? controlledMiMoOutputFileProducer(join(nativeHome, 'data', 'tool-output'), join(workingDir, 'producer-release.txt'), output) : undefined
+  const producer = mode === 'observed-size'
+    ? controlledMiMoOutputFileProducer(join(nativeHome, 'data', 'tool-output'), join(workingDir, 'producer-release.txt'), output)
+    : undefined
   await withCleanup(async () => {
     const capturing = captureNativeToolOutput(context, testInfo, {
       output,
       callId: 'native-output-path',
-      ...(producer ? { call: () => bashToolCall(context.provider, 'native-output-path', producer.command) } : {}),
+      ...(producer
+        ? {
+            call: () => bashToolCall(context.provider, 'native-output-path', producer.command),
+          }
+        : {}),
       // MiMo keeps its output files in its native data directory.
       proof: capture => proveNativeOutputReceipt(capture, testInfo, readMiMoNativeOutput, {
         privateRoot: nativeHome,
         // MiMo reads the command stream in a fiber of the command scope (packages/cli/src/tool/bash.ts).
         // A quick exit can close that scope before the fiber drains the pipe, so the native preview can end at any line.
         // Every computed line holds the line marker, so the proof does not depend on where the native stream stopped.
-        previewMarkers: receipt => [output.lineMarker, ...presentPreviewMarkers(receipt.previewText, output)],
+        previewMarkers: receipt => [
+          output.lineMarker,
+          ...presentPreviewMarkers(receipt.previewText, output),
+        ],
         extraProof: async (receipt) => {
           expect(capture.agent.workingDir).toBe(workingDir)
           const part = pickObject(pickObject(receipt.frame, 'properties'), 'part')
@@ -59,7 +68,12 @@ async function runMiMoOutputFile(context: ManagedNativeScenarioContext, testInfo
         },
       }),
     })
-    await Promise.all([capturing, ...(producer ? [producer.observedPath] : [])])
+    await Promise.all([
+      capturing,
+      ...(producer
+        ? [producer.observedPath]
+        : []),
+    ])
   }, async () => {
     try {
       if (producer) {
@@ -67,7 +81,9 @@ async function runMiMoOutputFile(context: ManagedNativeScenarioContext, testInfo
         let worker: object
         try {
           const agent = await nativeAgentById(context, openedAgentId)
-          const snapshot = agent ? await readNativeMessageSnapshot(context, agent.id) : undefined
+          const snapshot = agent
+            ? await readNativeMessageSnapshot(context, agent.id)
+            : undefined
           const tools = snapshot?.messages.flatMap((message) => {
             const frame = nativeMessageBody(message)
             if (!isObject(frame))
@@ -80,27 +96,48 @@ async function runMiMoOutputFile(context: ManagedNativeScenarioContext, testInfo
             const metadata = pickObject(state, 'metadata')
             const output = state?.output
             const progress = metadata?.output
-            return [{
-              spanId: message.spanId,
-              storedSessionId: message.agentSessionId,
-              nativeSessionId: part.sessionID,
-              nativeCallId: part.callID,
-              partId: part.id,
-              tool: part.tool,
-              status: state?.status,
-              command: pickObject(state, 'input')?.command,
-              nativeOutputPath: metadata?.outputPath,
-              nativeTruncated: metadata?.truncated,
-              outputBytes: typeof output === 'string' ? Buffer.byteLength(output) : undefined,
-              progressBytes: typeof progress === 'string' ? Buffer.byteLength(progress) : undefined,
-            }]
+            return [
+              {
+                spanId: message.spanId,
+                storedSessionId: message.agentSessionId,
+                nativeSessionId: part.sessionID,
+                nativeCallId: part.callID,
+                partId: part.id,
+                tool: part.tool,
+                status: state?.status,
+                command: pickObject(state, 'input')?.command,
+                nativeOutputPath: metadata?.outputPath,
+                nativeTruncated: metadata?.truncated,
+                outputBytes: typeof output === 'string'
+                  ? Buffer.byteLength(output)
+                  : undefined,
+                progressBytes: typeof progress === 'string'
+                  ? Buffer.byteLength(progress)
+                  : undefined,
+              },
+            ]
           })
-          worker = { agentId: agent?.id, sessionId: agent?.agentSessionId, status: agent?.status, activityState: agent?.activityState, publishedActivityState: agent?.publishedActivityState, activeBackgroundTasks: agent?.activeBackgroundTasks, tools }
+          worker = {
+            agentId: agent?.id,
+            sessionId: agent?.agentSessionId,
+            status: agent?.status,
+            activityState: agent?.activityState,
+            publishedActivityState: agent?.publishedActivityState,
+            activeBackgroundTasks: agent?.activeBackgroundTasks,
+            tools,
+          }
         }
         catch (error) {
-          worker = { failure: error instanceof Error ? error.message : String(error) }
+          worker = {
+            failure: error instanceof Error
+              ? error.message
+              : String(error),
+          }
         }
-        await testInfo.attach('mimo-native-file-size-observer', { body: JSON.stringify({ observer, worker }, null, 2), contentType: 'application/json' })
+        await testInfo.attach('mimo-native-file-size-observer', {
+          body: JSON.stringify({ observer, worker }, null, 2),
+          contentType: 'application/json',
+        })
       }
     }
     finally {
@@ -110,9 +147,19 @@ async function runMiMoOutputFile(context: ManagedNativeScenarioContext, testInfo
 }
 
 mimoTest('keeps native output paths and the quick-exit preview after reload', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }, testInfo) => {
-  await runMiMoOutputFile(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId }), testInfo, 'quick-exit')
+  await runMiMoOutputFile(await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+  }), testInfo, 'quick-exit')
 })
 
 mimoTest('keeps native output paths after native file-size observation', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }, testInfo) => {
-  await runMiMoOutputFile(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId }), testInfo, 'observed-size')
+  await runMiMoOutputFile(await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+  }), testInfo, 'observed-size')
 })

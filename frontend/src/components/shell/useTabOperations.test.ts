@@ -73,7 +73,13 @@ function addFile(
   filePath: string,
 ) {
   nextPosition += 1
-  emitAddTab({ type: TabType.FILE, id, tileId, position: `p${nextPosition}`, workerId: 'w-1' })
+  emitAddTab({
+    type: TabType.FILE,
+    id,
+    tileId,
+    position: `p${nextPosition}`,
+    workerId: 'w-1',
+  })
   stores.metadata.patch(id, { filePath })
 }
 
@@ -86,7 +92,13 @@ function addAgent(
   meta: Record<string, unknown> = {},
 ) {
   nextPosition += 1
-  emitAddTab({ type: TabType.AGENT, id, tileId, position: position ?? `p${nextPosition}`, workerId: 'w-1' })
+  emitAddTab({
+    type: TabType.AGENT,
+    id,
+    tileId,
+    position: position ?? `p${nextPosition}`,
+    workerId: 'w-1',
+  })
   if (Object.keys(meta).length > 0)
     stores.metadata.patch(id, meta)
 }
@@ -139,7 +151,12 @@ function setup(
       handleTerminalClose,
     } as never,
     activeTab: () => selection.activeTabForWorkspace('ws-test'),
-    getCurrentTabContext: () => ({ workerId: 'w-1', workingDir: '/tmp', homeDir: '/home/test', gitToplevel: '' }),
+    getCurrentTabContext: () => ({
+      workerId: 'w-1',
+      workingDir: '/tmp',
+      homeDir: '/home/test',
+      gitToplevel: '',
+    }),
     focusEditor: vi.fn(),
     getScrollState,
     getActiveWorkspaceId: () => 'ws-test',
@@ -164,7 +181,13 @@ function setup(
       addAgent(stores, id, onTile, undefined, meta),
     addTerminal: (id: string, onTile = tileId) => {
       nextPosition += 1
-      emitAddTab({ type: TabType.TERMINAL, id, tileId: onTile, position: `p${nextPosition}`, workerId: 'w-1' })
+      emitAddTab({
+        type: TabType.TERMINAL,
+        id,
+        tileId: onTile,
+        position: `p${nextPosition}`,
+        workerId: 'w-1',
+      })
     },
   }
 }
@@ -208,7 +231,10 @@ describe('useTabOperations', () => {
           expect(req).toMatchObject({
             payload: {
               workingDir: '/tmp',
-              kind: { case: 'file', value: { filePath: '/tmp/nested/myfile.go' } },
+              kind: {
+                case: 'file',
+                value: { filePath: '/tmp/nested/myfile.go' },
+              },
             },
           })
         }
@@ -222,7 +248,14 @@ describe('useTabOperations', () => {
       await createRoot(async (dispose) => {
         try {
           const { ops } = setup()
-          ops.handleChatImageOpen({ agentId: 'agent-a', seq: 42n, index: 1, title: 'Read', workerId: 'w-1', workingDir: '/tmp' })
+          ops.handleChatImageOpen({
+            agentId: 'agent-a',
+            seq: 42n,
+            index: 1,
+            title: 'Read',
+            workerId: 'w-1',
+            workingDir: '/tmp',
+          })
           await Promise.resolve()
           expect(mockRegisterTabPayload).toHaveBeenCalledTimes(1)
           const [workerId, req] = mockRegisterTabPayload.mock.calls[0] ?? []
@@ -232,13 +265,20 @@ describe('useTabOperations', () => {
               workingDir: '/tmp',
               kind: {
                 case: 'image',
-                value: { agentId: 'agent-a', seq: 42n, imageIndex: 1, title: 'Read' },
+                value: {
+                  agentId: 'agent-a',
+                  seq: 42n,
+                  imageIndex: 1,
+                  title: 'Read',
+                },
               },
             },
           })
           // The whole point of the reference: a screenshot must not reach the
           // tab layer, which the hub sees the identity half of.
-          expect(JSON.stringify(req, (_k, v) => typeof v === 'bigint' ? String(v) : v))
+          expect(JSON.stringify(req, (_k, v) => typeof v === 'bigint'
+            ? String(v)
+            : v))
             .not
             .toContain('base64')
         }
@@ -252,13 +292,27 @@ describe('useTabOperations', () => {
       await createRoot(async (dispose) => {
         try {
           const { ops, view } = setup()
-          ops.handleChatImageOpen({ agentId: 'agent-a', seq: 42n, index: 1, title: 'Read', workerId: 'w-1', workingDir: '/tmp' })
+          ops.handleChatImageOpen({
+            agentId: 'agent-a',
+            seq: 42n,
+            index: 1,
+            title: 'Read',
+            workerId: 'w-1',
+            workingDir: '/tmp',
+          })
           await flush()
           const opened = view.forWorkspace('ws-test').filter(t => t.type === TabType.IMAGE)
           expect(opened).toHaveLength(1)
 
           mockRegisterTabPayload.mockClear()
-          ops.handleChatImageOpen({ agentId: 'agent-a', seq: 42n, index: 1, title: 'Read', workerId: 'w-1', workingDir: '/tmp' })
+          ops.handleChatImageOpen({
+            agentId: 'agent-a',
+            seq: 42n,
+            index: 1,
+            title: 'Read',
+            workerId: 'w-1',
+            workingDir: '/tmp',
+          })
           await flush()
           expect(view.forWorkspace('ws-test').filter(t => t.type === TabType.IMAGE)).toHaveLength(1)
           expect(mockRegisterTabPayload).not.toHaveBeenCalled()
@@ -273,8 +327,22 @@ describe('useTabOperations', () => {
       await createRoot(async (dispose) => {
         try {
           const { ops, view } = setup()
-          ops.handleChatImageOpen({ agentId: 'agent-a', seq: 42n, index: 0, title: 'Read', workerId: 'w-1', workingDir: '/tmp' })
-          ops.handleChatImageOpen({ agentId: 'agent-a', seq: 42n, index: 1, title: 'Read', workerId: 'w-1', workingDir: '/tmp' })
+          ops.handleChatImageOpen({
+            agentId: 'agent-a',
+            seq: 42n,
+            index: 0,
+            title: 'Read',
+            workerId: 'w-1',
+            workingDir: '/tmp',
+          })
+          ops.handleChatImageOpen({
+            agentId: 'agent-a',
+            seq: 42n,
+            index: 1,
+            title: 'Read',
+            workerId: 'w-1',
+            workingDir: '/tmp',
+          })
           await flush()
           expect(view.forWorkspace('ws-test').filter(t => t.type === TabType.IMAGE)).toHaveLength(2)
         }
@@ -289,7 +357,14 @@ describe('useTabOperations', () => {
         try {
           const { ops, view } = setup()
           mockRegisterTabPayload.mockRejectedValueOnce(new Error('channel closed'))
-          ops.handleChatImageOpen({ agentId: 'agent-a', seq: 42n, index: 0, title: 'Read', workerId: 'w-1', workingDir: '/tmp' })
+          ops.handleChatImageOpen({
+            agentId: 'agent-a',
+            seq: 42n,
+            index: 0,
+            title: 'Read',
+            workerId: 'w-1',
+            workingDir: '/tmp',
+          })
           await flush()
           // Leaving it would strand a tab no peer -- and no reload -- can
           // resolve, because nothing on the worker describes it.
@@ -329,7 +404,11 @@ describe('useTabOperations', () => {
           // message reference it would have to fetch an agent message for.
           expect(mockRegisterTabPayload).toHaveBeenCalledTimes(1)
           const [, req] = mockRegisterTabPayload.mock.calls[0] as [string, Record<string, unknown>]
-          expect(req).toMatchObject({ payload: { kind: { case: 'file' } } })
+          expect(req).toMatchObject({
+            payload: {
+              kind: { case: 'file' },
+            },
+          })
         }
         finally {
           dispose()
@@ -343,7 +422,14 @@ describe('useTabOperations', () => {
           const { ops, view } = setup()
           // No filePath: an MCP screenshot, or a Bash whose stdout was a data
           // URI. Nothing on disk to open, so the reference is the only route.
-          ops.handleChatImageOpen({ agentId: 'agent-a', seq: 42n, index: 3, title: 'screenshot', workerId: 'w-1', workingDir: '/tmp' })
+          ops.handleChatImageOpen({
+            agentId: 'agent-a',
+            seq: 42n,
+            index: 3,
+            title: 'screenshot',
+            workerId: 'w-1',
+            workingDir: '/tmp',
+          })
           await flush()
 
           const tabs = view.forWorkspace('ws-test')
@@ -367,7 +453,15 @@ describe('useTabOperations', () => {
       await createRoot(async (dispose) => {
         try {
           const { ops, view } = setup()
-          ops.handleChatImageOpen({ agentId: 'agent-a', seq: 42n, index: 0, filePath: '', title: 'shot', workerId: 'w-1', workingDir: '/tmp' })
+          ops.handleChatImageOpen({
+            agentId: 'agent-a',
+            seq: 42n,
+            index: 0,
+            filePath: '',
+            title: 'shot',
+            workerId: 'w-1',
+            workingDir: '/tmp',
+          })
           await flush()
 
           const tabs = view.forWorkspace('ws-test')
@@ -542,7 +636,9 @@ describe('useTabOperations', () => {
       // Through the generated schema: a conditional type over this union does
       // not distribute, so the cast it replaces resolved to `never` and checked
       // the fixture against nothing.
-      processes: [create(TerminalProcessSchema, { pid: 51234, name: 'node' })],
+      processes: [
+        create(TerminalProcessSchema, { pid: 51234, name: 'node' }),
+      ],
       totalCount: 1,
     }
 
@@ -1077,7 +1173,11 @@ describe('useTabOperations', () => {
       // bottom, so getScrollState() returns undefined.
       const { view, chatStore, ops, selection } = setup(() => undefined)
       // A prior visit left a saved anchor for agent-a.
-      chatStore.viewportScroll.set('agent-a', { anchor: { id: 'old', offsetWithinRow: 40 }, atBottom: false, hasMoreNewer: false })
+      chatStore.viewportScroll.set('agent-a', {
+        anchor: { id: 'old', offsetWithinRow: 40 },
+        atBottom: false,
+        hasMoreNewer: false,
+      })
       expect(chatStore.viewportScroll.get('agent-a')).toBeDefined()
 
       const nextTab = view.getById(TabType.AGENT, 'agent-b')!
@@ -1092,7 +1192,11 @@ describe('useTabOperations', () => {
 
   it('saves the viewport when the outgoing tab has a restorable position', () => {
     createRoot((dispose) => {
-      const saved = { anchor: { id: 'm5', offsetWithinRow: 12 }, atBottom: false, hasMoreNewer: false }
+      const saved = {
+        anchor: { id: 'm5', offsetWithinRow: 12 },
+        atBottom: false,
+        hasMoreNewer: false,
+      }
       const { view, chatStore, ops, selection } = setup(() => saved)
 
       const nextTab = view.getById(TabType.AGENT, 'agent-b')!
@@ -1329,7 +1433,13 @@ describe('useTabOperations.handleTabClose cross-workspace', () => {
     const handleAgentClose = vi.fn()
     const handleTerminalClose = vi.fn()
 
-    emitAddTab({ type, id, tileId: harness.rootTileId, position: 'a', workerId: 'w-other' })
+    emitAddTab({
+      type,
+      id,
+      tileId: harness.rootTileId,
+      position: 'a',
+      workerId: 'w-other',
+    })
     if (Object.keys(meta).length > 0)
       stores.metadata.patch(id, meta)
 
@@ -1342,12 +1452,20 @@ describe('useTabOperations.handleTabClose cross-workspace', () => {
       agentOps: { handleAgentClose } as never,
       termOps: { handleTerminalClose } as never,
       activeTab: () => stores.selection.activeTabForWorkspace('ws-active'),
-      getCurrentTabContext: () => ({ workerId: 'w-1', workingDir: '/tmp', homeDir: '/home/test', gitToplevel: '' }),
+      getCurrentTabContext: () => ({
+        workerId: 'w-1',
+        workingDir: '/tmp',
+        homeDir: '/home/test',
+        gitToplevel: '',
+      }),
       focusEditor: vi.fn(),
       getScrollState: () => ({ atBottom: false, hasMoreNewer: false }),
       // The client is on ws-active; the seeded tab is on ws-other.
       getActiveWorkspaceId: () => 'ws-active',
-      busyProbe: { probe: async () => null, probeMany: async () => [] },
+      busyProbe: {
+        probe: async () => null,
+        probeMany: async () => [],
+      },
       workerOnlineState: () => true,
       repoGitStore: createRepoGitStore(),
     })
@@ -1355,7 +1473,13 @@ describe('useTabOperations.handleTabClose cross-workspace', () => {
     const tab = stores.view.getById(type, id)!
     expect(tab, 'the other workspace\'s tab is visible in the shared projection').toBeTruthy()
     expect(tab.workspaceId).toBe('ws-other')
-    return { ...stores, ops, tab, handleAgentClose, handleTerminalClose }
+    return {
+      ...stores,
+      ops,
+      tab,
+      handleAgentClose,
+      handleTerminalClose,
+    }
   }
 
   /**
@@ -1458,7 +1582,9 @@ describe('useTabOperations.handleTabClose focus migration', () => {
         throw new Error('expected two tiles after split')
       // The split keeps both children as leaves; we just need to know
       // which one is the new childB so we can target the other.
-      const focusTile = tileB === otherTileId ? tileA : tileB
+      const focusTile = tileB === otherTileId
+        ? tileA
+        : tileB
       const otherLeafTile = otherTileId
 
       addFile(stores, 'file-a', focusTile, '/a')
@@ -1471,14 +1597,26 @@ describe('useTabOperations.handleTabClose focus migration', () => {
         selection,
         chatStore,
         layoutStore,
-        agentOps: { handleAgentClose: vi.fn() } as never,
-        termOps: { handleTerminalClose: vi.fn() } as never,
+        agentOps: {
+          handleAgentClose: vi.fn(),
+        } as never,
+        termOps: {
+          handleTerminalClose: vi.fn(),
+        } as never,
         activeTab: () => selection.activeTabForWorkspace('ws-test'),
-        getCurrentTabContext: () => ({ workerId: 'w-1', workingDir: '/tmp', homeDir: '/home/test', gitToplevel: '' }),
+        getCurrentTabContext: () => ({
+          workerId: 'w-1',
+          workingDir: '/tmp',
+          homeDir: '/home/test',
+          gitToplevel: '',
+        }),
         focusEditor: vi.fn(),
         getScrollState: () => ({ atBottom: false, hasMoreNewer: false }),
         getActiveWorkspaceId: () => 'ws-test',
-        busyProbe: { probe: async () => null, probeMany: async () => [] },
+        busyProbe: {
+          probe: async () => null,
+          probeMany: async () => [],
+        },
         workerOnlineState: () => true,
         repoGitStore: createRepoGitStore(),
       })
@@ -1508,7 +1646,9 @@ describe('useTabOperations.handleTabClose focus migration', () => {
       // The split produced exactly two leaves; the throw is the type-level guard alone.
       if (tileA === undefined || tileB === undefined)
         throw new Error('expected two tiles after split')
-      const focusTile = tileB === otherTileId ? tileA : tileB
+      const focusTile = tileB === otherTileId
+        ? tileA
+        : tileB
       const otherLeafTile = otherTileId
 
       addFile(stores, 'file-a', focusTile, '/a')
@@ -1522,14 +1662,26 @@ describe('useTabOperations.handleTabClose focus migration', () => {
         selection,
         chatStore,
         layoutStore,
-        agentOps: { handleAgentClose: vi.fn() } as never,
-        termOps: { handleTerminalClose: vi.fn() } as never,
+        agentOps: {
+          handleAgentClose: vi.fn(),
+        } as never,
+        termOps: {
+          handleTerminalClose: vi.fn(),
+        } as never,
         activeTab: () => selection.activeTabForWorkspace('ws-test'),
-        getCurrentTabContext: () => ({ workerId: 'w-1', workingDir: '/tmp', homeDir: '/home/test', gitToplevel: '' }),
+        getCurrentTabContext: () => ({
+          workerId: 'w-1',
+          workingDir: '/tmp',
+          homeDir: '/home/test',
+          gitToplevel: '',
+        }),
         focusEditor: vi.fn(),
         getScrollState: () => ({ atBottom: false, hasMoreNewer: false }),
         getActiveWorkspaceId: () => 'ws-test',
-        busyProbe: { probe: async () => null, probeMany: async () => [] },
+        busyProbe: {
+          probe: async () => null,
+          probeMany: async () => [],
+        },
         workerOnlineState: () => true,
         repoGitStore: createRepoGitStore(),
       })
@@ -1574,11 +1726,19 @@ function setupWithFloatingWindow() {
     agentOps: { handleAgentClose } as never,
     termOps: { handleTerminalClose } as never,
     activeTab: () => selection.activeTabForWorkspace('ws-test'),
-    getCurrentTabContext: () => ({ workerId: 'w-1', workingDir: '/tmp', homeDir: '/home/test', gitToplevel: '' }),
+    getCurrentTabContext: () => ({
+      workerId: 'w-1',
+      workingDir: '/tmp',
+      homeDir: '/home/test',
+      gitToplevel: '',
+    }),
     focusEditor: vi.fn(),
     getScrollState: () => ({ atBottom: false, hasMoreNewer: false }),
     getActiveWorkspaceId: () => 'ws-test',
-    busyProbe: { probe: async () => null, probeMany: async () => [] },
+    busyProbe: {
+      probe: async () => null,
+      probeMany: async () => [],
+    },
     workerOnlineState: () => true,
     repoGitStore: createRepoGitStore(),
   })
@@ -1634,7 +1794,9 @@ describe('useTabOperations.handleTabClose floating-window cleanup', () => {
         // mints two new leaves, so `tileId` is no longer somewhere a tab can
         // live -- take both leaf ids from the window after the split.
         const newTileId = floatingWindowStore.splitTile(windowId, tileId, 'horizontal')!
-        const leaves = [...floatingWindowStore.getWindowTileIdSet(windowId) ?? []]
+        const leaves = [
+          ...floatingWindowStore.getWindowTileIdSet(windowId) ?? [],
+        ]
         const otherLeaf = leaves.find(id => id !== newTileId)!
         addFile('f1', otherLeaf, '/a.txt')
         addFile('f2', newTileId, '/b.txt')
@@ -1903,7 +2065,13 @@ describe('useTabOperations.closeTabWithAction', () => {
     const handleAgentClose = vi.fn()
     const handleTerminalClose = vi.fn()
 
-    emitAddTab({ type, id, tileId: harness.rootTileId, position: 'a', workerId: 'w-cross' })
+    emitAddTab({
+      type,
+      id,
+      tileId: harness.rootTileId,
+      position: 'a',
+      workerId: 'w-cross',
+    })
     if (Object.keys(meta).length > 0)
       stores.metadata.patch(id, meta)
 
@@ -1916,15 +2084,29 @@ describe('useTabOperations.closeTabWithAction', () => {
       agentOps: { handleAgentClose } as never,
       termOps: { handleTerminalClose } as never,
       activeTab: () => stores.selection.activeTabForWorkspace('ws-active'),
-      getCurrentTabContext: () => ({ workerId: 'w-active', workingDir: '/tmp', homeDir: '/home/test', gitToplevel: '' }),
+      getCurrentTabContext: () => ({
+        workerId: 'w-active',
+        workingDir: '/tmp',
+        homeDir: '/home/test',
+        gitToplevel: '',
+      }),
       focusEditor: vi.fn(),
       getScrollState: () => ({ atBottom: false, hasMoreNewer: false }),
       getActiveWorkspaceId: () => 'ws-active',
-      busyProbe: { probe: async () => null, probeMany: async () => [] },
+      busyProbe: {
+        probe: async () => null,
+        probeMany: async () => [],
+      },
       workerOnlineState: () => true,
       repoGitStore: createRepoGitStore(),
     })
-    return { ...stores, ops, tab: stores.view.getById(type, id)!, handleAgentClose, handleTerminalClose }
+    return {
+      ...stores,
+      ops,
+      tab: stores.view.getById(type, id)!,
+      handleAgentClose,
+      handleTerminalClose,
+    }
   }
 
   it('cross-workspace AGENT: routes through the shared handler and tombstones the tab', async () => {
@@ -1989,7 +2171,9 @@ function setupForFocusMigration() {
   // The split produced exactly two leaves; the throw is the type-level guard alone.
   if (tileA === undefined || tileB === undefined)
     throw new Error('expected two tiles after split')
-  const homeTileId = tileB === otherTileId ? tileA : tileB
+  const homeTileId = tileB === otherTileId
+    ? tileA
+    : tileB
   layoutStore.setFocusedTile(homeTileId)
 
   addAgent(stores, 'agent-a', homeTileId)
@@ -2007,15 +2191,30 @@ function setupForFocusMigration() {
     agentOps: { handleAgentClose } as never,
     termOps: { handleTerminalClose } as never,
     activeTab: () => selection.activeTabForWorkspace('ws-test'),
-    getCurrentTabContext: () => ({ workerId: 'w-1', workingDir: '/tmp', homeDir: '/home/test', gitToplevel: '' }),
+    getCurrentTabContext: () => ({
+      workerId: 'w-1',
+      workingDir: '/tmp',
+      homeDir: '/home/test',
+      gitToplevel: '',
+    }),
     focusEditor: vi.fn(),
     getScrollState: () => ({ atBottom: false, hasMoreNewer: false }),
     getActiveWorkspaceId: () => 'ws-test',
-    busyProbe: { probe: async () => null, probeMany: async () => [] },
+    busyProbe: {
+      probe: async () => null,
+      probeMany: async () => [],
+    },
     workerOnlineState: () => true,
     repoGitStore: createRepoGitStore(),
   })
-  return { ...stores, ops, homeTileId, otherTileId, handleAgentClose, handleTerminalClose }
+  return {
+    ...stores,
+    ops,
+    homeTileId,
+    otherTileId,
+    handleAgentClose,
+    handleTerminalClose,
+  }
 }
 
 // "A tab rename is open" is what stops every automatic focus in the shell from

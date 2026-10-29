@@ -88,7 +88,9 @@ export function AgentProviderSelector(props: AgentProviderSelectorProps) {
               <button
                 type="button"
                 role="menuitem"
-                class={`${styles.menuItem}${provider === currentProvider() ? ` ${styles.menuItemSelected}` : ''}`}
+                class={`${styles.menuItem}${provider === currentProvider()
+                  ? ` ${styles.menuItemSelected}`
+                  : ''}`}
                 data-testid={`agent-provider-option-${provider}`}
                 onClick={() => props.onChange(provider)}
               >

@@ -24,11 +24,24 @@ export function RequestedFileChanges(props: { sources: FileEditDiff[], context?:
                 <div class={toolInputSummary}>
                   <Show when={source.operation === 'delete'}>Delete </Show>
                   <Show when={source.operation === 'add'}>Create </Show>
-                  <FileEditDiffTitle source={facts} {...(props.context !== undefined ? { context: props.context } : {})} />
+                  <FileEditDiffTitle
+                    source={facts}
+                    {...(props.context !== undefined
+                      ? { context: props.context }
+                      : {})}
+                  />
                 </div>
               </Show>
               <Show when={fileEditHasDiff(source)}>
-                <FileEditDiffBody source={source} diff={{ view: () => props.context?.diffView?.() ?? 'unified' }} {...(props.context !== undefined ? { context: props.context } : {})} />
+                <FileEditDiffBody
+                  source={source}
+                  diff={{
+                    view: () => props.context?.diffView?.() ?? 'unified',
+                  }}
+                  {...(props.context !== undefined
+                    ? { context: props.context }
+                    : {})}
+                />
               </Show>
             </>
           )

@@ -5,7 +5,10 @@ import { assistantBubbles, openAgentInfoCard, sendMessage, waitForAgentIdle } fr
 
 cursorTest('omits context usage when its ACP bridge sends no usage update', async ({ native }) => {
   const { page, modelScript } = native
-  const step = await modelScript.queue({ text: 'Usage recorded.', usage: { ...SCRIPTED_CONTEXT_USAGE } })
+  const step = await modelScript.queue({
+    text: 'Usage recorded.',
+    usage: { ...SCRIPTED_CONTEXT_USAGE },
+  })
   await sendMessage(page, modelScript.prompt('Reply once.'))
   await modelScript.waitForSteps(step + 1)
   await waitForAgentIdle(page)

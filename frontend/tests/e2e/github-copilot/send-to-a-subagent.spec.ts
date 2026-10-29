@@ -25,28 +25,48 @@ copilotTest('sends messages into a background subagent while it runs and while i
     {
       name: 'the child runs its first tool',
       when: copilotChildTaskMatcher(childTask),
-      respond: { gate, toolCalls: [bashToolCall(native.provider, 'child-shell', printfMarkerCommand('CHILD_READY_', 42))] },
+      respond: {
+        gate,
+        toolCalls: [
+          bashToolCall(native.provider, 'child-shell', printfMarkerCommand('CHILD_READY_', 42)),
+        ],
+      },
       once: true,
     },
     {
       name: 'the child answers its tool',
-      when: { ...copilotChildTaskMatcher(childTask), lastMessage: { role: 'tool' } },
+      when: {
+        ...copilotChildTaskMatcher(childTask),
+        lastMessage: { role: 'tool' },
+      },
       respond: { text: 'The child marker command ran.' },
       once: true,
     },
-    { name: steeredRule, when: { user: 'Also say CHILD_STEERED' }, respond: { text: 'CHILD_STEERED' }, once: true },
-    { name: idleRule, when: { user: 'Now say CHILD_AGAIN' }, respond: { text: 'CHILD_AGAIN' }, once: true },
+    {
+      name: steeredRule,
+      when: { user: 'Also say CHILD_STEERED' },
+      respond: { text: 'CHILD_STEERED' },
+      once: true,
+    },
+    {
+      name: idleRule,
+      when: { user: 'Now say CHILD_AGAIN' },
+      respond: { text: 'CHILD_AGAIN' },
+      once: true,
+    },
   )
   // Copilot tells the parent each time the background subagent goes idle, and the parent answers the notice.
   await modelScript.fallback({ text: 'The background subagent is idle.' })
   const { row, childId, parentId } = await withCleanup(async () => {
     await modelScript.queue(
       {
-        toolCalls: [spawnSubagentToolCall(native.provider, 'spawn-child-send', {
-          description: 'Answer the messages from the child tab',
-          prompt: modelScript.prompt(childTask),
-          background: true,
-        })],
+        toolCalls: [
+          spawnSubagentToolCall(native.provider, 'spawn-child-send', {
+            description: 'Answer the messages from the child tab',
+            prompt: modelScript.prompt(childTask),
+            background: true,
+          }),
+        ],
       },
       { text: 'The child runs in the background.' },
     )

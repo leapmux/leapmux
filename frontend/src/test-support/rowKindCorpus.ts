@@ -111,7 +111,9 @@ const DRAWN_OUTSIDE_THE_CHAT_ROW = new Set<MessageCategory['kind']>(['unsupporte
 export function drawnRowKind(category: MessageCategory['kind'], extraction: ChatRowExtraction): DrawnRowKind {
   if (extraction.kind === 'row')
     return extraction.row.kind
-  return DRAWN_OUTSIDE_THE_CHAT_ROW.has(category) ? 'hidden' : 'unrecognized'
+  return DRAWN_OUTSIDE_THE_CHAT_ROW.has(category)
+    ? 'hidden'
+    : 'unrecognized'
 }
 
 /**
@@ -126,88 +128,203 @@ export const ROW_KIND_CASES: RowKindCase[] = [
   {
     provider: Provider.COMMAND_CODE,
     name: 'native assistant text',
-    payload: { type: 'event', seq: 1, event: { type: 'message_end', content: [{ type: 'text', text: 'Native answer.' }] } },
+    payload: {
+      type: 'event',
+      seq: 1,
+      event: {
+        type: 'message_end',
+        content: [
+          { type: 'text', text: 'Native answer.' },
+        ],
+      },
+    },
     category: 'assistant_text',
   },
   {
     provider: Provider.COMMAND_CODE,
     name: 'native reasoning',
-    payload: { type: 'event', seq: 2, event: { type: 'thinking_end', text: 'Read the native source.' } },
+    payload: {
+      type: 'event',
+      seq: 2,
+      event: { type: 'thinking_end', text: 'Read the native source.' },
+    },
     category: 'assistant_thinking',
   },
   {
     provider: Provider.COMMAND_CODE,
     name: 'native completion',
-    payload: { jsonrpc: '2.0', method: 'turn/completed', params: { stopReason: 'completed' } },
+    payload: {
+      jsonrpc: '2.0',
+      method: 'turn/completed',
+      params: { stopReason: 'completed' },
+    },
     category: 'result_divider',
   },
   {
     provider: Provider.DEEPSEEK_HARNESS,
     name: 'native assistant text',
-    payload: { type: 'assistant/message', seq: 1, time: 1000, blockIndex: 0, data: { message: { content: [{ type: 'text', text: 'Native answer.' }] } } },
+    payload: {
+      type: 'assistant/message',
+      seq: 1,
+      time: 1000,
+      blockIndex: 0,
+      data: {
+        message: {
+          content: [
+            { type: 'text', text: 'Native answer.' },
+          ],
+        },
+      },
+    },
     category: 'assistant_text',
   },
   {
     provider: Provider.DEEPSEEK_HARNESS,
     name: 'native reasoning',
-    payload: { type: 'assistant/message', seq: 2, time: 1001, blockIndex: 0, data: { message: { content: [{ type: 'reasoning', text: 'Read the native source.' }] } } },
+    payload: {
+      type: 'assistant/message',
+      seq: 2,
+      time: 1001,
+      blockIndex: 0,
+      data: {
+        message: {
+          content: [
+            { type: 'reasoning', text: 'Read the native source.' },
+          ],
+        },
+      },
+    },
     category: 'assistant_thinking',
   },
   {
     provider: Provider.DEEPSEEK_HARNESS,
     name: 'native completion',
-    payload: { type: 'turn/end', seq: 3, time: 1002, data: { reason: { kind: 'completed' } } },
+    payload: {
+      type: 'turn/end',
+      seq: 3,
+      time: 1002,
+      data: {
+        reason: { kind: 'completed' },
+      },
+    },
     category: 'result_divider',
   },
   {
     provider: Provider.GEMINI_CLI,
     name: 'native child prompt',
-    payload: { id: 'native-user', type: 'user', content: [{ text: 'Read the native source.' }] },
+    payload: {
+      id: 'native-user',
+      type: 'user',
+      content: [
+        { text: 'Read the native source.' },
+      ],
+    },
     category: 'user_text',
   },
   {
     provider: Provider.GEMINI_CLI,
     name: 'native child answer',
-    payload: { id: 'native-model', type: 'gemini', content: [{ text: 'Private reasoning', thought: true }, { text: 'The native answer.' }] },
+    payload: {
+      id: 'native-model',
+      type: 'gemini',
+      content: [
+        { text: 'Private reasoning', thought: true },
+        { text: 'The native answer.' },
+      ],
+    },
     category: 'assistant_text',
   },
   {
     provider: Provider.GEMINI_CLI,
     name: 'native function response without visible text',
-    payload: { id: 'native-response', type: 'user', content: [{ functionResponse: { response: { output: 'Native tool output.' } } }] },
+    payload: {
+      id: 'native-response',
+      type: 'user',
+      content: [
+        {
+          functionResponse: {
+            response: { output: 'Native tool output.' },
+          },
+        },
+      ],
+    },
     category: 'hidden',
   },
   // --- Claude Code -------------------------------------------------------
   {
     provider: Provider.CLAUDE_CODE,
     name: 'assistant text',
-    payload: { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'Done.' }] } },
+    payload: {
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'Done.' },
+        ],
+      },
+    },
     category: 'assistant_text',
   },
   {
     provider: Provider.CLAUDE_CODE,
     name: 'assistant thinking',
-    payload: { type: 'assistant', message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'Let me consider...', signature: 'sig' }] } },
+    payload: {
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: 'Let me consider...', signature: 'sig' },
+        ],
+      },
+    },
     category: 'assistant_thinking',
   },
   {
     provider: Provider.CLAUDE_CODE,
     name: 'tool use',
-    payload: { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_1', name: 'Read', input: { file_path: '/repo/a.ts' } }] } },
+    payload: {
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'toolu_1',
+            name: 'Read',
+            input: { file_path: '/repo/a.ts' },
+          },
+        ],
+      },
+    },
     category: 'tool_use',
     spanType: 'Read',
   },
   {
     provider: Provider.CLAUDE_CODE,
     name: 'tool result',
-    payload: { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content: 'file contents', tool_use_id: 'toolu_1' }] } },
+    payload: {
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          { type: 'tool_result', content: 'file contents', tool_use_id: 'toolu_1' },
+        ],
+      },
+    },
     category: 'tool_result',
     spanType: 'Read',
   },
   {
     provider: Provider.CLAUDE_CODE,
     name: 'turn end',
-    payload: { type: 'result', subtype: 'success', result: 'Done', duration_ms: 1234, num_turns: 1, stop_reason: 'end_turn' },
+    payload: {
+      type: 'result',
+      subtype: 'success',
+      result: 'Done',
+      duration_ms: 1234,
+      num_turns: 1,
+      stop_reason: 'end_turn',
+    },
     category: 'result_divider',
   },
   {
@@ -215,7 +332,17 @@ export const ROW_KIND_CASES: RowKindCase[] = [
     name: 'proposed plan',
     payload: {
       type: 'assistant',
-      message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_2', name: 'ExitPlanMode', input: { plan: '1. Read the parser.\n2. Correct the token check.' } }] },
+      message: {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'toolu_2',
+            name: 'ExitPlanMode',
+            input: { plan: '1. Read the parser.\n2. Correct the token check.' },
+          },
+        ],
+      },
     },
     category: 'assistant_plan',
     spanType: 'ExitPlanMode',
@@ -225,7 +352,10 @@ export const ROW_KIND_CASES: RowKindCase[] = [
     // The extractor finds no words in it either, so the reader gets the frame itself.
     provider: Provider.CLAUDE_CODE,
     name: 'unreadable assistant envelope',
-    payload: { type: 'assistant', message: { role: 'assistant', content: [] } },
+    payload: {
+      type: 'assistant',
+      message: { role: 'assistant', content: [] },
+    },
     category: 'unknown',
   },
 
@@ -233,20 +363,33 @@ export const ROW_KIND_CASES: RowKindCase[] = [
   {
     provider: Provider.CODEX,
     name: 'command item',
-    payload: { item: { id: 'i1', type: 'commandExecution', command: 'ls -1', status: 'completed', aggregatedOutput: 'a.ts', exitCode: 0 } },
+    payload: {
+      item: {
+        id: 'i1',
+        type: 'commandExecution',
+        command: 'ls -1',
+        status: 'completed',
+        aggregatedOutput: 'a.ts',
+        exitCode: 0,
+      },
+    },
     category: 'tool_use',
     spanType: 'commandExecution',
   },
   {
     provider: Provider.CODEX,
     name: 'agent message item',
-    payload: { item: { id: 'i2', type: 'agentMessage', text: 'All set.' } },
+    payload: {
+      item: { id: 'i2', type: 'agentMessage', text: 'All set.' },
+    },
     category: 'assistant_text',
   },
   {
     provider: Provider.CODEX,
     name: 'turn completed',
-    payload: { turn: { id: 't1', status: 'completed' } },
+    payload: {
+      turn: { id: 't1', status: 'completed' },
+    },
     category: 'result_divider',
   },
 
@@ -254,7 +397,14 @@ export const ROW_KIND_CASES: RowKindCase[] = [
   {
     provider: Provider.CURSOR,
     name: 'tool call',
-    payload: { sessionUpdate: 'tool_call', toolCallId: 'call-1', title: 'Update TODOs', kind: 'other', status: 'pending', rawInput: { _toolName: 'updateTodos' } },
+    payload: {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'call-1',
+      title: 'Update TODOs',
+      kind: 'other',
+      status: 'pending',
+      rawInput: { _toolName: 'updateTodos' },
+    },
     category: 'tool_use',
   },
   {
@@ -273,7 +423,11 @@ export const ROW_KIND_CASES: RowKindCase[] = [
       toolCallId: 'call_948e',
       title: 'read image · /repo/dot.png',
       rawInput: { source: '/repo/dot.png' },
-      _meta: { goose: { toolCall: { toolName: 'read_image', extensionName: 'developer' } } },
+      _meta: {
+        goose: {
+          toolCall: { toolName: 'read_image', extensionName: 'developer' },
+        },
+      },
     },
     category: 'tool_use',
   },
@@ -288,13 +442,30 @@ export const ROW_KIND_CASES: RowKindCase[] = [
   {
     provider: Provider.REASONIX,
     name: 'first tool call',
-    payload: { sessionUpdate: 'tool_call', toolCallId: 'rx-1', status: 'pending', title: 'read_file', kind: 'read', rawInput: { path: '/p/a.ts' } },
+    payload: {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'rx-1',
+      status: 'pending',
+      title: 'read_file',
+      kind: 'read',
+      rawInput: { path: '/p/a.ts' },
+    },
     category: 'tool_use',
   },
   {
     provider: Provider.REASONIX,
     name: 'completed tool call',
-    payload: { sessionUpdate: 'tool_call_update', toolCallId: 'rx-1', status: 'completed', content: [{ type: 'content', content: { type: 'text', text: 'one\ntwo\n' } }] },
+    payload: {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: 'rx-1',
+      status: 'completed',
+      content: [
+        {
+          type: 'content',
+          content: { type: 'text', text: 'one\ntwo\n' },
+        },
+      ],
+    },
     category: 'tool_use',
   },
 
@@ -362,7 +533,12 @@ export const ROW_KIND_CASES: RowKindCase[] = [
   {
     provider: Provider.FAST_AGENT,
     name: 'available commands update',
-    payload: { sessionUpdate: 'available_commands_update', availableCommands: [{ name: 'status', description: 'Show status' }] },
+    payload: {
+      sessionUpdate: 'available_commands_update',
+      availableCommands: [
+        { name: 'status', description: 'Show status' },
+      ],
+    },
     category: 'hidden',
   },
 
@@ -375,7 +551,16 @@ export const ROW_KIND_CASES: RowKindCase[] = [
       toolCallId: 'call_5_0',
       title: 'read_file',
       rawInput: { target_file: '/repo/probe.txt' },
-      _meta: { 'x.ai/tool': { version: 1, name: 'read_file', kind: 'read', namespace: 'grok_build', label: 'Read', read_only: true } },
+      _meta: {
+        'x.ai/tool': {
+          version: 1,
+          name: 'read_file',
+          kind: 'read',
+          namespace: 'grok_build',
+          label: 'Read',
+          read_only: true,
+        },
+      },
     },
     category: 'tool_use',
   },
@@ -385,7 +570,15 @@ export const ROW_KIND_CASES: RowKindCase[] = [
     payload: {
       jsonrpc: '2.0',
       method: '_x.ai/session_notification',
-      params: { sessionId: 's', update: { sessionUpdate: 'turn_completed', prompt_id: 'p', stop_reason: 'end_turn', elapsed_ms: 264 } },
+      params: {
+        sessionId: 's',
+        update: {
+          sessionUpdate: 'turn_completed',
+          prompt_id: 'p',
+          stop_reason: 'end_turn',
+          elapsed_ms: 264,
+        },
+      },
     },
     category: 'result_divider',
   },
@@ -401,8 +594,12 @@ export const ROW_KIND_CASES: RowKindCase[] = [
       kind: 'read',
       status: 'pending',
       rawInput: { path: '/w/hello.txt', offset: null, limit: null },
-      locations: [{ path: '/w/hello.txt' }],
-      _meta: { kiro: { toolOrigin: 'default' } },
+      locations: [
+        { path: '/w/hello.txt' },
+      ],
+      _meta: {
+        kiro: { toolOrigin: 'default' },
+      },
     },
     category: 'tool_use',
   },
@@ -411,7 +608,14 @@ export const ROW_KIND_CASES: RowKindCase[] = [
     name: 'end of a turn Kiro started',
     payload: {
       sessionUpdate: 'session_info_update',
-      _meta: { kiro: { turnEnd: { stopReason: 'end_turn' }, kind: 'turn_end', stopReason: 'end_turn', messageId: 'm-turn-end' } },
+      _meta: {
+        kiro: {
+          turnEnd: { stopReason: 'end_turn' },
+          kind: 'turn_end',
+          stopReason: 'end_turn',
+          messageId: 'm-turn-end',
+        },
+      },
     },
     category: 'result_divider',
   },
@@ -420,7 +624,13 @@ export const ROW_KIND_CASES: RowKindCase[] = [
     name: 'context usage update',
     payload: {
       sessionUpdate: 'session_info_update',
-      _meta: { kiro: { contextUsage: { usagePercentage: 0.8 }, kind: 'context_usage', usagePercentage: 0.8 } },
+      _meta: {
+        kiro: {
+          contextUsage: { usagePercentage: 0.8 },
+          kind: 'context_usage',
+          usagePercentage: 0.8,
+        },
+      },
     },
     category: 'hidden',
   },
@@ -445,7 +655,11 @@ export const ROW_KIND_CASES: RowKindCase[] = [
   {
     provider: Provider.QWEN_CODE,
     name: 'end of a turn Qwen started',
-    payload: { jsonrpc: '2.0', method: '_qwencode/end_turn', params: { sessionId: 's', reason: 'end_turn', source: 'goal' } },
+    payload: {
+      jsonrpc: '2.0',
+      method: '_qwencode/end_turn',
+      params: { sessionId: 's', reason: 'end_turn', source: 'goal' },
+    },
     category: 'result_divider',
   },
 
@@ -453,13 +667,27 @@ export const ROW_KIND_CASES: RowKindCase[] = [
   {
     provider: Provider.OPENCODE,
     name: 'tool call',
-    payload: { sessionUpdate: 'tool_call', toolCallId: 'oc-1', kind: 'read', title: 'read', status: 'pending', rawInput: { filePath: '/repo/a.ts' } },
+    payload: {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'oc-1',
+      kind: 'read',
+      title: 'read',
+      status: 'pending',
+      rawInput: { filePath: '/repo/a.ts' },
+    },
     category: 'tool_use',
   },
   {
     provider: Provider.KILO,
     name: 'semantic search call',
-    payload: { sessionUpdate: 'tool_call', toolCallId: 'kilo-1', kind: 'other', title: 'semantic_search', status: 'pending', rawInput: { query: 'the parser' } },
+    payload: {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'kilo-1',
+      kind: 'other',
+      title: 'semantic_search',
+      status: 'pending',
+      rawInput: { query: 'the parser' },
+    },
     category: 'tool_use',
   },
 
@@ -467,26 +695,44 @@ export const ROW_KIND_CASES: RowKindCase[] = [
   {
     provider: Provider.PI,
     name: 'tool execution start',
-    payload: { type: 'tool_execution_start', toolCallId: 'pi-1', toolName: 'read', args: { path: '/repo/a.ts' } },
+    payload: {
+      type: 'tool_execution_start',
+      toolCallId: 'pi-1',
+      toolName: 'read',
+      args: { path: '/repo/a.ts' },
+    },
     category: 'tool_use',
   },
   {
     provider: Provider.PI,
     name: 'tool execution end',
-    payload: { type: 'tool_execution_end', toolCallId: 'pi-1', toolName: 'read', result: { output: 'file contents' } },
+    payload: {
+      type: 'tool_execution_end',
+      toolCallId: 'pi-1',
+      toolName: 'read',
+      result: { output: 'file contents' },
+    },
     category: 'tool_result',
     spanType: 'read',
   },
   {
     provider: Provider.PI,
     name: 'session entry',
-    payload: { type: 'entry_appended', entry: { type: 'model_change', provider: 'anthropic', modelId: 'claude-opus-5' } },
+    payload: {
+      type: 'entry_appended',
+      entry: { type: 'model_change', provider: 'anthropic', modelId: 'claude-opus-5' },
+    },
     category: 'unknown',
   },
   {
     provider: Provider.PI,
     name: 'summarization retry',
-    payload: { type: 'summarization_retry_scheduled', attempt: 1, maxAttempts: 3, delayMs: 500 },
+    payload: {
+      type: 'summarization_retry_scheduled',
+      attempt: 1,
+      maxAttempts: 3,
+      delayMs: 500,
+    },
     category: 'notification',
   },
   {
@@ -502,32 +748,77 @@ export const ROW_KIND_CASES: RowKindCase[] = [
   {
     provider: Provider.OH_MY_PI,
     name: 'assistant text',
-    payload: { type: 'message_end', message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'The user wants a greeting.' }, { type: 'text', text: 'Hello from the mock model.' }], stopReason: 'stop' } },
+    payload: {
+      type: 'message_end',
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: 'The user wants a greeting.' },
+          { type: 'text', text: 'Hello from the mock model.' },
+        ],
+        stopReason: 'stop',
+      },
+    },
     category: 'assistant_text',
   },
   {
     provider: Provider.OH_MY_PI,
     name: 'tool execution start',
-    payload: { type: 'tool_execution_start', toolCallId: 'call_1', toolName: 'bash', args: { command: 'echo probe-output' } },
+    payload: {
+      type: 'tool_execution_start',
+      toolCallId: 'call_1',
+      toolName: 'bash',
+      args: { command: 'echo probe-output' },
+    },
     category: 'tool_use',
   },
   {
     provider: Provider.OH_MY_PI,
     name: 'tool execution end',
-    payload: { type: 'tool_execution_end', toolCallId: 'call_1', toolName: 'bash', result: { content: [{ type: 'text', text: 'probe-output\n\n\nWall time: 0.05 seconds' }], details: { timeoutSeconds: 300, wallTimeMs: 49.99 } }, isError: false },
+    payload: {
+      type: 'tool_execution_end',
+      toolCallId: 'call_1',
+      toolName: 'bash',
+      result: {
+        content: [
+          { type: 'text', text: 'probe-output\n\n\nWall time: 0.05 seconds' },
+        ],
+        details: { timeoutSeconds: 300, wallTimeMs: 49.99 },
+      },
+      isError: false,
+    },
     category: 'tool_result',
     spanType: 'bash',
   },
   {
     provider: Provider.OH_MY_PI,
     name: 'automatic retry',
-    payload: { type: 'auto_retry_start', attempt: 1, maxAttempts: 10, delayMs: 92.36, errorMessage: '400 bad request' },
+    payload: {
+      type: 'auto_retry_start',
+      attempt: 1,
+      maxAttempts: 10,
+      delayMs: 92.36,
+      errorMessage: '400 bad request',
+    },
     category: 'notification',
   },
   {
     provider: Provider.OH_MY_PI,
     name: 'background job delivered',
-    payload: { type: 'message_end', message: { role: 'custom', customType: 'async-result', content: '<system-notice>Background job ScoutOne has completed.</system-notice>', display: true, details: { jobs: [{ jobId: 'ScoutOne', type: 'task', label: 'ScoutOne' }] } } },
+    payload: {
+      type: 'message_end',
+      message: {
+        role: 'custom',
+        customType: 'async-result',
+        content: '<system-notice>Background job ScoutOne has completed.</system-notice>',
+        display: true,
+        details: {
+          jobs: [
+            { jobId: 'ScoutOne', type: 'task', label: 'ScoutOne' },
+          ],
+        },
+      },
+    },
     category: 'notification',
   },
   {
@@ -544,32 +835,96 @@ export const ROW_KIND_CASES: RowKindCase[] = [
   {
     provider: Provider.AMP,
     name: 'assistant text',
-    payload: { type: 'assistant', message: { type: 'message', role: 'assistant', content: [{ type: 'text', text: 'done' }], stop_reason: 'end_turn', usage: { input_tokens: 0, output_tokens: 7 } }, parent_tool_use_id: null, session_id: 'T-01a0d1c3-e51a-756b-9279-34c1cd441c35' },
+    payload: {
+      type: 'assistant',
+      message: {
+        type: 'message',
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'done' },
+        ],
+        stop_reason: 'end_turn',
+        usage: { input_tokens: 0, output_tokens: 7 },
+      },
+      parent_tool_use_id: null,
+      session_id: 'T-01a0d1c3-e51a-756b-9279-34c1cd441c35',
+    },
     category: 'assistant_text',
   },
   {
     provider: Provider.AMP,
     name: 'thinking',
-    payload: { type: 'assistant', message: { type: 'message', role: 'assistant', content: [{ type: 'thinking', thinking: '**Planning shell ls execution**' }], stop_reason: null }, parent_tool_use_id: null, session_id: 'T-01a0d1c3-e51a-756b-9279-34c1cd441c35' },
+    payload: {
+      type: 'assistant',
+      message: {
+        type: 'message',
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: '**Planning shell ls execution**' },
+        ],
+        stop_reason: null,
+      },
+      parent_tool_use_id: null,
+      session_id: 'T-01a0d1c3-e51a-756b-9279-34c1cd441c35',
+    },
     category: 'assistant_thinking',
   },
   {
     provider: Provider.AMP,
     name: 'tool call',
-    payload: { type: 'assistant', message: { type: 'message', role: 'assistant', content: [{ type: 'tool_use', id: 'TU-034UC14fL0WVIuQhmDl0qN', name: 'shell_command', input: { command: 'ls', workdir: '/work' } }], stop_reason: 'tool_use' }, parent_tool_use_id: null, session_id: 'T-01a0d1c3-e51a-756b-9279-34c1cd441c35' },
+    payload: {
+      type: 'assistant',
+      message: {
+        type: 'message',
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'TU-034UC14fL0WVIuQhmDl0qN',
+            name: 'shell_command',
+            input: { command: 'ls', workdir: '/work' },
+          },
+        ],
+        stop_reason: 'tool_use',
+      },
+      parent_tool_use_id: null,
+      session_id: 'T-01a0d1c3-e51a-756b-9279-34c1cd441c35',
+    },
     category: 'tool_use',
   },
   {
     provider: Provider.AMP,
     name: 'tool result',
-    payload: { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'TU-034UC14fL0WVIuQhmDl0qN', content: '{"output":"README.md\\n","exitCode":0}', is_error: false }] }, parent_tool_use_id: null, session_id: 'T-01a0d1c3-e51a-756b-9279-34c1cd441c35' },
+    payload: {
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          {
+            type: 'tool_result',
+            tool_use_id: 'TU-034UC14fL0WVIuQhmDl0qN',
+            content: '{"output":"README.md\\n","exitCode":0}',
+            is_error: false,
+          },
+        ],
+      },
+      parent_tool_use_id: null,
+      session_id: 'T-01a0d1c3-e51a-756b-9279-34c1cd441c35',
+    },
     category: 'tool_result',
     spanType: 'shell_command',
   },
   {
     provider: Provider.AMP,
     name: 'turn end',
-    payload: { type: 'result', subtype: 'success', is_error: false, num_turns: 4, result: 'pong', session_id: 'T-01a0d1c3-e51a-756b-9279-34c1cd441c35' },
+    payload: {
+      type: 'result',
+      subtype: 'success',
+      is_error: false,
+      num_turns: 4,
+      result: 'pong',
+      session_id: 'T-01a0d1c3-e51a-756b-9279-34c1cd441c35',
+    },
     category: 'result_divider',
   },
 
@@ -580,38 +935,92 @@ export const ROW_KIND_CASES: RowKindCase[] = [
   {
     provider: Provider.CLINE,
     name: 'assistant text',
-    payload: { version: 'v1', event: 'assistant.finished', sessionId: '1790258346189_zqp76', payload: { text: 'Hello from the mock model.' } },
+    payload: {
+      version: 'v1',
+      event: 'assistant.finished',
+      sessionId: '1790258346189_zqp76',
+      payload: { text: 'Hello from the mock model.' },
+    },
     category: 'assistant_text',
   },
   {
     provider: Provider.CLINE,
     name: 'reasoning',
-    payload: { version: 'v1', event: 'reasoning.finished', sessionId: '1790258346189_zqp76', payload: { reasoning: 'The user says hello. I answer briefly.' } },
+    payload: {
+      version: 'v1',
+      event: 'reasoning.finished',
+      sessionId: '1790258346189_zqp76',
+      payload: { reasoning: 'The user says hello. I answer briefly.' },
+    },
     category: 'assistant_thinking',
   },
   {
     provider: Provider.CLINE,
     name: 'tool call',
-    payload: { version: 'v1', event: 'tool.started', sessionId: '1790258346189_zqp76', payload: { toolCallId: 'call_bash_1', toolName: 'run_commands', input: { commands: ['echo probe-bash'] } } },
+    payload: {
+      version: 'v1',
+      event: 'tool.started',
+      sessionId: '1790258346189_zqp76',
+      payload: {
+        toolCallId: 'call_bash_1',
+        toolName: 'run_commands',
+        input: {
+          commands: ['echo probe-bash'],
+        },
+      },
+    },
     category: 'tool_use',
   },
   {
     provider: Provider.CLINE,
     name: 'tool result',
-    payload: { version: 'v1', event: 'tool.finished', sessionId: '1790258346189_zqp76', payload: { toolCallId: 'call_bash_1', toolName: 'run_commands', output: [{ query: 'echo probe-bash', result: 'probe-bash\n', success: true }] } },
+    payload: {
+      version: 'v1',
+      event: 'tool.finished',
+      sessionId: '1790258346189_zqp76',
+      payload: {
+        toolCallId: 'call_bash_1',
+        toolName: 'run_commands',
+        output: [
+          { query: 'echo probe-bash', result: 'probe-bash\n', success: true },
+        ],
+      },
+    },
     category: 'tool_result',
     spanType: 'run_commands',
   },
   {
     provider: Provider.CLINE,
     name: 'turn end',
-    payload: { version: 'v1', event: 'run.completed', sessionId: '1790258346189_zqp76', payload: { reason: 'completed', result: { text: 'Hello from the mock model.', iterations: 1 } } },
+    payload: {
+      version: 'v1',
+      event: 'run.completed',
+      sessionId: '1790258346189_zqp76',
+      payload: {
+        reason: 'completed',
+        result: { text: 'Hello from the mock model.', iterations: 1 },
+      },
+    },
     category: 'result_divider',
   },
   {
     provider: Provider.CLINE,
     name: 'compaction notice',
-    payload: { version: 'v1', event: 'session.notice', sessionId: '1790258346189_zqp76', payload: { message: 'auto-compacted', noticeType: 'status', metadata: { kind: 'auto_compaction', phase: 'completed', tokensBefore: 90000, tokensAfter: 12000 } } },
+    payload: {
+      version: 'v1',
+      event: 'session.notice',
+      sessionId: '1790258346189_zqp76',
+      payload: {
+        message: 'auto-compacted',
+        noticeType: 'status',
+        metadata: {
+          kind: 'auto_compaction',
+          phase: 'completed',
+          tokensBefore: 90000,
+          tokensAfter: 12000,
+        },
+      },
+    },
     category: 'notification',
   },
 
@@ -629,7 +1038,15 @@ export const ROW_KIND_CASES: RowKindCase[] = [
   {
     provider: Provider.ZCODE,
     name: 'scheduled tool',
-    payload: { type: 'tool.updated', payload: { kind: 'scheduled', toolCallId: 'z1', toolName: 'Read', input: { file_path: '/repo/a.ts' } } },
+    payload: {
+      type: 'tool.updated',
+      payload: {
+        kind: 'scheduled',
+        toolCallId: 'z1',
+        toolName: 'Read',
+        input: { file_path: '/repo/a.ts' },
+      },
+    },
     category: 'tool_use',
   },
 
@@ -637,37 +1054,79 @@ export const ROW_KIND_CASES: RowKindCase[] = [
   {
     provider: Provider.CODEWHALE,
     name: 'reply',
-    payload: { event: 'item.completed', payload: { item: { kind: 'agent_message', status: 'completed', detail: 'Hello there.' } } },
+    payload: {
+      event: 'item.completed',
+      payload: {
+        item: { kind: 'agent_message', status: 'completed', detail: 'Hello there.' },
+      },
+    },
     category: 'assistant_text',
   },
   {
     provider: Provider.CODEWHALE,
     name: 'reasoning',
-    payload: { event: 'item.completed', payload: { item: { kind: 'agent_reasoning', status: 'completed', detail: 'Thinking.' } } },
+    payload: {
+      event: 'item.completed',
+      payload: {
+        item: { kind: 'agent_reasoning', status: 'completed', detail: 'Thinking.' },
+      },
+    },
     category: 'assistant_thinking',
   },
   {
     provider: Provider.CODEWHALE,
     name: 'tool started',
-    payload: { event: 'item.started', payload: { item: { kind: 'tool_call', metadata: { tool_use_id: 'w1', tool_name: 'bash' } }, tool: { id: 'w1', name: 'bash', input: { command: 'ls' } } } },
+    payload: {
+      event: 'item.started',
+      payload: {
+        item: {
+          kind: 'tool_call',
+          metadata: { tool_use_id: 'w1', tool_name: 'bash' },
+        },
+        tool: {
+          id: 'w1',
+          name: 'bash',
+          input: { command: 'ls' },
+        },
+      },
+    },
     category: 'tool_use',
   },
   {
     provider: Provider.CODEWHALE,
     name: 'tool finished',
-    payload: { event: 'item.completed', payload: { item: { kind: 'tool_call', detail: 'a.ts', metadata: { tool_use_id: 'w1', tool_name: 'bash', exit_code: 0 } } } },
+    payload: {
+      event: 'item.completed',
+      payload: {
+        item: {
+          kind: 'tool_call',
+          detail: 'a.ts',
+          metadata: { tool_use_id: 'w1', tool_name: 'bash', exit_code: 0 },
+        },
+      },
+    },
     category: 'tool_result',
   },
   {
     provider: Provider.CODEWHALE,
     name: 'status',
-    payload: { event: 'item.completed', payload: { item: { kind: 'status', status: 'completed', detail: 'Checkpoint saved' } } },
+    payload: {
+      event: 'item.completed',
+      payload: {
+        item: { kind: 'status', status: 'completed', detail: 'Checkpoint saved' },
+      },
+    },
     category: 'notification',
   },
   {
     provider: Provider.CODEWHALE,
     name: 'turn end',
-    payload: { event: 'turn.completed', payload: { turn: { status: 'completed' } } },
+    payload: {
+      event: 'turn.completed',
+      payload: {
+        turn: { status: 'completed' },
+      },
+    },
     category: 'result_divider',
   },
 
@@ -687,7 +1146,13 @@ export const ROW_KIND_CASES: RowKindCase[] = [
       name: 'Bash',
       args: { command: 'echo hi-from-bash', description: 'Echo a greeting' },
       description: 'Running: echo hi-from-bash',
-      display: { kind: 'command', command: 'echo hi-from-bash', cwd: '/work', description: 'Echo a greeting', language: 'bash' },
+      display: {
+        kind: 'command',
+        command: 'echo hi-from-bash',
+        cwd: '/work',
+        description: 'Echo a greeting',
+        language: 'bash',
+      },
       sessionId: 'session_f7cf22a1-3d27-4d41-b8e2-978b1e5fa5a7',
     },
     category: 'tool_use',
@@ -695,14 +1160,30 @@ export const ROW_KIND_CASES: RowKindCase[] = [
   {
     provider: Provider.KIMI_CODE,
     name: 'tool result',
-    payload: { type: 'tool.result', time: 1790186809167, agentId: 'main', turnId: 0, toolCallId: 'call_bash_1', output: 'hi-from-bash\n', sessionId: 'session_f7cf22a1-3d27-4d41-b8e2-978b1e5fa5a7' },
+    payload: {
+      type: 'tool.result',
+      time: 1790186809167,
+      agentId: 'main',
+      turnId: 0,
+      toolCallId: 'call_bash_1',
+      output: 'hi-from-bash\n',
+      sessionId: 'session_f7cf22a1-3d27-4d41-b8e2-978b1e5fa5a7',
+    },
     spanType: 'Bash',
     category: 'tool_result',
   },
   {
     provider: Provider.KIMI_CODE,
     name: 'turn end',
-    payload: { type: 'turn.ended', time: 1790186809300, agentId: 'main', turnId: 0, reason: 'completed', durationMs: 32, sessionId: 'session_f7cf22a1-3d27-4d41-b8e2-978b1e5fa5a7' },
+    payload: {
+      type: 'turn.ended',
+      time: 1790186809300,
+      agentId: 'main',
+      turnId: 0,
+      reason: 'completed',
+      durationMs: 32,
+      sessionId: 'session_f7cf22a1-3d27-4d41-b8e2-978b1e5fa5a7',
+    },
     category: 'result_divider',
   },
 
@@ -720,7 +1201,11 @@ export const ROW_KIND_CASES: RowKindCase[] = [
   {
     provider: Provider.MIMO_CODE,
     name: 'finished tool',
-    payload: toolFrame(MIMO_TOOL.Bash, { input: { command: 'ls' }, output: 'a.ts\n', metadata: { output: 'a.ts\n', exit: 0 } }),
+    payload: toolFrame(MIMO_TOOL.Bash, {
+      input: { command: 'ls' },
+      output: 'a.ts\n',
+      metadata: { output: 'a.ts\n', exit: 0 },
+    }),
     category: 'tool_result',
     spanType: MIMO_TOOL.Bash,
   },
@@ -770,45 +1255,110 @@ export const ROW_KIND_CASES: RowKindCase[] = [
   {
     provider: Provider.MUSE_CODE,
     name: 'assistant text',
-    payload: { method: 'item/completed', params: { sessionId: 'native-session', item: { itemId: 'native-item', kind: 'agentMessage', status: 'completed', text: 'Native answer.' } } },
+    payload: {
+      method: 'item/completed',
+      params: {
+        sessionId: 'native-session',
+        item: {
+          itemId: 'native-item',
+          kind: 'agentMessage',
+          status: 'completed',
+          text: 'Native answer.',
+        },
+      },
+    },
     category: 'assistant_text',
   },
   {
     provider: Provider.MUSE_CODE,
     name: 'reasoning',
-    payload: { method: 'item/completed', params: { sessionId: 'native-session', item: { itemId: 'native-item', kind: 'reasoning', status: 'completed', summary: ['First', 'Second'] } } },
+    payload: {
+      method: 'item/completed',
+      params: {
+        sessionId: 'native-session',
+        item: {
+          itemId: 'native-item',
+          kind: 'reasoning',
+          status: 'completed',
+          summary: ['First', 'Second'],
+        },
+      },
+    },
     category: 'assistant_thinking',
   },
   {
     provider: Provider.MUSE_CODE,
     name: 'bash tool call',
-    payload: { method: 'item/started', params: { sessionId: 'session', item: { itemId: 'tool', kind: 'toolCall', turnId: 'turn', callId: 'call', tool: 'bash', args: '{"command":"printf native"}', status: 'inProgress' } } },
+    payload: {
+      method: 'item/started',
+      params: {
+        sessionId: 'session',
+        item: {
+          itemId: 'tool',
+          kind: 'toolCall',
+          turnId: 'turn',
+          callId: 'call',
+          tool: 'bash',
+          args: '{"command":"printf native"}',
+          status: 'inProgress',
+        },
+      },
+    },
     category: 'tool_use',
     spanType: 'bash',
   },
   {
     provider: Provider.MUSE_CODE,
     name: 'bash tool result',
-    payload: { method: 'item/completed', params: { sessionId: 'session', item: { itemId: 'tool', kind: 'toolCall', turnId: 'turn', callId: 'call', tool: 'bash', args: '{"command":"printf native"}', status: 'completed', visibleOutput: 'native' } } },
+    payload: {
+      method: 'item/completed',
+      params: {
+        sessionId: 'session',
+        item: {
+          itemId: 'tool',
+          kind: 'toolCall',
+          turnId: 'turn',
+          callId: 'call',
+          tool: 'bash',
+          args: '{"command":"printf native"}',
+          status: 'completed',
+          visibleOutput: 'native',
+        },
+      },
+    },
     category: 'tool_result',
     spanType: 'bash',
   },
   {
     provider: Provider.MUSE_CODE,
     name: 'turn end',
-    payload: { method: 'turn/completed', params: { sessionId: 'native-session' } },
+    payload: {
+      method: 'turn/completed',
+      params: { sessionId: 'native-session' },
+    },
     category: 'result_divider',
   },
   {
     provider: Provider.MUSE_CODE,
     name: 'recognized to-do update',
-    payload: { method: 'session/todoListChanged', params: { sessionId: 'native-session', items: [{ text: 'Native task', status: 'completed' }] } },
+    payload: {
+      method: 'session/todoListChanged',
+      params: {
+        sessionId: 'native-session',
+        items: [
+          { text: 'Native task', status: 'completed' },
+        ],
+      },
+    },
     category: 'hidden',
   },
   {
     provider: Provider.MUSE_CODE,
     name: 'question settlement',
-    payload: { method: 'userInput/settled', params: { sessionId: 'native-session', userInputId: 'native-input', outcome: 'answered' } },
+    payload: {
+      method: 'userInput/settled',
+      params: { sessionId: 'native-session', userInputId: 'native-input', outcome: 'answered' },
+    },
     category: 'notification',
   },
 
@@ -820,7 +1370,12 @@ export const ROW_KIND_CASES: RowKindCase[] = [
   {
     provider: Provider.CLAUDE_CODE,
     name: 'user send',
-    payload: { content: 'Correct the token check.', attachments: [{ filename: 'parser.ts', mime_type: 'text/plain' }] },
+    payload: {
+      content: 'Correct the token check.',
+      attachments: [
+        { filename: 'parser.ts', mime_type: 'text/plain' },
+      ],
+    },
     category: 'user_content',
   },
   {
@@ -835,7 +1390,11 @@ export const ROW_KIND_CASES: RowKindCase[] = [
     // plugin, so the frame beside it can be anything the agent sent.
     provider: Provider.CLAUDE_CODE,
     name: 'saved control answer',
-    payload: { response: { response: { behavior: 'allow' } } },
+    payload: {
+      response: {
+        response: { behavior: 'allow' },
+      },
+    },
     messageMetadata: {
       [MESSAGE_METADATA_FIELD.ControlRequestID]: 'req-1',
       [MESSAGE_METADATA_FIELD.ControlRequestClaimToken]: 'claim-1',
@@ -847,33 +1406,75 @@ export const ROW_KIND_CASES: RowKindCase[] = [
   {
     provider: Provider.CODEBUDDY,
     name: 'assistant text',
-    payload: { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'Done.' }] } },
+    payload: {
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'Done.' },
+        ],
+      },
+    },
     category: 'assistant_text',
   },
   {
     provider: Provider.CODEBUDDY,
     name: 'assistant thinking',
-    payload: { type: 'assistant', message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'Consider...', signature: 'sig' }] } },
+    payload: {
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: 'Consider...', signature: 'sig' },
+        ],
+      },
+    },
     category: 'assistant_thinking',
   },
   {
     provider: Provider.CODEBUDDY,
     name: 'tool use',
-    payload: { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_cb1', name: 'Read', input: { file_path: '/repo/a.ts' } }] } },
+    payload: {
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'toolu_cb1',
+            name: 'Read',
+            input: { file_path: '/repo/a.ts' },
+          },
+        ],
+      },
+    },
     category: 'tool_use',
     spanType: 'Read',
   },
   {
     provider: Provider.CODEBUDDY,
     name: 'tool result',
-    payload: { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content: 'file contents', tool_use_id: 'toolu_cb1' }] } },
+    payload: {
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          { type: 'tool_result', content: 'file contents', tool_use_id: 'toolu_cb1' },
+        ],
+      },
+    },
     category: 'tool_result',
     spanType: 'Read',
   },
   {
     provider: Provider.CODEBUDDY,
     name: 'turn end',
-    payload: { type: 'result', subtype: 'success', result: 'Done', num_turns: 1 },
+    payload: {
+      type: 'result',
+      subtype: 'success',
+      result: 'Done',
+      num_turns: 1,
+    },
     category: 'result_divider',
   },
 
@@ -881,33 +1482,75 @@ export const ROW_KIND_CASES: RowKindCase[] = [
   {
     provider: Provider.QODER,
     name: 'assistant text',
-    payload: { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'Done.' }] } },
+    payload: {
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'Done.' },
+        ],
+      },
+    },
     category: 'assistant_text',
   },
   {
     provider: Provider.QODER,
     name: 'assistant thinking',
-    payload: { type: 'assistant', message: { role: 'assistant', content: [{ type: 'thinking', thinking: 'Consider...', signature: 'sig' }] } },
+    payload: {
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'thinking', thinking: 'Consider...', signature: 'sig' },
+        ],
+      },
+    },
     category: 'assistant_thinking',
   },
   {
     provider: Provider.QODER,
     name: 'tool use',
-    payload: { type: 'assistant', message: { role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_qd1', name: 'Read', input: { file_path: '/repo/a.ts' } }] } },
+    payload: {
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [
+          {
+            type: 'tool_use',
+            id: 'toolu_qd1',
+            name: 'Read',
+            input: { file_path: '/repo/a.ts' },
+          },
+        ],
+      },
+    },
     category: 'tool_use',
     spanType: 'Read',
   },
   {
     provider: Provider.QODER,
     name: 'tool result',
-    payload: { type: 'user', message: { role: 'user', content: [{ type: 'tool_result', content: 'file contents', tool_use_id: 'toolu_qd1' }] } },
+    payload: {
+      type: 'user',
+      message: {
+        role: 'user',
+        content: [
+          { type: 'tool_result', content: 'file contents', tool_use_id: 'toolu_qd1' },
+        ],
+      },
+    },
     category: 'tool_result',
     spanType: 'Read',
   },
   {
     provider: Provider.QODER,
     name: 'turn end',
-    payload: { type: 'result', subtype: 'success', result: 'Done', num_turns: 1 },
+    payload: {
+      type: 'result',
+      subtype: 'success',
+      result: 'Done',
+      num_turns: 1,
+    },
     category: 'result_divider',
   },
 
@@ -919,7 +1562,15 @@ export const ROW_KIND_CASES: RowKindCase[] = [
     // misconfiguration itself.
     provider: Provider.UNSPECIFIED,
     name: 'frame of an unknown provider',
-    payload: { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: 'Done.' }] } },
+    payload: {
+      type: 'assistant',
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: 'Done.' },
+        ],
+      },
+    },
     category: 'unsupported_provider',
   },
   // --- Letta Code --------------------------------------------------------
@@ -930,19 +1581,34 @@ export const ROW_KIND_CASES: RowKindCase[] = [
   {
     provider: Provider.LETTA,
     name: 'assembled reasoning',
-    payload: { type: 'assembled_message', kind: 'reasoning', text: 'The user says hello.', completion: 'complete' },
+    payload: {
+      type: 'assembled_message',
+      kind: 'reasoning',
+      text: 'The user says hello.',
+      completion: 'complete',
+    },
     category: 'assistant_thinking',
   },
   {
     provider: Provider.LETTA,
     name: 'tool call of the stored delta',
-    payload: { message_type: 'client_tool_start', tool_call_id: 'call_1', tool_name: 'Bash', tool_input: { command: 'echo hi' } },
+    payload: {
+      message_type: 'client_tool_start',
+      tool_call_id: 'call_1',
+      tool_name: 'Bash',
+      tool_input: { command: 'echo hi' },
+    },
     category: 'tool_use',
   },
   {
     provider: Provider.LETTA,
     name: 'tool result of the stored delta',
-    payload: { message_type: 'tool_return_message', tool_call_id: 'call_1', tool_name: 'Bash', tool_return: 'hi\n' },
+    payload: {
+      message_type: 'tool_return_message',
+      tool_call_id: 'call_1',
+      tool_name: 'Bash',
+      tool_return: 'hi\n',
+    },
     category: 'tool_result',
   },
   // The shapes the worker really persists. The wire discriminator of a
@@ -951,13 +1617,23 @@ export const ROW_KIND_CASES: RowKindCase[] = [
   {
     provider: Provider.LETTA,
     name: 'turn end of the live frame',
-    payload: { type: 'turn_finished', turn_id: 'batch-direct-1', stop_reason: 'end_turn', run_id: 'local-run-1' },
+    payload: {
+      type: 'turn_finished',
+      turn_id: 'batch-direct-1',
+      stop_reason: 'end_turn',
+      run_id: 'local-run-1',
+    },
     category: 'result_divider',
   },
   {
     provider: Provider.LETTA,
     name: 'assembled assistant text',
-    payload: { type: 'assembled_message', kind: 'text', text: '6912', completion: 'complete' },
+    payload: {
+      type: 'assembled_message',
+      kind: 'text',
+      text: '6912',
+      completion: 'complete',
+    },
     category: 'assistant_text',
   },
   {
@@ -971,19 +1647,37 @@ export const ROW_KIND_CASES: RowKindCase[] = [
   {
     provider: Provider.DROID,
     name: 'assistant text',
-    payload: { type: 'assembled_message', kind: 'text', text: 'Hello from the mock model.', completion: 'complete' },
+    payload: {
+      type: 'assembled_message',
+      kind: 'text',
+      text: 'Hello from the mock model.',
+      completion: 'complete',
+    },
     category: 'assistant_text',
   },
   {
     provider: Provider.DROID,
     name: 'tool call',
-    payload: { type: 'tool_call', toolUse: { type: 'tool_use', id: 'call_1', name: 'Execute', input: { command: 'echo hi' } } },
+    payload: {
+      type: 'tool_call',
+      toolUse: {
+        type: 'tool_use',
+        id: 'call_1',
+        name: 'Execute',
+        input: { command: 'echo hi' },
+      },
+    },
     category: 'tool_use',
   },
   {
     provider: Provider.DROID,
     name: 'tool result',
-    payload: { type: 'tool_result', toolUseId: 'call_1', content: 'hi\n', isError: false },
+    payload: {
+      type: 'tool_result',
+      toolUseId: 'call_1',
+      content: 'hi\n',
+      isError: false,
+    },
     category: 'tool_result',
   },
   {

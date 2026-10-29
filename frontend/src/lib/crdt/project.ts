@@ -374,7 +374,9 @@ export class ProjectionCache {
     // The inputs moved but the OUTPUT may not have: see {@link ProjectionCache}
     // on the same-value rewrite. Keeping the previous object costs one shallow
     // compare on a miss and saves every consumer downstream from re-running.
-    const tree = prev && sameRenderTree(prev.tree, fresh) ? prev.tree : fresh
+    const tree = prev && sameRenderTree(prev.tree, fresh)
+      ? prev.tree
+      : fresh
     this.nextNodes.set(nodeId, {
       kind: rec?.kind,
       direction: rec?.direction,
@@ -407,7 +409,9 @@ export class ProjectionCache {
   /** The miss path, extracted for the reason {@link rebuildTree} gives. */
   private rebuildTab(rec: TabRecord, workspaceId: string, build: () => RenderedTab, prev: CachedTab | undefined): RenderedTab {
     const fresh = build()
-    const row = prev && shallowEqual(prev.row, fresh) ? prev.row : fresh
+    const row = prev && shallowEqual(prev.row, fresh)
+      ? prev.row
+      : fresh
     this.nextTabs.set(rec.tabId, {
       tabType: rec.tabType,
       tileId: rec.tileId,
@@ -474,7 +478,9 @@ export class ProjectionCache {
     prev: CachedWindow | undefined,
   ): RenderedFloatingWindow {
     const fresh = build()
-    const window = prev && shallowEqual(prev.window, fresh) ? prev.window : fresh
+    const window = prev && shallowEqual(prev.window, fresh)
+      ? prev.window
+      : fresh
     this.nextWindows.set(rec.windowId, {
       rootNodeId: rec.rootNodeId,
       x: rec.x,
@@ -647,7 +653,9 @@ function sameRenderTree(a: RenderTree, b: RenderTree): boolean {
 
 /** `prev` when it holds the same elements as `next`, so the identity survives. */
 function reuseArray<T>(prev: readonly T[] | undefined, next: readonly T[]): readonly T[] {
-  return prev && shallowEqualArrays(prev, next) ? prev : next
+  return prev && shallowEqualArrays(prev, next)
+    ? prev
+    : next
 }
 
 /**
@@ -671,7 +679,17 @@ function reuseMap<K, V>(prev: ReadonlyMap<K, V> | undefined, next: ReadonlyMap<K
 
 /** A bare leaf under `nodeId` -- the shape every degenerate tree case renders as. */
 function leafOnly(nodeId: string): RenderTree {
-  return { nodeId, kind: NodeKind.LEAF, direction: 0, ratios: [], rows: 0, cols: 0, rowRatios: [], colRatios: [], children: [] }
+  return {
+    nodeId,
+    kind: NodeKind.LEAF,
+    direction: 0,
+    ratios: [],
+    rows: 0,
+    cols: 0,
+    rowRatios: [],
+    colRatios: [],
+    children: [],
+  }
 }
 
 /**
@@ -834,7 +852,9 @@ function buildTreeFromRoot(state: UserCrdtState, rootId: string, childIndex: Map
   // which can only collide with a live record that has none of them set, and
   // both produce exactly this tree.
   const build = (): RenderTree => leafOnly(rootId)
-  return cache ? cache.tree(rootId, rec, NO_CHILD_TREES, build) : build()
+  return cache
+    ? cache.tree(rootId, rec, NO_CHILD_TREES, build)
+    : build()
 }
 
 /**
@@ -873,7 +893,9 @@ function buildTree(rec: NodeRecord, childIndex: Map<string, NodeRecord[]>, seen:
     const sorted = (childIndex.get(rec.nodeId) ?? []).slice().sort((a, b) => {
       const pa = a.position?.value ?? ''
       const pb = b.position?.value ?? ''
-      return pa !== pb ? cmpStr(pa, pb) : cmpStr(a.nodeId, b.nodeId)
+      return pa !== pb
+        ? cmpStr(pa, pb)
+        : cmpStr(a.nodeId, b.nodeId)
     })
     const built = sorted.map(child => buildTree(child, childIndex, seen, cache))
     // SPLIT with one live child renders as just that child (visual collapse),
@@ -909,13 +931,17 @@ function buildTree(rec: NodeRecord, childIndex: Map<string, NodeRecord[]>, seen:
     for (let r = 0; r < rows; r++) {
       for (let col = 0; col < cols; col++) {
         const entry = grid.get(`${r},${col}`)
-        cells.push(entry ? buildTree(entry, childIndex, seen, cache) : EMPTY_TREE)
+        cells.push(entry
+          ? buildTree(entry, childIndex, seen, cache)
+          : EMPTY_TREE)
       }
     }
     children = cells
   }
   const build = (): RenderTree => buildNodeTree(rec, kind, rows, cols, children)
-  return cache ? cache.tree(rec.nodeId, rec, children, build) : build()
+  return cache
+    ? cache.tree(rec.nodeId, rec, children, build)
+    : build()
 }
 
 /**
@@ -938,11 +964,17 @@ function buildNodeTree(rec: NodeRecord, kind: NodeKind, rows: number, cols: numb
     nodeId: rec.nodeId,
     kind,
     direction: rec.direction?.value ?? 0,
-    ratios: kind === NodeKind.SPLIT ? normalizeRatios(rawRatios, children.length) : [...rawRatios],
+    ratios: kind === NodeKind.SPLIT
+      ? normalizeRatios(rawRatios, children.length)
+      : [...rawRatios],
     rows,
     cols,
-    rowRatios: isGrid && rawRowRatios.length !== rows ? normalizeRatios(rawRowRatios, rows) : [...rawRowRatios],
-    colRatios: isGrid && rawColRatios.length !== cols ? normalizeRatios(rawColRatios, cols) : [...rawColRatios],
+    rowRatios: isGrid && rawRowRatios.length !== rows
+      ? normalizeRatios(rawRowRatios, rows)
+      : [...rawRowRatios],
+    colRatios: isGrid && rawColRatios.length !== cols
+      ? normalizeRatios(rawColRatios, cols)
+      : [...rawColRatios],
     children,
   }
 }
@@ -984,7 +1016,11 @@ function ownershipHolds(state: UserCrdtState, workspaceId: string, chainAlive: b
  * locale).
  */
 export function cmpStr(a: string, b: string): number {
-  return a < b ? -1 : a > b ? 1 : 0
+  return a < b
+    ? -1
+    : a > b
+      ? 1
+      : 0
 }
 
 function normalizeRatios(ratios: readonly number[], n: number): number[] {
@@ -1068,7 +1104,9 @@ export function project(state: UserCrdtState, cache?: ProjectionCache): Projecti
       opacity: fw.opacity?.value ?? 0,
       innerTree,
     })
-    const rendered = cache ? cache.window(fw, innerTree, build) : build()
+    const rendered = cache
+      ? cache.window(fw, innerTree, build)
+      : build()
     const list = windowsByWorkspace.get(wsId)
     if (list)
       list.push(rendered)
@@ -1083,7 +1121,9 @@ export function project(state: UserCrdtState, cache?: ProjectionCache): Projecti
     const floatingWindows = windowsByWorkspace.get(wsId) ?? NO_WINDOWS
     const build = (windows: readonly RenderedFloatingWindow[]): WorkspaceProjection =>
       ({ workspaceId: wsId, mainTree, floatingWindows: windows })
-    workspaces.set(wsId, cache ? cache.workspace(wsId, mainTree, floatingWindows, build) : build(floatingWindows))
+    workspaces.set(wsId, cache
+      ? cache.workspace(wsId, mainTree, floatingWindows, build)
+      : build(floatingWindows))
   }
 
   const ownedRaw: RenderedTab[] = []
@@ -1112,7 +1152,9 @@ export function project(state: UserCrdtState, cache?: ProjectionCache): Projecti
     // advertises every leaf under its own node id -- see the SPLIT collapse in
     // `buildTree`. `renderedTabs` narrows `ownedTabs` to the tabs that are on a
     // live leaf; it does not relabel them, so both hold the SAME row object.
-    const row = cache ? cache.tab(t, workspaceId, build) : build()
+    const row = cache
+      ? cache.tab(t, workspaceId, build)
+      : build()
     ownedRaw.push(row)
     if (leaf)
       renderedRaw.push(row)
@@ -1122,8 +1164,12 @@ export function project(state: UserCrdtState, cache?: ProjectionCache): Projecti
   // next tick compares against.
   const byTabId = (rows: readonly RenderedTab[]): readonly RenderedTab[] =>
     rows.slice().sort((a, b) => cmpStr(a.tabId, b.tabId))
-  const ownedTabs = cache ? cache.sortedTabs('owned', ownedRaw, byTabId) : byTabId(ownedRaw)
-  const renderedTabs = cache ? cache.sortedTabs('rendered', renderedRaw, byTabId) : byTabId(renderedRaw)
+  const ownedTabs = cache
+    ? cache.sortedTabs('owned', ownedRaw, byTabId)
+    : byTabId(ownedRaw)
+  const renderedTabs = cache
+    ? cache.sortedTabs('rendered', renderedRaw, byTabId)
+    : byTabId(renderedRaw)
 
   const build = (parts: ProjectionParts): Projection => ({ userId: state.userId, ...parts })
   return cache

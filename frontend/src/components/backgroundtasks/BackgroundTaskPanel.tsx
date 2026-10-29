@@ -76,8 +76,12 @@ export const BackgroundTaskPanel: Component<BackgroundTaskPanelProps> = (props) 
           tasks={props.tasks}
           kind={tab()}
           emptyMessage={LIST_TABS_META[tab()].empty}
-          {...(props.loadFailed !== undefined ? { loadFailed: props.loadFailed } : {})}
-          {...(props.onOpenSubagent !== undefined ? { onOpenSubagent: props.onOpenSubagent } : {})}
+          {...(props.loadFailed !== undefined
+            ? { loadFailed: props.loadFailed }
+            : {})}
+          {...(props.onOpenSubagent !== undefined
+            ? { onOpenSubagent: props.onOpenSubagent }
+            : {})}
         />
       </div>
     </div>

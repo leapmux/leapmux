@@ -33,13 +33,30 @@ vi.mock('./nativeToolExecution', () => ({
       protocol: 'anthropic-messages',
       path: '/v1/messages',
       stepIndex: 4,
-      body: { messages: [{ role: 'user', content: [{ type: 'tool_result', tool_use_id: callId, content: run.resultText }] }] },
+      body: {
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'tool_result', tool_use_id: callId, content: run.resultText },
+            ],
+          },
+        ],
+      },
     }
-    return { start: 3, toolRequest: { ...resultRequest, stepIndex: 3 }, resultRequest }
+    return {
+      start: 3,
+      toolRequest: { ...resultRequest, stepIndex: 3 },
+      resultRequest,
+    }
   },
 }))
 vi.mock('./ui', () => ({
-  assistantBubbles: () => ({ filter: ({ hasText }: { hasText: string }) => ({ first: () => passingLocator(`answer ${hasText}`) }) }),
+  assistantBubbles: () => ({
+    filter: ({ hasText }: { hasText: string }) => ({
+      first: () => passingLocator(`answer ${hasText}`),
+    }),
+  }),
   openWorkspace: async (_page: unknown, workspaceId: string) => { run.events.push(`open workspace ${workspaceId}`) },
   applyPermissionPreset: async (_page: unknown, preset: string) => { run.events.push(`preset ${preset}`) },
 }))
@@ -50,13 +67,19 @@ vi.mock('./api', () => ({
     return 'agent'
   },
 }))
-vi.mock('../agentSettings', () => ({ agentOpenOptions: (agentProvider: AgentProvider) => ({ agentProvider }) }))
+vi.mock('../agentSettings', () => ({
+  agentOpenOptions: (agentProvider: AgentProvider) => ({ agentProvider }),
+}))
 vi.mock('./nativeScenario', async importOriginal => ({
   ...await importOriginal<typeof import('./nativeScenario')>(),
   selectedAgentTabId: async () => 'agent',
 }))
-vi.mock('./server', () => ({ getGlobalState: () => ({ tmpDir: run.scratch }) }))
-vi.mock('./runDirectory', () => ({ createTestDirectory: (prefix: string) => mkdtempSync(join(run.scratch, prefix)) }))
+vi.mock('./server', () => ({
+  getGlobalState: () => ({ tmpDir: run.scratch }),
+}))
+vi.mock('./runDirectory', () => ({
+  createTestDirectory: (prefix: string) => mkdtempSync(join(run.scratch, prefix)),
+}))
 
 /** A fake locator whose Playwright checks pass and leave a record. */
 function passingLocator(name: string): Locator {
@@ -102,22 +125,45 @@ describe('nativeMcpAnswer', () => {
 
 describe('invokeNativeMcpTool', () => {
   it('runs one turn with the built call and returns the request that holds the result', async () => {
-    const request = await invokeNativeMcpTool(context(), { server: 'echo_probe', tool: 'echo', callId: 'call-1', input: { value: '' } })
+    const request = await invokeNativeMcpTool(context(), {
+      server: 'echo_probe',
+      tool: 'echo',
+      callId: 'call-1',
+      input: { value: '' },
+    })
     expect(request.stepIndex).toBe(4)
-    expect(run.turns).toEqual([{
-      toolCalls: [{ id: 'call-1', name: 'mcp__echo_probe__echo', arguments: { value: '' } }],
-      prompt: 'Call the echo_probe echo tool once.',
-      answer: nativeMcpAnswer('call-1'),
-    }])
+    expect(run.turns).toEqual([
+      {
+        toolCalls: [
+          {
+            id: 'call-1',
+            name: 'mcp__echo_probe__echo',
+            arguments: { value: '' },
+          },
+        ],
+        prompt: 'Call the echo_probe echo tool once.',
+        answer: nativeMcpAnswer('call-1'),
+      },
+    ])
   })
 
   it.each(['', ' '])('refuses an empty call ID before a turn: %j', async (callId) => {
-    await expect(invokeNativeMcpTool(context(), { server: 'echo_probe', tool: 'echo', callId, input: {} })).rejects.toThrow('needs a call ID')
+    await expect(invokeNativeMcpTool(context(), {
+      server: 'echo_probe',
+      tool: 'echo',
+      callId,
+      input: {},
+    })).rejects.toThrow('needs a call ID')
     expect(run.turns).toEqual([])
   })
 
   it('refuses a provider whose builder changes the call ID, before a turn', async () => {
-    await expect(invokeNativeMcpTool(context(AgentProvider.DROID), { server: 'echo_probe', tool: 'echo', callId: 'call-1', input: {} }))
+    await expect(invokeNativeMcpTool(context(AgentProvider.DROID), {
+      server: 'echo_probe',
+      tool: 'echo',
+      callId: 'call-1',
+      input: {},
+    }))
       .rejects
       .toThrow('has the ID call_call-1, not call-1')
     expect(run.turns).toEqual([])
@@ -128,7 +174,13 @@ describe('exerciseMcpEcho', () => {
   it('requires the echoed value in the tool result and the answer of the call', async () => {
     run.resultText = 'MCP_ECHO:'
     await exerciseMcpEcho(context(), '')
-    expect(run.turns[0]?.toolCalls).toEqual([{ id: 'mcp-', name: 'mcp__echo_probe__echo', arguments: { value: '' } }])
+    expect(run.turns[0]?.toolCalls).toEqual([
+      {
+        id: 'mcp-',
+        name: 'mcp__echo_probe__echo',
+        arguments: { value: '' },
+      },
+    ])
     expect(run.events).toEqual([`answer ${nativeMcpAnswer('mcp-')} to.be.visible`])
   })
 
@@ -141,10 +193,27 @@ describe('exerciseMcpEcho', () => {
     const receiptLog = join(run.scratch, 'receipt.json')
     writeFileSync(receiptLog, JSON.stringify({
       initializeCapabilities: {},
-      toolCatalogs: [{ id: 1, tools: [{ name: 'echo', inputSchema: { type: 'object' } }] }],
+      toolCatalogs: [
+        {
+          id: 1,
+          tools: [
+            {
+              name: 'echo',
+              inputSchema: { type: 'object' },
+            },
+          ],
+        },
+      ],
       elicitationRequests,
       elicitationReplies: [],
-      toolResults: [{ id: 2, tool: 'echo', text: 'MCP_ECHO:value', isError: false }],
+      toolResults: [
+        {
+          id: 2,
+          tool: 'echo',
+          text: 'MCP_ECHO:value',
+          isError: false,
+        },
+      ],
       exchange: [],
     }))
     return receiptLog
@@ -152,22 +221,37 @@ describe('exerciseMcpEcho', () => {
 
   it('requires the call in the receipt of the server', async () => {
     run.resultText = 'MCP_ECHO:value'
-    await exerciseMcpEcho(context(), 'value', { receiptLog: writeReceipt() })
+    await exerciseMcpEcho(context(), 'value', {
+      receiptLog: writeReceipt(),
+    })
   })
 
   it('fails when the server of the receipt asked for input', async () => {
     run.resultText = 'MCP_ECHO:value'
     // Playwright's `expect` fails with the values that it compared: the receipt must hold no input request.
-    await expect(exerciseMcpEcho(context(), 'value', { receiptLog: writeReceipt([{ id: 3, toolRequestId: 2, params: {} }]) }))
+    await expect(exerciseMcpEcho(context(), 'value', {
+      receiptLog: writeReceipt([
+        { id: 3, toolRequestId: 2, params: {} },
+      ]),
+    }))
       .rejects
-      .toMatchObject({ matcherResult: { actual: [{ id: 3, toolRequestId: 2, params: {} }], expected: [] } })
+      .toMatchObject({
+        matcherResult: {
+          actual: [
+            { id: 3, toolRequestId: 2, params: {} },
+          ],
+          expected: [],
+        },
+      })
   })
 
   it('fails when the receipt holds another echo result', async () => {
     run.resultText = 'MCP_ECHO:other'
     const receiptLog = writeReceipt()
     // The check for the echo result of the call fails: the receipt holds no `MCP_ECHO:other`.
-    await expect(exerciseMcpEcho(context(), 'other', { receiptLog })).rejects.toMatchObject({ matcherResult: { actual: false, expected: true } })
+    await expect(exerciseMcpEcho(context(), 'other', { receiptLog })).rejects.toMatchObject({
+      matcherResult: { actual: false, expected: true },
+    })
   })
 })
 
@@ -179,7 +263,11 @@ describe('withNativeMcpFormAgent', () => {
     await withNativeMcpFormAgent(context(), {
       directoryPrefix: 'form-agent-',
       configurationPath: run.configurationPath,
-      configuration: server => ({ servers: { [server.name]: { command: server.command, args: server.args } } }),
+      configuration: server => ({
+        servers: {
+          [server.name]: { command: server.command, args: server.args },
+        },
+      }),
     }, async ({ server, receiptLog }) => {
       seen.push(server.name, receiptLog)
       run.events.push('use')
@@ -188,9 +276,21 @@ describe('withNativeMcpFormAgent', () => {
     expect(name).toBe(MCP_FORM_SERVER_NAME)
     expect(receiptLog).toMatch(/form-agent-[^/\\]+(?:\\|\/)native-mcp-receipt\.json$/)
     expect(JSON.parse(run.configurationAtOpen ?? 'null')).toEqual({
-      servers: { [MCP_FORM_SERVER_NAME]: { command: process.execPath, args: [join(dirname(receiptLog!), 'native-form-server.mjs')] } },
+      servers: {
+        [MCP_FORM_SERVER_NAME]: {
+          command: process.execPath,
+          args: [
+            join(dirname(receiptLog!), 'native-form-server.mjs'),
+          ],
+        },
+      },
     })
-    expect(run.events).toEqual(['open agent CLAUDE_CODE in workspace', 'open workspace workspace', 'preset bypass', 'use'])
+    expect(run.events).toEqual([
+      'open agent CLAUDE_CODE in workspace',
+      'open workspace workspace',
+      'preset bypass',
+      'use',
+    ])
     expect(readFileSync(run.configurationPath, 'utf8')).toBe('{"kept":true}')
   })
 
@@ -222,7 +322,9 @@ describe('withNativeMcpFormAgent', () => {
       receipts.push(receiptLog)
     })
     expect(workingDir).toHaveBeenCalledExactlyOnceWith('form-agent-')
-    expect(receipts).toEqual([expect.stringMatching(/form-agent-[^/\\]+(?:\\|\/)repo(?:\\|\/)native-mcp-receipt\.json$/)])
+    expect(receipts).toEqual([
+      expect.stringMatching(/form-agent-[^/\\]+(?:\\|\/)repo(?:\\|\/)native-mcp-receipt\.json$/),
+    ])
   })
 
   it('refuses the agent of another provider before it writes the server or the configuration', async () => {

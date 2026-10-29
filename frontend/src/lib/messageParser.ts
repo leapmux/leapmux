@@ -71,7 +71,10 @@ export function parseMessageContent(message: AgentChatMessage): ParsedMessageCon
   const cached = parseCache.get(message)
   if (cached)
     return cached
-  let result = { ...parseMessageContentImpl(message), agentSessionId: message.agentSessionId }
+  let result = {
+    ...parseMessageContentImpl(message),
+    agentSessionId: message.agentSessionId,
+  }
   if (message.supplementalContent?.length) {
     const text = readMessageText(message.supplementalContent, message.supplementalContentCompression)
     if (text !== null) {
@@ -84,8 +87,12 @@ export function parseMessageContent(message: AgentChatMessage): ParsedMessageCon
       }
       result = {
         ...result,
-        supplementalContent: isObject(supplementalContent) ? supplementalContent[MESSAGE_SUPPLEMENT_FIELD.Provider] : undefined,
-        messageMetadata: isObject(supplementalContent) ? supplementalContent[MESSAGE_SUPPLEMENT_FIELD.Metadata] : undefined,
+        supplementalContent: isObject(supplementalContent)
+          ? supplementalContent[MESSAGE_SUPPLEMENT_FIELD.Provider]
+          : undefined,
+        messageMetadata: isObject(supplementalContent)
+          ? supplementalContent[MESSAGE_SUPPLEMENT_FIELD.Metadata]
+          : undefined,
         supplementalRawText: text,
       }
     }
@@ -123,8 +130,14 @@ function parseMessageContentImpl(message: AgentChatMessage): ParsedMessageConten
     if (obj?.type === NOTIFICATION_THREAD_TYPE && Array.isArray(obj.messages)) {
       const wrapper = { old_seqs: obj.old_seqs ?? [], messages: obj.messages }
 
-      if (obj.messages.length === 0)
-        return { rawText: text, topLevel: obj, parentObject: undefined, wrapper }
+      if (obj.messages.length === 0) {
+        return {
+          rawText: text,
+          topLevel: obj,
+          parentObject: undefined,
+          wrapper,
+        }
+      }
 
       const first = obj.messages[0]
       const parent = (typeof first === 'object' && first !== null && !Array.isArray(first))
@@ -142,17 +155,29 @@ function parseMessageContentImpl(message: AgentChatMessage): ParsedMessageConten
     const parent = (typeof obj === 'object' && obj !== null && !Array.isArray(obj))
       ? obj as Record<string, unknown>
       : undefined
-    return { rawText: text, topLevel: obj, parentObject: parent, wrapper: null }
+    return {
+      rawText: text,
+      topLevel: obj,
+      parentObject: parent,
+      wrapper: null,
+    }
   }
   catch {
-    return { rawText: text, topLevel: null, parentObject: undefined, wrapper: null }
+    return {
+      rawText: text,
+      topLevel: null,
+      parentObject: undefined,
+      wrapper: null,
+    }
   }
 }
 
 function readMessageText(content: Uint8Array, compression: AgentChatMessage['contentCompression']): string | null {
   try {
     const bytes = decompressContent(content, compression)
-    return bytes === null ? null : messageTextDecoder.decode(bytes)
+    return bytes === null
+      ? null
+      : messageTextDecoder.decode(bytes)
   }
   catch {
     // A damaged compressed field must not hide the other message fields.
@@ -190,7 +215,9 @@ export function getInnerMessageType(parsed: ParsedMessageContent): string | unde
  */
 export function messageUsage(parsed: ParsedMessageContent): Record<string, unknown> | undefined {
   const message = getInnerMessage(parsed)?.message
-  return isObject(message) ? (message.usage as Record<string, unknown> | undefined) : undefined
+  return isObject(message)
+    ? (message.usage as Record<string, unknown> | undefined)
+    : undefined
 }
 
 /**
@@ -202,7 +229,9 @@ export function messageUsage(parsed: ParsedMessageContent): Record<string, unkno
 export function messagesOf(parsed: ParsedMessageContent): unknown[] {
   return parsed.wrapper
     ? parsed.wrapper.messages
-    : parsed.topLevel ? [parsed.topLevel] : []
+    : parsed.topLevel
+      ? [parsed.topLevel]
+      : []
 }
 
 // ---------------------------------------------------------------------------
@@ -304,14 +333,18 @@ export function extractContextUsage(
       result.contextUsage = fromProvider
   }
 
-  return Object.keys(result).length > 0 ? result : null
+  return Object.keys(result).length > 0
+    ? result
+    : null
 }
 
 function modelContextWindow(modelData: unknown): number {
   if (!modelData || typeof modelData !== 'object')
     return 0
   const cw = (modelData as Record<string, unknown>).contextWindow
-  return typeof cw === 'number' && cw > 0 ? cw : 0
+  return typeof cw === 'number' && cw > 0
+    ? cw
+    : 0
 }
 
 function maxContextWindow(modelUsage: Record<string, unknown>): number {
@@ -394,7 +427,9 @@ export function extractResultMetadata(
   if (totalCostUsd !== undefined)
     result.totalCostUsd = totalCostUsd
 
-  return Object.keys(result).length > 0 ? result : null
+  return Object.keys(result).length > 0
+    ? result
+    : null
 }
 
 /** Extract settings changes from a LEAPMUX settings_changed inner message. */

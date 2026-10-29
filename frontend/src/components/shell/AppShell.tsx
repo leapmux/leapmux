@@ -199,7 +199,9 @@ export const AppShell: Component = () => {
     // Read at fire time: the user can change the duration while a panel is
     // retracting, and the dispose must wait out the animation the panel is
     // actually running.
-    closeDelayMs: () => (prefersReducedMotion() ? 0 : preferences.quakeAnimationMs() + 50),
+    closeDelayMs: () => (prefersReducedMotion()
+      ? 0
+      : preferences.quakeAnimationMs() + 50),
     // A cold open refuses an archived workspace, the same rule every other
     // "open a terminal" path applies. Declared here rather than at each keyboard
     // command, so the Control CLI cannot answer differently.
@@ -420,7 +422,9 @@ export const AppShell: Component = () => {
         return undefined
       if (isSubagentTab(tab))
         return true
-      return tabMetadata.get(agentId)?.hydrated === true ? false : undefined
+      return tabMetadata.get(agentId)?.hydrated === true
+        ? false
+        : undefined
     },
   })
 
@@ -467,7 +471,9 @@ export const AppShell: Component = () => {
         // A worker and no directory: the URL identifies a machine, not a repository.
         startPoint: {
           kind: 'directory',
-          ...(searchParams.workerId !== undefined ? { workerId: searchParams.workerId as string } : {}),
+          ...(searchParams.workerId !== undefined
+            ? { workerId: searchParams.workerId as string }
+            : {}),
         },
       })
       setSearchParams({ newWorkspace: undefined, workerId: undefined }, { replace: true })
@@ -539,7 +545,9 @@ export const AppShell: Component = () => {
   // never-painted span of the next catch-up delta as "already rendered".
   setTerminalScreenSink((tabId, screen, parsedOffset) => tabMetadata.patchExisting(tabId, {
     screen,
-    ...(parsedOffset !== undefined ? { lastOffset: parsedOffset } : {}),
+    ...(parsedOffset !== undefined
+      ? { lastOffset: parsedOffset }
+      : {}),
   }))
   onCleanup(() => setTerminalScreenSink(null))
 
@@ -589,7 +597,9 @@ export const AppShell: Component = () => {
       // The `uid` guard stays even though the key no longer carries it:
       // `resolveActiveWorkspace` refuses to act on an empty user id, and a read
       // that ran anyway would throw before the identity resolved.
-      savedWorkspaceId: uid ? localStorageGet<string>(KEY_ACTIVE_WORKSPACE) : undefined,
+      savedWorkspaceId: uid
+        ? localStorageGet<string>(KEY_ACTIVE_WORKSPACE)
+        : undefined,
     })
     switch (decision.kind) {
       case 'keep':
@@ -703,7 +713,9 @@ export const AppShell: Component = () => {
   // Active tab derived state
   const activeTab = createMemo(() => {
     const tileId = layoutStore.focusedTileId()
-    return tileId ? selection.activeTabForTile(tileId) ?? null : null
+    return tileId
+      ? selection.activeTabForTile(tileId) ?? null
+      : null
   })
   const activeTabType = createMemo(() => activeTab()?.type ?? null)
 
@@ -723,16 +735,34 @@ export const AppShell: Component = () => {
   // over it and only ever calls it from a later event.
   function getCurrentTabContext(): TabContext {
     const tab = activeTab()
-    if (!tab)
-      return { workerId: '', workingDir: '', homeDir: '', gitToplevel: '' }
+    if (!tab) {
+      return {
+        workerId: '',
+        workingDir: '',
+        homeDir: '',
+        gitToplevel: '',
+      }
+    }
     const workerId = tab.workerId ?? ''
     const homeDir = workerInfoStore.getHomeDir(workerId)
     const gitToplevel = tab.gitToplevel ?? ''
     if (tab.type === TabType.FILE) {
-      const dir = tab.workingDir || (tab.filePath ? parentDirectory(tab.filePath) : '')
-      return { workerId, workingDir: dir, homeDir, gitToplevel }
+      const dir = tab.workingDir || (tab.filePath
+        ? parentDirectory(tab.filePath)
+        : '')
+      return {
+        workerId,
+        workingDir: dir,
+        homeDir,
+        gitToplevel,
+      }
     }
-    return { workerId, workingDir: tab.workingDir ?? '', homeDir, gitToplevel }
+    return {
+      workerId,
+      workingDir: tab.workingDir ?? '',
+      homeDir,
+      gitToplevel,
+    }
   }
 
   // The Files tree selects the working directory of the active tab, and keeps a
@@ -746,12 +776,16 @@ export const AppShell: Component = () => {
   // `revealPath` instead.
   const activeTabIdentity = createMemo(() => {
     const tab = activeTab()
-    return tab ? tabKey(tab) : ''
+    return tab
+      ? tabKey(tab)
+      : ''
   })
   const activeWorkingDir = createMemo(() => getCurrentTabContext().workingDir)
   const activeTabFilePath = createMemo(() => {
     const tab = activeTab()
-    return tab?.type === TabType.FILE ? tab.filePath ?? '' : ''
+    return tab?.type === TabType.FILE
+      ? tab.filePath ?? ''
+      : ''
   })
   followActiveTabSelection({
     activeTabKey: activeTabIdentity,
@@ -781,8 +815,11 @@ export const AppShell: Component = () => {
     const tab = activeTab() ?? {}
     const path = gitStatusProbePath(ctx)
     const key = focusedRepoKeyFromTab(tab, ctx, repoGitStore)
-    if (ctx.workerId && path)
-      void repoGitStore.refresh(ctx.workerId, path, key !== undefined ? { repoKey: key } : {})
+    if (ctx.workerId && path) {
+      void repoGitStore.refresh(ctx.workerId, path, key !== undefined
+        ? { repoKey: key }
+        : {})
+    }
   }
 
   // Refresh git file status when a turn ends.
@@ -1174,14 +1211,24 @@ export const AppShell: Component = () => {
   })
 
   // Tile drag-and-drop
-  const tileDrag = useTileDragDrop({ view: tabView, selection, layoutStore, floatingWindowStore })
+  const tileDrag = useTileDragDrop({
+    view: tabView,
+    selection,
+    layoutStore,
+    floatingWindowStore,
+  })
 
   const focusTile = (tileId: string, workspaceId?: string) =>
     focusTileShared(layoutStore, floatingWindowStore, tileId, workspaceId)
 
   // --- Floating window tab movement operations ---
   const { handleDetachTab, handleAttachTab, handleToggleFloatingTab, handleActivateFloatingWindow }
-    = useFloatingWindowOps({ layoutStore, floatingWindowStore, view: tabView, selection })
+    = useFloatingWindowOps({
+      layoutStore,
+      floatingWindowStore,
+      view: tabView,
+      selection,
+    })
 
   const { move: handleCrossWorkspaceMove } = useCrossWorkspaceMove({
     getActiveWorkspaceId: () => workspace.activeWorkspaceId(),
@@ -1215,7 +1262,9 @@ export const AppShell: Component = () => {
     return rootAgentIdFor((id: string) => tabView.getAgentTab(id), tab.id)
   })
   const activeBackgroundTasks = createMemo(() =>
-    activeRootAgentId() ? chatStore.backgroundTasks.get(activeRootAgentId()!) : [],
+    activeRootAgentId()
+      ? chatStore.backgroundTasks.get(activeRootAgentId()!)
+      : [],
   )
   // Whether the worker could not answer for this root's registry. Keeps a
   // FAILURE distinguishable from an empty registry: the section is hidden when
@@ -1223,7 +1272,9 @@ export const AppShell: Component = () => {
   // section off screen with nothing to say why -- which is what a database
   // missing a column did.
   const activeBackgroundTasksFailed = createMemo(() =>
-    activeRootAgentId() ? chatStore.backgroundTasks.loadFailed(activeRootAgentId()!) : false,
+    activeRootAgentId()
+      ? chatStore.backgroundTasks.loadFailed(activeRootAgentId()!)
+      : false,
   )
   // Both goal surfaces use this handler. Set opens the editor with the current objective.
   // The other actions call the provider directly. Clear removes the objective without a confirmation.
@@ -1249,8 +1300,12 @@ export const AppShell: Component = () => {
       return undefined
     const current = chatStore.goal.get(rootId)
     const surface: GoalSurface = {
-      ...(pluginFor(tabView.getAgentTab(rootId)?.agentProvider)?.session?.goalStatusUnconfirmed ? { statusUnconfirmed: true as const } : {}),
-      ...(current !== undefined ? { current } : {}),
+      ...(pluginFor(tabView.getAgentTab(rootId)?.agentProvider)?.session?.goalStatusUnconfirmed
+        ? { statusUnconfirmed: true as const }
+        : {}),
+      ...(current !== undefined
+        ? { current }
+        : {}),
       progress: chatStore.goal.progress(rootId),
       actions: chatStore.goal.supportedActions(rootId),
       // The sidebar acts on the ACTIVE root, so it resolves the agent at CLICK
@@ -1263,7 +1318,9 @@ export const AppShell: Component = () => {
           runGoalAction(agentId, action)
       },
     }
-    return hasGoalSurface(surface) ? surface : undefined
+    return hasGoalSurface(surface)
+      ? surface
+      : undefined
   })
   // The active root identifies an agent tab for both goal surfaces.
   const showGoalsAndTodos = createMemo(() =>
@@ -1497,7 +1554,9 @@ export const AppShell: Component = () => {
    */
   const activeQuakeKeyId = createMemo(() => {
     const key = quakeKeyForTab(tileRenderer.focusedQuakeTab() ?? undefined)
-    return key === undefined ? null : quakeKeyId(key)
+    return key === undefined
+      ? null
+      : quakeKeyId(key)
   })
   activeQuakeKeyIdRef = activeQuakeKeyId
 
@@ -1590,7 +1649,9 @@ export const AppShell: Component = () => {
     get activeTabReady() { return activeTabReady() },
     get activeFilePath() {
       const active = selection.activeTabForWorkspace(workspace.activeWorkspaceId() ?? '')
-      return active?.type === TabType.FILE ? active.filePath : undefined
+      return active?.type === TabType.FILE
+        ? active.filePath
+        : undefined
     },
     get hasActiveFileTab() {
       const active = selection.activeTabForWorkspace(workspace.activeWorkspaceId() ?? '')
@@ -1632,7 +1693,9 @@ export const AppShell: Component = () => {
   createEffect(on(
     () => {
       const ctx = getCurrentTabContext()
-      return `${ctx.workerId}\0${ctx.gitToplevel}\0${ctx.workingDir}\0${activeTabReady() ? '1' : '0'}`
+      return `${ctx.workerId}\0${ctx.gitToplevel}\0${ctx.workingDir}\0${activeTabReady()
+        ? '1'
+        : '0'}`
     },
     () => refreshGitStatusForActiveTab(),
   ))
@@ -1761,7 +1824,14 @@ export const AppShell: Component = () => {
 
   const WorkspaceShellLayer = () => (
     <GridPopoverHostProvider>
-      <div style={{ '--mono-font-family': preferences.monoFontFamily(), '--ui-font-family': preferences.uiFontFamily(), 'position': 'relative', 'height': '100%', 'width': '100%' }}>
+      <div style={{
+        '--mono-font-family': preferences.monoFontFamily(),
+        '--ui-font-family': preferences.uiFontFamily(),
+        'position': 'relative',
+        'height': '100%',
+        'width': '100%',
+      }}
+      >
         {/* Both layouts sit in the same drag-provider sandwich: the section
             and tab drag contexts are layout-independent, so the stack lives
             here once instead of being re-declared and re-fed inside each
@@ -1805,8 +1875,12 @@ export const AppShell: Component = () => {
       <div class={styles.bootShellHost}>
         <div
           class={styles.bootShellContent}
-          data-ready={shellChromeVisible() ? '' : undefined}
-          aria-hidden={shellChromeVisible() ? undefined : true}
+          data-ready={shellChromeVisible()
+            ? ''
+            : undefined}
+          aria-hidden={shellChromeVisible()
+            ? undefined
+            : true}
         >
           <WorkspaceShellLayer />
         </div>
@@ -1857,7 +1931,9 @@ export const AppShell: Component = () => {
             // Omitted until the provider scan answers: the prop takes no
             // explicit undefined, and the hoist lets the spread narrow.
             const providers = agentOps.availableProviders()
-            return providers !== undefined ? { availableProviders: providers } : {}
+            return providers !== undefined
+              ? { availableProviders: providers }
+              : {}
           })()}
           onRefreshProviders={agentOps.loadAvailableProviders}
           repoGitStore={repoGitStore}
@@ -1868,7 +1944,9 @@ export const AppShell: Component = () => {
         <Show when={bootSplashMounted()}>
           <div
             class={styles.bootSplashOverlay}
-            data-exiting={shellReady() ? '' : undefined}
+            data-exiting={shellReady()
+              ? ''
+              : undefined}
             aria-hidden={shellReady() || undefined}
           >
             <BootSplash />

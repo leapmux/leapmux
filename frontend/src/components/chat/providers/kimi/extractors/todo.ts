@@ -35,6 +35,13 @@ export function kimiTodoItems(raw: unknown): TodoItem[] {
     if (!isObject(entry))
       return []
     const content = pickString(entry, 'title')
-    return [{ rowKey: todoRowKey(undefined, index, content), content, status: kimiTodoStatus(entry.status), activeForm: '' }]
+    return [
+      {
+        rowKey: todoRowKey(undefined, index, content),
+        content,
+        status: kimiTodoStatus(entry.status),
+        activeForm: '',
+      },
+    ]
   })
 }

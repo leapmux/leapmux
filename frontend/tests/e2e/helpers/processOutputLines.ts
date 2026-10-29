@@ -18,7 +18,9 @@ export function createProcessOutputLineDecoder(onLine: (line: string) => void): 
     let newline = complete.indexOf('\n')
     while (newline >= 0) {
       const line = complete.slice(start, newline)
-      onLine(line.endsWith('\r') ? line.slice(0, -1) : line)
+      onLine(line.endsWith('\r')
+        ? line.slice(0, -1)
+        : line)
       start = newline + 1
       newline = complete.indexOf('\n', start)
     }
@@ -28,7 +30,9 @@ export function createProcessOutputLineDecoder(onLine: (line: string) => void): 
     write: (chunk) => {
       if (ended)
         throw new Error('The process output stream already ended.')
-      consume(decoder.write(typeof chunk === 'string' ? Buffer.from(chunk) : chunk))
+      consume(decoder.write(typeof chunk === 'string'
+        ? Buffer.from(chunk)
+        : chunk))
     },
     end: () => {
       if (ended)

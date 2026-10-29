@@ -6,7 +6,10 @@ import { chatScrollContainer, sendMessage, waitForAgentIdle } from '../helpers/u
 
 /** The native compaction of Pi. A rule answers its summarizer, which Pi gives its own system prompt. */
 export const PI_COMPACTION: NativeCompactionOptions = {
-  summary: { route: 'rule', when: { system: '^You are a context summarization assistant\\.' } },
+  summary: {
+    route: 'rule',
+    when: { system: '^You are a context summarization assistant\\.' },
+  },
 }
 
 /**

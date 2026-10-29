@@ -4,7 +4,9 @@ import { QWEN_AUTH_TYPE } from '../helpers/qwenEnvironment'
 
 /** Enable only the existing primary model's native audio modality in the private fixture. */
 export function qwenAudioConfiguration(value: unknown): Record<string, unknown> {
-  const providers = isObject(value) && isObject(value.modelProviders) ? value.modelProviders : undefined
+  const providers = isObject(value) && isObject(value.modelProviders)
+    ? value.modelProviders
+    : undefined
   const models = providers?.[QWEN_AUTH_TYPE]
   if (!isObject(value) || !Array.isArray(models) || !models.every(isObject))
     throw new Error('The Qwen audio fixture requires its private model providers.')
@@ -17,7 +19,10 @@ export function qwenAudioConfiguration(value: unknown): Record<string, unknown> 
     if (!isObject(model.generationConfig) || !isObject(model.generationConfig.modalities))
       throw new Error('The Qwen audio fixture requires native modalities for every mock model.')
     const generation = model.generationConfig
-    model.generationConfig = { ...generation, modalities: { ...generation.modalities as Record<string, unknown>, audio: model.id === MOCK_MODELS.qwen } }
+    model.generationConfig = {
+      ...generation,
+      modalities: { ...generation.modalities as Record<string, unknown>, audio: model.id === MOCK_MODELS.qwen },
+    }
   }
   return configured
 }

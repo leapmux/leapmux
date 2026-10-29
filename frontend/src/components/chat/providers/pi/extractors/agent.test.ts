@@ -3,12 +3,39 @@ import { input } from '../../testUtils'
 import { piAgentRequest, piAgentResult } from './agent'
 import { piPairedResult } from './toolCommon'
 
-const request = { type: 'tool_execution_start', toolCallId: 'call', toolName: 'Agent', args: { description: 'Inspect sample', prompt: 'Read sample.ts', subagent_type: 'Explore', model: 'requested-model', thinking: 'high', max_turns: 4 } }
-const result = (details: Record<string, unknown>, text = 'Report') => ({ type: 'tool_execution_end', toolCallId: 'call', toolName: 'Agent', result: { content: [{ type: 'text', text }], details } })
+const request = {
+  type: 'tool_execution_start',
+  toolCallId: 'call',
+  toolName: 'Agent',
+  args: {
+    description: 'Inspect sample',
+    prompt: 'Read sample.ts',
+    subagent_type: 'Explore',
+    model: 'requested-model',
+    thinking: 'high',
+    max_turns: 4,
+  },
+}
+function result(details: Record<string, unknown>, text = 'Report') {
+  return {
+    type: 'tool_execution_end',
+    toolCallId: 'call',
+    toolName: 'Agent',
+    result: {
+      content: [
+        { type: 'text', text },
+      ],
+      details,
+    },
+  }
+}
 
 describe('pi agent source', () => {
   it('extracts a retrieved report without request data', () => {
-    const payload = { ...result({}, 'Agent: child-1\nType: Explore | Status: completed | Tool uses: 0 | Context: 0% | Duration: 0.0s\nDescription: Inspect sample\n\nReport\n\n--- Agent Conversation ---\nConversation'), toolName: 'get_subagent_result' }
+    const payload = {
+      ...result({}, 'Agent: child-1\nType: Explore | Status: completed | Tool uses: 0 | Context: 0% | Duration: 0.0s\nDescription: Inspect sample\n\nReport\n\n--- Agent Conversation ---\nConversation'),
+      toolName: 'get_subagent_result',
+    }
     const source = piAgentResult(payload)
     expect(source.agentId).toBe('child-1')
     expect(source.outcome).toBe('completed')
@@ -19,12 +46,26 @@ describe('pi agent source', () => {
 
   it('preserves retrieval text when its identity or header is invalid', () => {
     const text = 'Agent: child-1\nType: Explore | Status: completed | Tool uses: 1 | Duration: 1.0s\nDescription: Inspect sample\n\nReport'
-    const native = { ...result({}, text), toolName: 'get_subagent_result' }
-    const foreign = input({ ...request, toolName: 'get_subagent_result', args: { agent_id: 'foreign' } })
+    const native = {
+      ...result({}, text),
+      toolName: 'get_subagent_result',
+    }
+    const foreign = input({
+      ...request,
+      toolName: 'get_subagent_result',
+      args: { agent_id: 'foreign' },
+    })
     expect(piAgentResult(native, foreign).body).toBe(text)
     expect(piAgentResult(native, foreign).outcome).toBe('unknown')
-    for (const malformed of [text.replace('Status: completed', 'Status: other'), text.replace('Tool uses: 1', 'Tool uses: -1'), text.replace('Description: ', 'Description\n')]) {
-      const source = piAgentResult({ ...result({}, malformed), toolName: 'get_subagent_result' })
+    for (const malformed of [
+      text.replace('Status: completed', 'Status: other'),
+      text.replace('Tool uses: 1', 'Tool uses: -1'),
+      text.replace('Description: ', 'Description\n'),
+    ]) {
+      const source = piAgentResult({
+        ...result({}, malformed),
+        toolName: 'get_subagent_result',
+      })
       expect(source.body).toBe(malformed)
       expect(source.outcome).toBe('unknown')
     }
@@ -32,7 +73,10 @@ describe('pi agent source', () => {
 
   it.each(['get_subagent_result', 'steer_subagent'])('recognizes a missing agent without the %s request', (toolName) => {
     const text = 'Agent not found: "child-1". It may have been cleaned up.'
-    const source = piAgentResult({ ...result({}, text), toolName })
+    const source = piAgentResult({
+      ...result({}, text),
+      toolName,
+    })
     expect(source.agentId).toBe('child-1')
     expect(source.outcome).toBe('failed')
     expect(source.body).toBe(text)
@@ -45,7 +89,14 @@ describe('pi agent source', () => {
     ['Failed to steer agent: Source unavailable', 'failed'],
     ['Provider returned an unknown response', 'unknown'],
   ])('preserves a native steering response: %s', (text, outcome) => {
-    const source = piAgentResult({ ...result({}, text), toolName: 'steer_subagent' }, input({ ...request, toolName: 'steer_subagent', args: { agent_id: 'child-1' } }))
+    const source = piAgentResult({
+      ...result({}, text),
+      toolName: 'steer_subagent',
+    }, input({
+      ...request,
+      toolName: 'steer_subagent',
+      args: { agent_id: 'child-1' },
+    }))
     expect(source.outcome).toBe(outcome)
     expect(source.body).toBe(text)
   })
@@ -58,7 +109,9 @@ describe('pi agent source', () => {
     expect(source.metadata).toContainEqual({ label: 'Maximum turns', value: '4' })
     expect(source.metadata).toContainEqual({ label: 'Agent type', value: 'Explore' })
     const native = piAgentResult(result({ status: 'completed', modelName: 'resolved-model' }), input(request))
-    expect(native.metadata.filter(item => item.label === 'Model')).toEqual([{ label: 'Model', value: 'resolved-model' }])
+    expect(native.metadata.filter(item => item.label === 'Model')).toEqual([
+      { label: 'Model', value: 'resolved-model' },
+    ])
   })
 
   it.each([
@@ -85,7 +138,10 @@ describe('pi agent source', () => {
     ] as const) {
       const source = piAgentResult(result({ status, toolUses: 0 }, `Agent completed in 1.0s (0 tool uses)${note}.\n\nPartial report`))
       expect(source.body).toBe('Partial report')
-      expect(source.metadata).toContainEqual({ label: 'Notice', value: note.trim().slice(1, -1) })
+      expect(source.metadata).toContainEqual({
+        label: 'Notice',
+        value: note.trim().slice(1, -1),
+      })
       expect(source.outcome).not.toBe('completed')
     }
   })
@@ -99,23 +155,53 @@ describe('pi agent source', () => {
   })
 
   it('keeps zero counters and ignores malformed counters', () => {
-    const source = piAgentResult(result({ toolUses: 0, turnCount: 0, durationMs: 0, maxTurns: -1 }))
-    expect(source.metadata).toEqual([{ label: 'Tool uses', value: '0' }, { label: 'Turns', value: '0' }, { label: 'Duration', value: '0ms' }])
-    for (const value of [-1, 0.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1, '', null])
+    const source = piAgentResult(result({
+      toolUses: 0,
+      turnCount: 0,
+      durationMs: 0,
+      maxTurns: -1,
+    }))
+    expect(source.metadata).toEqual([
+      { label: 'Tool uses', value: '0' },
+      { label: 'Turns', value: '0' },
+      { label: 'Duration', value: '0ms' },
+    ])
+    for (const value of [
+      -1,
+      0.5,
+      Number.NaN,
+      Number.POSITIVE_INFINITY,
+      Number.MAX_SAFE_INTEGER + 1,
+      '',
+      null,
+    ])
       expect(piAgentResult(result({ toolUses: value, durationMs: value })).metadata).toEqual([])
   })
 
   it('preserves empty output and lets tool errors override child success', () => {
     expect(piAgentResult(result({}, '')).body).toBe('')
-    expect(piAgentResult({ ...result({ status: 'completed' }), isError: true }).outcome).toBe('failed')
+    expect(piAgentResult({
+      ...result({ status: 'completed' }),
+      isError: true,
+    }).outcome).toBe('failed')
     expect(piAgentRequest({ type: 'tool_execution_start' }).prompt).toBe('')
   })
 
   it('accepts only the matching final result for a request', () => {
     const complete = result({ status: 'completed' })
     expect(piPairedResult(request, input(complete))?.parentObject).toEqual(complete)
-    for (const changes of [{ toolCallId: '' }, { toolCallId: 'foreign' }, { toolCallId: 1 }, { toolName: 'read' }, { type: 'tool_execution_update' }])
-      expect(piPairedResult(request, input({ ...complete, ...changes }))).toBeUndefined()
+    for (const changes of [
+      { toolCallId: '' },
+      { toolCallId: 'foreign' },
+      { toolCallId: 1 },
+      { toolName: 'read' },
+      { type: 'tool_execution_update' },
+    ]) {
+      expect(piPairedResult(request, input({
+        ...complete,
+        ...changes,
+      }))).toBeUndefined()
+    }
     expect(piPairedResult(complete, input(complete))).toBeUndefined()
     expect(piPairedResult({ ...request, toolCallId: '' }, input(complete))).toBeUndefined()
   })

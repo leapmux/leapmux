@@ -187,7 +187,9 @@ test.describe('DirectoryTree', () => {
 
     // Verify the container is now scrollable
     const scrollable = await scrollContainerHandle.evaluate(
-      el => el ? el.scrollHeight > el.clientHeight : false,
+      el => el
+        ? el.scrollHeight > el.clientHeight
+        : false,
     )
     expect(scrollable).toBe(true)
 

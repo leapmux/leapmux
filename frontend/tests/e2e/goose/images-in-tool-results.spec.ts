@@ -7,7 +7,11 @@ gooseTest('shows the picture returned by read_image', async ({ native, authentic
   await native.modelScript.rule({
     name: 'the permission judge clears the image read',
     when: { system: 'permission-safety classifier' },
-    respond: { toolCalls: [goosePermissionJudgmentToolCall('judge-goose-image', ['goose-read-image'])] },
+    respond: {
+      toolCalls: [
+        goosePermissionJudgmentToolCall('judge-goose-image', ['goose-read-image']),
+      ],
+    },
   })
   const { fileName, resultRequest } = await runToolImageTurn(native, {
     workingDir: authenticatedGooseWorkspace.workingDir,

@@ -19,8 +19,14 @@ export function nativeStartupShellEnvironment(
   mkdirSync(directory, { recursive: true })
   const path = `${wrapperDirectory}${delimiter}${environment.PATH ?? ''}`
   for (const file of ['.zlogin', '.zshrc']) {
-    const original = environment.ZDOTDIR ? join(environment.ZDOTDIR, file) : environment.HOME ? join(environment.HOME, file) : undefined
-    const source = original && existsSync(original) ? readFileSync(original, 'utf8') : ''
+    const original = environment.ZDOTDIR
+      ? join(environment.ZDOTDIR, file)
+      : environment.HOME
+        ? join(environment.HOME, file)
+        : undefined
+    const source = original && existsSync(original)
+      ? readFileSync(original, 'utf8')
+      : ''
     writeFileSync(join(directory, file), `${source}\nexport PATH=${quotePosixShellArgument(wrapperDirectory)}:"$PATH"\n`, { mode: 0o600 })
   }
   return { PATH: path, ZDOTDIR: directory }
@@ -42,7 +48,10 @@ export async function withNativeStartupWorker(
     await withNativeWorker(server, {
       dataDirPrefix: 'native-startup-worker',
       workerName: 'Native startup test',
-      env: { ...shellEnvironment, ...options.workerEnvironment?.(wrapper) },
+      env: {
+        ...shellEnvironment,
+        ...options.workerEnvironment?.(wrapper),
+      },
     }, worker => use(worker.workerId, wrapper, worker))
   }, () => wrapper.dispose())
 }

@@ -244,7 +244,9 @@ async function waitForGate(
 /** Apply the test deadline to a model-script wait. */
 function waitDeadline(timeoutMs: number, testDeadline: number | undefined): { deadline: number, limit: string } {
   const started = Date.now()
-  const beforeTestEnds = testDeadline === undefined ? Infinity : testDeadline - WAIT_REPORT_MARGIN_MS
+  const beforeTestEnds = testDeadline === undefined
+    ? Infinity
+    : testDeadline - WAIT_REPORT_MARGIN_MS
   const deadline = Math.min(started + timeoutMs, beforeTestEnds)
   // Keep the limit in the error so it states which deadline ended the wait.
   const limit = deadline === beforeTestEnds
@@ -273,7 +275,13 @@ function summarize(status: MockModelScenarioStatus): Record<string, unknown> {
     stepCount: status.stepCount,
     ruleMatches: status.ruleMatches,
     pendingGates: status.pendingGates,
-    requests: limit(status.requests, ({ protocol, path, stepIndex, rule, fallback }) => ({ protocol, path, stepIndex, rule, fallback })),
+    requests: limit(status.requests, ({ protocol, path, stepIndex, rule, fallback }) => ({
+      protocol,
+      path,
+      stepIndex,
+      rule,
+      fallback,
+    })),
     unexpectedRequests: limit(status.unexpectedRequests, ({ protocol, path, reason }) => ({ protocol, path, reason })),
   }
 }
@@ -297,17 +305,20 @@ export interface ModelScriptFixtures {
  * deadline through `./testDeadline`: the model-script waits, and `waitForAgentIdle`.
  */
 export const modelScriptFixtures: Fixtures<ModelScriptFixtures> = {
-  // eslint-disable-next-line no-empty-pattern
-  testStartedAt: [async ({}, use, testInfo) => {
-    const startedAt = Date.now()
-    const end = startTestDeadline(startedAt, () => testInfo.timeout)
-    try {
-      await use(startedAt)
-    }
-    finally {
-      end()
-    }
-  }, { auto: true }],
+  testStartedAt: [
+    // eslint-disable-next-line no-empty-pattern
+    async ({}, use, testInfo) => {
+      const startedAt = Date.now()
+      const end = startTestDeadline(startedAt, () => testInfo.timeout)
+      try {
+        await use(startedAt)
+      }
+      finally {
+        end()
+      }
+    },
+    { auto: true },
+  ],
 
   // Give each test one model script. A marked prompt belongs to that script.
   // An unscripted turn fails its test. An unmarked prompt reaches the ambient

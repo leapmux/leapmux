@@ -30,7 +30,11 @@ export const PermissionRequestContent: ParentComponent<{
   })
   return (
     <>
-      <div class={styles.controlBannerTitle}>{canAnswerControlRequest(props.request) ? 'Permission Required' : 'Permission request'}</div>
+      <div class={styles.controlBannerTitle}>
+        {canAnswerControlRequest(props.request)
+          ? 'Permission Required'
+          : 'Permission request'}
+      </div>
       <Show when={props.source.title}>
         <div class={styles.bannerHint}>{props.source.title}</div>
       </Show>

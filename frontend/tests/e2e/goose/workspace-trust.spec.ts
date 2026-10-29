@@ -3,6 +3,13 @@ import { exerciseNativeWorkspaceTrustLimit, instructionFileConfiguration } from 
 import { nativeContext } from './scenarios'
 
 gooseTest('starts and reads a private project without a workspace trust request', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
-  await exerciseNativeWorkspaceTrustLimit(context, { projectConfiguration: instructionFileConfiguration('.goosehints') })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+  })
+  await exerciseNativeWorkspaceTrustLimit(context, {
+    projectConfiguration: instructionFileConfiguration('.goosehints'),
+  })
 })

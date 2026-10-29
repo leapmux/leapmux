@@ -19,8 +19,12 @@ export async function attachCopilotNativeLogs(home: string | undefined, testInfo
   const logs = join(home, 'logs')
   if (existsSync(logs)) {
     for (const entry of readdirSync(logs, { withFileTypes: true })) {
-      if (entry.isFile() && entry.name.endsWith('.log'))
-        await testInfo.attach(`copilot-${entry.name}`, { path: join(logs, entry.name), contentType: 'text/plain' })
+      if (entry.isFile() && entry.name.endsWith('.log')) {
+        await testInfo.attach(`copilot-${entry.name}`, {
+          path: join(logs, entry.name),
+          contentType: 'text/plain',
+        })
+      }
     }
   }
 }

@@ -60,7 +60,9 @@ export function makeInspectResp(overrides: Partial<InspectBranchDeletionResponse
   // branch is in there too — the dialog filters it out). The worktree
   // path leaves `branches` empty to mirror the worker's contract.
   const isWorktree = rest.isWorktree ?? false
-  const defaultBranches: GitBranchEntry[] = isWorktree ? [] : makeBranches(['main', 'doomed'])
+  const defaultBranches: GitBranchEntry[] = isWorktree
+    ? []
+    : makeBranches(['main', 'doomed'])
   return {
     $typeName: 'leapmux.v1.InspectBranchDeletionResponse',
     isWorktree,
@@ -69,7 +71,9 @@ export function makeInspectResp(overrides: Partial<InspectBranchDeletionResponse
     // tracked worktree from an untracked one; non-worktree leaves it empty.
     worktreeId: isWorktree ? 'wt-1' : '',
     branchName: 'doomed',
-    branches: branches ?? (branchNames ? makeBranches(branchNames) : defaultBranches),
+    branches: branches ?? (branchNames
+      ? makeBranches(branchNames)
+      : defaultBranches),
     gitState: gitState ?? ({
       $typeName: 'leapmux.v1.BranchGitState',
       diffAdded,

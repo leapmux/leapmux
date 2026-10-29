@@ -18,6 +18,11 @@ export function readKiroNativeOutput(snapshot: NativeMessageSnapshot, callId: st
   if (transformation?.kind !== 'offloaded' || !isFilesystemPath(path) || !/[\\/]tool-outputs[\\/][\w-]+-[a-f0-9]{8}\.txt$/iu.test(path))
     throw new Error('The native Kiro result has no exact filesystem output pointer.')
   if (typeof output?.output !== 'string')
-    throw new Error('The native Kiro result has no original preview string.')
-  return { paths: [path], previewText: output.output, frame: record.frame, content: record.message.content }
+    throw new TypeError('The native Kiro result has no original preview string.')
+  return {
+    paths: [path],
+    previewText: output.output,
+    frame: record.frame,
+    content: record.message.content,
+  }
 }

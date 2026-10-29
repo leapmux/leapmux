@@ -62,12 +62,14 @@ export function createJunieEnvironment(options: JunieEnvironmentOptions): Record
     'model-locations': [modelsDir],
     'agent-locations': [agentsDir],
     'provider': options.proxyProvider,
-    'proxies': [{
-      'name': options.proxyProvider,
-      'kind': 'OpenAI',
-      'api-url': options.origin,
-      'headers': [`Authorization: Bearer ${options.modelKey}`],
-    }],
+    'proxies': [
+      {
+        'name': options.proxyProvider,
+        'kind': 'OpenAI',
+        'api-url': options.origin,
+        'headers': [`Authorization: Bearer ${options.modelKey}`],
+      },
+    ],
   })
   writeJunieWrapper(options.shimsDirectory)
   const env: Record<string, string> = {
@@ -75,7 +77,9 @@ export function createJunieEnvironment(options: JunieEnvironmentOptions): Record
     JUNIE_CONFIG_LOCATION: configPath,
     JUNIE_SKIP_UPDATE_CHECK: '1',
   }
-  const installRoot = options.realHomeDir === undefined ? undefined : join(options.realHomeDir, '.local', 'share', 'junie')
+  const installRoot = options.realHomeDir === undefined
+    ? undefined
+    : join(options.realHomeDir, '.local', 'share', 'junie')
   if (installRoot !== undefined)
     env.JUNIE_DATA = junieDataDirectory(installRoot, join(options.runDirectory, 'junie-data'))
   return env
@@ -91,7 +95,9 @@ export function createJunieEnvironment(options: JunieEnvironmentOptions): Record
 function junieModelProfile(options: JunieEnvironmentOptions, fullEndpoint: string, apiType: 'OpenAICompletion' | 'OpenAIResponses' = 'OpenAICompletion'): Record<string, unknown> {
   return {
     id: options.modelID,
-    displayName: apiType === 'OpenAIResponses' ? 'Mock Responses Model' : 'Mock Model',
+    displayName: apiType === 'OpenAIResponses'
+      ? 'Mock Responses Model'
+      : 'Mock Model',
     providerName: 'Mock',
     baseUrl: fullEndpoint,
     apiKey: options.modelKey,

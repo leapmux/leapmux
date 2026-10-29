@@ -22,11 +22,16 @@ import { ZCODE_TOOL_READERS, ZCODE_TOOL_REQUEST_OVERRIDES, zcodeReclassify, zcod
 import '../plugin'
 
 function event(kind: string, fields: Record<string, unknown>): Record<string, unknown> {
-  return { type: 'tool.updated', payload: { kind, toolCallId: 'call', ...fields } }
+  return {
+    type: 'tool.updated',
+    payload: { kind, toolCallId: 'call', ...fields },
+  }
 }
 
 function row(parsed: Record<string, unknown>, spanType?: string, request?: Record<string, unknown>): ZCodeRow {
-  return zcodeRow(parsed, spanType, request ? input(request) : undefined)
+  return zcodeRow(parsed, spanType, request
+    ? input(request)
+    : undefined)
 }
 
 function resultRow(toolName: string, args: Record<string, unknown>, result: Record<string, unknown>): ZCodeRow {
@@ -84,13 +89,23 @@ describe('zcodeToolCall bodies', () => {
     const call = presentationOf('mcp__node_repl__js', { code: 'nodeRepl.emitImage(...)' }, {
       success: true,
       content: text,
-      display: { kind: 'node_repl_images', images: [{ base64: 'AQID', mimeType: 'image/png' }] },
+      display: {
+        kind: 'node_repl_images',
+        images: [
+          { base64: 'AQID', mimeType: 'image/png' },
+        ],
+      },
     })
     expect(call.kind).toBe('mcp')
-    const content = call.kind === 'mcp' && call.result && 'content' in call.result ? call.result.content : []
+    const content = call.kind === 'mcp' && call.result && 'content' in call.result
+      ? call.result.content
+      : []
     expect(content).toEqual([
       { type: 'text', text },
-      { type: 'image', source: { mimeType: 'image/png', data: 'AQID' } },
+      {
+        type: 'image',
+        source: { mimeType: 'image/png', data: 'AQID' },
+      },
     ])
   })
 
@@ -101,14 +116,23 @@ describe('zcodeToolCall bodies', () => {
       display: { kind: 'node_repl_images', images: [] },
     })
     expect(call.kind).toBe('mcp')
-    expect(call.kind === 'mcp' && call.result && 'content' in call.result ? call.result.content : []).toEqual([{ type: 'text', text: 'done' }])
+    expect(call.kind === 'mcp' && call.result && 'content' in call.result
+      ? call.result.content
+      : []).toEqual([
+      { type: 'text', text: 'done' },
+    ])
   })
 
   it('keeps a failed native Node result as an error', () => {
     const call = presentationOf('mcp__node_repl__js', { code: 'throw Error("failed")' }, {
       success: false,
       content: 'The Node tool failed.',
-      display: { kind: 'node_repl_images', images: [{ base64: 'AQID', mimeType: 'image/png' }] },
+      display: {
+        kind: 'node_repl_images',
+        images: [
+          { base64: 'AQID', mimeType: 'image/png' },
+        ],
+      },
     })
     expect(call.status).toBe('failed')
     expect(call.result).toEqual({ failure: true, text: 'The Node tool failed.' })
@@ -117,7 +141,12 @@ describe('zcodeToolCall bodies', () => {
   it('maps a task-stop display to the shared status result', () => {
     const call = presentationOf(ZCODE_TOOL.TaskOutput, {}, {
       success: true,
-      display: { kind: 'task_stop', taskId: 'task-42', command: 'npm run dev', message: 'Stopped the task' },
+      display: {
+        kind: 'task_stop',
+        taskId: 'task-42',
+        command: 'npm run dev',
+        message: 'Stopped the task',
+      },
     })
     expect(call.kind).toBe('task')
     expect(call.kind === 'task' && call.result).toMatchObject({
@@ -143,11 +172,22 @@ describe('zcodeToolCall bodies', () => {
   // draws. The body therefore stays the plain text of the result.
   it('keeps a node-image display as text and reports its images separately', () => {
     const parsed = event(ZCODE_TOOL_KIND.Result, {
-      result: { success: true, content: 'Rendered the chart', display: { kind: 'node_repl_images', images: [{ base64: 'AAAA', mimeType: 'image/png' }] } },
+      result: {
+        success: true,
+        content: 'Rendered the chart',
+        display: {
+          kind: 'node_repl_images',
+          images: [
+            { base64: 'AAAA', mimeType: 'image/png' },
+          ],
+        },
+      },
     })
     const call = zcodeToolCall(row(parsed, 'js'))!
     expect(call.images).toHaveLength(1)
-    expect(call.kind === 'execute' && call.result && isUnparsedToolResult(call.result) ? call.result.text : undefined).toBe('Rendered the chart')
+    expect(call.kind === 'execute' && call.result && isUnparsedToolResult(call.result)
+      ? call.result.text
+      : undefined).toBe('Rendered the chart')
   })
 
   it('copies a numbered read without the native line-number prefixes', () => {
@@ -162,7 +202,14 @@ describe('zcodeToolCall bodies', () => {
   })
 
   it('draws the checklist of an open TodoWrite request', () => {
-    const parsed = event(ZCODE_TOOL_KIND.Scheduled, { toolName: ZCODE_TOOL.TodoWrite, input: { todos: [{ content: 'Write the parser', status: 'pending' }] } })
+    const parsed = event(ZCODE_TOOL_KIND.Scheduled, {
+      toolName: ZCODE_TOOL.TodoWrite,
+      input: {
+        todos: [
+          { content: 'Write the parser', status: 'pending' },
+        ],
+      },
+    })
     const call = zcodeToolCall(row(parsed))!
     expect(call.kind).toBe('todo')
     // `todoRenderer` composes the count from the request; the payload states none.
@@ -177,7 +224,19 @@ describe('zcodeToolCall truncation', () => {
     const call = presentationOf(ZCODE_TOOL.Edit, {}, {
       success: true,
       truncated: true,
-      display: { kind: 'file_diff', filePath: '/project/a.ts', structuredPatch: [{ oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-before', '+after'] }] },
+      display: {
+        kind: 'file_diff',
+        filePath: '/project/a.ts',
+        structuredPatch: [
+          {
+            oldStart: 1,
+            oldLines: 1,
+            newStart: 1,
+            newLines: 1,
+            lines: ['-before', '+after'],
+          },
+        ],
+      },
     })
     expect(call.truncated).toBe(true)
   })
@@ -187,7 +246,9 @@ describe('zcodeToolCall truncation', () => {
   it('gives the flag to the command body, not to the row', () => {
     const call = presentationOf(ZCODE_TOOL.Bash, { command: 'ls' }, { success: true, truncated: true, content: 'partial' })
     expect(call.truncated).toBeUndefined()
-    const source = call.kind === 'execute' && call.result && 'commands' in call.result ? call.result.commands[0] : undefined
+    const source = call.kind === 'execute' && call.result && 'commands' in call.result
+      ? call.result.commands[0]
+      : undefined
     expect(source?.truncated).toBe(true)
   })
 
@@ -204,13 +265,18 @@ describe('zcodeToolCall truncation', () => {
   it('gives the flag to the search body, not to the row', () => {
     const call = presentationOf(ZCODE_TOOL.Glob, { pattern: '*.ts' }, { success: true, truncated: true, content: 'a.ts' })
     expect(call.truncated).toBeUndefined()
-    expect(call.kind === 'glob' && call.result ? (call.result as { truncated?: boolean }).truncated : undefined).toBe(true)
+    expect(call.kind === 'glob' && call.result
+      ? (call.result as { truncated?: boolean }).truncated
+      : undefined).toBe(true)
   })
 })
 
 describe('zcodeToolCall', () => {
   it('reads a scheduled row as the request of its span', () => {
-    const call = zcodeToolCall(row(event(ZCODE_TOOL_KIND.Scheduled, { toolName: ZCODE_TOOL.Bash, input: { command: 'ls' } })))!
+    const call = zcodeToolCall(row(event(ZCODE_TOOL_KIND.Scheduled, {
+      toolName: ZCODE_TOOL.Bash,
+      input: { command: 'ls' },
+    })))!
     expect(call).toMatchObject({ id: 'call', status: 'unstated' })
     expect(call.label).toBe(ZCODE_TOOL.Bash)
   })
@@ -228,15 +294,24 @@ describe('zcodeToolCall', () => {
   // A turn that ends while the call runs stores the agent's own last frame, which
   // still reads as a call in progress.
   it('reads a retained frame as a cancelled result', () => {
-    const parsed: ParsedMessageContent = { ...input(event(ZCODE_TOOL_KIND.Progress, { stdoutTail: 'partial output' })), completion: MessageCompletion.INTERRUPTED }
+    const parsed: ParsedMessageContent = {
+      ...input(event(ZCODE_TOOL_KIND.Progress, { stdoutTail: 'partial output' })),
+      completion: MessageCompletion.INTERRUPTED,
+    }
     const call = zcodeToolCall(row(parsed.parentObject!, ZCODE_TOOL.Bash), parsed)!
     expect(call).toMatchObject({ status: 'cancelled' })
     expect(call.kind).toBe('execute')
-    expect(call.result).toMatchObject({ commands: [{ output: 'partial output' }] })
+    expect(call.result).toMatchObject({
+      commands: [
+        { output: 'partial output' },
+      ],
+    })
   })
 
   it('invents no tool name for a row that states none', () => {
-    const call = zcodeToolCall(row(event(ZCODE_TOOL_KIND.Result, { result: { success: true, content: 'recovered output' } })))!
+    const call = zcodeToolCall(row(event(ZCODE_TOOL_KIND.Result, {
+      result: { success: true, content: 'recovered output' },
+    })))!
     expect(call.kind).toBe('other')
     expect(call.label).toBeUndefined()
   })
@@ -266,15 +341,17 @@ describe('the icon of a tool the shared kinds do state', () => {
 // different ways in the same transcript.
 describe('zcode AskUserQuestion rows', () => {
   const QUESTION = {
-    questions: [{
-      header: 'Parser',
-      question: 'Which parser should I write?',
-      multiSelect: false,
-      options: [
-        { label: 'Recursive descent', value: 'Recursive descent', description: 'Hand-written, easy to step through.' },
-        { label: 'PEG', value: 'PEG', preview: '```ts\nconst grammar = peg`...`\n```' },
-      ],
-    }],
+    questions: [
+      {
+        header: 'Parser',
+        question: 'Which parser should I write?',
+        multiSelect: false,
+        options: [
+          { label: 'Recursive descent', value: 'Recursive descent', description: 'Hand-written, easy to step through.' },
+          { label: 'PEG', value: 'PEG', preview: '```ts\nconst grammar = peg`...`\n```' },
+        ],
+      },
+    ],
   }
 
   it('draws the question the scheduled row asked', () => {
@@ -289,7 +366,14 @@ describe('zcode AskUserQuestion rows', () => {
   // repeating the input as JSON.
   it('draws a question that offered no option', () => {
     const scheduled = row(
-      event(ZCODE_TOOL_KIND.Scheduled, { toolName: ZCODE_TOOL.AskUserQuestion, input: { questions: [{ question: 'What next?' }] } }),
+      event(ZCODE_TOOL_KIND.Scheduled, {
+        toolName: ZCODE_TOOL.AskUserQuestion,
+        input: {
+          questions: [
+            { question: 'What next?' },
+          ],
+        },
+      }),
       ZCODE_TOOL.AskUserQuestion,
     )
     const call = zcodeToolCall(scheduled)!
@@ -310,7 +394,9 @@ describe('zcode AskUserQuestion rows', () => {
   // who scrolls back looks for.
   it('draws the answer on the finished row', () => {
     const call = presentationOf(ZCODE_TOOL.AskUserQuestion, QUESTION, { success: true, content: 'Recursive descent' })
-    expect(call.kind === 'question' && call.result ? (call.result as { answers: Array<{ answer: string | null }> }).answers[0]?.answer : undefined).toBe('Recursive descent')
+    expect(call.kind === 'question' && call.result
+      ? (call.result as { answers: Array<{ answer: string | null }> }).answers[0]?.answer
+      : undefined).toBe('Recursive descent')
   })
 })
 
@@ -321,7 +407,12 @@ describe('zcodeToolCall generic rows', () => {
     const call = presentationOf(ZCODE_TOOL.Js, { command: 'draw()' }, {
       success: true,
       content: 'Rendered',
-      display: { kind: 'node_repl_images', images: [{ data: 'aGk=', mimeType: 'image/png' }] },
+      display: {
+        kind: 'node_repl_images',
+        images: [
+          { data: 'aGk=', mimeType: 'image/png' },
+        ],
+      },
     })
     // The JavaScript sandbox is an execute row, so the picture rides its own list.
     expect(call.images.length).toBe(1)
@@ -331,11 +422,18 @@ describe('zcodeToolCall generic rows', () => {
     const call = presentationOf('some_unknown_tool', {}, {
       success: true,
       content: 'Rendered',
-      display: { kind: 'node_repl_images', images: [{ data: 'aGk=', mimeType: 'image/png' }] },
+      display: {
+        kind: 'node_repl_images',
+        images: [
+          { data: 'aGk=', mimeType: 'image/png' },
+        ],
+      },
     })
     expect(call.kind).toBe('other')
     expect(call.images).toEqual([])
-    const source = call.kind === 'other' && call.result && 'content' in call.result ? call.result.content : []
+    const source = call.kind === 'other' && call.result && 'content' in call.result
+      ? call.result.content
+      : []
     expect(source.map(item => item.type)).toEqual(['text', 'image'])
   })
 })
@@ -349,7 +447,11 @@ describe('zcodeToolCall to-do rows', () => {
   })
 
   it('reads a TodoWrite that carries a list as a to-do row', () => {
-    const call = presentationOf(ZCODE_TOOL.TodoWrite, { todos: [{ content: 'Write the parser', status: 'pending' }] }, { success: true })
+    const call = presentationOf(ZCODE_TOOL.TodoWrite, {
+      todos: [
+        { content: 'Write the parser', status: 'pending' },
+      ],
+    }, { success: true })
     expect(call.kind).toBe('todo')
   })
 })
@@ -358,8 +460,16 @@ describe('zcodeToolCall truncated bodies', () => {
   // A read, a fetch, an agent, a to-do and a task body all state nothing about a cut,
   // so the row's own flag is the only notice the reader gets.
   it.each([
-    [ZCODE_TOOL.Read, { file_path: '/p/a.ts' }, { success: true, truncated: true, content: 'partial' }],
-    [ZCODE_TOOL.WebFetch, { url: 'https://example.com' }, { success: true, truncated: true, content: 'partial' }],
+    [
+      ZCODE_TOOL.Read,
+      { file_path: '/p/a.ts' },
+      { success: true, truncated: true, content: 'partial' },
+    ],
+    [
+      ZCODE_TOOL.WebFetch,
+      { url: 'https://example.com' },
+      { success: true, truncated: true, content: 'partial' },
+    ],
   ])('states the cut on a %s row', (toolName, args, result) => {
     expect(presentationOf(toolName, args, result).truncated).toBe(true)
   })
@@ -373,7 +483,12 @@ describe('zcodeToolCall bash timeouts', () => {
     const call = presentationOf(ZCODE_TOOL.Bash, { command: 'sleep 90' }, {
       success: true,
       content: 'partial',
-      perf: { detail: { kind: 'command', command: { timedOut: true } } },
+      perf: {
+        detail: {
+          kind: 'command',
+          command: { timedOut: true },
+        },
+      },
     })
     expect(call.kind).toBe('execute')
     expect(call.status).toBe('cancelled')
@@ -402,7 +517,12 @@ const OVERRIDE_CASES: ReadonlyArray<readonly [ToolKind, string, Record<string, u
   [
     'agent',
     ZCODE_TOOL.Agent,
-    { description: 'Inspect the parser', subagent_type: 'reviewer', prompt: 'Read it', instructions: 'Never read' },
+    {
+      description: 'Inspect the parser',
+      subagent_type: 'reviewer',
+      prompt: 'Read it',
+      instructions: 'Never read',
+    },
     { success: true, content: '' },
     { description: 'Inspect the parser', agentType: 'reviewer', prompt: 'Read it' },
     { description: 'Inspect the parser', prompt: 'Read it' },
@@ -412,21 +532,62 @@ const OVERRIDE_CASES: ReadonlyArray<readonly [ToolKind, string, Record<string, u
     ZCODE_TOOL.Edit,
     { file_path: '/project/a.ts', old_string: 'before', new_string: 'after' },
     { success: true, content: 'Applied' },
-    { changes: [{ filePath: '/project/a.ts', structuredPatch: null, oldStr: 'before', newStr: 'after' }], replaceAll: undefined },
+    {
+      changes: [
+        {
+          filePath: '/project/a.ts',
+          structuredPatch: null,
+          oldStr: 'before',
+          newStr: 'after',
+        },
+      ],
+      replaceAll: undefined,
+    },
     // The shared entry reads the same file and the same two sides, and it states the
     // operation beside them. The ZCode entry reads `replace_all` as well, and it takes
     // the landed diff from the facts, which the arguments alone cannot supply.
-    { changes: [{ filePath: '/project/a.ts', operation: 'edit', structuredPatch: null, oldStr: 'before', newStr: 'after' }] },
+    {
+      changes: [
+        {
+          filePath: '/project/a.ts',
+          operation: 'edit',
+          structuredPatch: null,
+          oldStr: 'before',
+          newStr: 'after',
+        },
+      ],
+    },
   ],
   [
     'write',
     ZCODE_TOOL.Write,
     { file_path: '/project/b.ts', content: 'hello' },
     { success: true, content: 'Wrote' },
-    { changes: [{ filePath: '/project/b.ts', structuredPatch: null, oldStr: '', newStr: 'hello', operation: 'add' }], replaceAll: undefined },
+    {
+      changes: [
+        {
+          filePath: '/project/b.ts',
+          structuredPatch: null,
+          oldStr: '',
+          newStr: 'hello',
+          operation: 'add',
+        },
+      ],
+      replaceAll: undefined,
+    },
     // The shared entry states the file and the addition, and no BODY: `content` is a
     // best-effort reading that each provider spells for itself.
-    { changes: [{ filePath: '/project/b.ts', operation: 'add', structuredPatch: null, oldStr: '', newStr: '' }] },
+    {
+      changes: [
+        {
+          filePath: '/project/b.ts',
+          operation: 'add',
+          structuredPatch: null,
+          oldStr: '',
+          newStr: '',
+        },
+      ],
+    },
   ],
   [
     'execute',
@@ -440,9 +601,21 @@ const OVERRIDE_CASES: ReadonlyArray<readonly [ToolKind, string, Record<string, u
     'mcp',
     'mcp__other__thing',
     { query: 'renderer' },
-    { success: true, content: 'The tool response', display: { kind: 'mcp_tool', serverName: 'docs', toolName: 'lookup' } },
-    { server: 'docs', tool: 'lookup', args: { query: 'renderer' } },
-    { args: { query: 'renderer' }, server: '', tool: '' },
+    {
+      success: true,
+      content: 'The tool response',
+      display: { kind: 'mcp_tool', serverName: 'docs', toolName: 'lookup' },
+    },
+    {
+      server: 'docs',
+      tool: 'lookup',
+      args: { query: 'renderer' },
+    },
+    {
+      args: { query: 'renderer' },
+      server: '',
+      tool: '',
+    },
   ],
   [
     'message',
@@ -455,37 +628,84 @@ const OVERRIDE_CASES: ReadonlyArray<readonly [ToolKind, string, Record<string, u
   [
     'question',
     ZCODE_TOOL.AskUserQuestion,
-    { questions: [{ header: 'Parser', question: 'Which parser should I write?', options: [{ label: 'PEG', value: 'PEG' }] }] },
+    {
+      questions: [
+        {
+          header: 'Parser',
+          question: 'Which parser should I write?',
+          options: [
+            { label: 'PEG', value: 'PEG' },
+          ],
+        },
+      ],
+    },
     { success: true, content: 'PEG' },
-    { questions: [{ header: 'Parser', question: 'Which parser should I write?', options: [{ label: 'PEG', description: undefined, preview: undefined }] }] },
+    {
+      questions: [
+        {
+          header: 'Parser',
+          question: 'Which parser should I write?',
+          options: [
+            { label: 'PEG', description: undefined, preview: undefined },
+          ],
+        },
+      ],
+    },
     { questions: [] },
   ],
   [
     'task',
     ZCODE_TOOL.TaskOutput,
     { task_id: 't-1', taskId: 'never read' },
-    { success: true, display: { kind: 'task_stop', taskId: 'task-42' } },
+    {
+      success: true,
+      display: { kind: 'task_stop', taskId: 'task-42' },
+    },
     { action: 'stop', taskId: 't-1' },
     { action: 'other', taskId: 't-1' },
   ],
   [
     'todo',
     ZCODE_TOOL.TodoWrite,
-    { todos: [{ content: 'Write the parser', status: 'pending' }] },
+    {
+      todos: [
+        { content: 'Write the parser', status: 'pending' },
+      ],
+    },
     { success: true },
-    { items: [expect.objectContaining({ content: 'Write the parser', status: 'pending' })] },
+    {
+      items: [
+        expect.objectContaining({ content: 'Write the parser', status: 'pending' }),
+      ],
+    },
     { items: [] },
   ],
   [
     'trigger',
     ZCODE_TOOL.CronCreate,
-    { trigger_id: 't-1', id: 'never read', name: 'Nightly', schedule: '0 0 * * *', cron: 'never read' },
+    {
+      trigger_id: 't-1',
+      id: 'never read',
+      name: 'Nightly',
+      schedule: '0 0 * * *',
+      cron: 'never read',
+    },
     { success: true, content: 'Created' },
-    { action: 'create', triggerId: 't-1', name: 'Nightly', schedule: '0 0 * * *' },
+    {
+      action: 'create',
+      triggerId: 't-1',
+      name: 'Nightly',
+      schedule: '0 0 * * *',
+    },
     // The ACTION is the whole deviation. The id, the label and the schedule come from
     // the shared entry, which reads the same five spellings, so the two answers differ
     // on that one field alone -- the tool name states it and no argument carries it.
-    { action: 'other', triggerId: 't-1', name: 'Nightly', schedule: '0 0 * * *' },
+    {
+      action: 'other',
+      triggerId: 't-1',
+      name: 'Nightly',
+      schedule: '0 0 * * *',
+    },
   ],
 ]
 
@@ -527,13 +747,17 @@ describe('ZCODE_TOOL_REQUEST_OVERRIDES', () => {
       success: true,
       display: { kind: 'mcp_tool', serverName: 'docs', toolName: 'lookup' },
     })
-    expect(call.kind === 'mcp' ? [call.request.server, call.request.tool] : []).toEqual(['docs', 'lookup'])
+    expect(call.kind === 'mcp'
+      ? [call.request.server, call.request.tool]
+      : []).toEqual(['docs', 'lookup'])
   })
 
   // The wire name answers when no display states a pair.
   it('reads an MCP identity from the wire name when the display states none', () => {
     const call = presentationOf('mcp__other__thing', {}, { success: true, content: 'done' })
-    expect(call.kind === 'mcp' ? [call.request.server, call.request.tool] : []).toEqual(['other', 'thing'])
+    expect(call.kind === 'mcp'
+      ? [call.request.server, call.request.tool]
+      : []).toEqual(['other', 'thing'])
   })
 
   // The display's `input` STRING is the source, not the arguments object: it keeps an
@@ -541,32 +765,47 @@ describe('ZCODE_TOOL_REQUEST_OVERRIDES', () => {
   it('pretty-prints the argument text the display states, not the arguments object', () => {
     const call = presentationOf('mcp__docs__lookup', { query: 'renderer' }, {
       success: true,
-      display: { kind: 'mcp_tool', serverName: 'docs', toolName: 'lookup', input: '{"query":"renderer","limit":9007199254740993}' },
+      display: {
+        kind: 'mcp_tool',
+        serverName: 'docs',
+        toolName: 'lookup',
+        input: '{"query":"renderer","limit":9007199254740993}',
+      },
     })
-    expect(call.kind === 'mcp' ? call.request.argsText : undefined).toContain('9007199254740993')
+    expect(call.kind === 'mcp'
+      ? call.request.argsText
+      : undefined).toContain('9007199254740993')
   })
 
   // The words the RESULT states fill a message the arguments left empty.
   it('fills a message from the result text when the arguments carry none', () => {
     const call = presentationOf(ZCODE_TOOL.SendMessage, { to: 'peer-1' }, { success: true, content: 'Ship it' })
-    expect(call.kind === 'message' ? call.request : undefined).toEqual({ to: 'peer-1', text: 'Ship it' })
+    expect(call.kind === 'message'
+      ? call.request
+      : undefined).toEqual({ to: 'peer-1', text: 'Ship it' })
   })
 
   // `to` is ZCode's first spelling and `recipient` its second.
   it('reads a message recipient from to ahead of recipient', () => {
     const call = presentationOf(ZCODE_TOOL.SendMessage, { to: 'peer-1', recipient: 'never read', message: 'Ship it' }, { success: true })
-    expect(call.kind === 'message' ? call.request.to : undefined).toBe('peer-1')
+    expect(call.kind === 'message'
+      ? call.request.to
+      : undefined).toBe('peer-1')
   })
 
   // The three sandbox tools state the language; every other execute tool states none.
   it.each([ZCODE_TOOL.Js, ZCODE_TOOL.JsAddNodeModuleDir, ZCODE_TOOL.JsReset])('states the sandbox language for %s', (toolName) => {
     const call = presentationOf(toolName, { command: 'draw()' }, { success: true, content: 'ok' })
-    expect(call.kind === 'execute' ? call.request.language : undefined).toBe('javascript')
+    expect(call.kind === 'execute'
+      ? call.request.language
+      : undefined).toBe('javascript')
   })
 
   it('states no language for a shell command', () => {
     const call = presentationOf(ZCODE_TOOL.Bash, { command: 'ls' }, { success: true, content: 'a.ts' })
-    expect(call.kind === 'execute' ? call.request.language : undefined).toBeUndefined()
+    expect(call.kind === 'execute'
+      ? call.request.language
+      : undefined).toBeUndefined()
   })
 
   // The hint decides the action, and the two hints answer differently.
@@ -574,25 +813,36 @@ describe('ZCODE_TOOL_REQUEST_OVERRIDES', () => {
     ['task_stop', 'stop'],
     ['task_output', 'output'],
   ])('reads the %s display as the %s action', (hint, action) => {
-    const call = presentationOf(ZCODE_TOOL.TaskOutput, {}, { success: true, display: { kind: hint, taskId: 'task-42' } })
-    expect(call.kind === 'task' ? call.request.action : undefined).toBe(action)
+    const call = presentationOf(ZCODE_TOOL.TaskOutput, {}, {
+      success: true,
+      display: { kind: hint, taskId: 'task-42' },
+    })
+    expect(call.kind === 'task'
+      ? call.request.action
+      : undefined).toBe(action)
   })
 
   it('reads a task call that states no display as neither action', () => {
     const call = presentationOf(ZCODE_TOOL.TaskOutput, {}, { success: true, content: 'done' })
-    expect(call.kind === 'task' ? call.request.action : undefined).toBe('other')
+    expect(call.kind === 'task'
+      ? call.request.action
+      : undefined).toBe('other')
   })
 
   // The ARGUMENTS answer first, so a later release that adds the key still wins.
   it('reads a trigger action from the arguments ahead of the tool name', () => {
     const call = presentationOf(ZCODE_TOOL.CronCreate, { action: 'run', trigger_id: 't-1' }, { success: true, content: 'Ran' })
-    expect(call.kind === 'trigger' ? call.request.action : undefined).toBe('run')
+    expect(call.kind === 'trigger'
+      ? call.request.action
+      : undefined).toBe('run')
   })
 
   // An action word the request does not declare falls back to the tool's own.
   it('refuses an action word the request does not declare', () => {
     const call = presentationOf(ZCODE_TOOL.CronList, { action: 'frobnicate' }, { success: true, content: 'done' })
-    expect(call.kind === 'trigger' ? call.request.action : undefined).toBe('list')
+    expect(call.kind === 'trigger'
+      ? call.request.action
+      : undefined).toBe('list')
   })
 })
 
@@ -613,7 +863,19 @@ describe('ZCODE_TOOL_READERS', () => {
   // The eleven kinds no ZCode tool takes still fill their declared request, so a row
   // that ever reaches one draws the kind's card rather than throwing inside a renderer
   // that reads `request.changes[0]` or `request.path` with no guard.
-  it.each(['agents', 'chart', 'delete', 'image', 'list', 'memory', 'move', 'report', 'search', 'think', 'wait'] as const)('fills the declared request of %s', (kind) => {
+  it.each([
+    'agents',
+    'chart',
+    'delete',
+    'image',
+    'list',
+    'memory',
+    'move',
+    'report',
+    'search',
+    'think',
+    'wait',
+  ] as const)('fills the declared request of %s', (kind) => {
     const facts = factsOf(resultRow('SomeToolAddedLater', { path: '/project/a.ts', pattern: '*.ts' }, { success: true, content: 'done' }))
     expect(ZCODE_TOOL_READERS[kind](facts).request).toEqual(DEFAULT_TOOL_REQUESTS[kind](facts.input))
   })
@@ -626,13 +888,19 @@ describe('zcodeReclassify', () => {
   })
 
   it('keeps a to-do call that carries a list', () => {
-    const row = resultRow(ZCODE_TOOL.TodoWrite, { todos: [{ content: 'Write the parser', status: 'pending' }] }, { success: true })
+    const row = resultRow(ZCODE_TOOL.TodoWrite, {
+      todos: [
+        { content: 'Write the parser', status: 'pending' },
+      ],
+    }, { success: true })
     expect(zcodeReclassify(factsOf(row))).toBe('todo')
   })
 
   // A row with no tool name has no label to tell it apart from an uncategorized one.
   it('folds a row that states no tool name onto the generic card', () => {
-    const noName = row(event(ZCODE_TOOL_KIND.Result, { result: { success: true, content: 'recovered output' } }))
+    const noName = row(event(ZCODE_TOOL_KIND.Result, {
+      result: { success: true, content: 'recovered output' },
+    }))
     expect(zcodeToolKind(noName.toolName)).toBe('unspecified')
     expect(zcodeReclassify(factsOf(noName))).toBe('other')
   })
@@ -653,13 +921,21 @@ describe('zcodeReclassify', () => {
 // row's title instead.
 describe('a failed ZCode file change', () => {
   it.each([
-    [ZCODE_TOOL.Edit, { file_path: '/project/a.ts', old_string: 'before', new_string: 'after' }],
-    [ZCODE_TOOL.Write, { file_path: '/project/a.ts', content: 'hello' }],
+    [
+      ZCODE_TOOL.Edit,
+      { file_path: '/project/a.ts', old_string: 'before', new_string: 'after' },
+    ],
+    [
+      ZCODE_TOOL.Write,
+      { file_path: '/project/a.ts', content: 'hello' },
+    ],
   ])('keeps the file %s asked to change', (toolName, args) => {
     const call = presentationOf(toolName, args, { success: false, content: 'Permission denied' })
     expect(call.status).toBe('failed')
     expect(call.result).toEqual({ failure: true, text: 'Permission denied' })
-    const changes = call.kind === 'edit' || call.kind === 'write' ? call.request.changes : []
+    const changes = call.kind === 'edit' || call.kind === 'write'
+      ? call.request.changes
+      : []
     expect(changes.map(change => change.filePath)).toEqual(['/project/a.ts'])
   })
 
@@ -670,7 +946,9 @@ describe('a failed ZCode file change', () => {
       content: 'Permission denied',
       display: { kind: 'file_diff', filePath: '/project/a.ts' },
     })
-    const changes = call.kind === 'edit' ? call.request.changes : []
+    const changes = call.kind === 'edit'
+      ? call.request.changes
+      : []
     expect(changes.map(change => change.filePath)).toEqual(['/project/a.ts'])
   })
 })
@@ -684,25 +962,40 @@ describe('a ZCode ApplyPatch call', () => {
 
   /** The changes the call reports as LANDED, or null for a result that states none. */
   function landedChanges(call: ToolCall): FileEditDiff[] | null {
-    return call.kind === 'edit' && call.result && 'changes' in call.result ? call.result.changes : null
+    return call.kind === 'edit' && call.result && 'changes' in call.result
+      ? call.result.changes
+      : null
   }
 
   it.each([
-    ['a finished call', { success: true, content: 'Applied' }],
-    ['a failed call', { success: false, content: 'Permission denied' }],
+    [
+      'a finished call',
+      { success: true, content: 'Applied' },
+    ],
+    [
+      'a failed call',
+      { success: false, content: 'Permission denied' },
+    ],
   ])('names the file the patch changes on %s', (_name, result) => {
     const call = presentationOf(ZCODE_TOOL.ApplyPatch, { patch: PATCH }, result)
     expect(call.kind).toBe('edit')
-    const changes = call.kind === 'edit' ? call.request.changes : []
+    const changes = call.kind === 'edit'
+      ? call.request.changes
+      : []
     expect(changes.map(change => change.filePath)).toEqual(['/project/a.ts'])
   })
 
   // The opening frame carries the same arguments and no result at all, which is the
   // state the reader watches for longest.
   it('names the file before any result lands', () => {
-    const call = zcodeToolCall(row(event(ZCODE_TOOL_KIND.Scheduled, { toolName: ZCODE_TOOL.ApplyPatch, input: { patch: PATCH } }), ZCODE_TOOL.ApplyPatch))!
+    const call = zcodeToolCall(row(event(ZCODE_TOOL_KIND.Scheduled, {
+      toolName: ZCODE_TOOL.ApplyPatch,
+      input: { patch: PATCH },
+    }), ZCODE_TOOL.ApplyPatch))!
     expect(call.result).toBeUndefined()
-    const changes = call.kind === 'edit' ? call.request.changes : []
+    const changes = call.kind === 'edit'
+      ? call.request.changes
+      : []
     expect(changes.map(change => change.filePath)).toEqual(['/project/a.ts'])
   })
 
@@ -710,7 +1003,9 @@ describe('a ZCode ApplyPatch call', () => {
   // result display: that display states at most one.
   it('names every file one patch changes', () => {
     const call = presentationOf(ZCODE_TOOL.ApplyPatch, { patch: MULTI_FILE_PATCH }, { success: true, content: 'Applied' })
-    const changes = call.kind === 'edit' ? call.request.changes : []
+    const changes = call.kind === 'edit'
+      ? call.request.changes
+      : []
     expect(changes.map(change => change.filePath)).toEqual(['/project/a.ts', '/project/b.ts'])
     expect(changes.map(change => change.operation)).toEqual(['edit', 'delete'])
   })
@@ -721,12 +1016,22 @@ describe('a ZCode ApplyPatch call', () => {
   // "Applied" over nothing.
   it('draws the diff the patch states once the call finished', () => {
     const call = presentationOf(ZCODE_TOOL.ApplyPatch, { patch: PATCH }, { success: true, content: 'Applied' })
-    expect(landedChanges(call)).toStrictEqual([{
-      filePath: '/project/a.ts',
-      operation: 'edit',
-      showLineNumbers: false,
-      structuredPatch: [{ oldStart: 0, oldLines: 1, newStart: 0, newLines: 1, lines: ['-before', '+after'] }],
-    }])
+    expect(landedChanges(call)).toStrictEqual([
+      {
+        filePath: '/project/a.ts',
+        operation: 'edit',
+        showLineNumbers: false,
+        structuredPatch: [
+          {
+            oldStart: 0,
+            oldLines: 1,
+            newStart: 0,
+            newLines: 1,
+            lines: ['-before', '+after'],
+          },
+        ],
+      },
+    ])
   })
 
   // EVERY file of the patch, for the reason the request half states: the result
@@ -739,9 +1044,24 @@ describe('a ZCode ApplyPatch call', () => {
         filePath: '/project/a.ts',
         operation: 'edit',
         showLineNumbers: false,
-        structuredPatch: [{ oldStart: 0, oldLines: 1, newStart: 0, newLines: 1, lines: ['-before', '+after'] }],
+        structuredPatch: [
+          {
+            oldStart: 0,
+            oldLines: 1,
+            newStart: 0,
+            newLines: 1,
+            lines: ['-before', '+after'],
+          },
+        ],
       },
-      { filePath: '/project/b.ts', operation: 'delete', showLineNumbers: false, structuredPatch: null, oldStr: '', newStr: '' },
+      {
+        filePath: '/project/b.ts',
+        operation: 'delete',
+        showLineNumbers: false,
+        structuredPatch: null,
+        oldStr: '',
+        newStr: '',
+      },
     ])
   })
 
@@ -753,21 +1073,34 @@ describe('a ZCode ApplyPatch call', () => {
     const call = presentationOf(ZCODE_TOOL.ApplyPatch, { patch: 'not a patch' }, { success: true, content: 'Applied' })
     expect(call.kind).toBe('other')
     expect(call.name).toBe(ZCODE_TOOL.ApplyPatch)
-    expect(call.kind === 'other' ? call.request.args : null).toEqual({ patch: 'not a patch' })
+    expect(call.kind === 'other'
+      ? call.request.args
+      : null).toEqual({ patch: 'not a patch' })
   })
 
   // The result half of the same refusal: the words the tool printed, and no diff.
   it('keeps the words of a patch the shared reader refuses', () => {
     const call = presentationOf(ZCODE_TOOL.ApplyPatch, { patch: 'not a patch' }, { success: true, content: 'Applied' })
     expect(landedChanges(call)).toBeNull()
-    expect(call.kind === 'other' ? typedResult(call)?.content : null).toEqual([{ type: 'text', text: 'Applied' }])
+    expect(call.kind === 'other'
+      ? typedResult(call)?.content
+      : null).toEqual([
+      { type: 'text', text: 'Applied' },
+    ])
   })
 
   // Only `ApplyPatch` sends a patch. Another tool's `patch` argument would be that
   // tool's own text, and the landed diff stays the answer for the two that have one.
   it('keeps the landed diff of an Edit that also carries a patch argument', () => {
-    const call = presentationOf(ZCODE_TOOL.Edit, { file_path: '/project/c.ts', old_string: 'before', new_string: 'after', patch: PATCH }, { success: true, content: 'Edited' })
-    const changes = call.kind === 'edit' ? call.request.changes : []
+    const call = presentationOf(ZCODE_TOOL.Edit, {
+      file_path: '/project/c.ts',
+      old_string: 'before',
+      new_string: 'after',
+      patch: PATCH,
+    }, { success: true, content: 'Edited' })
+    const changes = call.kind === 'edit'
+      ? call.request.changes
+      : []
     expect(changes.map(change => change.filePath)).toEqual(['/project/c.ts'])
   })
 
@@ -775,19 +1108,42 @@ describe('a ZCode ApplyPatch call', () => {
   // took, line numbers and all, and the `patch` argument of a tool that sends no
   // apply-patch envelope never displaces it.
   it('draws the landed diff of an Edit that also carries a patch argument', () => {
-    const call = presentationOf(ZCODE_TOOL.Edit, { file_path: '/project/c.ts', old_string: 'before', new_string: 'after', patch: PATCH }, {
+    const call = presentationOf(ZCODE_TOOL.Edit, {
+      file_path: '/project/c.ts',
+      old_string: 'before',
+      new_string: 'after',
+      patch: PATCH,
+    }, {
       success: true,
       content: 'Edited',
       display: {
         kind: ZCODE_DISPLAY.FileDiff,
         filePath: '/project/c.ts',
-        structuredPatch: [{ oldStart: 12, oldLines: 1, newStart: 12, newLines: 1, lines: ['-before', '+after'] }],
+        structuredPatch: [
+          {
+            oldStart: 12,
+            oldLines: 1,
+            newStart: 12,
+            newLines: 1,
+            lines: ['-before', '+after'],
+          },
+        ],
       },
     })
-    expect(landedChanges(call)).toStrictEqual([{
-      filePath: '/project/c.ts',
-      structuredPatch: [{ oldStart: 12, oldLines: 1, newStart: 12, newLines: 1, lines: ['-before', '+after'] }],
-    }])
+    expect(landedChanges(call)).toStrictEqual([
+      {
+        filePath: '/project/c.ts',
+        structuredPatch: [
+          {
+            oldStart: 12,
+            oldLines: 1,
+            newStart: 12,
+            newLines: 1,
+            lines: ['-before', '+after'],
+          },
+        ],
+      },
+    ])
   })
 })
 
@@ -801,7 +1157,9 @@ describe('a ZCode cron call', () => {
   ] as const)('reads the action %s states', (toolName, action) => {
     const call = presentationOf(toolName, { trigger_id: 't-1' }, { success: true, content: 'done' })
     expect(call.kind).toBe('trigger')
-    expect(call.kind === 'trigger' ? call.request.action : undefined).toBe(action)
+    expect(call.kind === 'trigger'
+      ? call.request.action
+      : undefined).toBe(action)
   })
 })
 
@@ -809,17 +1167,23 @@ describe('ZCode dynamic-workflow tools', () => {
   it('renders a workflow launch as a background task', () => {
     const call = presentationOf(ZCODE_TOOL.CreateWorkflow, { name: 'review', script: 'return "done"' }, { success: true, content: 'started' })
     expect(call.kind).toBe('task')
-    expect(call.kind === 'task' ? call.request : undefined).toEqual({ action: 'other', taskId: 'review' })
+    expect(call.kind === 'task'
+      ? call.request
+      : undefined).toEqual({ action: 'other', taskId: 'review' })
   })
 
   it('renders workflow enumeration as a task list', () => {
     const call = presentationOf(ZCODE_TOOL.ListWorkflowRuns, {}, { success: true, content: 'dwf-1' })
-    expect(call.kind === 'task' ? call.request.action : undefined).toBe('list')
+    expect(call.kind === 'task'
+      ? call.request.action
+      : undefined).toBe('list')
   })
 
   it('renders a workflow snippet as executable code', () => {
     const call = presentationOf(ZCODE_TOOL.EvalWorkflowSnippet, { code: 'return 1' }, { success: true, content: '1' })
-    expect(call.kind === 'execute' ? call.request.command : undefined).toBe('return 1')
+    expect(call.kind === 'execute'
+      ? call.request.command
+      : undefined).toBe('return 1')
   })
 })
 
@@ -829,12 +1193,16 @@ describe('a ZCode skill call', () => {
   it('names no skill when the arguments state none', () => {
     const call = presentationOf(ZCODE_TOOL.Skill, {}, { success: true, content: 'done' })
     expect(call.kind).toBe('skill')
-    expect(call.kind === 'skill' ? call.request.name : 'unread').toBeUndefined()
+    expect(call.kind === 'skill'
+      ? call.request.name
+      : 'unread').toBeUndefined()
   })
 
   it('names the skill the arguments state', () => {
     const call = presentationOf(ZCODE_TOOL.Skill, { skill: 'create-pr' }, { success: true, content: 'done' })
-    expect(call.kind === 'skill' ? call.request.name : undefined).toBe('create-pr')
+    expect(call.kind === 'skill'
+      ? call.request.name
+      : undefined).toBe('create-pr')
   })
 })
 
@@ -848,8 +1216,12 @@ describe('the tool kinds ZCode produces', () => {
   // an `edit` or a `write` whose request names no file and degrades it to the
   // uncategorized row, which would drop both kinds out of the set this walk measures.
   const ARGS = {
-    todos: [{ content: 'Write the parser', status: 'pending' }],
-    questions: [{ question: 'Which parser?' }],
+    todos: [
+      { content: 'Write the parser', status: 'pending' },
+    ],
+    questions: [
+      { question: 'Which parser?' },
+    ],
     file_path: '/project/a.ts',
   }
   const PRODUCED: readonly ToolKind[] = [
@@ -880,15 +1252,24 @@ describe('the tool kinds ZCode produces', () => {
     // An MCP wire name, which no entry of the name table spells.
     kinds.add(presentationOf('mcp__docs__lookup', ARGS, { success: true, content: 'done' }).kind)
     // Every display hint, over a tool name the table does not know.
-    for (const hint of Object.values(ZCODE_DISPLAY))
-      kinds.add(presentationOf('SomeToolAddedLater', ARGS, { success: true, content: 'done', display: { kind: hint } }).kind)
+    for (const hint of Object.values(ZCODE_DISPLAY)) {
+      kinds.add(presentationOf('SomeToolAddedLater', ARGS, {
+        success: true,
+        content: 'done',
+        display: { kind: hint },
+      }).kind)
+    }
     // A row that states no tool name at all.
-    kinds.add(zcodeToolCall(row(event(ZCODE_TOOL_KIND.Result, { result: { success: true, content: 'done' } })))!.kind)
+    kinds.add(zcodeToolCall(row(event(ZCODE_TOOL_KIND.Result, {
+      result: { success: true, content: 'done' },
+    })))!.kind)
     return kinds
   }
 
   it('reaches eighteen of the thirty shared kinds', () => {
-    expect([...producedKinds()].sort()).toEqual([...PRODUCED].sort())
+    expect([
+      ...producedKinds(),
+    ].sort()).toEqual([...PRODUCED].sort())
   })
 
   // The complement, spelled out: these are the twelve `zcodeArgumentsOnly` and the
@@ -918,8 +1299,16 @@ describe('native ZCode serialization paths', () => {
     const path = '/native/cli/artifacts/session/call-tool-result-11111111-1111-4111-8111-111111111111.txt'
     const complete = `<run_id>dwfrun-native</run_id>\n<status>completed</status>\n<result>\n${'x'.repeat(260000)}computed77${'y'.repeat(260000)}\n</result>`
     const preview = `<persisted-output>\nOutput too large (500 KB). Full output saved to: ${path}\n\nPreview (first 2 KB):\nhead\n...\n</persisted-output>`
-    const native = { ...event(ZCODE_TOOL_KIND.Result, { result: { success: true, content: preview, truncated: true } }), sessionId: 'session' }
-    const request = input(event(ZCODE_TOOL_KIND.Scheduled, { toolName: ZCODE_TOOL.GetWorkflowRun, input: { run_id: 'dwfrun-native' } }))
+    const native = {
+      ...event(ZCODE_TOOL_KIND.Result, {
+        result: { success: true, content: preview, truncated: true },
+      }),
+      sessionId: 'session',
+    }
+    const request = input(event(ZCODE_TOOL_KIND.Scheduled, {
+      toolName: ZCODE_TOOL.GetWorkflowRun,
+      input: { run_id: 'dwfrun-native' },
+    }))
     const supplementalContent = {
       type: 'tool.updated',
       payload: { kind: 'result', toolCallId: 'call' },
@@ -935,13 +1324,27 @@ describe('native ZCode serialization paths', () => {
             status: 'completed',
             input: { run_id: 'dwfrun-native' },
             output: preview,
-            metadata: { serialization: { budgetStrategy: 'artifact', truncated: true, originalBytes: Buffer.byteLength(complete), returnedBytes: Buffer.byteLength(preview), artifactPath: path } },
+            metadata: {
+              serialization: {
+                budgetStrategy: 'artifact',
+                truncated: true,
+                originalBytes: Buffer.byteLength(complete),
+                returnedBytes: Buffer.byteLength(preview),
+                artifactPath: path,
+              },
+            },
           },
         },
       },
       outputFiles: { [uri]: `data:text/plain;base64,${Buffer.from(complete).toString('base64')}` },
     }
-    const options = { spanId: 'call', spanType: ZCODE_TOOL.GetWorkflowRun, agentSessionId: 'session', request, supplementalContent }
+    const options = {
+      spanId: 'call',
+      spanType: ZCODE_TOOL.GetWorkflowRun,
+      agentSessionId: 'session',
+      request,
+      supplementalContent,
+    }
     const before = JSON.stringify({ native, request, supplementalContent })
     const call = providerToolCall(AgentProvider.ZCODE, native, options)
     expect(call?.kind).toBe('task')

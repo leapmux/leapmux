@@ -24,5 +24,7 @@ export function clipFirstLine(text: string, limit: number): string {
   // end of the line, where it renders as nothing and defeats a length check.
   // split-with-limit always yields at least one element; `?? ''` is for the type only.
   const line = (text.trim().split(/\r?\n/, 1)[0] ?? '').trim()
-  return line.length > limit ? `${line.slice(0, snapUtf16CutForward(line, limit))}${PREVIEW_ELLIPSIS}` : line
+  return line.length > limit
+    ? `${line.slice(0, snapUtf16CutForward(line, limit))}${PREVIEW_ELLIPSIS}`
+    : line
 }

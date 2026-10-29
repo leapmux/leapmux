@@ -16,7 +16,9 @@ import { droidPermissionPresets } from './permissionPresets'
  * worker refuses one that contradicts or was never offered.
  */
 export function sendDroidPermissionOption(onRespond: ControlResponseSender, requestId: string, optionId: string): Promise<void> {
-  const behavior = optionId === DROID_PERMISSION_OPTION.Cancel ? 'deny' : 'allow'
+  const behavior = optionId === DROID_PERMISSION_OPTION.Cancel
+    ? 'deny'
+    : 'allow'
   return sendResponse(onRespond, buildControlResponseEnvelope(requestId, { behavior, selectedOption: optionId }))
 }
 

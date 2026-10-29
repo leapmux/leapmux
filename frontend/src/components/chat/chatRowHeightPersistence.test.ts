@@ -57,7 +57,11 @@ function item(id: string, heightKey: string): VirtualItem {
 }
 
 function storedRow(id: string, heightKey: string, height: number): [string, string, number] {
-  return [id, fnv1a32Hex(heightKey), height]
+  return [
+    id,
+    fnv1a32Hex(heightKey),
+    height,
+  ]
 }
 
 describe('chatRowHeightPersistence', () => {
@@ -108,7 +112,16 @@ describe('chatRowHeightPersistence', () => {
         },
       })
     })
-    return { setItems, setGeomVersion, setStorageId, primed, snapshot, measured, pending, dispose }
+    return {
+      setItems,
+      setGeomVersion,
+      setStorageId,
+      primed,
+      snapshot,
+      measured,
+      pending,
+      dispose,
+    }
   }
 
   it('restores a saved zero and excludes a stale zero digest', async () => {
@@ -130,19 +143,29 @@ describe('chatRowHeightPersistence', () => {
     }
     const restored = makeHarness({
       storageId: 'agent-1',
-      items: [item('empty', 'k-empty'), item('positive', 'k-positive')],
+      items: [
+        item('empty', 'k-empty'),
+        item('positive', 'k-positive'),
+      ],
     })
     try {
       await settle()
-      expect(restored.primed).toEqual([[
-        { id: 'empty', heightKey: 'k-empty', height: 0 },
-        { id: 'positive', heightKey: 'k-positive', height: 120 },
-      ]])
+      expect(restored.primed).toEqual([
+        [
+          { id: 'empty', heightKey: 'k-empty', height: 0 },
+          { id: 'positive', heightKey: 'k-positive', height: 120 },
+        ],
+      ])
     }
     finally {
       restored.dispose()
     }
-    const stale = makeHarness({ storageId: 'agent-1', items: [item('empty', 'new-key')] })
+    const stale = makeHarness({
+      storageId: 'agent-1',
+      items: [
+        item('empty', 'new-key'),
+      ],
+    })
     try {
       await settle()
       expect(stale.primed).toEqual([])
@@ -155,41 +178,68 @@ describe('chatRowHeightPersistence', () => {
   it('hydrates stored rows whose key digest matches the live heightKey', async () => {
     localStorageStore(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
       v: STORED_ROW_HEIGHTS_VERSION,
-      rows: [storedRow('a', 'k-a', 120), storedRow('b', 'k-b-old', 80)],
+      rows: [
+        storedRow('a', 'k-a', 120),
+        storedRow('b', 'k-b-old', 80),
+      ],
     })
     const h = makeHarness({
       storageId: 'agent-1',
-      items: [item('a', 'k-a'), item('b', 'k-b-new')],
+      items: [
+        item('a', 'k-a'),
+        item('b', 'k-b-new'),
+      ],
     })
     await settle()
     // 'a' matches and hydrates; 'b' was measured under a different layout
     // epoch and must NOT be adopted.
-    expect(h.primed).toEqual([[{ id: 'a', heightKey: 'k-a', height: 120 }]])
+    expect(h.primed).toEqual([
+      [
+        { id: 'a', heightKey: 'k-a', height: 120 },
+      ],
+    ])
     h.dispose()
   })
 
   it('adopts a pending row later, when its live key changes to match (width settles)', async () => {
     localStorageStore(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
       v: STORED_ROW_HEIGHTS_VERSION,
-      rows: [storedRow('a', 'k-a|w800', 120)],
+      rows: [
+        storedRow('a', 'k-a|w800', 120),
+      ],
     })
-    const h = makeHarness({ storageId: 'agent-1', items: [item('a', 'k-a|w360')] })
+    const h = makeHarness({
+      storageId: 'agent-1',
+      items: [
+        item('a', 'k-a|w360'),
+      ],
+    })
     await settle()
     expect(h.primed).toEqual([])
-    h.setItems([item('a', 'k-a|w800')])
-    expect(h.primed).toEqual([[{ id: 'a', heightKey: 'k-a|w800', height: 120 }]])
+    h.setItems([
+      item('a', 'k-a|w800'),
+    ])
+    expect(h.primed).toEqual([
+      [
+        { id: 'a', heightKey: 'k-a|w800', height: 120 },
+      ],
+    ])
     h.dispose()
   })
 
   it('keeps a pending row when the virtualizer defers prime-height adoption', async () => {
     localStorageStore(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
       v: STORED_ROW_HEIGHTS_VERSION,
-      rows: [storedRow('a', 'k-a', 120)],
+      rows: [
+        storedRow('a', 'k-a', 120),
+      ],
     })
     const pending = new Set<string>()
     const h = makeHarness({
       storageId: 'agent-1',
-      items: [item('a', 'k-a')],
+      items: [
+        item('a', 'k-a'),
+      ],
       pending,
       // Deferred behind the momentum gate: nothing commits, but the row is marked
       // pending (as the real virtualizer does), so it isn't re-primed on every
@@ -201,7 +251,11 @@ describe('chatRowHeightPersistence', () => {
       },
     })
     await settle()
-    expect(h.primed).toEqual([[{ id: 'a', heightKey: 'k-a', height: 120 }]])
+    expect(h.primed).toEqual([
+      [
+        { id: 'a', heightKey: 'k-a', height: 120 },
+      ],
+    ])
 
     h.snapshot.push({ id: 'b', heightKey: 'k-b', height: 80 })
     h.setGeomVersion(1)
@@ -209,7 +263,10 @@ describe('chatRowHeightPersistence', () => {
     await settle()
 
     expect((await readStored())?.rows)
-      .toEqual([storedRow('a', 'k-a', 120), storedRow('b', 'k-b', 80)])
+      .toEqual([
+        storedRow('a', 'k-a', 120),
+        storedRow('b', 'k-b', 80),
+      ])
     h.dispose()
   })
 
@@ -223,13 +280,17 @@ describe('chatRowHeightPersistence', () => {
     // prime when the key matches again. It must not permanently bar the row.
     localStorageStore(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
       v: STORED_ROW_HEIGHTS_VERSION,
-      rows: [storedRow('a', 'k-a', 120)],
+      rows: [
+        storedRow('a', 'k-a', 120),
+      ],
     })
     const pending = new Set<string>()
     let deferring = true
     const h = makeHarness({
       storageId: 'agent-1',
-      items: [item('a', 'k-a')],
+      items: [
+        item('a', 'k-a'),
+      ],
       pending,
       // While the fling is active the prime is deferred: nothing commits, the row
       // stays UNMEASURED, and (as the real virtualizer does) it is marked pending
@@ -249,22 +310,34 @@ describe('chatRowHeightPersistence', () => {
     })
     await settle()
     // First attempt on load: deferred (commits nothing, row stays unmeasured).
-    expect(h.primed).toEqual([[{ id: 'a', heightKey: 'k-a', height: 120 }]])
+    expect(h.primed).toEqual([
+      [
+        { id: 'a', heightKey: 'k-a', height: 120 },
+      ],
+    ])
 
     // Key drifts mid-fling (a chrome/UI toggle rewrote it): digest no longer
     // matches, so nothing is attempted for the transient key.
-    h.setItems([item('a', 'k-a-transient')])
+    h.setItems([
+      item('a', 'k-a-transient'),
+    ])
     expect(h.primed).toHaveLength(1)
 
     // Fling has settled; the key reverts to its original digest-matching value.
     deferring = false
-    h.setItems([item('a', 'k-a')])
+    h.setItems([
+      item('a', 'k-a'),
+    ])
 
     // The warm-start height MUST be adopted now -- the earlier deferral was
     // transient, not a permanent rejection.
     expect(h.primed).toEqual([
-      [{ id: 'a', heightKey: 'k-a', height: 120 }],
-      [{ id: 'a', heightKey: 'k-a', height: 120 }],
+      [
+        { id: 'a', heightKey: 'k-a', height: 120 },
+      ],
+      [
+        { id: 'a', heightKey: 'k-a', height: 120 },
+      ],
     ])
     expect(h.measured.has('a')).toBe(true)
     h.dispose()
@@ -279,13 +352,17 @@ describe('chatRowHeightPersistence', () => {
     // or the stale marker bars its warm-start height for the component's life.
     localStorageStore(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
       v: STORED_ROW_HEIGHTS_VERSION,
-      rows: [storedRow('a', 'k-a', 120)],
+      rows: [
+        storedRow('a', 'k-a', 120),
+      ],
     })
     const pending = new Set<string>()
     let deferring = true
     const h = makeHarness({
       storageId: 'agent-1',
-      items: [item('a', 'k-a')],
+      items: [
+        item('a', 'k-a'),
+      ],
       pending,
       // While the fling is active the prime is DEFERRED: queued as pending,
       // committing nothing. Once it settles it commits normally.
@@ -306,7 +383,10 @@ describe('chatRowHeightPersistence', () => {
 
     // An item-list change while the prime is STILL queued must NOT re-prime it --
     // the marker suppresses the per-item-change churn during the fling.
-    h.setItems([item('a', 'k-a'), item('z', 'k-z')])
+    h.setItems([
+      item('a', 'k-a'),
+      item('z', 'k-z'),
+    ])
     expect(h.primed).toHaveLength(1)
 
     // The fling settles, but the row was trimmed out before the flush, so its
@@ -315,9 +395,13 @@ describe('chatRowHeightPersistence', () => {
     deferring = false
     // The same digest-matching key reappears -> the stale marker must clear and the
     // warm-start height must finally be adopted.
-    h.setItems([item('a', 'k-a')])
+    h.setItems([
+      item('a', 'k-a'),
+    ])
     expect(h.primed).toHaveLength(2)
-    expect(h.primed[1]).toEqual([{ id: 'a', heightKey: 'k-a', height: 120 }])
+    expect(h.primed[1]).toEqual([
+      { id: 'a', heightKey: 'k-a', height: 120 },
+    ])
     expect(h.measured.has('a')).toBe(true)
     h.dispose()
   })
@@ -325,10 +409,18 @@ describe('chatRowHeightPersistence', () => {
   it('retires a pending row once a real measurement supersedes it', async () => {
     localStorageStore(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
       v: STORED_ROW_HEIGHTS_VERSION,
-      rows: [storedRow('a', 'k-a', 120)],
+      rows: [
+        storedRow('a', 'k-a', 120),
+      ],
     })
     const measured = new Set(['a'])
-    const h = makeHarness({ storageId: 'agent-1', items: [item('a', 'k-a')], measured })
+    const h = makeHarness({
+      storageId: 'agent-1',
+      items: [
+        item('a', 'k-a'),
+      ],
+      measured,
+    })
     await settle()
     expect(h.primed).toEqual([])
     h.dispose()
@@ -339,7 +431,9 @@ describe('chatRowHeightPersistence', () => {
     // survive the save instead of being clobbered by the fresh snapshot.
     localStorageStore(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
       v: STORED_ROW_HEIGHTS_VERSION,
-      rows: [storedRow('old', 'k-old', 300)],
+      rows: [
+        storedRow('old', 'k-old', 300),
+      ],
     })
     const h = makeHarness({ storageId: 'agent-1', items: [] })
     await settle()
@@ -350,8 +444,16 @@ describe('chatRowHeightPersistence', () => {
 
     const stored = await readStored()
     expect(stored?.rows).toEqual([
-      ['old', fnv1a32Hex('k-old'), 300],
-      ['a', fnv1a32Hex('k-a'), 120.26], // rounded to 2dp
+      [
+        'old',
+        fnv1a32Hex('k-old'),
+        300,
+      ],
+      [
+        'a',
+        fnv1a32Hex('k-a'),
+        120.26,
+      ], // rounded to 2dp
     ])
     h.dispose()
   })
@@ -376,17 +478,26 @@ describe('chatRowHeightPersistence', () => {
   it('never replaces stored data with an empty snapshot', async () => {
     localStorageStore(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
       v: STORED_ROW_HEIGHTS_VERSION,
-      rows: [storedRow('a', 'k-a|w800', 120)],
+      rows: [
+        storedRow('a', 'k-a|w800', 120),
+      ],
     })
     // Live key never matches (different width), so nothing adopts and the
     // snapshot is empty — the stored rows must survive the save tick.
-    const h = makeHarness({ storageId: 'agent-1', items: [item('a', 'k-a|w360')] })
+    const h = makeHarness({
+      storageId: 'agent-1',
+      items: [
+        item('a', 'k-a|w360'),
+      ],
+    })
     await settle()
     h.setGeomVersion(1)
     vi.advanceTimersByTime(ROW_HEIGHT_SAVE_DEBOUNCE_MS)
     await settle()
     expect((await readStored())?.rows)
-      .toEqual([storedRow('a', 'k-a|w800', 120)])
+      .toEqual([
+        storedRow('a', 'k-a|w800', 120),
+      ])
     h.dispose()
   })
 
@@ -400,7 +511,11 @@ describe('chatRowHeightPersistence', () => {
   })
 
   it('is inert without a storage id', async () => {
-    const h = makeHarness({ items: [item('a', 'k-a')] })
+    const h = makeHarness({
+      items: [
+        item('a', 'k-a'),
+      ],
+    })
     await settle()
     h.snapshot.push({ id: 'a', heightKey: 'k-a', height: 100 })
     h.setGeomVersion(1)
@@ -414,14 +529,24 @@ describe('chatRowHeightPersistence', () => {
   it('loads and hydrates once the storage id arrives late', async () => {
     localStorageStore(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
       v: STORED_ROW_HEIGHTS_VERSION,
-      rows: [storedRow('a', 'k-a', 120)],
+      rows: [
+        storedRow('a', 'k-a', 120),
+      ],
     })
-    const h = makeHarness({ items: [item('a', 'k-a')] }) // no id yet
+    const h = makeHarness({
+      items: [
+        item('a', 'k-a'),
+      ],
+    }) // no id yet
     await settle()
     expect(h.primed).toEqual([])
     h.setStorageId('agent-1')
     await settle()
-    expect(h.primed).toEqual([[{ id: 'a', heightKey: 'k-a', height: 120 }]])
+    expect(h.primed).toEqual([
+      [
+        { id: 'a', heightKey: 'k-a', height: 120 },
+      ],
+    ])
     h.dispose()
   })
 
@@ -434,22 +559,39 @@ describe('chatRowHeightPersistence', () => {
   it('loads once per instance, ignoring a storage id that moves afterwards', async () => {
     localStorageStore(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
       v: STORED_ROW_HEIGHTS_VERSION,
-      rows: [storedRow('a', 'k-a', 120)],
+      rows: [
+        storedRow('a', 'k-a', 120),
+      ],
     })
     localStorageStore(`${PREFIX_CHAT_ROW_HEIGHTS}agent-2`, {
       v: STORED_ROW_HEIGHTS_VERSION,
-      rows: [storedRow('a', 'k-a', 999)],
+      rows: [
+        storedRow('a', 'k-a', 999),
+      ],
     })
-    const h = makeHarness({ storageId: 'agent-1', items: [item('a', 'k-a')] })
+    const h = makeHarness({
+      storageId: 'agent-1',
+      items: [
+        item('a', 'k-a'),
+      ],
+    })
     await settle()
-    expect(h.primed).toEqual([[{ id: 'a', heightKey: 'k-a', height: 120 }]])
+    expect(h.primed).toEqual([
+      [
+        { id: 'a', heightKey: 'k-a', height: 120 },
+      ],
+    ])
 
     h.setStorageId('agent-2')
     await settle()
 
     // The second chat's 999 never reaches the virtualizer, and no second prime
     // happens at all.
-    expect(h.primed).toEqual([[{ id: 'a', heightKey: 'k-a', height: 120 }]])
+    expect(h.primed).toEqual([
+      [
+        { id: 'a', heightKey: 'k-a', height: 120 },
+      ],
+    ])
     h.dispose()
     localStorageDrop(`${PREFIX_CHAT_ROW_HEIGHTS}agent-2`)
   })
@@ -460,9 +602,16 @@ describe('chatRowHeightPersistence', () => {
     // row and shed the pending one first.
     localStorageStore(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
       v: STORED_ROW_HEIGHTS_VERSION,
-      rows: [storedRow('stale', 'k-stale|w999', 50)],
+      rows: [
+        storedRow('stale', 'k-stale|w999', 50),
+      ],
     })
-    const h = makeHarness({ storageId: 'agent-1', items: [item('stale', 'k-live')] })
+    const h = makeHarness({
+      storageId: 'agent-1',
+      items: [
+        item('stale', 'k-live'),
+      ],
+    })
     await settle()
     for (let i = 0; i < PERSISTED_ROW_HEIGHTS_MAX; i++)
       h.snapshot.push({ id: `r${i}`, heightKey: `k-${i}`, height: 10 + i })
@@ -485,9 +634,16 @@ describe('chatRowHeightPersistence', () => {
     // inherit 'a's early pending slot (which the cap would shed first).
     localStorageStore(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
       v: STORED_ROW_HEIGHTS_VERSION,
-      rows: [storedRow('a', 'k-a-old', 120)],
+      rows: [
+        storedRow('a', 'k-a-old', 120),
+      ],
     })
-    const h = makeHarness({ storageId: 'agent-1', items: [item('a', 'k-a-new')] })
+    const h = makeHarness({
+      storageId: 'agent-1',
+      items: [
+        item('a', 'k-a-new'),
+      ],
+    })
     await settle()
     // snapshotHeights is LRU-ordered oldest-first: 'z' measured before 'a'.
     h.snapshot.push({ id: 'z', heightKey: 'k-z', height: 40 })
@@ -500,8 +656,16 @@ describe('chatRowHeightPersistence', () => {
     // 'a' at the END (freshly-measured position), carrying its measured height +
     // live-key digest -- not stranded at the front where the over-cap slice bites.
     expect(stored?.rows).toEqual([
-      ['z', fnv1a32Hex('k-z'), 40],
-      ['a', fnv1a32Hex('k-a-new'), 200],
+      [
+        'z',
+        fnv1a32Hex('k-z'),
+        40,
+      ],
+      [
+        'a',
+        fnv1a32Hex('k-a-new'),
+        200,
+      ],
     ])
     h.dispose()
   })
@@ -512,9 +676,16 @@ describe('chatRowHeightPersistence', () => {
     // only thing that stops those heights from jumping the offset map.
     localStorageStore(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
       v: STORED_ROW_HEIGHTS_VERSION - 1,
-      rows: [storedRow('a', 'k-a', 120)],
+      rows: [
+        storedRow('a', 'k-a', 120),
+      ],
     })
-    const h = makeHarness({ storageId: 'agent-1', items: [item('a', 'k-a')] })
+    const h = makeHarness({
+      storageId: 'agent-1',
+      items: [
+        item('a', 'k-a'),
+      ],
+    })
     await settle()
     expect(h.primed).toEqual([])
     // And it is DELETED, not merely ignored. The read that returned it also refreshed its
@@ -528,19 +699,43 @@ describe('chatRowHeightPersistence', () => {
     localStorageStore(`${PREFIX_CHAT_ROW_HEIGHTS}agent-1`, {
       v: STORED_ROW_HEIGHTS_VERSION,
       rows: [
-        ['a', fnv1a32Hex('k-a')], // missing height
-        ['b', fnv1a32Hex('k-b'), -5], // non-positive
-        ['c', fnv1a32Hex('k-c'), Number.NaN], // non-finite
+        [
+          'a',
+          fnv1a32Hex('k-a'),
+        ], // missing height
+        [
+          'b',
+          fnv1a32Hex('k-b'),
+          -5,
+        ], // non-positive
+        [
+          'c',
+          fnv1a32Hex('k-c'),
+          Number.NaN,
+        ], // non-finite
         'junk',
-        ['d', fnv1a32Hex('k-d'), 40],
+        [
+          'd',
+          fnv1a32Hex('k-d'),
+          40,
+        ],
       ],
     })
     const h = makeHarness({
       storageId: 'agent-1',
-      items: [item('a', 'k-a'), item('b', 'k-b'), item('c', 'k-c'), item('d', 'k-d')],
+      items: [
+        item('a', 'k-a'),
+        item('b', 'k-b'),
+        item('c', 'k-c'),
+        item('d', 'k-d'),
+      ],
     })
     await settle()
-    expect(h.primed).toEqual([[{ id: 'd', heightKey: 'k-d', height: 40 }]])
+    expect(h.primed).toEqual([
+      [
+        { id: 'd', heightKey: 'k-d', height: 40 },
+      ],
+    ])
     h.dispose()
   })
 })

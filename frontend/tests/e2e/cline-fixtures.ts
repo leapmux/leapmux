@@ -26,7 +26,9 @@ export const CLINE_E2E_SKIP_REASON: string | null = missingBinaryReason('cline',
  * each command. A spec that tests tool rendering would otherwise answer a banner
  * before each call. The control-request spec opens its own workspace in Act.
  */
-const AUTO_APPROVE = { optionValues: { permissionMode: CLINE_PERMISSION_MODE.AutoApprove } }
+const AUTO_APPROVE = {
+  optionValues: { permissionMode: CLINE_PERMISSION_MODE.AutoApprove },
+}
 
 export const clineTest = createProviderTest({
   agent: CLINE_AGENT,
@@ -42,5 +44,11 @@ export const clineTest = createProviderTest({
   planningClineWorkspace: AgentWorkspace
 }>({
   askingClineWorkspace: authenticatedAgentWorkspace({ ...CLINE_AGENT, prefix: 'cline-e2e-act' }),
-  planningClineWorkspace: authenticatedAgentWorkspace({ ...CLINE_AGENT, prefix: 'cline-e2e-plan', openOptions: { optionValues: { permissionMode: CLINE_PERMISSION_MODE.Plan } } }),
+  planningClineWorkspace: authenticatedAgentWorkspace({
+    ...CLINE_AGENT,
+    prefix: 'cline-e2e-plan',
+    openOptions: {
+      optionValues: { permissionMode: CLINE_PERMISSION_MODE.Plan },
+    },
+  }),
 })

@@ -26,16 +26,25 @@ claudeTest('shows each agent of a native Claude Workflow run under the run group
     name: 'the workflow child answers locally',
     // Claude puts system reminders before the child's harness text. The root's
     // Workflow result quotes the prompt but does not carry this harness text.
-    when: { user: ['\\[Workflow harness — computed task\\]', CHILD_RESULT] },
+    when: {
+      user: ['\\[Workflow harness — computed task\\]', CHILD_RESULT],
+    },
     respond: { text: CHILD_RESULT },
   })
   // Claude can start more root turns when the background workflow reports its
   // result. Their count depends on when the workflow notification arrives.
   await modelScript.fallback({ text: 'Workflow notification noted.' })
   const start = await modelScript.queue(
-    { toolCalls: [codeExecutionToolCall(AgentProvider.CLAUDE_CODE, 'workflow-probe', workflowScript([
-      { prompt: modelScript.prompt(`Reply with ${CHILD_RESULT}.`), label: 'probe' },
-    ]))] },
+    {
+      toolCalls: [
+        codeExecutionToolCall(AgentProvider.CLAUDE_CODE, 'workflow-probe', workflowScript([
+          {
+            prompt: modelScript.prompt(`Reply with ${CHILD_RESULT}.`),
+            label: 'probe',
+          },
+        ])),
+      ],
+    },
     { text: 'The workflow finished.' },
   )
   await sendMessage(page, modelScript.prompt('Run the one-child workflow and report its result.'))
@@ -76,20 +85,34 @@ claudeTest('shows two agents of one Workflow run as two rows in one group', asyn
   const tabsBefore = await agentTabs(page).count()
   await modelScript.rule({
     name: 'the first workflow child answers locally',
-    when: { user: ['\\[Workflow harness — computed task\\]', CHILD_RESULT] },
+    when: {
+      user: ['\\[Workflow harness — computed task\\]', CHILD_RESULT],
+    },
     respond: { text: CHILD_RESULT },
   })
   await modelScript.rule({
     name: 'the second workflow child answers locally',
-    when: { user: ['\\[Workflow harness — computed task\\]', CHILD_RESULT_TWO] },
+    when: {
+      user: ['\\[Workflow harness — computed task\\]', CHILD_RESULT_TWO],
+    },
     respond: { text: CHILD_RESULT_TWO },
   })
   await modelScript.fallback({ text: 'Workflow notification noted.' })
   const start = await modelScript.queue(
-    { toolCalls: [codeExecutionToolCall(AgentProvider.CLAUDE_CODE, 'workflow-probe', workflowScript([
-      { prompt: modelScript.prompt(`Reply with ${CHILD_RESULT}.`), label: 'first' },
-      { prompt: modelScript.prompt(`Reply with ${CHILD_RESULT_TWO}.`), label: 'second' },
-    ]))] },
+    {
+      toolCalls: [
+        codeExecutionToolCall(AgentProvider.CLAUDE_CODE, 'workflow-probe', workflowScript([
+          {
+            prompt: modelScript.prompt(`Reply with ${CHILD_RESULT}.`),
+            label: 'first',
+          },
+          {
+            prompt: modelScript.prompt(`Reply with ${CHILD_RESULT_TWO}.`),
+            label: 'second',
+          },
+        ])),
+      ],
+    },
     { text: 'The workflow finished.' },
   )
   await sendMessage(page, modelScript.prompt('Run the two-child workflow and report its result.'))

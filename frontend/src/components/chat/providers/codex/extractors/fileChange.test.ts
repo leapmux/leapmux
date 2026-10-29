@@ -9,8 +9,13 @@ describe('codexChangeKind', () => {
   })
 
   it('unwraps the object a newer frame spells', () => {
-    expect(codexChangeKind({ kind: { type: 'update' }, path: 'edit.ts' })).toBe('update')
-    expect(codexChangeKind({ kind: { type: 'update', movePath: 'moved.ts' } })).toBe('update')
+    expect(codexChangeKind({
+      kind: { type: 'update' },
+      path: 'edit.ts',
+    })).toBe('update')
+    expect(codexChangeKind({
+      kind: { type: 'update', movePath: 'moved.ts' },
+    })).toBe('update')
   })
 
   it('answers the empty string for a change that states no kind', () => {
@@ -18,6 +23,8 @@ describe('codexChangeKind', () => {
     expect(codexChangeKind({ kind: null })).toBe('')
     expect(codexChangeKind({ kind: 7 })).toBe('')
     expect(codexChangeKind({ kind: {} })).toBe('')
-    expect(codexChangeKind({ kind: { type: 3 } })).toBe('')
+    expect(codexChangeKind({
+      kind: { type: 3 },
+    })).toBe('')
   })
 })

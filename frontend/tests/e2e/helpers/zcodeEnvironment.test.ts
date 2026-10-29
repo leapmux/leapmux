@@ -4,7 +4,18 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { createZcodeEnvironment } from './zcodeEnvironment'
 
 let runDirectory: string
-const options = () => ({ runDirectory, homeDir: join(runDirectory, 'home'), baseURL: 'http://127.0.0.1:4567/v1', modelKey: 'unit-key', providerID: 'personal:unit', modelID: 'unit-model', alternateModelID: 'unit-alt', plainModelID: 'unit-plain' })
+function options() {
+  return {
+    runDirectory,
+    homeDir: join(runDirectory, 'home'),
+    baseURL: 'http://127.0.0.1:4567/v1',
+    modelKey: 'unit-key',
+    providerID: 'personal:unit',
+    modelID: 'unit-model',
+    alternateModelID: 'unit-alt',
+    plainModelID: 'unit-plain',
+  }
+}
 
 beforeEach(() => {
   const scratch = resolve(import.meta.dirname, '../../../../.tmp')
@@ -31,8 +42,13 @@ describe('createZcodeEnvironment', () => {
     createZcodeEnvironment(options())
     const config = JSON.parse(readFileSync(join(runDirectory, 'home', '.zcode', 'v2', 'config.json'), 'utf8'))
     const models = config.provider['personal:unit'].models
-    for (const id of ['unit-model', 'unit-alt'])
-      expect(models[id].reasoning).toEqual({ enabled: true, variants: ['low', 'medium', 'high'], defaultVariant: 'high' })
+    for (const id of ['unit-model', 'unit-alt']) {
+      expect(models[id].reasoning).toEqual({
+        enabled: true,
+        variants: ['low', 'medium', 'high'],
+        defaultVariant: 'high',
+      })
+    }
     expect(models['unit-plain'].reasoning).toEqual({ enabled: false })
   })
 
@@ -40,7 +56,11 @@ describe('createZcodeEnvironment', () => {
     const env = createZcodeEnvironment(options())
     expect(env.ZCODE_PERSONAL_PROVIDER_CONFIG_FILE).toBe(join(runDirectory, 'home', '.zcode', 'v2', 'provider_config.json'))
     const personal = JSON.parse(readFileSync(env.ZCODE_PERSONAL_PROVIDER_CONFIG_FILE!, 'utf8'))
-    expect(personal.config.defaultModelSelection).toEqual({ providerId: 'personal:unit', modelId: 'unit-model', options: { reasoningLevel: 'high' } })
+    expect(personal.config.defaultModelSelection).toEqual({
+      providerId: 'personal:unit',
+      modelId: 'unit-model',
+      options: { reasoningLevel: 'high' },
+    })
     const rule = personal.config.providerConfigRules.providerRules[0]
     expect(rule.config.access).toEqual({ type: 'api-key', apiKey: 'unit-key' })
     expect(rule.config.personalModelIds).toEqual(['unit-model', 'unit-alt', 'unit-plain'])

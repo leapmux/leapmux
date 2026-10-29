@@ -6,14 +6,14 @@ function systemText(content: unknown): string[] {
   if (typeof content === 'string')
     return [content]
   if (!Array.isArray(content))
-    throw new Error('The native Claude system instruction has invalid content.')
+    throw new TypeError('The native Claude system instruction has invalid content.')
   return content.flatMap((block: unknown) => {
     if (!isObject(block))
       throw new Error('The native Claude system instruction contains an invalid block.')
     if (block.type !== 'text')
       return []
     if (typeof block.text !== 'string')
-      throw new Error('The native Claude system text block contains no text.')
+      throw new TypeError('The native Claude system text block contains no text.')
     return [block.text]
   })
 }
@@ -26,7 +26,7 @@ export function claudeUltracodeEnabled(request: Pick<MockModelRequestRecord, 'pr
   if (request.body.system !== undefined)
     parts.push(...systemText(request.body.system))
   if (!Array.isArray(request.body.messages))
-    throw new Error('The native Ultracode request contains no message array.')
+    throw new TypeError('The native Ultracode request contains no message array.')
   for (const message of request.body.messages) {
     if (!isObject(message))
       throw new Error('The native Ultracode request contains an invalid message.')

@@ -21,7 +21,12 @@ fastAgentTest.describe('Fast Agent settings', () => {
 })
 
 fastAgentModesTest('returns from the writer to the reader and proves both native agents after reload', async ({ fastAgentModesWorkspace, page, modelScript }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer: fastAgentModesWorkspace.server, workspaceId: fastAgentModesWorkspace.workspaceId })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer: fastAgentModesWorkspace.server,
+    workspaceId: fastAgentModesWorkspace.workspaceId,
+  })
   await waitForNativeSettingsHydrated(page)
   await expectSettingsOptionsOffered(page, 'permissionMode', ['reader', 'writer'])
   const group = nativeOptionGroup(await currentNativeAgent(context), 'permissionMode')
@@ -35,8 +40,18 @@ fastAgentModesTest('returns from the writer to the reader and proves both native
   await expectSettingsChip(page, label('reader'))
   const notices: NativeModeNotice[] = []
   for (const mode of [
-    { value: 'writer', previous: 'reader', marker: 'NATIVE_FAST_AGENT_WRITER', absent: 'NATIVE_FAST_AGENT_READER' },
-    { value: 'reader', previous: 'writer', marker: 'NATIVE_FAST_AGENT_READER', absent: 'NATIVE_FAST_AGENT_WRITER' },
+    {
+      value: 'writer',
+      previous: 'reader',
+      marker: 'NATIVE_FAST_AGENT_WRITER',
+      absent: 'NATIVE_FAST_AGENT_READER',
+    },
+    {
+      value: 'reader',
+      previous: 'writer',
+      marker: 'NATIVE_FAST_AGENT_READER',
+      absent: 'NATIVE_FAST_AGENT_WRITER',
+    },
   ]) {
     const notice = await chooseNativeModeWithNotice(context, {
       groupId: 'permissionMode',
@@ -61,7 +76,12 @@ fastAgentModesTest('returns from the writer to the reader and proves both native
 })
 
 fastAgentModesTest('selects another configured native agent before and after reload', async ({ fastAgentModesWorkspace, page, modelScript }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer: fastAgentModesWorkspace.server, workspaceId: fastAgentModesWorkspace.workspaceId })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer: fastAgentModesWorkspace.server,
+    workspaceId: fastAgentModesWorkspace.workspaceId,
+  })
   expect(nativeOptionValue(await currentNativeAgent(context), 'permissionMode')).toBe('reader')
   const initial = await sendNativeAnswer(context, 'Reply through the initial configured reader agent.', 'The native reader agent answered.')
   expect(nativeModelInstructionText(initial)).toContain('NATIVE_FAST_AGENT_READER')

@@ -209,7 +209,9 @@ export function createOpsSubmitter(opts: CreateOpsSubmitterOpts) {
     parked.set(batch.batchId, batch)
     backoff.schedule(batch.batchId, () => {
       parked.delete(batch.batchId)
-      rescheduleForWireRetry([cloneBatch(batch)])
+      rescheduleForWireRetry([
+        cloneBatch(batch),
+      ])
     })
   }
 
@@ -428,7 +430,10 @@ export type OpsSubmitter = ReturnType<typeof createOpsSubmitter>
 // + same batch_id. Used by the retry paths so the original batches
 // (potentially mutated by other code paths) stay independent.
 function cloneBatch(b: OpBatch): OpBatch {
-  return { ...b, ops: [...b.ops] }
+  return {
+    ...b,
+    ops: [...b.ops],
+  }
 }
 
 // rejectionLabels maps every BatchRejectionReason to a user-facing
@@ -466,5 +471,7 @@ function rejectionLabel(reason: number): string {
   // (numeric TS enums support value→name reverse indexing) so logs
   // still carry a recognizable symbol, not a bare integer.
   const name = BatchRejectionReason[reason] as string | undefined
-  return name ? `${name} (code ${reason})` : `code ${reason}`
+  return name
+    ? `${name} (code ${reason})`
+    : `code ${reason}`
 }

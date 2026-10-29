@@ -16,11 +16,17 @@ deepseekHarnessTest('shows a real child file result while its native model reply
     parentTask: 'Create the scripted live native child.',
     background: true,
     // The native Read result starts with three header rows: `<path>`, `<type>`, and `<content>`. A result view shows only its first three rows until the reader expands it.
-    toolProof: { read: { workingDir: authenticatedDeepseekHarnessWorkspace.workingDir, expandResult: true } },
+    toolProof: {
+      read: { workingDir: authenticatedDeepseekHarnessWorkspace.workingDir, expandResult: true },
+    },
     beforeRelease: async () => {
       await registerChildReports(native)
       const snapshot = await readNativeSidebarSnapshot(native, parent.id)
-      const child = selectRunningChildTask(snapshot.backgroundTasks, { parentId: parent.id, rootAgentId: parent.rootAgentId, previousChildIds: new Set() })
+      const child = selectRunningChildTask(snapshot.backgroundTasks, {
+        parentId: parent.id,
+        rootAgentId: parent.rootAgentId,
+        previousChildIds: new Set(),
+      })
       if (!child)
         throw new Error('The live native transcript requires one exact child of its stored parent.')
       childId = child.childAgentId

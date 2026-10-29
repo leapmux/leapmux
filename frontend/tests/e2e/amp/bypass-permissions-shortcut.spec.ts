@@ -16,7 +16,12 @@ import { nativeContext } from './scenarios'
  */
 ampTest.describe('Amp permissions', () => {
   ampTest('approves a pending tool and the next tool when Bypass changes during a turn', async ({ askingAmpWorkspace, page, modelScript, leapmuxServer }) => {
-    await exerciseMidTurnBypass(await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingAmpWorkspace.workspaceId }))
+    await exerciseMidTurnBypass(await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: askingAmpWorkspace.workspaceId,
+    }))
   })
 
   ampTest('retains an already-selected native Bypass preset across two preparation calls', async ({ native }) => {
@@ -31,7 +36,11 @@ ampTest.describe('Amp permissions', () => {
     await applyPermissionPreset(page, 'bypass')
     await expectNativeOptionValue(native, 'permissionMode', AMP_PERMISSION_MODE.AllowAll)
     const start = await modelScript.queue(
-      { toolCalls: [bashToolCall(native.provider, 'active-bypass-call', 'printf "ACTIVEBYPASS%s\\n" "$((40 + 2))"')] },
+      {
+        toolCalls: [
+          bashToolCall(native.provider, 'active-bypass-call', 'printf "ACTIVEBYPASS%s\\n" "$((40 + 2))"'),
+        ],
+      },
       nativeTextStep(native, 'The already-selected native preset ran the command.'),
     )
     await sendMessage(page, modelScript.prompt('Run the native arithmetic command under the selected permission preset.'))
@@ -50,7 +59,12 @@ ampTest.describe('Amp permissions', () => {
     // Amp has no mode that asks for the risky calls alone, so it offers no Smart
     // shortcut. Bypass selects Allow All, which applies to the next call at once.
     await expectPermissionShortcuts(page, { smart: 'absent', bypass: 'offered' })
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingAmpWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: askingAmpWorkspace.workspaceId,
+    })
     await exerciseBypassPermissions(context, {
       settingsProof: agent => expect(nativeOptionValue(agent, 'permissionMode')).toBe(AMP_PERMISSION_MODE.AllowAll),
     })

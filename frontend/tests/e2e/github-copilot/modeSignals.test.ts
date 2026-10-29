@@ -12,24 +12,42 @@ function userTurn(text: string, plan: boolean): { role: 'user', content: string 
 }
 
 function chatRequest(messages: readonly unknown[]): MockModelRequestRecord {
-  return { protocol: 'openai-chat-completions', path: '/chat/completions', body: { messages } }
+  return {
+    protocol: 'openai-chat-completions',
+    path: '/chat/completions',
+    body: { messages },
+  }
 }
 
 describe('isCopilotPlanTurn', () => {
   it('reads the plan prefix after the date line of the last user turn', () => {
-    expect(isCopilotPlanTurn(chatRequest([{ role: 'system', content: SYSTEM_PROMPT }, userTurn('Plan the change.', true)]))).toBe(true)
+    expect(isCopilotPlanTurn(chatRequest([
+      { role: 'system', content: SYSTEM_PROMPT },
+      userTurn('Plan the change.', true),
+    ]))).toBe(true)
   })
 
   it('reads a turn without the prefix as a turn outside plan mode', () => {
-    expect(isCopilotPlanTurn(chatRequest([{ role: 'system', content: SYSTEM_PROMPT }, userTurn('Make the change.', false)]))).toBe(false)
+    expect(isCopilotPlanTurn(chatRequest([
+      { role: 'system', content: SYSTEM_PROMPT },
+      userTurn('Make the change.', false),
+    ]))).toBe(false)
   })
 
   it('reads the plan prefix from the text part of a user turn with an image', () => {
     const turn = userTurn('Plan the change in the screenshot.', true)
-    expect(isCopilotPlanTurn(chatRequest([{
-      role: 'user',
-      content: [{ type: 'text', text: turn.content }, { type: 'image_url', image_url: { url: 'data:image/png;base64,iVBORw0KGgo=' } }],
-    }]))).toBe(true)
+    expect(isCopilotPlanTurn(chatRequest([
+      {
+        role: 'user',
+        content: [
+          { type: 'text', text: turn.content },
+          {
+            type: 'image_url',
+            image_url: { url: 'data:image/png;base64,iVBORw0KGgo=' },
+          },
+        ],
+      },
+    ]))).toBe(true)
   })
 
   it('ignores the prefix of an earlier user turn', () => {
@@ -41,25 +59,38 @@ describe('isCopilotPlanTurn', () => {
   })
 
   it('ignores the prefix inside a line of the user text', () => {
-    expect(isCopilotPlanTurn(chatRequest([userTurn('Explain what [[PLAN]] means.', false)]))).toBe(false)
+    expect(isCopilotPlanTurn(chatRequest([
+      userTurn('Explain what [[PLAN]] means.', false),
+    ]))).toBe(false)
   })
 
   it('ignores the prefix that only the system prompt states', () => {
-    expect(isCopilotPlanTurn(chatRequest([{ role: 'system', content: `${SYSTEM_PROMPT}\n${PLAN_NOTICE}` }, userTurn('Make the change.', false)]))).toBe(false)
+    expect(isCopilotPlanTurn(chatRequest([
+      { role: 'system', content: `${SYSTEM_PROMPT}\n${PLAN_NOTICE}` },
+      userTurn('Make the change.', false),
+    ]))).toBe(false)
   })
 
   it('throws for a request without a user turn', () => {
-    expect(() => isCopilotPlanTurn(chatRequest([{ role: 'system', content: SYSTEM_PROMPT }]))).toThrow('contains no user message')
+    expect(() => isCopilotPlanTurn(chatRequest([
+      { role: 'system', content: SYSTEM_PROMPT },
+    ]))).toThrow('contains no user message')
   })
 })
 
 describe('latestCopilotModeNotice', () => {
   it('returns undefined for a session that never changed its mode', () => {
-    expect(latestCopilotModeNotice(chatRequest([{ role: 'system', content: SYSTEM_PROMPT }, userTurn('Make the change.', false)]))).toBeUndefined()
+    expect(latestCopilotModeNotice(chatRequest([
+      { role: 'system', content: SYSTEM_PROMPT },
+      userTurn('Make the change.', false),
+    ]))).toBeUndefined()
   })
 
   it('returns the trimmed body of the only notice', () => {
-    expect(latestCopilotModeNotice(chatRequest([{ role: 'system', content: `${SYSTEM_PROMPT}\n\n${PLAN_ENDED_NOTICE}` }, userTurn('Make the change.', false)])))
+    expect(latestCopilotModeNotice(chatRequest([
+      { role: 'system', content: `${SYSTEM_PROMPT}\n\n${PLAN_ENDED_NOTICE}` },
+      userTurn('Make the change.', false),
+    ])))
       .toBe('Plan mode is no longer active. Do not follow plan-mode-only instructions from earlier in the conversation.')
   })
 
@@ -73,12 +104,18 @@ describe('latestCopilotModeNotice', () => {
   })
 
   it('returns the plan notice while plan mode is active', () => {
-    const notice = latestCopilotModeNotice(chatRequest([{ role: 'system', content: `${SYSTEM_PROMPT}\n\n${PLAN_NOTICE}` }, userTurn('Plan the change.', true)]))
+    const notice = latestCopilotModeNotice(chatRequest([
+      { role: 'system', content: `${SYSTEM_PROMPT}\n\n${PLAN_NOTICE}` },
+      userTurn('Plan the change.', true),
+    ]))
     expect(notice).toContain('<plan_mode>')
     expect(notice).not.toContain(COPILOT_PLAN_ENDED_NOTICE)
   })
 
   it('ignores a notice without its closing tag', () => {
-    expect(latestCopilotModeNotice(chatRequest([{ role: 'system', content: `${SYSTEM_PROMPT}\n<mode_changed_notice>\n${COPILOT_PLAN_ENDED_NOTICE}` }, userTurn('Make the change.', false)]))).toBeUndefined()
+    expect(latestCopilotModeNotice(chatRequest([
+      { role: 'system', content: `${SYSTEM_PROMPT}\n<mode_changed_notice>\n${COPILOT_PLAN_ENDED_NOTICE}` },
+      userTurn('Make the change.', false),
+    ]))).toBeUndefined()
   })
 })

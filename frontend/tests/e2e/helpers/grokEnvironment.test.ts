@@ -4,7 +4,17 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { createGrokEnvironment } from './grokEnvironment'
 
 let runDirectory: string
-const options = () => ({ runDirectory, homeDir: join(runDirectory, 'home'), baseURL: 'http://127.0.0.1:4567/v1', modelKey: 'unit-key', modelID: 'unit-model', alternateModelID: 'unit-alt', reasoningModelID: 'unit-reasoning' })
+function options() {
+  return {
+    runDirectory,
+    homeDir: join(runDirectory, 'home'),
+    baseURL: 'http://127.0.0.1:4567/v1',
+    modelKey: 'unit-key',
+    modelID: 'unit-model',
+    alternateModelID: 'unit-alt',
+    reasoningModelID: 'unit-reasoning',
+  }
+}
 
 /** The text of the `[model."<id>"]` table and its effort tables, up to the next model table or the end. */
 function modelSection(config: string, id: string): string {
@@ -12,13 +22,20 @@ function modelSection(config: string, id: string): string {
   if (start < 0)
     throw new Error(`The configuration has no model ${id}.`)
   const next = config.indexOf('\n[model."', start + 1)
-  return config.slice(start, next < 0 ? undefined : next)
+  return config.slice(start, next < 0
+    ? undefined
+    : next)
 }
 
 /** The effort IDs of one model section, and the ID of its default. */
 function effortLadder(section: string): { levels: string[], defaultLevel: string | undefined } {
-  const tables = [...section.matchAll(/\[\[model\."[^"]+"\.reasoning_efforts\]\]\nid = "(\w+)"\nvalue = "\w+"\nlabel = "\w+"\ndefault = (true|false)/g)]
-  return { levels: tables.map(table => table[1]!), defaultLevel: tables.find(table => table[2] === 'true')?.[1] }
+  const tables = [
+    ...section.matchAll(/\[\[model\."[^"]+"\.reasoning_efforts\]\]\nid = "(\w+)"\nvalue = "\w+"\nlabel = "\w+"\ndefault = (true|false)/g),
+  ]
+  return {
+    levels: tables.map(table => table[1]!),
+    defaultLevel: tables.find(table => table[2] === 'true')?.[1],
+  }
 }
 
 beforeEach(() => {
@@ -53,9 +70,15 @@ describe('createGrokEnvironment', () => {
     const primary = modelSection(config, 'unit-model')
     const reasoning = modelSection(config, 'unit-reasoning')
     expect(primary).toContain('supports_reasoning_effort = true\nreasoning_effort = "medium"')
-    expect(effortLadder(primary)).toEqual({ levels: ['low', 'medium', 'high'], defaultLevel: 'medium' })
+    expect(effortLadder(primary)).toEqual({
+      levels: ['low', 'medium', 'high'],
+      defaultLevel: 'medium',
+    })
     expect(reasoning).toContain('supports_reasoning_effort = true\nreasoning_effort = "high"')
-    expect(effortLadder(reasoning)).toEqual({ levels: ['low', 'medium', 'high'], defaultLevel: 'high' })
+    expect(effortLadder(reasoning)).toEqual({
+      levels: ['low', 'medium', 'high'],
+      defaultLevel: 'high',
+    })
     const alternate = modelSection(config, 'unit-alt')
     expect(alternate).not.toContain('reasoning')
   })

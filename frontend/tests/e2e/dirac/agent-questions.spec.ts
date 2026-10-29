@@ -15,13 +15,22 @@ function controlsReport(watch: { controls: () => readonly NativeControlFrame[] }
     return JSON.stringify(watch.controls(), null, 2)
   }
   catch (error) {
-    return JSON.stringify({ watchFailure: error instanceof Error ? error.message : String(error) }, null, 2)
+    return JSON.stringify({
+      watchFailure: error instanceof Error
+        ? error.message
+        : String(error),
+    }, null, 2)
   }
 }
 
 diracTest.describe('dirac agent questions', () => {
   diracTest('returns the selected form answer through the native question tool', async ({ askingDiracWorkspace, page, leapmuxServer, modelScript }, testInfo) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingDiracWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: askingDiracWorkspace.workspaceId,
+    })
     await waitForSettingsHydrated(page)
     const agentId = await selectedAgentTabId(page)
     const watch = await watchNativeControls(leapmuxServer, agentId)
@@ -51,7 +60,12 @@ diracTest.describe('dirac agent questions', () => {
 })
 
 diracTest('returns a typed answer and refuses empty or whitespace-only text', async ({ askingDiracWorkspace, page, leapmuxServer, modelScript }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingDiracWorkspace.workspaceId })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: askingDiracWorkspace.workspaceId,
+  })
   const result = await exerciseQuestionReply(context, async (form) => {
     await form.getByRole('button', { name: 'Choose an option *', exact: true }).click()
     await page.getByRole('menuitemradio', { name: 'Other answer', exact: true }).filter({ visible: true }).click()
@@ -73,7 +87,12 @@ diracTest('returns a typed answer and refuses empty or whitespace-only text', as
 })
 
 diracTest('returns native question cancellation without selecting an offered answer', async ({ askingDiracWorkspace, page, leapmuxServer, modelScript }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingDiracWorkspace.workspaceId })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: askingDiracWorkspace.workspaceId,
+  })
   const result = await exerciseQuestionReply(context, async () => {
     await page.locator('[data-testid="control-more-actions"]:visible').click()
     await page.getByRole('menuitem', { name: 'Cancel', exact: true }).filter({ visible: true }).click()
@@ -83,6 +102,11 @@ diracTest('returns native question cancellation without selecting an offered ans
 })
 
 diracTest('keeps a native question on its owner tab and workspace after reload', async ({ page, modelScript, leapmuxServer, askingDiracWorkspace }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingDiracWorkspace.workspaceId })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: askingDiracWorkspace.workspaceId,
+  })
   await exerciseQuestionIsolation(context, { customAnswerDraft: false })
 })

@@ -24,7 +24,9 @@ kimiTest.describe('uses Kimi Code tools', () => {
   // first half of that claim: the row that the reload must keep.
   kimiTest('a command renders as a tool card with its output, and keeps it after a reload', async ({ native }) => {
     await runNativeToolTurn(native, {
-      toolCalls: [bashToolCall(native.provider, 'echo-call', 'echo "kimi-test-output-$((40 + 2))"')],
+      toolCalls: [
+        bashToolCall(native.provider, 'echo-call', 'echo "kimi-test-output-$((40 + 2))"'),
+      ],
       prompt: 'Run the echo command and report the output.',
       answer: 'The command printed its output.',
     })
@@ -42,7 +44,9 @@ kimiTest.describe('uses Kimi Code tools', () => {
   // (`includeFailure: false`), so this test holds the only failure proof.
   kimiTest('a failed command shows its output and its exit code', async ({ native }) => {
     await runNativeToolTurn(native, {
-      toolCalls: [bashToolCall(native.provider, 'exit-call', `sh -c 'echo "hello-from-kimi-$((40 + 2))"; exit 7'`)],
+      toolCalls: [
+        bashToolCall(native.provider, 'exit-call', `sh -c 'echo "hello-from-kimi-$((40 + 2))"; exit 7'`),
+      ],
       prompt: 'Run this exact command and report its result.',
       answer: 'The command exited with status 7.',
     })
@@ -58,5 +62,8 @@ kimiTest.describe('uses Kimi Code tools', () => {
 kimiTest('preserves a literal private shell path with spaces and metacharacters', async ({ native }) => {
   // Kimi Code opens each result with `Wall time:`, and wraps a failed command in `<system>ERROR: …</system>` and the
   // trailer `Command failed with exit code: N.`. The row draws only the output.
-  await exerciseShellToolExecution(native, { prepare: () => applyPermissionPreset(native.page, 'bypass'), absentRowText: ['Wall time', '<system>', 'Command failed with exit code'] })
+  await exerciseShellToolExecution(native, {
+    prepare: () => applyPermissionPreset(native.page, 'bypass'),
+    absentRowText: ['Wall time', '<system>', 'Command failed with exit code'],
+  })
 })

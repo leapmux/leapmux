@@ -8,11 +8,21 @@ const encoder = new TextEncoder()
 const marker = 'NATIVE_CHILD_MARKER'
 const prompt = `${marker}: reply once.\n\nLEAPMUXE2ESCENARIO:current-task`
 const actualPack = reasonixChildContextPack(prompt)
-const nativeCall = { sessionUpdate: 'tool_call', toolCallId: 'spawn', title: 'read_only_task', rawInput: { description: 'Native display label', prompt } }
+const nativeCall = {
+  sessionUpdate: 'tool_call',
+  toolCallId: 'spawn',
+  title: 'read_only_task',
+  rawInput: { description: 'Native display label', prompt },
+}
 
 describe('reasonixChildTaskMatcher', () => {
   it('matches the captured native context prefix and exact task marker', () => {
-    expect(matchesRequest(reasonixChildTaskMatcher(marker), { protocol: 'openai-chat-completions', userText: actualPack, systemText: '', body: {} })).toBe(true)
+    expect(matchesRequest(reasonixChildTaskMatcher(marker), {
+      protocol: 'openai-chat-completions',
+      userText: actualPack,
+      systemText: '',
+      body: {},
+    })).toBe(true)
   })
 
   it('does not match another child, a root prompt, or a historical task copy', () => {
@@ -23,15 +33,39 @@ describe('reasonixChildTaskMatcher', () => {
       actualPack.replace('SubagentWorkspace', 'OtherWorkspace'),
       actualPack.replace(`\n\n${prompt}`, `\n\n## Task\n${prompt}`),
       `Quoted context:\n${actualPack}`,
-    ])
-      expect(matchesRequest(matcher, { protocol: 'openai-chat-completions', userText, systemText: actualPack, body: {} })).toBe(false)
-    const body = { messages: [{ role: 'user', content: actualPack }, { role: 'user', content: 'Run the next root task.' }], tools: [{ description: actualPack }] }
-    expect(matchesRequest(matcher, { protocol: 'openai-chat-completions', userText: lastUserText('openai-chat-completions', body), systemText: '', body })).toBe(false)
+    ]) {
+      expect(matchesRequest(matcher, {
+        protocol: 'openai-chat-completions',
+        userText,
+        systemText: actualPack,
+        body: {},
+      })).toBe(false)
+    }
+    const body = {
+      messages: [
+        { role: 'user', content: actualPack },
+        { role: 'user', content: 'Run the next root task.' },
+      ],
+      tools: [
+        { description: actualPack },
+      ],
+    }
+    expect(matchesRequest(matcher, {
+      protocol: 'openai-chat-completions',
+      userText: lastUserText('openai-chat-completions', body),
+      systemText: '',
+      body,
+    })).toBe(false)
   })
 
   it('escapes marker punctuation and refuses an empty marker', () => {
     const special = 'NATIVE.[child]+(id)'
-    expect(matchesRequest(reasonixChildTaskMatcher(special), { protocol: 'openai-chat-completions', userText: actualPack.replace(marker, special), systemText: '', body: {} })).toBe(true)
+    expect(matchesRequest(reasonixChildTaskMatcher(special), {
+      protocol: 'openai-chat-completions',
+      userText: actualPack.replace(marker, special),
+      systemText: '',
+      body: {},
+    })).toBe(true)
     expect(() => reasonixChildTaskMatcher('   ')).toThrow('nonempty task marker')
   })
 })
@@ -52,14 +86,21 @@ describe('reasonixChildTaskId', () => {
   })
 
   it('supports the native capability wrapper and repeated exact receipts', () => {
-    const wrapped = { ...nativeCall, title: 'use_capability', rawInput: { action: 'call', capability_id: 'tool:read_only_task', arguments: nativeCall.rawInput } }
+    const wrapped = {
+      ...nativeCall,
+      title: 'use_capability',
+      rawInput: { action: 'call', capability_id: 'tool:read_only_task', arguments: nativeCall.rawInput },
+    }
     expect(reasonixChildTaskId(nativeFrameSnapshot(wrapped, wrapped), 'spawn', prompt)).toBe('spawn')
   })
 
   it('refuses a wrong call, stale session, tool, or child prompt', () => {
     expect(() => reasonixChildTaskId(nativeFrameSnapshot({ ...nativeCall, toolCallId: 'other' }), 'spawn', prompt)).toThrow('no native parent receipt')
     expect(() => reasonixChildTaskId(nativeFrameSnapshot({ ...nativeCall, title: 'bash' }), 'spawn', prompt)).toThrow('another tool or child prompt')
-    expect(() => reasonixChildTaskId(nativeFrameSnapshot({ ...nativeCall, rawInput: { prompt: 'WRONG_PROMPT' } }), 'spawn', prompt)).toThrow('another tool or child prompt')
+    expect(() => reasonixChildTaskId(nativeFrameSnapshot({
+      ...nativeCall,
+      rawInput: { prompt: 'WRONG_PROMPT' },
+    }), 'spawn', prompt)).toThrow('another tool or child prompt')
     const stale = nativeFrameSnapshot(nativeCall)
     onlyNativeMessage(stale).agentSessionId = 'old-session'
     expect(() => reasonixChildTaskId(stale, 'spawn', prompt)).toThrow('no native parent receipt')

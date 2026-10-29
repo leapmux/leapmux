@@ -353,14 +353,18 @@ export function DropdownMenuCheckableItem(props: DropdownMenuCheckableItemProps)
   // may be a clock that ticks while the test reads it.
   const labelTestId = () => {
     const testId = props['data-testid']
-    return testId === undefined ? undefined : `${testId}-label`
+    return testId === undefined
+      ? undefined
+      : `${testId}-label`
   }
 
   // Spread-ready `testId`, read ONCE: a second `labelTestId()` call beside the
   // first cannot be narrowed, so presence and value are decided together here.
   const labelTestIdProps = () => {
     const testId = labelTestId()
-    return testId !== undefined ? { testId } : {}
+    return testId !== undefined
+      ? { testId }
+      : {}
   }
 
   return (
@@ -370,7 +374,9 @@ export function DropdownMenuCheckableItem(props: DropdownMenuCheckableItemProps)
       // called preventDefault() for that reason; declaring the type removes the
       // default action instead of cancelling it at every call site.
       type="button"
-      role={props.kind === 'checkbox' ? 'menuitemcheckbox' : 'menuitemradio'}
+      role={props.kind === 'checkbox'
+        ? 'menuitemcheckbox'
+        : 'menuitemradio'}
       aria-checked={props.checked}
       disabled={props.disabled}
       data-testid={props['data-testid']}
@@ -479,7 +485,9 @@ export function DropdownMenu(props: DropdownMenuProps) {
   // attributes to carry it.
   const getAnchorElement = (): Element | undefined => {
     const anchor = getAnchor()
-    return anchor instanceof Element ? anchor : undefined
+    return anchor instanceof Element
+      ? anchor
+      : undefined
   }
 
   /**
@@ -590,7 +598,9 @@ export function DropdownMenu(props: DropdownMenuProps) {
 
   const menuItems = (): HTMLElement[] =>
     popoverEl
-      ? [...popoverEl.querySelectorAll<HTMLElement>(MENU_ITEM_SELECTOR)]
+      ? [
+          ...popoverEl.querySelectorAll<HTMLElement>(MENU_ITEM_SELECTOR),
+        ]
           .filter(el => !insideClosedSubPopover(el))
       : []
 
@@ -611,7 +621,9 @@ export function DropdownMenu(props: DropdownMenuProps) {
   /** The item focus sits on now, or -1 when focus is elsewhere in the popover. */
   const focusedItemIndex = (): number => {
     const active = document.activeElement as HTMLElement | null
-    return active ? menuItems().indexOf(active) : -1
+    return active
+      ? menuItems().indexOf(active)
+      : -1
   }
 
   let typeAheadBuffer = ''
@@ -638,7 +650,9 @@ export function DropdownMenu(props: DropdownMenuProps) {
     const repeated = typeAheadBuffer.length > 1
       && [...typeAheadBuffer].every(c => c === typeAheadBuffer[0])
     const from = focusedItemIndex()
-    const start = typeAheadBuffer.length === 1 || repeated ? from + 1 : from
+    const start = typeAheadBuffer.length === 1 || repeated
+      ? from + 1
+      : from
     const needle = repeated ? typeAheadBuffer[0]! : typeAheadBuffer
     for (let i = 0; i < items.length; i++) {
       const item = items[(((start + i) % items.length) + items.length) % items.length]!
@@ -856,7 +870,10 @@ export function DropdownMenu(props: DropdownMenuProps) {
     // PLACE, so no host has to close and reopen just to re-trigger this effect.
     // A caller whose anchor is a stable element gains no new subscription -- the
     // anchor read was already part of every reposition.
-    createEffect(on(() => [props.open?.(), props.anchorRef?.()], ([shouldOpen]) => {
+    createEffect(on(() => [
+      props.open?.(),
+      props.anchorRef?.(),
+    ], ([shouldOpen]) => {
       if (!popoverEl)
         return
       // Guard against redundant show/hide: showPopover() on an already-open popover
@@ -1009,7 +1026,9 @@ export function DropdownMenu(props: DropdownMenuProps) {
     const shape = props.as === 'card'
       ? popoverCard
       : (props.matchTriggerWidth ? popoverFieldMenuClamp : popoverMenuClamp)
-    return props.class ? `${shape} ${props.class}` : shape
+    return props.class
+      ? `${shape} ${props.class}`
+      : shape
   }
 
   // The host adds NO box of its own, with a trigger or without one: every
@@ -1023,7 +1042,9 @@ export function DropdownMenu(props: DropdownMenuProps) {
           handlers) is identical, so render via Dynamic instead of two byte-identical
           branches that could drift. */}
       <Dynamic
-        component={props.as === undefined || props.as === 'menu' ? 'menu' : 'div'}
+        component={props.as === undefined || props.as === 'menu'
+          ? 'menu'
+          : 'div'}
         popover="auto"
         id={menuId}
         ref={popoverRefCallback}
@@ -1039,7 +1060,9 @@ export function DropdownMenu(props: DropdownMenuProps) {
         // the list: `popover="auto"` moves focus nowhere on its own, so on open
         // the focus stays on the trigger and every key went to the document.
         // A menu takes it; a card is a panel whose own controls Tab normally.
-        tabIndex={props.as === 'card' ? undefined : -1}
+        tabIndex={props.as === 'card'
+          ? undefined
+          : -1}
         onKeyDown={handleMenuKeyDown}
         onClick={(e: MouseEvent) => {
           e.stopPropagation()

@@ -11,7 +11,9 @@ describe('classifyLettaMessage', () => {
     const frame = {
       type: 'message',
       message_type: 'tool_call_message',
-      tool_calls: [{ tool_call_id: 'call-read-native', name: 'Read', arguments: '{"file_path":"note.txt"}' }],
+      tool_calls: [
+        { tool_call_id: 'call-read-native', name: 'Read', arguments: '{"file_path":"note.txt"}' },
+      ],
     }
     const resolved = input(frame, undefined, AgentProvider.LETTA)
 
@@ -30,12 +32,14 @@ describe('letta native tool phases', () => {
       status: 'success',
       tool_call_id: 'call-1',
       tool_return: 'current native window',
-      tool_returns: [{
-        tool_call_id: 'call-1',
-        status: 'success',
-        tool_return: 'current native window',
-        stdout: ['current native window'],
-      }],
+      tool_returns: [
+        {
+          tool_call_id: 'call-1',
+          status: 'success',
+          tool_return: 'current native window',
+          stdout: ['current native window'],
+        },
+      ],
     }
     const parsed = input(frame, undefined, AgentProvider.LETTA)
     expect(classifyLettaMessage(parsed)).toEqual({ kind: 'hidden' })
@@ -44,20 +48,41 @@ describe('letta native tool phases', () => {
   })
 
   it('keeps an empty lifecycle end out of the result side', () => {
-    const parsed = input({ id: 'native-start', message_type: 'client_tool_end', run_id: 'run-1', tool_call_id: 'call-1', status: 'success' }, undefined, AgentProvider.LETTA)
+    const parsed = input({
+      id: 'native-start',
+      message_type: 'client_tool_end',
+      run_id: 'run-1',
+      tool_call_id: 'call-1',
+      status: 'success',
+    }, undefined, AgentProvider.LETTA)
     expect(classifyLettaMessage(parsed)).toEqual({ kind: 'hidden' })
     expect(lettaSpanRole(parsed)).toBe('none')
     expect(lettaRelatedMessages(parsed)).toEqual([])
   })
 
   it.each(['', 0, false, null])('retains real client end data without a falsy fallback: %j', (tool_return) => {
-    const parsed = input({ id: 'native-end', message_type: 'client_tool_end', run_id: 'run-1', tool_call_id: 'call-1', status: 'success', tool_return }, undefined, AgentProvider.LETTA)
+    const parsed = input({
+      id: 'native-end',
+      message_type: 'client_tool_end',
+      run_id: 'run-1',
+      tool_call_id: 'call-1',
+      status: 'success',
+      tool_return,
+    }, undefined, AgentProvider.LETTA)
     expect(classifyLettaMessage(parsed)).toEqual({ kind: 'tool_result' })
     expect(lettaSpanRole(parsed)).toBe('result')
   })
 
   it('preserves the actual synthetic final return', () => {
-    const parsed = input({ type: 'message', id: 'synthetic-tool-return-native-final', message_type: 'tool_return_message', run_id: 'run-1', tool_call_id: 'call-1', status: 'success', tool_return: 'complete final result' }, undefined, AgentProvider.LETTA)
+    const parsed = input({
+      type: 'message',
+      id: 'synthetic-tool-return-native-final',
+      message_type: 'tool_return_message',
+      run_id: 'run-1',
+      tool_call_id: 'call-1',
+      status: 'success',
+      tool_return: 'complete final result',
+    }, undefined, AgentProvider.LETTA)
     expect(classifyLettaMessage(parsed)).toEqual({ kind: 'tool_result' })
     expect(lettaSpanRole(parsed)).toBe('result')
   })
@@ -69,21 +94,42 @@ describe('letta native tool phases', () => {
     'synthetic-tool-return-native-final',
     'synthetic-interrupt-tool-return-native-final',
   ])('preserves a genuine return whose ID differs from the exact progress ID: %s', (id) => {
-    const parsed = input({ type: 'message', id, message_type: 'tool_return_message', run_id: 'run-1', tool_call_id: 'call-1', status: 'success', tool_return: 'Native result.' }, undefined, AgentProvider.LETTA)
+    const parsed = input({
+      type: 'message',
+      id,
+      message_type: 'tool_return_message',
+      run_id: 'run-1',
+      tool_call_id: 'call-1',
+      status: 'success',
+      tool_return: 'Native result.',
+    }, undefined, AgentProvider.LETTA)
     expect(classifyLettaMessage(parsed)).toEqual({ kind: 'tool_result' })
     expect(lettaSpanRole(parsed)).toBe('result')
     expect(lettaRelatedMessages(parsed)).toEqual(['request'])
   })
 
   it.each(['', 0, false, null])('keeps error result data on the result side without a falsy fallback: %j', (tool_return) => {
-    const parsed = input({ id: 'native-end', message_type: 'client_tool_end', run_id: 'run-1', tool_call_id: 'call-1', status: 'error', tool_return }, undefined, AgentProvider.LETTA)
+    const parsed = input({
+      id: 'native-end',
+      message_type: 'client_tool_end',
+      run_id: 'run-1',
+      tool_call_id: 'call-1',
+      status: 'error',
+      tool_return,
+    }, undefined, AgentProvider.LETTA)
     expect(classifyLettaMessage(parsed)).toEqual({ kind: 'tool_result' })
     expect(lettaSpanRole(parsed)).toBe('result')
     expect(lettaRelatedMessages(parsed)).toEqual(['request'])
   })
 
   it('keeps an error lifecycle without returned data outside the pair', () => {
-    const parsed = input({ id: 'native-end', message_type: 'client_tool_end', run_id: 'run-1', tool_call_id: 'call-1', status: 'error' }, undefined, AgentProvider.LETTA)
+    const parsed = input({
+      id: 'native-end',
+      message_type: 'client_tool_end',
+      run_id: 'run-1',
+      tool_call_id: 'call-1',
+      status: 'error',
+    }, undefined, AgentProvider.LETTA)
     expect(classifyLettaMessage(parsed)).toEqual({ kind: 'hidden' })
     expect(lettaSpanRole(parsed)).toBe('none')
     expect(lettaRelatedMessages(parsed)).toEqual([])
@@ -131,7 +177,9 @@ describe('classifyLettaMessage notices', () => {
 
     expect(classifyLettaMessage(input(frame, null, AgentProvider.LETTA))).toEqual({
       kind: 'notification',
-      entries: [{ kind: 'text', text: words }],
+      entries: [
+        { kind: 'text', text: words },
+      ],
     })
   })
 
@@ -141,14 +189,25 @@ describe('classifyLettaMessage notices', () => {
 
     expect(classifyLettaMessage(input(frame, null, AgentProvider.LETTA))).toEqual({
       kind: 'notification',
-      entries: [{ kind: 'text', text: apiError.message }],
+      entries: [
+        { kind: 'text', text: apiError.message },
+      ],
     })
   })
 
   it.each([
-    ['no words', { message_type: 'loop_error', run_id: 'local-run-1', is_terminal: true }],
-    ['a blank message and no structured error', { message_type: 'loop_error', message: '  ', is_terminal: true }],
-    ['a message that is not text', { message_type: 'loop_error', message: 42, is_terminal: true }],
+    [
+      'no words',
+      { message_type: 'loop_error', run_id: 'local-run-1', is_terminal: true },
+    ],
+    [
+      'a blank message and no structured error',
+      { message_type: 'loop_error', message: '  ', is_terminal: true },
+    ],
+    [
+      'a message that is not text',
+      { message_type: 'loop_error', message: 42, is_terminal: true },
+    ],
   ])('keeps a loop error with %s visible without raw JSON', (_name, frame) => {
     expect(classifyLettaMessage(input(frame, null, AgentProvider.LETTA))).toEqual({
       kind: 'notification',
@@ -170,16 +229,26 @@ describe('classifyLettaMessage notices', () => {
     const snapshot = lettaSubagentSnapshot()
 
     expect(classifyLettaMessage(input(snapshot, null, AgentProvider.LETTA))).toEqual({ kind: 'notification', entries: [] })
-    expect(classifyLettaMessage(input(snapshot, { old_seqs: [], messages: [snapshot, snapshot] }, AgentProvider.LETTA))).toEqual({ kind: 'notification', entries: [] })
+    expect(classifyLettaMessage(input(snapshot, {
+      old_seqs: [],
+      messages: [snapshot, snapshot],
+    }, AgentProvider.LETTA))).toEqual({ kind: 'notification', entries: [] })
   })
 
   it('keeps an absent payload and an invalid native tool call unknown', () => {
     expect(classifyLettaMessage(input(undefined, null, AgentProvider.LETTA))).toEqual({ kind: 'unknown' })
-    expect(classifyLettaMessage(input({ message_type: 'tool_call_message', tool_calls: [{ name: 'Bash' }] }, null, AgentProvider.LETTA))).toEqual({ kind: 'unknown' })
+    expect(classifyLettaMessage(input({
+      message_type: 'tool_call_message',
+      tool_calls: [
+        { name: 'Bash' },
+      ],
+    }, null, AgentProvider.LETTA))).toEqual({ kind: 'unknown' })
   })
 
   it('does not claim an old payload wrapper as native output', () => {
-    const parsed = input({ payload: { message_type: 'client_tool_start', tool_name: 'Bash', tool_call_id: 'old' } }, null, AgentProvider.LETTA)
+    const parsed = input({
+      payload: { message_type: 'client_tool_start', tool_name: 'Bash', tool_call_id: 'old' },
+    }, null, AgentProvider.LETTA)
     expect(classifyLettaMessage(parsed)).toEqual({ kind: 'notification', entries: [] })
     expect(lettaSpanRole(parsed)).toBe('other')
   })
@@ -191,9 +260,27 @@ describe('classifyLettaMessage notices', () => {
 
 describe('classifyLettaMessage native manual compaction', () => {
   it('keeps the native completion visible in raw and threaded rows', () => {
-    const frame = { message_type: 'slash_command_end', command_id: 'compact', input: '/compact', success: true, output: 'Native summary.' }
-    const expected = { kind: 'notification', entries: [{ kind: 'compaction', phase: 'end', detail: { trigger: 'manual' } }] }
+    const frame = {
+      message_type: 'slash_command_end',
+      command_id: 'compact',
+      input: '/compact',
+      success: true,
+      output: 'Native summary.',
+    }
+    const expected = {
+      kind: 'notification',
+      entries: [
+        {
+          kind: 'compaction',
+          phase: 'end',
+          detail: { trigger: 'manual' },
+        },
+      ],
+    }
     expect(classifyLettaMessage(input(frame, undefined, AgentProvider.LETTA))).toEqual(expected)
-    expect(classifyLettaMessage(input(frame, { old_seqs: [], messages: [frame] }, AgentProvider.LETTA))).toEqual(expected)
+    expect(classifyLettaMessage(input(frame, {
+      old_seqs: [],
+      messages: [frame],
+    }, AgentProvider.LETTA))).toEqual(expected)
   })
 })

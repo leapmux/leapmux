@@ -24,14 +24,26 @@ function plugin(): ProviderPlugin {
         return toolCallRow(createToolCall({
           id,
           name: 'fixture',
-          lifecycle: { frameStatus: 'completed', providerOutcome: null, retainedOutcome: null, rowFinal: true, resultFrameLanded: true },
-        }, { kind: 'other', request: { args: {} }, result: { content: [] } }), 'result', { request: false, result: true })
+          lifecycle: {
+            frameStatus: 'completed',
+            providerOutcome: null,
+            retainedOutcome: null,
+            rowFinal: true,
+            resultFrameLanded: true,
+          },
+        }, {
+          kind: 'other',
+          request: { args: {} },
+          result: { content: [] },
+        }), 'result', { request: false, result: true })
       },
       outputFilePaths: (input, call) => {
         observations.push(input)
         const own = input.resolved.parentObject
         const path = pickString(own, 'path')
-        return own?.id === call.id && path ? [path] : []
+        return own?.id === call.id && path
+          ? [path]
+          : []
       },
     },
   }

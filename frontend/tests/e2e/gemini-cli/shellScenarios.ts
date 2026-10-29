@@ -16,7 +16,12 @@ const INJECTION_REFUSAL = 'Command injection detected: command substitution synt
  * The fixed parts of the record that Gemini CLI wraps around the output of a command for its model:
  * `<untrusted_context>\nOutput: …\nExit Code: N\nProcess Group PGID: N\n</untrusted_context>`.
  */
-const GEMINI_SHELL_RECORD = ['<untrusted_context>', 'Output:', 'Exit Code:', 'Process Group PGID'] as const
+const GEMINI_SHELL_RECORD = [
+  '<untrusted_context>',
+  'Output:',
+  'Exit Code:',
+  'Process Group PGID',
+] as const
 
 /**
  * Preserve the native refusal and verify printed stdout and a nonzero shell exit.
@@ -36,9 +41,30 @@ export async function exerciseGeminiShellToolExecution(context: ManagedNativeSce
   const safeFile = join(mkdtempSync(join(agent.workingDir, 'native shell safe-')), 'native shell output.txt')
   const marker = uniqueMarker()
   const cases = [
-    { name: 'double-quoted path refusal', command: `${printfMarkerCommand(`SHELL${marker}`, 42)} > "${hostileFile}"; cat "${hostileFile}"`, output: INJECTION_REFUSAL, status: 'completed', rejected: true, row: undefined },
-    { name: 'printed stdout', command: `${printfMarkerCommand(`SHELL${marker}`, 42)} > ${quotePosixShellArgument(safeFile)}; cat ${quotePosixShellArgument(safeFile)}`, output: `SHELL${marker}42`, status: 'completed', rejected: false, row: { output: `SHELL${marker}42`, printedPrefix: `SHELL${marker}`, exitCode: 0 } },
-    { name: 'printed stderr', command: `${printfMarkerCommand(`SHELLERR${marker}`, 77)} >&2; exit 7`, output: `SHELLERR${marker}77`, status: 'failed', rejected: false, row: { output: `SHELLERR${marker}77`, printedPrefix: `SHELLERR${marker}`, exitCode: 7 } },
+    {
+      name: 'double-quoted path refusal',
+      command: `${printfMarkerCommand(`SHELL${marker}`, 42)} > "${hostileFile}"; cat "${hostileFile}"`,
+      output: INJECTION_REFUSAL,
+      status: 'completed',
+      rejected: true,
+      row: undefined,
+    },
+    {
+      name: 'printed stdout',
+      command: `${printfMarkerCommand(`SHELL${marker}`, 42)} > ${quotePosixShellArgument(safeFile)}; cat ${quotePosixShellArgument(safeFile)}`,
+      output: `SHELL${marker}42`,
+      status: 'completed',
+      rejected: false,
+      row: { output: `SHELL${marker}42`, printedPrefix: `SHELL${marker}`, exitCode: 0 },
+    },
+    {
+      name: 'printed stderr',
+      command: `${printfMarkerCommand(`SHELLERR${marker}`, 77)} >&2; exit 7`,
+      output: `SHELLERR${marker}77`,
+      status: 'failed',
+      rejected: false,
+      row: { output: `SHELLERR${marker}77`, printedPrefix: `SHELLERR${marker}`, exitCode: 7 },
+    },
   ] as const
   expect(existsSync(hostileFile)).toBe(false)
   expect(existsSync(safeFile)).toBe(false)
@@ -46,7 +72,9 @@ export async function exerciseGeminiShellToolExecution(context: ManagedNativeSce
     const callId = `gemini-shell-${marker}-${index}`
     const answer = `The native ${scenario.name} scenario ended.`
     const { resultRequest } = await runNativeToolTurn(context, {
-      toolCalls: [bashToolCall(context.provider, callId, scenario.command)],
+      toolCalls: [
+        bashToolCall(context.provider, callId, scenario.command),
+      ],
       prompt: `Run the native ${scenario.name} scenario.`,
       answer,
     })

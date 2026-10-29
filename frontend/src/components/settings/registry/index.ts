@@ -32,7 +32,9 @@ function browserOnlyDescriptor(decl: BrowserOnlySettingDecl, prefs: PreferencesS
   const hidden = hideWhenAny(descriptor.hidden, preferenceRule(hiddenWhen, prefs))
   return {
     ...descriptor,
-    ...(hidden === undefined ? {} : { hidden }),
+    ...(hidden === undefined
+      ? {}
+      : { hidden }),
   }
 }
 
@@ -75,19 +77,29 @@ function accountDescriptor(
     return undefined
   const hidden = hideWhenAny(
     decl.hidden,
-    found.hiddenInSolo ? () => isSoloMode() : undefined,
-    found.hiddenInHub ? () => !isSoloMode() : undefined,
+    found.hiddenInSolo
+      ? () => isSoloMode()
+      : undefined,
+    found.hiddenInHub
+      ? () => !isSoloMode()
+      : undefined,
     preferenceRule(decl.hiddenWhen, prefs),
   )
   return {
     id: decl.id,
     category: found.category as CategoryId,
     label: decl.label,
-    ...(decl.help === undefined ? {} : { help: decl.help }),
-    ...(decl.keywords === undefined ? {} : { keywords: decl.keywords }),
+    ...(decl.help === undefined
+      ? {}
+      : { help: decl.help }),
+    ...(decl.keywords === undefined
+      ? {}
+      : { keywords: decl.keywords }),
     scope: decl.scope,
     control: withDeclaredNames(control, decl),
-    ...(found.restart ? { restart: true } : {}),
+    ...(found.restart
+      ? { restart: true }
+      : {}),
     // The wire's own `dependsOn` is NOT consulted, and it is the one hide
     // rule this path drops: it reads a live value out of a
     // `Map<string, SettingValue>`, which the typed account tier does not
@@ -98,7 +110,9 @@ function accountDescriptor(
     // descriptor unfiltered, unlike ListSettings, which drops a hub-scope
     // descriptor its own deployment hides. So this join is the account scope's
     // one enforcement point, and half of it would hide half the rows.
-    ...(hidden === undefined ? {} : { hidden }),
+    ...(hidden === undefined
+      ? {}
+      : { hidden }),
   }
 }
 
@@ -114,7 +128,9 @@ function preferenceRule(
   hiddenWhen: ((prefs: PreferencesState) => boolean) | undefined,
   prefs: PreferencesState,
 ): (() => boolean) | undefined {
-  return hiddenWhen === undefined ? undefined : () => hiddenWhen(prefs)
+  return hiddenWhen === undefined
+    ? undefined
+    : () => hiddenWhen(prefs)
 }
 
 /**
@@ -228,7 +244,14 @@ export function createBrowserRows(
     const descriptor = decl.protoKey === undefined
       ? browserOnlyDescriptor(decl, prefs)
       : accountDescriptor(decl, wire, prefs)
-    return descriptor === undefined ? [] : [{ descriptor, binding: decl.bind(prefs) }]
+    return descriptor === undefined
+      ? []
+      : [
+          {
+            descriptor,
+            binding: decl.bind(prefs),
+          },
+        ]
   })
 }
 
@@ -253,5 +276,7 @@ export function createBrowserRows(
  * failure.
  */
 export const CLAIMED_PROTO_KEYS: ReadonlySet<string> = new Set(
-  browserSettings.flatMap(d => (d.protoKey === undefined ? [] : [d.protoKey])),
+  browserSettings.flatMap(d => (d.protoKey === undefined
+    ? []
+    : [d.protoKey])),
 )

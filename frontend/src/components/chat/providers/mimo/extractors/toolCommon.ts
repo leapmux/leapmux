@@ -87,7 +87,9 @@ export function mimoToolPart(parsed: unknown): MiMoToolPart | null {
     error: pickString(state, 'error'),
     title: pickString(state, 'title'),
     metadata: pickObject(state, 'metadata') ?? {},
-    attachments: Array.isArray(state.attachments) ? state.attachments.filter(isObject) : [],
+    attachments: Array.isArray(state.attachments)
+      ? state.attachments.filter(isObject)
+      : [],
   }
 }
 
@@ -127,6 +129,8 @@ export function mimoToolImages(part: MiMoToolPart): ImageResultSource[] {
     const parsed = parseDataImageUrl(pickString(attachment, 'url'))
     if (!parsed || !parsed.mimeType.startsWith('image/'))
       return []
-    return [{ mimeType: parsed.mimeType, data: parsed.base64 }]
+    return [
+      { mimeType: parsed.mimeType, data: parsed.base64 },
+    ]
   })
 }

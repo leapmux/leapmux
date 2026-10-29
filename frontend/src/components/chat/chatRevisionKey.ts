@@ -53,7 +53,10 @@ function member(tag: string, revision: MessageRevision): string {
 export function rowRevisionKey(
   dependencies: RowRevisionDependencies,
 ): string {
-  const parts = [`v${ROW_REVISION_KEY_VERSION}`, member('own', dependencies.own)]
+  const parts = [
+    `v${ROW_REVISION_KEY_VERSION}`,
+    member('own', dependencies.own),
+  ]
   if (dependencies.request !== undefined)
     parts.push(member('request', dependencies.request))
   if (dependencies.result !== undefined)

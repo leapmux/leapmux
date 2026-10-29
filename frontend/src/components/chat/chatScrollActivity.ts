@@ -123,5 +123,10 @@ export function createScrollActivity(deps: ScrollActivityDeps): ScrollActivity {
 
   onCleanup(dispose)
 
-  return { active, noteInput, noteScroll, dispose }
+  return {
+    active,
+    noteInput,
+    noteScroll,
+    dispose,
+  }
 }

@@ -24,14 +24,27 @@ function script(): string {
 
 describe('writeNodeLauncher', () => {
   it.skipIf(process.platform === 'win32')('runs the script through Node with every argument unchanged and its exit code', () => {
-    const launcher = writeNodeLauncher(directory, 'native-probe', { node: process.execPath, script: script() })
+    const launcher = writeNodeLauncher(directory, 'native-probe', {
+      node: process.execPath,
+      script: script(),
+    })
     expect(launcher).toBe(join(directory, 'native-probe'))
     expect(statSync(launcher).mode & 0o777).toBe(0o700)
-    const result = spawnSync(launcher, ['--flag', 'quoted 한글 argument', '$HOME', ''], { encoding: 'utf8' })
+    const result = spawnSync(launcher, [
+      '--flag',
+      'quoted 한글 argument',
+      '$HOME',
+      '',
+    ], { encoding: 'utf8' })
     expect(result.error).toBeUndefined()
     expect(result.status).toBe(7)
     const output = JSON.parse(result.stdout) as { argv: string[], pid: number }
-    expect(output.argv).toEqual(['--flag', 'quoted 한글 argument', '$HOME', ''])
+    expect(output.argv).toEqual([
+      '--flag',
+      'quoted 한글 argument',
+      '$HOME',
+      '',
+    ])
     // `exec` replaces the shell, so the launched process is Node itself.
     expect(output.pid).toBe(result.pid)
   })
@@ -46,19 +59,40 @@ describe('writeNodeLauncher', () => {
   it.skipIf(process.platform === 'win32')('replaces a launcher that exists, and restores its private mode', () => {
     const path = join(directory, 'native-probe')
     writeFileSync(path, 'stale', { mode: 0o755 })
-    writeNodeLauncher(directory, 'native-probe', { node: process.execPath, script: script() })
+    writeNodeLauncher(directory, 'native-probe', {
+      node: process.execPath,
+      script: script(),
+    })
     expect(readFileSync(path, 'utf8')).toContain('exec ')
     expect(statSync(path).mode & 0o777).toBe(0o700)
   })
 
-  it.each(['', '.', '..', 'bin/native', 'native\0'])('refuses the name %j, which is not one file-name component', (name) => {
-    expect(() => writeNodeLauncher(directory, name, { node: process.execPath, script: script() })).toThrow('one file-name component')
+  it.each([
+    '',
+    '.',
+    '..',
+    'bin/native',
+    'native\0',
+  ])('refuses the name %j, which is not one file-name component', (name) => {
+    expect(() => writeNodeLauncher(directory, name, {
+      node: process.execPath,
+      script: script(),
+    })).toThrow('one file-name component')
   })
 
   it.each([
-    ['directory', { directory: 'relative', node: process.execPath, script: '/absolute/script.cjs' }],
-    ['Node executable', { directory: '/absolute', node: 'node', script: '/absolute/script.cjs' }],
-    ['script', { directory: '/absolute', node: process.execPath, script: 'script.cjs' }],
+    [
+      'directory',
+      { directory: 'relative', node: process.execPath, script: '/absolute/script.cjs' },
+    ],
+    [
+      'Node executable',
+      { directory: '/absolute', node: 'node', script: '/absolute/script.cjs' },
+    ],
+    [
+      'script',
+      { directory: '/absolute', node: process.execPath, script: 'script.cjs' },
+    ],
   ])('refuses a relative %s', (_label, paths) => {
     expect(() => writeNodeLauncher(paths.directory, 'native-probe', { node: paths.node, script: paths.script })).toThrow('requires an absolute directory, Node executable, and script')
   })

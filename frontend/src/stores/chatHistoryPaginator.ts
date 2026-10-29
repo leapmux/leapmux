@@ -551,7 +551,9 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
       if (deps.caughtUpToLiveTail(agentId))
         return 'settled'
       const recordedTail = deps.liveTail.get(agentId)
-      const tailCursor = recordedTail > 0n ? recordedTail - 1n : 0n
+      const tailCursor = recordedTail > 0n
+        ? recordedTail - 1n
+        : 0n
       if (tailCursor <= deps.getLastSeq(agentId))
         return 'settled'
       const resp = await listMessagesAfter(workerId, agentId, tailCursor)
@@ -715,7 +717,12 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
       const liveSeqAtEntry = deps.liveTail.get(agentId)
       const beforeRequest = seq >= MAX_INT64_SEQ
         ? { agentId, anchor: MessagePageAnchor.LATEST, limit: MESSAGE_PAGE_LIMIT }
-        : { agentId, anchor: MessagePageAnchor.BEFORE, cursorSeq: seq + 1n, limit: MESSAGE_PAGE_LIMIT }
+        : {
+            agentId,
+            anchor: MessagePageAnchor.BEFORE,
+            cursorSeq: seq + 1n,
+            limit: MESSAGE_PAGE_LIMIT,
+          }
       // Both requests carry `signal`, so an abort ends them at the transport rather than only
       // discarding what they return. That is what makes a seek genuinely abandonable: the caller
       // that gave up (the rail, when its scrub leaves this target) stops the round trip instead
@@ -724,7 +731,12 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
       try {
         [before, after] = await Promise.all([
           listAgentMessages(workerId, beforeRequest, { signal }),
-          listAgentMessages(workerId, { agentId, anchor: MessagePageAnchor.AFTER, cursorSeq: seq, limit: MESSAGE_PAGE_LIMIT }, { signal }),
+          listAgentMessages(workerId, {
+            agentId,
+            anchor: MessagePageAnchor.AFTER,
+            cursorSeq: seq,
+            limit: MESSAGE_PAGE_LIMIT,
+          }, { signal }),
         ])
       }
       catch (err) {
@@ -737,7 +749,10 @@ export function createHistoryPaginator(deps: HistoryPaginatorDeps) {
       }
       if (signal.aborted)
         return
-      const rows = [...before.messages, ...after.messages]
+      const rows = [
+        ...before.messages,
+        ...after.messages,
+      ]
       if (rows.length === 0) {
         // No rows on either side: the history around (and beyond) the target is gone.
         // Empty the window and clear a stale recorded tail (skipped if a mid-fetch

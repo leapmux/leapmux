@@ -17,7 +17,9 @@
  */
 export function normalizeBindAddr(value: string): string {
   const v = value.trim()
-  return v.startsWith('[') && v.endsWith(']') ? v.slice(1, -1) : v
+  return v.startsWith('[') && v.endsWith(']')
+    ? v.slice(1, -1)
+    : v
 }
 
 /** Parses a dotted-quad exactly as Go's net.ParseIP does, or null. */
@@ -109,8 +111,13 @@ export function parseIPv6(v: string): number[] | null {
   if (!head)
     return null
   if (halves.length === 1) {
-    const full = [...head, ...tail]
-    return full.length === 16 ? full : null
+    const full = [
+      ...head,
+      ...tail,
+    ]
+    return full.length === 16
+      ? full
+      : null
   }
   const restHalf = halves[1]
   if (restHalf === undefined)
@@ -124,7 +131,12 @@ export function parseIPv6(v: string): number[] | null {
   const fill = 16 - head.length - rest.length - tail.length
   if (fill < 1)
     return null
-  return [...head, ...Array.from<number>({ length: fill }).fill(0), ...rest, ...tail]
+  return [
+    ...head,
+    ...Array.from<number>({ length: fill }).fill(0),
+    ...rest,
+    ...tail,
+  ]
 }
 
 /**
@@ -170,7 +182,9 @@ export function isLoopbackAddress(v: string): boolean {
   if (!v6)
     return false
   // IPv4-mapped (::ffff:a.b.c.d) is loopback iff the embedded v4 is.
-  const mapped = v6.slice(0, 12).every((b, i) => (i < 10 ? b === 0 : b === 0xFF))
+  const mapped = v6.slice(0, 12).every((b, i) => (i < 10
+    ? b === 0
+    : b === 0xFF))
   if (mapped)
     return v6[12] === 127
   // ::1 and every equivalent spelling of it.

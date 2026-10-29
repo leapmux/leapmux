@@ -166,7 +166,10 @@ describe('attachServerLog', () => {
     const directory = mkdtempSync(join(scratch, 'server-log-attachment-'))
     try {
       const attach = vi.fn<TestInfo['attach']>(async () => {})
-      const testInfo = { outputPath: (...parts: string[]) => join(directory, ...parts), attach } as unknown as TestInfo
+      const testInfo = {
+        outputPath: (...parts: string[]) => join(directory, ...parts),
+        attach,
+      } as unknown as TestInfo
       const text = 'first line\nsecond line\n한글 line\n'
       await attachServerLog(testInfo, text)
       const path = join(directory, 'server-log.txt')

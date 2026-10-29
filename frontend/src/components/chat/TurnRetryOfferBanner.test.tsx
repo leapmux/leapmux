@@ -18,7 +18,9 @@ const MODEL_GROUPS = [
   create(AvailableOptionGroupSchema, {
     id: 'model',
     label: 'Model',
-    options: [{ id: 'gpt-6-luna', name: 'GPT-6 Luna' }],
+    options: [
+      { id: 'gpt-6-luna', name: 'GPT-6 Luna' },
+    ],
   }),
 ]
 
@@ -86,7 +88,9 @@ describe('TurnRetryOfferBanner', () => {
       create(AvailableOptionGroupSchema, {
         id: 'model',
         label: 'Model',
-        options: [{ id: 'gpt-6-luna', name: 'GPT-6 Luna' }],
+        options: [
+          { id: 'gpt-6-luna', name: 'GPT-6 Luna' },
+        ],
       }),
     ])
     render(() => (

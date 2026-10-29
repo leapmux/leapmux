@@ -112,7 +112,9 @@ export function createLoadingSignal(timeoutMs = DEFAULT_TIMEOUT_MS) {
   const stop = (key?: string, axes: readonly string[] = []) => {
     // Keep the spinner visible until every agent completes its pending changes.
     // A keyless stop changes no agent record. The global timeout limits the spinner duration.
-    const stillPending = key === undefined ? pendingAgents().size : stopPending(key, axes)
+    const stillPending = key === undefined
+      ? pendingAgents().size
+      : stopPending(key, axes)
     if (stillPending > 0)
       return
     if (debounceId !== undefined) {
@@ -135,7 +137,9 @@ export function createLoadingSignal(timeoutMs = DEFAULT_TIMEOUT_MS) {
    */
   const pendingAxes = (key: string): ReadonlySet<string> => {
     const axes = untrack(pendingAgents).get(key)?.axes
-    return axes?.size ? new Set(axes.keys()) : EMPTY_AXES
+    return axes?.size
+      ? new Set(axes.keys())
+      : EMPTY_AXES
   }
 
   onCleanup(() => {
@@ -144,5 +148,11 @@ export function createLoadingSignal(timeoutMs = DEFAULT_TIMEOUT_MS) {
       clearTimeout(pending.timer)
     setPendingAgents(new Map())
   })
-  return { loading, isPending, pendingAxes, start, stop }
+  return {
+    loading,
+    isPending,
+    pendingAxes,
+    start,
+    stop,
+  }
 }

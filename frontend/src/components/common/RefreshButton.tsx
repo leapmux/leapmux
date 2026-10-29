@@ -18,7 +18,12 @@ interface RefreshButtonProps {
 }
 
 export const RefreshButton: Component<RefreshButtonProps> = (props) => {
-  const [local, rest] = splitProps(props, ['onClick', 'disabled', 'iconSize', 'size'])
+  const [local, rest] = splitProps(props, [
+    'onClick',
+    'disabled',
+    'iconSize',
+    'size',
+  ])
   const [animating, setAnimating] = createSignal(false)
 
   const handleClick = () => {
@@ -33,7 +38,9 @@ export const RefreshButton: Component<RefreshButtonProps> = (props) => {
       size={local.size ?? 'sm'}
       state={local.disabled ? IconButtonState.Disabled : IconButtonState.Enabled}
       onClick={handleClick}
-      class={animating() ? styles.spinning : ''}
+      class={animating()
+        ? styles.spinning
+        : ''}
       onAnimationEnd={() => setAnimating(false)}
       {...rest}
     />

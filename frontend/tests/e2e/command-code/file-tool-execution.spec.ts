@@ -17,8 +17,24 @@ commandCodeTest('reads and changes actual native files and preserves the native 
   const directory = createNativeToolDirectory(agent.workingDir)
   const marker = uniqueMarker()
   const cases = [
-    { id: 'exact', before: `OLD${marker}\n`, after: `NEW${marker}\n`, requestedBefore: `OLD${marker}\n`, requestedAfter: `NEW${marker}\n`, nativeBefore: `OLD${marker}`, nativeAfter: `NEW${marker}` },
-    { id: 'fuzzy', before: '\uFEFFconst value = “old”;\r\n', after: '\uFEFFconst value = “new”;\r\n', requestedBefore: 'const value = "old";\n', requestedAfter: 'const value = "new";\n', nativeBefore: 'const value = “old”;', nativeAfter: 'const value = “new”;' },
+    {
+      id: 'exact',
+      before: `OLD${marker}\n`,
+      after: `NEW${marker}\n`,
+      requestedBefore: `OLD${marker}\n`,
+      requestedAfter: `NEW${marker}\n`,
+      nativeBefore: `OLD${marker}`,
+      nativeAfter: `NEW${marker}`,
+    },
+    {
+      id: 'fuzzy',
+      before: '\uFEFFconst value = “old”;\r\n',
+      after: '\uFEFFconst value = “new”;\r\n',
+      requestedBefore: 'const value = "old";\n',
+      requestedAfter: 'const value = "new";\n',
+      nativeBefore: 'const value = “old”;',
+      nativeAfter: 'const value = “new”;',
+    },
   ]
   for (const scenario of cases) {
     const file = join(directory, `${scenario.id}-${marker}.txt`)
@@ -32,10 +48,26 @@ commandCodeTest('reads and changes actual native files and preserves the native 
     const writeId = `write-${scenario.id}`
     const stepIndex = await runNativeToolSteps(native, {
       steps: [
-        { toolCalls: [readToolCall(native.provider, beforeId, file)] },
-        { toolCalls: [editToolCall(native.provider, editId, { path: file, before: scenario.requestedBefore, after: scenario.requestedAfter })] },
-        { toolCalls: [readToolCall(native.provider, afterId, file)] },
-        { toolCalls: [writeToolCall(native.provider, writeId, { path: created, content: written })] },
+        {
+          toolCalls: [
+            readToolCall(native.provider, beforeId, file),
+          ],
+        },
+        {
+          toolCalls: [
+            editToolCall(native.provider, editId, { path: file, before: scenario.requestedBefore, after: scenario.requestedAfter }),
+          ],
+        },
+        {
+          toolCalls: [
+            readToolCall(native.provider, afterId, file),
+          ],
+        },
+        {
+          toolCalls: [
+            writeToolCall(native.provider, writeId, { path: created, content: written }),
+          ],
+        },
       ],
       prompt: `Read and edit the ${scenario.id} file, read its current bytes, then create the second file.`,
       answer: `The native ${scenario.id} file operations ended.`,

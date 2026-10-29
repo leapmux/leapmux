@@ -23,17 +23,49 @@ describe('acpPlanTodos', () => {
       { content: 'four' },
       { content: 'five', status: 'unknown' },
     ])).toEqual([
-      { rowKey: '0:one', content: 'one', status: 'pending', activeForm: '' },
-      { rowKey: '1:two', content: 'two', status: 'completed', activeForm: '' },
-      { rowKey: '2:three', content: 'three', status: 'in_progress', activeForm: '' },
-      { rowKey: '3:four', content: 'four', status: 'pending', activeForm: '' },
-      { rowKey: '4:five', content: 'five', status: 'pending', activeForm: '' },
+      {
+        rowKey: '0:one',
+        content: 'one',
+        status: 'pending',
+        activeForm: '',
+      },
+      {
+        rowKey: '1:two',
+        content: 'two',
+        status: 'completed',
+        activeForm: '',
+      },
+      {
+        rowKey: '2:three',
+        content: 'three',
+        status: 'in_progress',
+        activeForm: '',
+      },
+      {
+        rowKey: '3:four',
+        content: 'four',
+        status: 'pending',
+        activeForm: '',
+      },
+      {
+        rowKey: '4:five',
+        content: 'five',
+        status: 'pending',
+        activeForm: '',
+      },
     ])
   })
 
   it('coerces missing content to empty string', () => {
-    expect(acpPlanTodos([{ status: 'completed' }])).toEqual([
-      { rowKey: '0:', content: '', status: 'completed', activeForm: '' },
+    expect(acpPlanTodos([
+      { status: 'completed' },
+    ])).toEqual([
+      {
+        rowKey: '0:',
+        content: '',
+        status: 'completed',
+        activeForm: '',
+      },
     ])
   })
 
@@ -42,16 +74,40 @@ describe('acpPlanTodos', () => {
   // reader -- so it is dropped, and the surviving entries keep their place in the RAW
   // plan so that `rowKey` stays the same across a re-send.
   it('drops an entry that states no fields and keeps the raw index of the rest', () => {
-    expect(acpPlanTodos([null, 'one', { content: 'two' }, 42, ['three'], { content: 'four', status: 'completed' }])).toEqual([
-      { rowKey: '2:two', content: 'two', status: 'pending', activeForm: '' },
-      { rowKey: '5:four', content: 'four', status: 'completed', activeForm: '' },
+    expect(acpPlanTodos([
+      null,
+      'one',
+      { content: 'two' },
+      42,
+      ['three'],
+      { content: 'four', status: 'completed' },
+    ])).toEqual([
+      {
+        rowKey: '2:two',
+        content: 'two',
+        status: 'pending',
+        activeForm: '',
+      },
+      {
+        rowKey: '5:four',
+        content: 'four',
+        status: 'completed',
+        activeForm: '',
+      },
     ])
   })
 
   // A non-string content is no content, and the row would otherwise draw the number.
   it('reads a content that is not a string as none', () => {
-    expect(acpPlanTodos([{ content: 42, status: 'in_progress' }])).toEqual([
-      { rowKey: '0:', content: '', status: 'in_progress', activeForm: '' },
+    expect(acpPlanTodos([
+      { content: 42, status: 'in_progress' },
+    ])).toEqual([
+      {
+        rowKey: '0:',
+        content: '',
+        status: 'in_progress',
+        activeForm: '',
+      },
     ])
   })
 })

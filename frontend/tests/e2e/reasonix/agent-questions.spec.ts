@@ -27,11 +27,16 @@ reasonixTest('offers an actual native permission without an agent question seque
 reasonixTest('returns the selected answer through its native ask permission after reload', async ({ native }) => {
   const { page } = native
   const { result } = await exerciseQuestionAnswer(native, {
-    questions: [{
-      header: 'Database',
-      question: 'Which database should this native test use?',
-      options: [{ label: 'Postgres', description: 'Use Postgres.' }, { label: 'SQLite', description: 'Use SQLite.' }],
-    }],
+    questions: [
+      {
+        header: 'Database',
+        question: 'Which database should this native test use?',
+        options: [
+          { label: 'Postgres', description: 'Use Postgres.' },
+          { label: 'SQLite', description: 'Use SQLite.' },
+        ],
+      },
+    ],
     callId: 'reasonix-native-ask',
     reply: async () => {
       await page.reload()
@@ -49,11 +54,16 @@ reasonixTest('cancels the native ask request without starting another model turn
   const watch = await watchNativeControls(native.leapmuxServer, agent.id)
   try {
     await exerciseQuestionCancellation(native, {
-      questions: [{
-        header: 'Database',
-        question: 'Which database should this native test use?',
-        options: [{ label: 'Postgres', description: 'Use Postgres.' }, { label: 'SQLite', description: 'Use SQLite.' }],
-      }],
+      questions: [
+        {
+          header: 'Database',
+          question: 'Which database should this native test use?',
+          options: [
+            { label: 'Postgres', description: 'Use Postgres.' },
+            { label: 'SQLite', description: 'Use SQLite.' },
+          ],
+        },
+      ],
       callId: 'reasonix-cancelled-ask',
       reply: async () => {
         await native.page.reload()
@@ -63,7 +73,11 @@ reasonixTest('cancels the native ask request without starting another model turn
     })
     const observed = await waitForOneNativeControl(watch)
     const { decision } = await readObservedNativeDecision(native, agent, watch, observed)
-    expect(decision.response).toMatchObject({ result: { outcome: { outcome: 'selected', optionId: 'q1:cancel' } } })
+    expect(decision.response).toMatchObject({
+      result: {
+        outcome: { outcome: 'selected', optionId: 'q1:cancel' },
+      },
+    })
   }
   finally {
     watch.cancel()
@@ -72,8 +86,22 @@ reasonixTest('cancels the native ask request without starting another model turn
 
 reasonixTest('returns one native answer for each sequential question', async ({ native }) => {
   const questions = [
-    { header: 'Database', question: 'Which native database?', options: [{ label: 'Postgres', description: 'Use Postgres.' }, { label: 'SQLite', description: 'Use SQLite.' }] },
-    { header: 'Size', question: 'Which native size?', options: [{ label: 'Small', description: 'Use small.' }, { label: 'Large', description: 'Use large.' }] },
+    {
+      header: 'Database',
+      question: 'Which native database?',
+      options: [
+        { label: 'Postgres', description: 'Use Postgres.' },
+        { label: 'SQLite', description: 'Use SQLite.' },
+      ],
+    },
+    {
+      header: 'Size',
+      question: 'Which native size?',
+      options: [
+        { label: 'Small', description: 'Use small.' },
+        { label: 'Large', description: 'Use large.' },
+      ],
+    },
   ]
   const { result } = await exerciseQuestionAnswer(native, {
     questions,

@@ -25,7 +25,10 @@ export async function nativeContext(fixtures: NativeContextFixtures): Promise<Ma
 
 /** Select the actual isolated executable and hold only its native runtime invocation. */
 export function nativeLaunch(context: ManagedNativeScenarioContext): NativeStartupLaunch {
-  return resolveNativeStartupLaunch(context.leapmuxServer.agentEnv, { binaryName: 'droid', holdWhen: ['exec'] })
+  return resolveNativeStartupLaunch(context.leapmuxServer.agentEnv, {
+    binaryName: 'droid',
+    holdWhen: ['exec'],
+  })
 }
 
 /**
@@ -43,11 +46,18 @@ export async function runningChild(context: ManagedNativeScenarioContext, option
  * the notice of the completed child through a rule.
  */
 export function runningChildOptions(context: NativeChildScriptContext, options: { allowExistingRows?: boolean } = {}): RunningChildOptions {
-  const child = heldChildIdentity(context, { spawn: { background: true } })
+  const child = heldChildIdentity(context, {
+    spawn: { background: true },
+  })
   return heldChildOptions(context, child, {
-    child: { matcher: { system: DROID_CHILD_SYSTEM, body: child.task }, finalStep: context.textStep('NATIVECHILDCOMPLETE') },
+    child: {
+      matcher: { system: DROID_CHILD_SYSTEM, body: child.task },
+      finalStep: context.textStep('NATIVECHILDCOMPLETE'),
+    },
     allowExistingRows: options.allowExistingRows ?? false,
-    rules: [droidChildNoticeRule(child.description, { text: 'The native child completed.' })],
+    rules: [
+      droidChildNoticeRule(child.description, { text: 'The native child completed.' }),
+    ],
   })
 }
 

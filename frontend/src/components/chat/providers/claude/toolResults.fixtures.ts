@@ -16,13 +16,30 @@ function result(content: unknown, toolUseResult?: Record<string, unknown>, isErr
     type: 'user',
     message: {
       role: 'user',
-      content: [{ type: 'tool_result', tool_use_id: 'r1', content, ...(isError ? { is_error: true } : {}) }],
+      content: [
+        {
+          type: 'tool_result',
+          tool_use_id: 'r1',
+          content,
+          ...(isError
+            ? { is_error: true }
+            : {}),
+        },
+      ],
     },
-    ...(toolUseResult ? { tool_use_result: toolUseResult } : {}),
+    ...(toolUseResult
+      ? { tool_use_result: toolUseResult }
+      : {}),
   }
 }
 
-const HUNK = { oldStart: 1, oldLines: 1, newStart: 1, newLines: 1, lines: ['-old', '+new'] }
+const HUNK = {
+  oldStart: 1,
+  oldLines: 1,
+  newStart: 1,
+  newLines: 1,
+  lines: ['-old', '+new'],
+}
 
 /** The request half a fixture needs for a call whose result reads the arguments. */
 function request(name: string, args: Record<string, unknown>): ProviderRowOptions {
@@ -32,7 +49,17 @@ function request(name: string, args: Record<string, unknown>): ProviderRowOption
       topLevel: null,
       parentObject: {
         type: 'assistant',
-        message: { role: 'assistant', content: [{ type: 'tool_use', id: 'r1', name, input: args }] },
+        message: {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool_use',
+              id: 'r1',
+              name,
+              input: args,
+            },
+          ],
+        },
       },
       rawText: '',
       supplementalContent: undefined,
@@ -42,11 +69,17 @@ function request(name: string, args: Record<string, unknown>): ProviderRowOption
 }
 
 function fixture(name: string, content: unknown, args: Record<string, unknown>, toolUseResult?: Record<string, unknown>): ToolResultFixture {
-  return { payload: result(content, toolUseResult), options: request(name, args) }
+  return {
+    payload: result(content, toolUseResult),
+    options: request(name, args),
+  }
 }
 
 function proseFixture(name: string, content: string, args: Record<string, unknown>): ToolResultFixture {
-  return { payload: result(content), options: request(name, args) }
+  return {
+    payload: result(content),
+    options: request(name, args),
+  }
 }
 
 /**
@@ -62,22 +95,102 @@ const ERROR_TEXT = 'The tool reported an error.'
 const FIXTURES: Readonly<Record<string, ToolResultFixture>> = {
   [CLAUDE_TOOL_NAMES.BASH]: fixture(CLAUDE_TOOL_NAMES.BASH, 'ok', { command: 'ls' }, { stdout: 'ok' }),
   [CLAUDE_TOOL_NAMES.POWERSHELL]: fixture(CLAUDE_TOOL_NAMES.POWERSHELL, 'ok', { command: 'ls' }, { stdout: 'ok' }),
-  [CLAUDE_TOOL_NAMES.READ]: fixture(CLAUDE_TOOL_NAMES.READ, '1\ta', { file_path: '/p/a.ts' }, { type: 'read', file: { filePath: '/p/a.ts', content: 'a', startLine: 1, totalLines: 1, numLines: 1 } }),
-  [CLAUDE_TOOL_NAMES.WRITE]: fixture(CLAUDE_TOOL_NAMES.WRITE, 'Updated', { file_path: '/p/a.ts', content: 'new' }, { type: 'update', filePath: '/p/a.ts', structuredPatch: [HUNK] }),
-  [CLAUDE_TOOL_NAMES.EDIT]: fixture(CLAUDE_TOOL_NAMES.EDIT, 'Updated', { file_path: '/p/a.ts', old_string: 'old', new_string: 'new' }, { type: 'update', filePath: '/p/a.ts', structuredPatch: [HUNK] }),
-  [CLAUDE_TOOL_NAMES.MULTI_EDIT]: fixture(CLAUDE_TOOL_NAMES.MULTI_EDIT, 'Updated', { file_path: '/p/a.ts', edits: [{ old_string: 'old', new_string: 'new' }] }, { type: 'update', filePath: '/p/a.ts', structuredPatch: [HUNK] }),
-  [CLAUDE_TOOL_NAMES.NOTEBOOK_EDIT]: fixture(CLAUDE_TOOL_NAMES.NOTEBOOK_EDIT, 'Updated', { notebook_path: '/p/nb.ipynb', new_source: 'new' }, { type: 'update', filePath: '/p/nb.ipynb', structuredPatch: [HUNK] }),
-  [CLAUDE_TOOL_NAMES.GREP]: fixture(CLAUDE_TOOL_NAMES.GREP, 'a.ts:1:x', { pattern: 'x' }, { numFiles: 1, numLines: 1, content: 'a.ts:1:x', filenames: ['a.ts'] }),
-  [CLAUDE_TOOL_NAMES.GLOB]: fixture(CLAUDE_TOOL_NAMES.GLOB, 'a.ts', { pattern: '*' }, { filenames: ['a.ts'], numFiles: 1 }),
-  [CLAUDE_TOOL_NAMES.AGENT]: fixture(CLAUDE_TOOL_NAMES.AGENT, 'done', { description: 'Probe', prompt: 'Run.' }, { status: 'completed', agentId: 'a1', content: [{ type: 'text', text: 'done' }] }),
+  [CLAUDE_TOOL_NAMES.READ]: fixture(CLAUDE_TOOL_NAMES.READ, '1\ta', { file_path: '/p/a.ts' }, {
+    type: 'read',
+    file: {
+      filePath: '/p/a.ts',
+      content: 'a',
+      startLine: 1,
+      totalLines: 1,
+      numLines: 1,
+    },
+  }),
+  [CLAUDE_TOOL_NAMES.WRITE]: fixture(CLAUDE_TOOL_NAMES.WRITE, 'Updated', { file_path: '/p/a.ts', content: 'new' }, {
+    type: 'update',
+    filePath: '/p/a.ts',
+    structuredPatch: [HUNK],
+  }),
+  [CLAUDE_TOOL_NAMES.EDIT]: fixture(CLAUDE_TOOL_NAMES.EDIT, 'Updated', { file_path: '/p/a.ts', old_string: 'old', new_string: 'new' }, {
+    type: 'update',
+    filePath: '/p/a.ts',
+    structuredPatch: [HUNK],
+  }),
+  [CLAUDE_TOOL_NAMES.MULTI_EDIT]: fixture(CLAUDE_TOOL_NAMES.MULTI_EDIT, 'Updated', {
+    file_path: '/p/a.ts',
+    edits: [
+      { old_string: 'old', new_string: 'new' },
+    ],
+  }, {
+    type: 'update',
+    filePath: '/p/a.ts',
+    structuredPatch: [HUNK],
+  }),
+  [CLAUDE_TOOL_NAMES.NOTEBOOK_EDIT]: fixture(CLAUDE_TOOL_NAMES.NOTEBOOK_EDIT, 'Updated', { notebook_path: '/p/nb.ipynb', new_source: 'new' }, {
+    type: 'update',
+    filePath: '/p/nb.ipynb',
+    structuredPatch: [HUNK],
+  }),
+  [CLAUDE_TOOL_NAMES.GREP]: fixture(CLAUDE_TOOL_NAMES.GREP, 'a.ts:1:x', { pattern: 'x' }, {
+    numFiles: 1,
+    numLines: 1,
+    content: 'a.ts:1:x',
+    filenames: ['a.ts'],
+  }),
+  [CLAUDE_TOOL_NAMES.GLOB]: fixture(CLAUDE_TOOL_NAMES.GLOB, 'a.ts', { pattern: '*' }, {
+    filenames: ['a.ts'],
+    numFiles: 1,
+  }),
+  [CLAUDE_TOOL_NAMES.AGENT]: fixture(CLAUDE_TOOL_NAMES.AGENT, 'done', { description: 'Probe', prompt: 'Run.' }, {
+    status: 'completed',
+    agentId: 'a1',
+    content: [
+      { type: 'text', text: 'done' },
+    ],
+  }),
   [CLAUDE_TOOL_NAMES.WEB_FETCH]: fixture(CLAUDE_TOOL_NAMES.WEB_FETCH, '# page', { url: 'https://example.com' }, { code: 200, result: '# page' }),
-  [CLAUDE_TOOL_NAMES.WEB_SEARCH]: fixture(CLAUDE_TOOL_NAMES.WEB_SEARCH, 'searched', { query: 'q' }, { query: 'q', results: [{ title: 'Docs', url: 'https://example.com' }] }),
-  [CLAUDE_TOOL_NAMES.TODO_WRITE]: fixture(CLAUDE_TOOL_NAMES.TODO_WRITE, 'Saved', { todos: [{ content: 'One', status: 'pending', activeForm: '' }] }, { newTodos: [{ content: 'One', status: 'pending', activeForm: '' }] }),
-  [CLAUDE_TOOL_NAMES.TASK_OUTPUT]: fixture(CLAUDE_TOOL_NAMES.TASK_OUTPUT, 'out', { task_id: 't1' }, { task: { task_id: 't1', task_type: 'shell', status: 'completed', description: 'Probe', output: 'out' } }),
+  [CLAUDE_TOOL_NAMES.WEB_SEARCH]: fixture(CLAUDE_TOOL_NAMES.WEB_SEARCH, 'searched', { query: 'q' }, {
+    query: 'q',
+    results: [
+      { title: 'Docs', url: 'https://example.com' },
+    ],
+  }),
+  [CLAUDE_TOOL_NAMES.TODO_WRITE]: fixture(CLAUDE_TOOL_NAMES.TODO_WRITE, 'Saved', {
+    todos: [
+      { content: 'One', status: 'pending', activeForm: '' },
+    ],
+  }, {
+    newTodos: [
+      { content: 'One', status: 'pending', activeForm: '' },
+    ],
+  }),
+  [CLAUDE_TOOL_NAMES.TASK_OUTPUT]: fixture(CLAUDE_TOOL_NAMES.TASK_OUTPUT, 'out', { task_id: 't1' }, {
+    task: {
+      task_id: 't1',
+      task_type: 'shell',
+      status: 'completed',
+      description: 'Probe',
+      output: 'out',
+    },
+  }),
   [CLAUDE_TOOL_NAMES.TASK_STOP]: fixture(CLAUDE_TOOL_NAMES.TASK_STOP, 'Stopped', { task_id: 't1' }, { message: 'Stopped the task', task_id: 't1', task_type: 'shell' }),
   [CLAUDE_TOOL_NAMES.REMOTE_TRIGGER]: fixture(CLAUDE_TOOL_NAMES.REMOTE_TRIGGER, 'HTTP 200\n{}', { action: 'list' }, { status: 200, json: '{}' }),
   [CLAUDE_TOOL_NAMES.EXIT_PLAN_MODE]: proseFixture(CLAUDE_TOOL_NAMES.EXIT_PLAN_MODE, 'Approved', {}),
-  [CLAUDE_TOOL_NAMES.ASK_USER_QUESTION]: fixture(CLAUDE_TOOL_NAMES.ASK_USER_QUESTION, 'answered', { questions: [{ question: 'Which?', header: 'Pick', options: [{ label: 'A' }] }] }, { questions: [{ question: 'Which?', header: 'Pick', options: [] }], answers: { 'Which?': 'A' } }),
+  [CLAUDE_TOOL_NAMES.ASK_USER_QUESTION]: fixture(CLAUDE_TOOL_NAMES.ASK_USER_QUESTION, 'answered', {
+    questions: [
+      {
+        question: 'Which?',
+        header: 'Pick',
+        options: [
+          { label: 'A' },
+        ],
+      },
+    ],
+  }, {
+    questions: [
+      { question: 'Which?', header: 'Pick', options: [] },
+    ],
+    answers: { 'Which?': 'A' },
+  }),
   [CLAUDE_TOOL_NAMES.ENTER_WORKTREE]: proseFixture(CLAUDE_TOOL_NAMES.ENTER_WORKTREE, 'moved', { name: 'wt' }),
   [CLAUDE_TOOL_NAMES.EXIT_WORKTREE]: proseFixture(CLAUDE_TOOL_NAMES.EXIT_WORKTREE, 'moved back', {}),
   [CLAUDE_TOOL_NAMES.SEND_MESSAGE]: proseFixture(CLAUDE_TOOL_NAMES.SEND_MESSAGE, 'sent', { to: 'peer', message: 'hi' }),
@@ -87,10 +200,34 @@ const FIXTURES: Readonly<Record<string, ToolResultFixture>> = {
   [CLAUDE_TOOL_NAMES.TEAM_DELETE]: proseFixture(CLAUDE_TOOL_NAMES.TEAM_DELETE, 'deleted', { team_name: 'T' }),
   [CLAUDE_TOOL_NAMES.SKILL]: proseFixture(CLAUDE_TOOL_NAMES.SKILL, 'ran', { skill: 'deploy' }),
   [CLAUDE_TOOL_NAMES.SLEEP]: proseFixture(CLAUDE_TOOL_NAMES.SLEEP, 'slept', { durationMs: 1000 }),
-  [CLAUDE_TOOL_NAMES.STRUCTURED_OUTPUT]: proseFixture(CLAUDE_TOOL_NAMES.STRUCTURED_OUTPUT, '{"ok":true}', { value: { ok: true } }),
-  [CLAUDE_TOOL_NAMES.LIST_MCP_RESOURCES]: fixture(CLAUDE_TOOL_NAMES.LIST_MCP_RESOURCES, 'listed', { server: 's' }, { resources: [{ uri: 'probe://a', name: 'A' }] }),
-  [CLAUDE_TOOL_NAMES.READ_MCP_RESOURCE]: fixture(CLAUDE_TOOL_NAMES.READ_MCP_RESOURCE, 'doc', { server: 's', uri: 'probe://a' }, { type: 'text', file: { filePath: 'probe://a', content: 'doc', startLine: 1, totalLines: 1, numLines: 1 } }),
-  [CLAUDE_TOOL_NAMES.READ_MCP_RESOURCE_DIR]: fixture(CLAUDE_TOOL_NAMES.READ_MCP_RESOURCE_DIR, 'doc', { server: 's', uri: 'probe://dir' }, { type: 'text', file: { filePath: 'probe://a', content: 'doc', startLine: 1, totalLines: 1, numLines: 1 } }),
+  [CLAUDE_TOOL_NAMES.STRUCTURED_OUTPUT]: proseFixture(CLAUDE_TOOL_NAMES.STRUCTURED_OUTPUT, '{"ok":true}', {
+    value: { ok: true },
+  }),
+  [CLAUDE_TOOL_NAMES.LIST_MCP_RESOURCES]: fixture(CLAUDE_TOOL_NAMES.LIST_MCP_RESOURCES, 'listed', { server: 's' }, {
+    resources: [
+      { uri: 'probe://a', name: 'A' },
+    ],
+  }),
+  [CLAUDE_TOOL_NAMES.READ_MCP_RESOURCE]: fixture(CLAUDE_TOOL_NAMES.READ_MCP_RESOURCE, 'doc', { server: 's', uri: 'probe://a' }, {
+    type: 'text',
+    file: {
+      filePath: 'probe://a',
+      content: 'doc',
+      startLine: 1,
+      totalLines: 1,
+      numLines: 1,
+    },
+  }),
+  [CLAUDE_TOOL_NAMES.READ_MCP_RESOURCE_DIR]: fixture(CLAUDE_TOOL_NAMES.READ_MCP_RESOURCE_DIR, 'doc', { server: 's', uri: 'probe://dir' }, {
+    type: 'text',
+    file: {
+      filePath: 'probe://a',
+      content: 'doc',
+      startLine: 1,
+      totalLines: 1,
+      numLines: 1,
+    },
+  }),
   [CLAUDE_TOOL_NAMES.CRON_CREATE]: proseFixture(CLAUDE_TOOL_NAMES.CRON_CREATE, 'scheduled', { triggers: [] }),
   [CLAUDE_TOOL_NAMES.CRON_DELETE]: proseFixture(CLAUDE_TOOL_NAMES.CRON_DELETE, 'deleted', { triggers: [] }),
   [CLAUDE_TOOL_NAMES.CRON_LIST]: proseFixture(CLAUDE_TOOL_NAMES.CRON_LIST, '[]', {}),
@@ -116,7 +253,15 @@ function failed(kind: ToolKind, name: string, status: ToolFailureFixture['status
   if (!success)
     throw new Error(`No successful fixture states ${name}`)
   const options = success.options
-  return { payload: result(ERROR_TEXT, undefined, true), ...(options !== undefined ? { options } : {}), kind, name, status }
+  return {
+    payload: result(ERROR_TEXT, undefined, true),
+    ...(options !== undefined
+      ? { options }
+      : {}),
+    kind,
+    name,
+    status,
+  }
 }
 
 export const CLAUDE_TOOL_RESULTS: ToolResultCheck = {

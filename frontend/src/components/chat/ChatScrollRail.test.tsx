@@ -33,7 +33,10 @@ function installImmediateRaf() {
 
 beforeEach(() => {
   clientHeightSpy = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'clientHeight')
-  Object.defineProperty(HTMLElement.prototype, 'clientHeight', { configurable: true, get: () => VIEWPORT_H })
+  Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
+    configurable: true,
+    get: () => VIEWPORT_H,
+  })
 })
 afterEach(() => {
   if (clientHeightSpy)
@@ -50,7 +53,17 @@ afterEach(() => {
  */
 function railWithRect(container: HTMLElement): HTMLElement {
   const rail = container.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement
-  rail.getBoundingClientRect = () => ({ top: 0, left: 0, height: 400, width: 10, right: 10, bottom: 400, x: 0, y: 0, toJSON: () => ({}) })
+  rail.getBoundingClientRect = () => ({
+    top: 0,
+    left: 0,
+    height: 400,
+    width: 10,
+    right: 10,
+    bottom: 400,
+    x: 0,
+    y: 0,
+    toJSON: () => ({}),
+  })
   return rail
 }
 
@@ -177,9 +190,20 @@ describe('ChatScrollRail', () => {
       { seq: 50_000n, type: MarkType.USER_MESSAGE },
       { seq: 75_000n, type: MarkType.CONTROL_RESPONSE },
     ]
-    const base = baseProps({ minSeq: 1n, marks, hasMoreOlder: true, hasMoreNewer: true })
+    const base = baseProps({
+      minSeq: 1n,
+      marks,
+      hasMoreOlder: true,
+      hasMoreNewer: true,
+    })
     const { container } = render(() => (
-      <ChatScrollRail {...base} rail={{ ...base.rail, maxSeq: maxSeq() }} />
+      <ChatScrollRail
+        {...base}
+        rail={{
+          ...base.rail,
+          maxSeq: maxSeq(),
+        }}
+      />
     ))
     const before = Array.from(container.querySelectorAll('[data-testid="chat-scroll-rail-dot"]'))
     expect(before.length).toBe(2)
@@ -219,7 +243,16 @@ describe('ChatScrollRail', () => {
       { seq: 501n, type: MarkType.USER_MESSAGE },
       { seq: 502n, type: MarkType.USER_MESSAGE },
     ]
-    const { container } = render(() => <ChatScrollRail {...baseProps({ minSeq: 1n, maxSeq: 100_000n, marks, onJumpToSeq, warmPreview })} />)
+    const { container } = render(() => (
+      <ChatScrollRail {...baseProps({
+        minSeq: 1n,
+        maxSeq: 100_000n,
+        marks,
+        onJumpToSeq,
+        warmPreview,
+      })}
+      />
+    ))
     const dot = container.querySelector('[data-testid="chat-scroll-rail-dot"]') as HTMLElement
     expect(dot.getAttribute('data-seq')).toBe('502')
     fireEvent.pointerEnter(dot)
@@ -295,8 +328,14 @@ describe('ChatScrollRail', () => {
   })
 
   it.each([
-    ['the track', (c: HTMLElement) => railWithRect(c)],
-    ['a dot', (c: HTMLElement) => c.querySelector('[data-testid="chat-scroll-rail-dot"]') as HTMLElement],
+    [
+      'the track',
+      (c: HTMLElement) => railWithRect(c),
+    ],
+    [
+      'a dot',
+      (c: HTMLElement) => c.querySelector('[data-testid="chat-scroll-rail-dot"]') as HTMLElement,
+    ],
   ])('ignores a SECONDARY-button press on %s', (_name, target) => {
     // Every press now captures the pointer and owns the rail until its pointerup -- and a context
     // menu can swallow the pointerup of a right press, which would leave the rail owned by a
@@ -308,7 +347,13 @@ describe('ChatScrollRail', () => {
     const { container } = render(() => <ChatScrollRail {...baseProps({ onJumpToSeq })} />)
     const el = target(container)
 
-    const event = new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 2, clientY: 300, pointerId: 1 })
+    const event = new PointerEvent('pointerdown', {
+      bubbles: true,
+      cancelable: true,
+      button: 2,
+      clientY: 300,
+      pointerId: 1,
+    })
     el.dispatchEvent(event)
     expect(onJumpToSeq).not.toHaveBeenCalled()
     expect(setPointerCapture).not.toHaveBeenCalled()
@@ -326,7 +371,12 @@ describe('ChatScrollRail', () => {
     const dot = container.querySelector('[data-testid="chat-scroll-rail-dot"]') as HTMLElement
 
     rail.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 300, pointerId: 1 }))
-    const rival = new PointerEvent('pointerdown', { bubbles: true, cancelable: true, clientY: 120, pointerId: 2 })
+    const rival = new PointerEvent('pointerdown', {
+      bubbles: true,
+      cancelable: true,
+      clientY: 120,
+      pointerId: 2,
+    })
     dot.dispatchEvent(rival)
     expect(rival.defaultPrevented).toBe(true)
   })
@@ -368,7 +418,12 @@ describe('ChatScrollRail', () => {
   })
 
   it('renders the fixed thumb flush to the bottom at the true bottom edge', () => {
-    const { container } = render(() => <ChatScrollRail {...baseProps({ scrollEl: makeScrollEl(100, 500) })} />)
+    const { container } = render(() => (
+      <ChatScrollRail {...baseProps({
+        scrollEl: makeScrollEl(100, 500),
+      })}
+      />
+    ))
     const thumb = container.querySelector('[data-testid="chat-scroll-rail-thumb"]') as HTMLElement
     expect(thumb).toBeTruthy()
     expect(thumb.style.height).toBe('24px')
@@ -425,13 +480,23 @@ describe('ChatScrollRail', () => {
     const lineEl = makeScrollEl(0, 500)
     const { container: c1 } = render(() => <ChatScrollRail {...baseProps({ scrollEl: lineEl })} />)
     ;(c1.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement)
-      .dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: 3, deltaMode: 1 }))
+      .dispatchEvent(new WheelEvent('wheel', {
+        bubbles: true,
+        cancelable: true,
+        deltaY: 3,
+        deltaMode: 1,
+      }))
     expect(lineEl.scrollTop).toBe(48)
     // Page mode (deltaMode 2): 1 page * clientHeight(400), clamped at max scroll (100).
     const pageEl = makeScrollEl(0, 500)
     const { container: c2 } = render(() => <ChatScrollRail {...baseProps({ scrollEl: pageEl })} />)
     ;(c2.querySelector('[data-testid="chat-scroll-rail"]') as HTMLElement)
-      .dispatchEvent(new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaY: 1, deltaMode: 2 }))
+      .dispatchEvent(new WheelEvent('wheel', {
+        bubbles: true,
+        cancelable: true,
+        deltaY: 1,
+        deltaMode: 2,
+      }))
     expect(pageEl.scrollTop).toBe(100)
   })
 
@@ -728,7 +793,9 @@ describe('ChatScrollRail', () => {
     // dot, so the scrub target resolves to it) or a finger would never see a preview.
     HTMLElement.prototype.setPointerCapture = vi.fn()
     installImmediateRaf()
-    const previewFor = (seq: bigint) => (seq === 2n ? 'pressed message two' : undefined)
+    const previewFor = (seq: bigint) => (seq === 2n
+      ? 'pressed message two'
+      : undefined)
     const { container } = render(() => <ChatScrollRail {...baseProps({ previewFor })} />)
     railWithRect(container) // the component reads the rail's rect on the dot press below
     expect(container.querySelector('[data-testid="chat-scroll-rail-preview"]')).toBeNull()
@@ -819,7 +886,15 @@ describe('ChatScrollRail', () => {
     // history the drag could target out-of-window (where the flash was worst).
     const scrollEl = makeScrollEl(0, 500)
     const { container } = render(() => (
-      <ChatScrollRail {...baseProps({ scrollEl, onJumpToSeq, hasMoreOlder: true, hasMoreNewer: true })} geometryVersion={geometryVersion()} />
+      <ChatScrollRail
+        {...baseProps({
+          scrollEl,
+          onJumpToSeq,
+          hasMoreOlder: true,
+          hasMoreNewer: true,
+        })}
+        geometryVersion={geometryVersion()}
+      />
     ))
     const rail = railWithRect(container)
     // Grab the fixed thumb (spans 0..24) and release at a DIFFERENT position.
@@ -850,7 +925,13 @@ describe('ChatScrollRail', () => {
     const onJumpToSeq = vi.fn(() => Promise.resolve(false))
     const scrollEl = makeScrollEl(0, 500)
     const { container } = render(() => (
-      <ChatScrollRail {...baseProps({ scrollEl, onJumpToSeq, hasMoreOlder: true, hasMoreNewer: true })} />
+      <ChatScrollRail {...baseProps({
+        scrollEl,
+        onJumpToSeq,
+        hasMoreOlder: true,
+        hasMoreNewer: true,
+      })}
+      />
     ))
     const rail = railWithRect(container)
     rail.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, clientY: 12, pointerId: 1 }))
@@ -917,7 +998,9 @@ describe('ChatScrollRail', () => {
     vi.useFakeTimers()
     installImmediateRaf() // override the faked rAF with a synchronous one for the drag frames
     const warmPreview = vi.fn()
-    const previewFor = (seq: bigint) => (seq === 2n ? 'scrubbed message two' : undefined)
+    const previewFor = (seq: bigint) => (seq === 2n
+      ? 'scrubbed message two'
+      : undefined)
     const { container } = render(() => <ChatScrollRail {...baseProps({ warmPreview, previewFor })} />)
     const rail = railWithRect(container)
     // No card until a drag is in progress (and nothing is hovered).
@@ -977,7 +1060,11 @@ describe('ChatScrollRail', () => {
   it('shows ONE card (the scrub target wins) when a dot is hovered while scrubbing', () => {
     HTMLElement.prototype.setPointerCapture = vi.fn()
     installImmediateRaf()
-    const previewFor = (seq: bigint) => (seq === 2n ? 'scrub target two' : seq === 4n ? 'hovered four' : undefined)
+    const previewFor = (seq: bigint) => (seq === 2n
+      ? 'scrub target two'
+      : seq === 4n
+        ? 'hovered four'
+        : undefined)
     const { container } = render(() => <ChatScrollRail {...baseProps({ previewFor })} />)
     const rail = railWithRect(container)
     // Scrub over the seq-2 dot (thumb centre 125), then also hover the seq-4 dot.
@@ -1008,7 +1095,9 @@ describe('ChatScrollRail', () => {
   })
 
   it('describes a focused dot by the preview card its focus opened', () => {
-    const previewFor = (seq: bigint) => (seq === 2n ? 'the first message' : undefined)
+    const previewFor = (seq: bigint) => (seq === 2n
+      ? 'the first message'
+      : undefined)
     const { container } = render(() => <ChatScrollRail {...baseProps({ previewFor })} />)
     const dots = container.querySelectorAll('[data-testid="chat-scroll-rail-dot"]')
     // `?.` reads are the type-level guard alone; baseProps() renders one dot per mark.
@@ -1132,7 +1221,9 @@ describe('ChatScrollRail dot preview card', () => {
     // WIRING: the rail hands cardTopPx to the card and the card writes it. The clamp's own
     // arithmetic, which needs a height to be worth asserting, is unit-tested against injected
     // heights in chatDotPreview.test.ts.
-    const marks = [{ seq: 1n, type: MarkType.USER_MESSAGE }]
+    const marks = [
+      { seq: 1n, type: MarkType.USER_MESSAGE },
+    ]
     const { container } = render(() => <ChatScrollRail {...baseProps({ minSeq: 1n, maxSeq: 100_000n, marks })} />)
     const dot = container.querySelector('[data-testid="chat-scroll-rail-dot"]') as HTMLElement
     expect(dot.style.top).toBe('12px') // with the fixed 24px thumb, the seq-1 dot sits at ~12px
@@ -1142,7 +1233,9 @@ describe('ChatScrollRail dot preview card', () => {
   })
 
   it('opens the card immediately on hover and renders the resolved preview as markdown', () => {
-    const previewFor = (seq: bigint) => (seq === 2n ? '**jump** to this message' : undefined)
+    const previewFor = (seq: bigint) => (seq === 2n
+      ? '**jump** to this message'
+      : undefined)
     const { container } = render(() => <ChatScrollRail {...baseProps({ previewFor })} />)
     const card = hoverFirstDot(container)! // no timers advanced -- it's immediate
     expect(card).toHaveTextContent('jump to this message')
@@ -1154,7 +1247,9 @@ describe('ChatScrollRail dot preview card', () => {
 
   it('keeps the card open for the close delay after the pointer leaves the dot, then closes it', () => {
     vi.useFakeTimers()
-    const previewFor = (seq: bigint) => (seq === 2n ? 'hi there' : undefined)
+    const previewFor = (seq: bigint) => (seq === 2n
+      ? 'hi there'
+      : undefined)
     const { container } = render(() => <ChatScrollRail {...baseProps({ previewFor })} />)
     const dot = container.querySelector('[data-testid="chat-scroll-rail-dot"]') as HTMLElement
     fireEvent.pointerEnter(dot)
@@ -1170,7 +1265,9 @@ describe('ChatScrollRail dot preview card', () => {
 
   it('keeps the card open while the pointer rests on it, and closes it a delay after it leaves', () => {
     vi.useFakeTimers()
-    const previewFor = (seq: bigint) => (seq === 2n ? 'hi there' : undefined)
+    const previewFor = (seq: bigint) => (seq === 2n
+      ? 'hi there'
+      : undefined)
     const { container } = render(() => <ChatScrollRail {...baseProps({ previewFor })} />)
     const dot = container.querySelector('[data-testid="chat-scroll-rail-dot"]') as HTMLElement
     fireEvent.pointerEnter(dot)
@@ -1190,7 +1287,9 @@ describe('ChatScrollRail dot preview card', () => {
 
   it('holds the card open while a press inside it drags a selection past its edge', () => {
     vi.useFakeTimers()
-    const previewFor = (seq: bigint) => (seq === 2n ? 'select me' : undefined)
+    const previewFor = (seq: bigint) => (seq === 2n
+      ? 'select me'
+      : undefined)
     const { container } = render(() => <ChatScrollRail {...baseProps({ previewFor })} />)
     const { card } = cardUnderPointer(container)
     // Press inside the card, then drag out of it -- what selecting to the end of a line does.
@@ -1210,7 +1309,9 @@ describe('ChatScrollRail dot preview card', () => {
 
   it('keeps a FOCUSED dot card open when the pointer visits the card and leaves again', () => {
     vi.useFakeTimers()
-    const previewFor = (seq: bigint) => (seq === 2n ? 'hi there' : undefined)
+    const previewFor = (seq: bigint) => (seq === 2n
+      ? 'hi there'
+      : undefined)
     const { container } = render(() => <ChatScrollRail {...baseProps({ previewFor })} />)
     const dot = container.querySelector('[data-testid="chat-scroll-rail-dot"]') as HTMLElement
     // A keyboard reader tabbed to the dot, then reached for the mouse.
@@ -1231,7 +1332,9 @@ describe('ChatScrollRail dot preview card', () => {
     const capture = vi.fn()
     HTMLElement.prototype.setPointerCapture = capture
     const onJumpToSeq = vi.fn()
-    const previewFor = (seq: bigint) => (seq === 2n ? 'select me' : undefined)
+    const previewFor = (seq: bigint) => (seq === 2n
+      ? 'select me'
+      : undefined)
     const { container } = render(() => <ChatScrollRail {...baseProps({ previewFor, onJumpToSeq })} />)
     railWithRect(container)
     const dot = container.querySelector('[data-testid="chat-scroll-rail-dot"]') as HTMLElement
@@ -1239,7 +1342,12 @@ describe('ChatScrollRail dot preview card', () => {
     const card = container.querySelector('[data-testid="chat-scroll-rail-preview"]') as HTMLElement
     // The card renders INSIDE the rail, so an unhandled press here would reach the rail's own
     // pointerdown and grab the thumb at the card's Y.
-    const press = new PointerEvent('pointerdown', { bubbles: true, cancelable: true, clientY: 40, pointerId: 1 })
+    const press = new PointerEvent('pointerdown', {
+      bubbles: true,
+      cancelable: true,
+      clientY: 40,
+      pointerId: 1,
+    })
     card.dispatchEvent(press)
     expect(capture).not.toHaveBeenCalled()
     expect(onJumpToSeq).not.toHaveBeenCalled()
@@ -1302,14 +1410,21 @@ describe('ChatScrollRail dot preview card', () => {
 
   it('opens no press hold for a SECONDARY button, whose pointerup a context menu can swallow', () => {
     vi.useFakeTimers()
-    const previewFor = (seq: bigint) => (seq === 2n ? 'select me' : undefined)
+    const previewFor = (seq: bigint) => (seq === 2n
+      ? 'select me'
+      : undefined)
     const { container } = render(() => <ChatScrollRail {...baseProps({ previewFor })} />)
     const { card } = cardUnderPointer(container)
 
     // A right-press to reach the browser's own "Copy". The native menu regularly eats the matching
     // pointerup, so a hold opened here would never end -- pinning the card over the transcript and
     // the whole rail lit for the rest of the session. beginRailPress guards the rail the same way.
-    card.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 2, pointerId: 1 }))
+    card.dispatchEvent(new PointerEvent('pointerdown', {
+      bubbles: true,
+      cancelable: true,
+      button: 2,
+      pointerId: 1,
+    }))
     fireEvent.pointerLeave(card)
     vi.advanceTimersByTime(POINTER_CLOSE_DELAY_MS)
     expect(container.querySelector('[data-testid="chat-scroll-rail-preview"]')).toBeNull()
@@ -1317,10 +1432,17 @@ describe('ChatScrollRail dot preview card', () => {
 
   it('ignores a rival pointer\'s release while THIS pointer is still selecting', () => {
     vi.useFakeTimers()
-    const previewFor = (seq: bigint) => (seq === 2n ? 'select me' : undefined)
+    const previewFor = (seq: bigint) => (seq === 2n
+      ? 'select me'
+      : undefined)
     const { container } = render(() => <ChatScrollRail {...baseProps({ previewFor })} />)
     const { card } = cardUnderPointer(container)
-    card.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, button: 0, pointerId: 1 }))
+    card.dispatchEvent(new PointerEvent('pointerdown', {
+      bubbles: true,
+      cancelable: true,
+      button: 0,
+      pointerId: 1,
+    }))
     fireEvent.pointerLeave(card)
 
     // A pen tap or a second finger elsewhere, on the hybrid devices where the card stays
@@ -1337,7 +1459,9 @@ describe('ChatScrollRail dot preview card', () => {
 
   it('takes the hold from a PRESS on a card that opened under a stationary cursor', () => {
     vi.useFakeTimers()
-    const previewFor = (seq: bigint) => (seq === 2n ? 'select me' : undefined)
+    const previewFor = (seq: bigint) => (seq === 2n
+      ? 'select me'
+      : undefined)
     const { container } = render(() => <ChatScrollRail {...baseProps({ previewFor })} />)
     // A keyboard reader tabs to the dot; the card mounts under a cursor that is ALREADY parked
     // where it appears, so no pointerenter ever fires and the card never learns it is hovered.
@@ -1366,7 +1490,9 @@ describe('ChatScrollRail dot preview card', () => {
 
   it('holds the card for as long as it holds the reader\'s SELECTION, not for a fixed delay', () => {
     vi.useFakeTimers()
-    const previewFor = (seq: bigint) => (seq === 2n ? 'select me' : undefined)
+    const previewFor = (seq: bigint) => (seq === 2n
+      ? 'select me'
+      : undefined)
     const { container } = render(() => <ChatScrollRail {...baseProps({ previewFor })} />)
     const { card } = cardUnderPointer(container)
 
@@ -1393,7 +1519,9 @@ describe('ChatScrollRail dot preview card', () => {
 
   it('takes no selection hold from a selection that started somewhere else', () => {
     vi.useFakeTimers()
-    const previewFor = (seq: bigint) => (seq === 2n ? 'select me' : undefined)
+    const previewFor = (seq: bigint) => (seq === 2n
+      ? 'select me'
+      : undefined)
     const { container } = render(() => <ChatScrollRail {...baseProps({ previewFor })} />)
     const { card } = cardUnderPointer(container)
 
@@ -1411,7 +1539,9 @@ describe('ChatScrollRail dot preview card', () => {
 
   it('closes on a release that left NO selection behind, with no extra hold to wait out', () => {
     vi.useFakeTimers()
-    const previewFor = (seq: bigint) => (seq === 2n ? 'select me' : undefined)
+    const previewFor = (seq: bigint) => (seq === 2n
+      ? 'select me'
+      : undefined)
     const { container } = render(() => <ChatScrollRail {...baseProps({ previewFor })} />)
     const { card } = cardUnderPointer(container)
 
@@ -1425,7 +1555,11 @@ describe('ChatScrollRail dot preview card', () => {
   })
 
   it('keeps the card on ITS dot while a selection drag crosses the dots beside it', () => {
-    const previewFor = (seq: bigint) => (seq === 2n ? 'message two' : seq === 4n ? 'message four' : undefined)
+    const previewFor = (seq: bigint) => (seq === 2n
+      ? 'message two'
+      : seq === 4n
+        ? 'message four'
+        : undefined)
     const { container } = render(() => <ChatScrollRail {...baseProps({ previewFor })} />)
     const dots = container.querySelectorAll('[data-testid="chat-scroll-rail-dot"]')
     // baseProps() renders one dot per mark; the guard is type-level alone.
@@ -1454,7 +1588,11 @@ describe('ChatScrollRail dot preview card', () => {
 
   it('switches the card to another dot at once, with no close delay in between', () => {
     vi.useFakeTimers()
-    const previewFor = (seq: bigint) => (seq === 2n ? 'message two' : seq === 4n ? 'message four' : undefined)
+    const previewFor = (seq: bigint) => (seq === 2n
+      ? 'message two'
+      : seq === 4n
+        ? 'message four'
+        : undefined)
     const { container } = render(() => <ChatScrollRail {...baseProps({ previewFor })} />)
     const dots = container.querySelectorAll('[data-testid="chat-scroll-rail-dot"]')
     // baseProps() renders one dot per mark; the guard is type-level alone.
@@ -1473,7 +1611,11 @@ describe('ChatScrollRail dot preview card', () => {
   })
 
   it('moves the SAME card element to the new dot\'s Y, and sends its scroll back to the top', () => {
-    const previewFor = (seq: bigint) => (seq === 2n ? 'message two' : seq === 4n ? 'message four' : undefined)
+    const previewFor = (seq: bigint) => (seq === 2n
+      ? 'message two'
+      : seq === 4n
+        ? 'message four'
+        : undefined)
     const { container } = render(() => <ChatScrollRail {...baseProps({ previewFor })} />)
     const dots = container.querySelectorAll('[data-testid="chat-scroll-rail-dot"]')
     // baseProps() renders one dot per mark; the guard is type-level alone.
@@ -1498,15 +1640,27 @@ describe('ChatScrollRail dot preview card', () => {
   })
 
   it('leaves the card\'s scroll alone when a streaming turn re-anchors the SAME dot', async () => {
-    const previewFor = (seq: bigint) => (seq === 2n ? 'message two' : undefined)
-    const [marks, setMarks] = createSignal([{ seq: 2n, type: MarkType.USER_MESSAGE }])
-    const { container } = render(() => <ChatScrollRail {...baseProps({ marks: marks(), previewFor })} />)
+    const previewFor = (seq: bigint) => (seq === 2n
+      ? 'message two'
+      : undefined)
+    const [marks, setMarks] = createSignal([
+      { seq: 2n, type: MarkType.USER_MESSAGE },
+    ])
+    const { container } = render(() => (
+      <ChatScrollRail {...baseProps({
+        marks: marks(),
+        previewFor,
+      })}
+      />
+    ))
     fireEvent.pointerEnter(container.querySelector('[data-testid="chat-scroll-rail-dot"]') as HTMLElement)
     const card = container.querySelector('[data-testid="chat-scroll-rail-preview"]') as HTMLElement
     card.scrollTop = 150
 
     // The same seq re-clusters to a fresh object as maxSeq ticks (see chatDotPreview.reanchor).
-    setMarks([{ seq: 2n, type: MarkType.CONTROL_RESPONSE }])
+    setMarks([
+      { seq: 2n, type: MarkType.CONTROL_RESPONSE },
+    ])
     await tick()
 
     // Resetting here would yank the card out from under a reader who is mid-read, once per
@@ -1527,7 +1681,9 @@ describe('ChatScrollRail dot preview card', () => {
 
   it('scrolls the preview card, not the transcript, when the card has room to scroll', () => {
     const scrollEl = makeScrollEl(100, 5000)
-    const previewFor = (seq: bigint) => (seq === 2n ? 'a long preview' : undefined)
+    const previewFor = (seq: bigint) => (seq === 2n
+      ? 'a long preview'
+      : undefined)
     const { container } = render(() => <ChatScrollRail {...baseProps({ scrollEl, previewFor })} />)
     const forwarded = vi.fn()
     scrollEl.addEventListener('wheel', forwarded)
@@ -1543,7 +1699,9 @@ describe('ChatScrollRail dot preview card', () => {
 
   it('forwards the wheel to the transcript when the preview card has nothing left to scroll', () => {
     const scrollEl = makeScrollEl(100, 5000)
-    const previewFor = (seq: bigint) => (seq === 2n ? 'a short preview' : undefined)
+    const previewFor = (seq: bigint) => (seq === 2n
+      ? 'a short preview'
+      : undefined)
     const { container } = render(() => <ChatScrollRail {...baseProps({ scrollEl, previewFor })} />)
     const card = cardWithScrollHeight(container, 200) // shorter than the card -> the preview fits
 
@@ -1559,7 +1717,9 @@ describe('ChatScrollRail dot preview card', () => {
     // downward but plenty upward, and one formula for both would either trap the wheel at an end
     // or hand the transcript a wheel the card could still use.
     const scrollEl = makeScrollEl(100, 5000)
-    const previewFor = (seq: bigint) => (seq === 2n ? 'a long preview' : undefined)
+    const previewFor = (seq: bigint) => (seq === 2n
+      ? 'a long preview'
+      : undefined)
     const { container } = render(() => <ChatScrollRail {...baseProps({ scrollEl, previewFor })} />)
     const card = cardWithScrollHeight(container, 600) // 600 - 400 = 200px of travel
     card.scrollTop = 200 // ...and the reader is already at the bottom of it
@@ -1575,13 +1735,20 @@ describe('ChatScrollRail dot preview card', () => {
 
   it('keeps a purely horizontal wheel off the rail, which could only swallow it', () => {
     const scrollEl = makeScrollEl(100, 5000)
-    const previewFor = (seq: bigint) => (seq === 2n ? 'a long preview' : undefined)
+    const previewFor = (seq: bigint) => (seq === 2n
+      ? 'a long preview'
+      : undefined)
     const { container } = render(() => <ChatScrollRail {...baseProps({ scrollEl, previewFor })} />)
     const forwarded = vi.fn()
     scrollEl.addEventListener('wheel', forwarded)
     const card = cardWithScrollHeight(container, 200) // a preview that FITS -- no vertical room at all
 
-    const sideways = new WheelEvent('wheel', { bubbles: true, cancelable: true, deltaX: 100, deltaY: 0 })
+    const sideways = new WheelEvent('wheel', {
+      bubbles: true,
+      cancelable: true,
+      deltaX: 100,
+      deltaY: 0,
+    })
     card.dispatchEvent(sideways)
 
     // The card scrolls on one axis only, so it has nothing to do with a sideways wheel -- but
@@ -1595,7 +1762,9 @@ describe('ChatScrollRail dot preview card', () => {
 
   it('ends the press hold on a pointercancel, not only on a pointerup', () => {
     vi.useFakeTimers()
-    const previewFor = (seq: bigint) => (seq === 2n ? 'select me' : undefined)
+    const previewFor = (seq: bigint) => (seq === 2n
+      ? 'select me'
+      : undefined)
     const { container } = render(() => <ChatScrollRail {...baseProps({ previewFor })} />)
     const { card } = cardUnderPointer(container)
     fireEvent.pointerDown(card)
@@ -1609,9 +1778,19 @@ describe('ChatScrollRail dot preview card', () => {
   })
 
   it('drops its window press listeners when the card is torn down mid-press', async () => {
-    const previewFor = (seq: bigint) => (seq === 2n ? 'select me' : undefined)
-    const [marks, setMarks] = createSignal([{ seq: 2n, type: MarkType.USER_MESSAGE }])
-    const { container } = render(() => <ChatScrollRail {...baseProps({ marks: marks(), previewFor })} />)
+    const previewFor = (seq: bigint) => (seq === 2n
+      ? 'select me'
+      : undefined)
+    const [marks, setMarks] = createSignal([
+      { seq: 2n, type: MarkType.USER_MESSAGE },
+    ])
+    const { container } = render(() => (
+      <ChatScrollRail {...baseProps({
+        marks: marks(),
+        previewFor,
+      })}
+      />
+    ))
     fireEvent.pointerEnter(container.querySelector('[data-testid="chat-scroll-rail-dot"]') as HTMLElement)
     const card = container.querySelector('[data-testid="chat-scroll-rail-preview"]') as HTMLElement
 
@@ -1641,12 +1820,22 @@ describe('ChatScrollRail dot preview card', () => {
   })
 
   it('gives the dots back to the pointer when the card is torn down mid-press', async () => {
-    const previewFor = (seq: bigint) => (seq === 2n ? 'select me' : seq === 4n ? 'message four' : undefined)
+    const previewFor = (seq: bigint) => (seq === 2n
+      ? 'select me'
+      : seq === 4n
+        ? 'message four'
+        : undefined)
     const [marks, setMarks] = createSignal([
       { seq: 2n, type: MarkType.USER_MESSAGE },
       { seq: 4n, type: MarkType.USER_MESSAGE },
     ])
-    const { container } = render(() => <ChatScrollRail {...baseProps({ marks: marks(), previewFor })} />)
+    const { container } = render(() => (
+      <ChatScrollRail {...baseProps({
+        marks: marks(),
+        previewFor,
+      })}
+      />
+    ))
     const dots = container.querySelectorAll('[data-testid="chat-scroll-rail-dot"]')
     // Two marks above, so the dot exists; the guard is type-level alone.
     const [firstDot] = dots
@@ -1660,7 +1849,9 @@ describe('ChatScrollRail dot preview card', () => {
     // pointerup of its own ever runs. The press LOCK it took on the rail's dots must come off with
     // it -- otherwise the dots stand down for a press that can never end, and the rail stops
     // showing any card at all for the rest of the session.
-    setMarks([{ seq: 4n, type: MarkType.USER_MESSAGE }])
+    setMarks([
+      { seq: 4n, type: MarkType.USER_MESSAGE },
+    ])
     await tick()
     expect(container.querySelector('[data-testid="chat-scroll-rail-preview"]')).toBeNull()
 
@@ -1669,7 +1860,9 @@ describe('ChatScrollRail dot preview card', () => {
   })
 
   it('opens ONE press hold however many times the press repeats', () => {
-    const previewFor = (seq: bigint) => (seq === 2n ? 'select me' : undefined)
+    const previewFor = (seq: bigint) => (seq === 2n
+      ? 'select me'
+      : undefined)
     const { container } = render(() => <ChatScrollRail {...baseProps({ previewFor })} />)
     const { card } = cardUnderPointer(container)
 
@@ -1685,9 +1878,19 @@ describe('ChatScrollRail dot preview card', () => {
   })
 
   it('closes the card when the hovered dot disappears', async () => {
-    const previewFor = (seq: bigint) => (seq === 2n ? 'stale preview' : undefined)
-    const [marks, setMarks] = createSignal([{ seq: 2n, type: MarkType.USER_MESSAGE }])
-    const { container } = render(() => <ChatScrollRail {...baseProps({ marks: marks(), previewFor })} />)
+    const previewFor = (seq: bigint) => (seq === 2n
+      ? 'stale preview'
+      : undefined)
+    const [marks, setMarks] = createSignal([
+      { seq: 2n, type: MarkType.USER_MESSAGE },
+    ])
+    const { container } = render(() => (
+      <ChatScrollRail {...baseProps({
+        marks: marks(),
+        previewFor,
+      })}
+      />
+    ))
     const dot = container.querySelector('[data-testid="chat-scroll-rail-dot"]') as HTMLElement
     fireEvent.pointerEnter(dot)
     expect(container.querySelector('[data-testid="chat-scroll-rail-preview"]')).toHaveTextContent('stale preview')
@@ -1719,8 +1922,18 @@ describe('ChatScrollRail dot preview card', () => {
       { seq: 501n, type: MarkType.USER_MESSAGE },
       { seq: 502n, type: MarkType.USER_MESSAGE },
     ]
-    const previewFor = (seq: bigint) => (seq === 502n ? 'the nearest message' : undefined)
-    const { container } = render(() => <ChatScrollRail {...baseProps({ minSeq: 1n, maxSeq: 100_000n, marks, previewFor })} />)
+    const previewFor = (seq: bigint) => (seq === 502n
+      ? 'the nearest message'
+      : undefined)
+    const { container } = render(() => (
+      <ChatScrollRail {...baseProps({
+        minSeq: 1n,
+        maxSeq: 100_000n,
+        marks,
+        previewFor,
+      })}
+      />
+    ))
     const card = hoverFirstDot(container)!
     expect(card).toHaveTextContent('3 messages') // the aggregate header
     expect(card).toHaveTextContent('the nearest message') // the representative's preview
@@ -2035,7 +2248,12 @@ describe('ChatScrollRail dot preview card', () => {
       ))
       const rail = railWithRect(container)
 
-      rail.dispatchEvent(new PointerEvent('pointermove', { bubbles: true, pointerType: 'mouse', clientY: 200, pointerId: 1 }))
+      rail.dispatchEvent(new PointerEvent('pointermove', {
+        bubbles: true,
+        pointerType: 'mouse',
+        clientY: 200,
+        pointerId: 1,
+      }))
       expect(onActivity).toHaveBeenCalledTimes(1)
       expect(rail.className).not.toContain(styles.railIdle)
 

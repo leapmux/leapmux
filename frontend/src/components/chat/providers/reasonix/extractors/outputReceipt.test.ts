@@ -23,11 +23,29 @@ describe('reasonixOutputFilePointer', () => {
     expect(reasonixOutputFilePointer(receipt.replace(path, sanitized), 'bash', callId)).toBe(sanitized)
   })
 
-  it.each([undefined, null, 0, '', {}, [], `quoted\n${receipt}`, receipt.replace('[bash', '[read_file'), receipt.replace('6001 lines', '0 lines'), receipt.replace('Read a window', 'Read another window')])('rejects an absent, quoted, or altered native receipt: %j', (value) => {
+  it.each([
+    undefined,
+    null,
+    0,
+    '',
+    {},
+    [],
+    `quoted\n${receipt}`,
+    receipt.replace('[bash', '[read_file'),
+    receipt.replace('6001 lines', '0 lines'),
+    receipt.replace('Read a window', 'Read another window'),
+  ])('rejects an absent, quoted, or altered native receipt: %j', (value) => {
     expect(reasonixOutputFilePointer(value, 'bash', 'native-call')).toBeUndefined()
   })
 
-  it.each(['relative/native-call.txt', 'https://example.com/native-call.txt', 'file:///native-call.txt', '/native/other-call.txt', '/native/native-call.txt\r', '/native/zero\0/native-call.txt'])('rejects a foreign or non-filesystem path: %j', (invalid) => {
+  it.each([
+    'relative/native-call.txt',
+    'https://example.com/native-call.txt',
+    'file:///native-call.txt',
+    '/native/other-call.txt',
+    '/native/native-call.txt\r',
+    '/native/zero\0/native-call.txt',
+  ])('rejects a foreign or non-filesystem path: %j', (invalid) => {
     expect(reasonixOutputFilePointer(receipt.replace(path, invalid), 'bash', 'native-call')).toBeUndefined()
   })
 

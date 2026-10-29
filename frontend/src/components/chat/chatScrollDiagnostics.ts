@@ -295,7 +295,9 @@ export function createScrollDiagnostics(deps: ScrollDiagnosticsDeps): ScrollDiag
     if (hasHistoryThatDirection && Math.abs(info.clampPx) >= VISIBLE_ANCHOR_JUMP_PX) {
       scrollLog.warn('anchor re-pin clamped at a loaded edge -- anchored row jumped', {
         ...info,
-        clampedAt: info.clampPx > 0 ? 'top' : 'bottom',
+        clampedAt: info.clampPx > 0
+          ? 'top'
+          : 'bottom',
         ...causationContext(),
       })
     }

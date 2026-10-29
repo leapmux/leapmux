@@ -16,8 +16,12 @@ export function readCodeBuddyNativeOutput(snapshot: NativeMessageSnapshot, callI
     },
   })
   const content = pickObject(record.frame, 'message')?.content
-  const matching = Array.isArray(content) ? content.filter(isObject).filter(block => block.type === 'tool_result' && block.tool_use_id === callId) : []
-  const result = matching.length === 1 ? matching[0] : undefined
+  const matching = Array.isArray(content)
+    ? content.filter(isObject).filter(block => block.type === 'tool_result' && block.tool_use_id === callId)
+    : []
+  const result = matching.length === 1
+    ? matching[0]
+    : undefined
   if (!result || result.is_error === true)
     throw new Error('The native CodeBuddy pointer requires one exact result block.')
   const resultContent = result.content
@@ -27,16 +31,27 @@ export function readCodeBuddyNativeOutput(snapshot: NativeMessageSnapshot, callI
       ? resultContent.filter(isObject).filter(block => block.type === 'text').map(block => block.text).filter((text): text is string => typeof text === 'string')
       : []
   const notices = texts.filter(text => text.startsWith('<persisted-output>'))
-  const notice = notices.length === 1 ? notices[0] : undefined
+  const notice = notices.length === 1
+    ? notices[0]
+    : undefined
   if (notice && (notice.split('<persisted-output>').length !== 2 || notice.split('</persisted-output>').length !== 2))
     throw new Error('The native result repeats its persisted-output wrapper.')
-  const wrapperPath = notice ? /^<persisted-output>\r?\nOutput too large \([^\r\n]+\)\. Full output saved to: ([^\r\n]+)\r?\n[\s\S]*\n<\/persisted-output>$/u.exec(notice)?.[1] : undefined
+  const wrapperPath = notice
+    ? /^<persisted-output>\r?\nOutput too large \([^\r\n]+\)\. Full output saved to: ([^\r\n]+)\r?\n[\s\S]*\n<\/persisted-output>$/u.exec(notice)?.[1]
+    : undefined
   const path = wrapperPath
-  const segments = typeof path === 'string' ? path.split(/[\\/]/u) : []
+  const segments = typeof path === 'string'
+    ? path.split(/[\\/]/u)
+    : []
   if (!isFilesystemPath(path) || segments.at(-2) !== 'tool-results'
     || !segments.includes(snapshot.agentSessionId) || segments.at(-1) !== `${callId}.txt`) {
     throw new Error('The native CodeBuddy result has no filesystem output pointer.')
   }
   const previewText = texts.join('')
-  return { paths: [path], previewText, frame: record.frame, content: record.message.content }
+  return {
+    paths: [path],
+    previewText,
+    frame: record.frame,
+    content: record.message.content,
+  }
 }

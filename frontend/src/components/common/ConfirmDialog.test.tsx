@@ -244,7 +244,9 @@ describe('ConfirmDialog', () => {
         </ConfirmDialog>
       ))
       const footer = screen.getByTestId('my-dialog').querySelector('footer')!
-      const labels = [...footer.querySelectorAll('button')].map(b => b.textContent?.trim())
+      const labels = [
+        ...footer.querySelectorAll('button'),
+      ].map(b => b.textContent?.trim())
       expect(labels).toEqual(['Cancel', 'Close all', 'Convert'])
       expect(screen.getByTestId('my-secondary')).toBeInTheDocument()
     })

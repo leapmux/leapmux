@@ -31,14 +31,33 @@ export function taskResultCollapsible(result: TaskResult): boolean {
 
 export function StatusResultBody(props: { source: TaskResult, context?: ToolResultRenderContext }): JSX.Element {
   const output = () => props.source.output
-  const collapsed = useCollapsedLines({ text: output, expanded: () => getToolResultExpanded(props.context) })
+  const collapsed = useCollapsedLines({
+    text: output,
+    expanded: () => getToolResultExpanded(props.context),
+  })
   const body = () => (
     <>
       <Show when={props.source.command}>
-        {command => <CommandInputBody command={command()} {...(props.context !== undefined ? { context: props.context } : {})} />}
+        {command => (
+          <CommandInputBody
+            command={command()}
+            {...(props.context !== undefined
+              ? { context: props.context }
+              : {})}
+          />
+        )}
       </Show>
       <Show when={output()}>
-        <CollapsibleContent outputPreview kind="ansi-or-pre" text={output()} display={collapsed.display()} isCollapsed={collapsed.isCollapsed()} {...(props.context !== undefined ? { context: props.context } : {})} />
+        <CollapsibleContent
+          outputPreview
+          kind="ansi-or-pre"
+          text={output()}
+          display={collapsed.display()}
+          isCollapsed={collapsed.isCollapsed()}
+          {...(props.context !== undefined
+            ? { context: props.context }
+            : {})}
+        />
       </Show>
     </>
   )

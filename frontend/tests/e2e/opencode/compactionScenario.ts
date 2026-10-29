@@ -33,7 +33,12 @@ export async function exerciseOpenCodeCompactionNotice(context: ManagedNativeSce
   expectSameNativeSession(before, await currentNativeAgent(context), 'Native compaction')
   const events = openCodeCompactionEvents(await readNativeMessageSnapshot(context, before.id))
   expect(events).toHaveLength(1)
-  expect(events).toMatchObject([{ type: 'session.compacted', properties: { sessionID: before.agentSessionId } }])
+  expect(events).toMatchObject([
+    {
+      type: 'session.compacted',
+      properties: { sessionID: before.agentSessionId },
+    },
+  ])
   await expectCompactionNoticeAfterReload(context.page, { divider: true })
   expectSameNativeSession(before, await currentNativeAgent(context), 'Reloading the completed compaction')
   expect(openCodeCompactionEvents(await readNativeMessageSnapshot(context, before.id)))
@@ -43,7 +48,12 @@ export async function exerciseOpenCodeCompactionNotice(context: ManagedNativeSce
 /** A refused summary emits no completion; an explicit retry uses the preserved context. */
 export async function exerciseFailedOpenCodeCompactionNotice(context: ManagedNativeScenarioContext): Promise<void> {
   const before = await currentNativeAgent(context)
-  await exerciseFailedNativeCompaction(context, { summary: { route: 'rule', when: { body: summaryMarker } } })
+  await exerciseFailedNativeCompaction(context, {
+    summary: {
+      route: 'rule',
+      when: { body: summaryMarker },
+    },
+  })
   expect(openCodeCompactionEvents(await readNativeMessageSnapshot(context, before.id))).toEqual([])
   await expectCompactionNoticeAfterReload(context.page, { count: 0, divider: true })
   expect(openCodeCompactionEvents(await readNativeMessageSnapshot(context, before.id))).toEqual([])

@@ -17,7 +17,10 @@ const receipt: LogLine = {
 
 describe('hasNativeGenerationReceipt', () => {
   it('matches the known SHA-256 vector and its exact byte count', () => {
-    expect(hasNativeGenerationReceipt([{ raw: 'banner', json: null, rxAt: 0 }, receipt], 'abc')).toBe(true)
+    expect(hasNativeGenerationReceipt([
+      { raw: 'banner', json: null, rxAt: 0 },
+      receipt,
+    ], 'abc')).toBe(true)
     expect(hasNativeGenerationReceipt([receipt], 'ab')).toBe(false)
     expect(hasNativeGenerationReceipt([receipt], 'abcd')).toBe(false)
   })
@@ -31,7 +34,15 @@ describe('hasNativeGenerationReceipt', () => {
     { [FIELD.Bytes]: 0 },
     { [FIELD.Bytes]: '3' },
   ])('rejects an incorrect native receipt field: %j', (change) => {
-    expect(hasNativeGenerationReceipt([{ ...receipt, json: { ...receipt.json, ...change } }], 'abc')).toBe(false)
+    expect(hasNativeGenerationReceipt([
+      {
+        ...receipt,
+        json: {
+          ...receipt.json,
+          ...change,
+        },
+      },
+    ], 'abc')).toBe(false)
   })
 
   it('rejects empty text rather than accepting an empty-stream receipt', () => {

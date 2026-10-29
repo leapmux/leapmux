@@ -30,7 +30,9 @@ export function claudeBashFromToolResult(args: ClaudeBashArgs): CommandResult {
     const { output, exitCode } = splitExitCodeMarker(resultContent)
     return {
       output,
-      ...(exitCode === undefined ? {} : { exitCode }),
+      ...(exitCode === undefined
+        ? {}
+        : { exitCode }),
     }
   }
 
@@ -39,7 +41,9 @@ export function claudeBashFromToolResult(args: ClaudeBashArgs): CommandResult {
 
   // Concatenate stdout + stderr into a single output stream for rendering;
   // surface stderr so future styling can split them.
-  const concat = stdout && stderr ? `${stdout}\n${stderr}` : (stdout || stderr || resultContent)
+  const concat = stdout && stderr
+    ? `${stdout}\n${stderr}`
+    : (stdout || stderr || resultContent)
 
   return {
     output: concat,
@@ -59,10 +63,14 @@ export function claudeExecuteSpec(request: ExecuteRequest, result: ClaudeToolRow
     result: {
       // The record is absent, not null: the arg type takes null as a stated
       // "no structured payload", which a row that carries no record does not state.
-      commands: [claudeBashFromToolResult({
-        ...(result.toolUseResult !== undefined ? { toolUseResult: result.toolUseResult } : {}),
-        resultContent: result.resultContent,
-      })],
+      commands: [
+        claudeBashFromToolResult({
+          ...(result.toolUseResult !== undefined
+            ? { toolUseResult: result.toolUseResult }
+            : {}),
+          resultContent: result.resultContent,
+        }),
+      ],
       unresolvedTerminals: [],
     },
   }

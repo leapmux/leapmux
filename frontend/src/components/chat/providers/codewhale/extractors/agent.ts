@@ -43,13 +43,17 @@ export function codewhaleAgentRequest(args: Record<string, unknown>): AgentReque
     : [action, target].filter(Boolean).join(' ')
   return {
     description,
-    ...(agentType ? { agentType } : {}),
+    ...(agentType
+      ? { agentType }
+      : {}),
     prompt: pickString(args, CODEWHALE_AGENT_INPUT_FIELD.Prompt),
   }
 }
 
 function stringList(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string' && entry !== '') : []
+  return Array.isArray(value)
+    ? value.filter((entry): entry is string => typeof entry === 'string' && entry !== '')
+    : []
 }
 
 /** One run a subagent record states, or null for a record that identifies no subagent. */
@@ -61,11 +65,19 @@ function agentRun(record: Record<string, unknown>, body: string, bodyLabel: stri
   return {
     description: pickString(record, CODEWHALE_RESULT_FIELD.Name) || pickString(record, CODEWHALE_RESULT_FIELD.Role),
     agentId,
-    ...(status ? { statusLabel: status.replaceAll('_', ' ') } : {}),
+    ...(status
+      ? {
+          statusLabel: status.replaceAll('_', ' '),
+        }
+      : {}),
     outcome: AGENT_STATUS_OUTCOMES.get(status) ?? 'unknown',
-    metadata: [{ label: 'Agent ID', value: agentId }],
+    metadata: [
+      { label: 'Agent ID', value: agentId },
+    ],
     body,
-    ...(bodyLabel !== undefined ? { bodyLabel } : {}),
+    ...(bodyLabel !== undefined
+      ? { bodyLabel }
+      : {}),
   }
 }
 
@@ -97,8 +109,12 @@ export function codewhaleAgentRuns(text: string, request: AgentRequest): AgentRu
   const note = pickString(document, CODEWHALE_RESULT_FIELD.Note)
   const runs = settled.filter(isObject).flatMap((record) => {
     const run = agentRun(record, note, undefined)
-    return run ? [run] : []
+    return run
+      ? [run]
+      : []
   })
   // A wait that settled nothing states only its note, which is no run to draw.
-  return runs.length > 0 ? runs : null
+  return runs.length > 0
+    ? runs
+    : null
 }

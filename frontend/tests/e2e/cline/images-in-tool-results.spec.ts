@@ -30,7 +30,12 @@ clineTest.describe('images in tool results for Cline', () => {
     const directory = createTestDirectory('cline-read-images-')
     const settings = join(directory, 'providers.json')
     const model = 'gpt-5.4'
-    writePrivateJSON(settings, clineProviders({ providerID: 'openai-native', modelID: model, modelKey: MODEL_KEY, baseURL: `${getGlobalState().mockModelUrl}/v1` }, Date.now()))
+    writePrivateJSON(settings, clineProviders({
+      providerID: 'openai-native',
+      modelID: model,
+      modelKey: MODEL_KEY,
+      baseURL: `${getGlobalState().mockModelUrl}/v1`,
+    }, Date.now()))
     await withNativeWorker(leapmuxServer, {
       dataDirPrefix: 'cline-read-images-worker',
       workerName: 'cline-read-images',
@@ -38,9 +43,17 @@ clineTest.describe('images in tool results for Cline', () => {
       privateDirectories: [directory],
     }, async (worker) => {
       const workspaceId = authenticatedEmptyWorkspace.workspaceId
-      const opened = await openProviderAgent(worker.server, workspaceId, CLINE_AGENT, { model, optionValues: { permissionMode: CLINE_PERMISSION_MODE.AutoApprove } })
+      const opened = await openProviderAgent(worker.server, workspaceId, CLINE_AGENT, {
+        model,
+        optionValues: { permissionMode: CLINE_PERMISSION_MODE.AutoApprove },
+      })
       await openWorkspace(page, workspaceId)
-      const native = await nativeContext({ page, modelScript, leapmuxServer: worker.server, workspaceId })
+      const native = await nativeContext({
+        page,
+        modelScript,
+        leapmuxServer: worker.server,
+        workspaceId,
+      })
       const image = await runToolImageTurn(native, {
         workingDir: opened.workingDir,
         marker: 'cline-native-read',
@@ -54,7 +67,9 @@ clineTest.describe('images in tool results for Cline', () => {
         await picture.locator('xpath=ancestor::button[@aria-label="Open image"]').click()
         const viewer = page.locator('img[src^="blob:"]:visible')
         await expect(viewer).toBeVisible()
-        await expect.poll(() => viewer.evaluate(element => element instanceof HTMLImageElement ? [element.naturalWidth, element.naturalHeight] : [])).toEqual([64, 64])
+        await expect.poll(() => viewer.evaluate(element => element instanceof HTMLImageElement
+          ? [element.naturalWidth, element.naturalHeight]
+          : [])).toEqual([64, 64])
         await tabById(page, opened.agentId).click()
       }
     })

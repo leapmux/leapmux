@@ -19,12 +19,26 @@ import { qwenChildTurn } from './childScenario'
 import { nativeContext } from './scenarios'
 
 /** How the agent of each test opens: in YOLO mode, so its workflow children run with no permission request. */
-const YOLO_OPEN: NativeAgentOpenOptions = { overrides: { optionValues: { [OPTION_ID_PERMISSION_MODE]: 'yolo' } } }
+const YOLO_OPEN: NativeAgentOpenOptions = {
+  overrides: {
+    optionValues: { [OPTION_ID_PERMISSION_MODE]: 'yolo' },
+  },
+}
 
 qwenTest('shows each agent of a native workflow run under the run group', async ({ authenticatedEmptyWorkspace, leapmuxServer, page, modelScript }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+  })
   await openNativeAgent(context, YOLO_OPEN)
-  const workUnit = (label: string, task: string, answer: string) => ({ label, task, answer, prompt: modelScript.prompt(task) })
+  const workUnit = (label: string, task: string, answer: string) => ({
+    label,
+    task,
+    answer,
+    prompt: modelScript.prompt(task),
+  })
   const children = [
     workUnit('First native unit', 'Reply with FIRSTNATIVEWORKUNIT.', 'FIRSTNATIVEWORKUNIT'),
     workUnit('Second native unit', 'Reply with SECONDNATIVEWORKUNIT.', 'SECONDNATIVEWORKUNIT'),
@@ -38,13 +52,17 @@ qwenTest('shows each agent of a native workflow run under the run group', async 
     })
   }
   const [first, second] = children
-  const start = await modelScript.queue({ toolCalls: [qwenWorkflowToolCall('two-workflow-units', [
-    'export const meta = { name: "qwen-two-work-units", description: "Run two independent assignments." }',
-    'phase("Two native assignments")',
-    `const first = await agent(${JSON.stringify(first.prompt)}, { label: ${JSON.stringify(first.label)} })`,
-    `const second = await agent(${JSON.stringify(second.prompt)}, { label: ${JSON.stringify(second.label)} })`,
-    'return { first, second }',
-  ].join('\n'))] })
+  const start = await modelScript.queue({
+    toolCalls: [
+      qwenWorkflowToolCall('two-workflow-units', [
+        'export const meta = { name: "qwen-two-work-units", description: "Run two independent assignments." }',
+        'phase("Two native assignments")',
+        `const first = await agent(${JSON.stringify(first.prompt)}, { label: ${JSON.stringify(first.label)} })`,
+        `const second = await agent(${JSON.stringify(second.prompt)}, { label: ${JSON.stringify(second.label)} })`,
+        'return { first, second }',
+      ].join('\n')),
+    ],
+  })
   await modelScript.fallback({ text: 'Both native workflow units completed.' })
   await sendMessage(page, modelScript.prompt('Run the two scripted native workflow assignments.'))
   await modelScript.waitForSteps(start + 1)
@@ -72,7 +90,12 @@ qwenTest('shows each agent of a native workflow run under the run group', async 
 })
 
 qwenTest('keeps the outgoing workflow stopped when a replacement starts new work', async ({ authenticatedEmptyWorkspace, leapmuxServer, page, modelScript }) => {
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+  })
   const { agentId } = await openNativeAgent(context, YOLO_OPEN)
   const outgoing = {
     name: 'qwen-outgoing-workflow',
@@ -121,11 +144,15 @@ qwenTest('keeps the outgoing workflow stopped when a replacement starts new work
     respond: { text: 'OUTGOINGWORKFLOWCHILD', gate: outgoing.gate },
     once: true,
   })
-  const oldStart = await modelScript.queue({ toolCalls: [qwenWorkflowToolCall(outgoing.callId, [
-    `export const meta = { name: ${JSON.stringify(outgoing.name)}, description: "Hold the outgoing assignment." }`,
-    'phase("Outgoing assignment")',
-    `return await agent(${JSON.stringify(modelScript.prompt(outgoing.task))}, { label: ${JSON.stringify(outgoing.label)} })`,
-  ].join('\n'))] })
+  const oldStart = await modelScript.queue({
+    toolCalls: [
+      qwenWorkflowToolCall(outgoing.callId, [
+        `export const meta = { name: ${JSON.stringify(outgoing.name)}, description: "Hold the outgoing assignment." }`,
+        'phase("Outgoing assignment")',
+        `return await agent(${JSON.stringify(modelScript.prompt(outgoing.task))}, { label: ${JSON.stringify(outgoing.label)} })`,
+      ].join('\n')),
+    ],
+  })
   try {
     await sendMessage(page, modelScript.prompt('Start the outgoing native workflow and hold its child.'))
     await modelScript.waitForSteps(oldStart + 1)
@@ -177,19 +204,28 @@ qwenTest('keeps the outgoing workflow stopped when a replacement starts new work
       await modelScript.rule({
         name: `replacement-native-work-unit-${index}`,
         when: qwenChildTurn(child.task),
-        respond: { text: child.answer, ...(index === 0 ? { gate: replacement.gate } : {}) },
+        respond: {
+          text: child.answer,
+          ...(index === 0
+            ? { gate: replacement.gate }
+            : {}),
+        },
         once: true,
       })
     }
     const [first, second] = replacement.children
     const newStart = await modelScript.queue(
-      { toolCalls: [qwenWorkflowToolCall(replacement.callId, [
-        `export const meta = { name: ${JSON.stringify(replacement.name)}, description: "Run replacement assignments." }`,
-        'phase("Replacement assignments")',
-        `const first = await agent(${JSON.stringify(modelScript.prompt(first.task))}, { label: ${JSON.stringify(first.label)} })`,
-        `const second = await agent(${JSON.stringify(modelScript.prompt(second.task))}, { label: ${JSON.stringify(second.label)} })`,
-        'return { first, second }',
-      ].join('\n'))] },
+      {
+        toolCalls: [
+          qwenWorkflowToolCall(replacement.callId, [
+            `export const meta = { name: ${JSON.stringify(replacement.name)}, description: "Run replacement assignments." }`,
+            'phase("Replacement assignments")',
+            `const first = await agent(${JSON.stringify(modelScript.prompt(first.task))}, { label: ${JSON.stringify(first.label)} })`,
+            `const second = await agent(${JSON.stringify(modelScript.prompt(second.task))}, { label: ${JSON.stringify(second.label)} })`,
+            'return { first, second }',
+          ].join('\n')),
+        ],
+      },
       { text: 'Both replacement native assignments completed.' },
     )
     await sendMessage(page, modelScript.prompt('Start the replacement workflow with two native assignments.'))

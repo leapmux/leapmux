@@ -9,5 +9,9 @@ export const museTest = createProviderTest({
   nativeContext,
   skipReason: MUSE_E2E_SKIP_REASON,
   workspaceName: 'authenticatedMuseWorkspace',
-  workspaceOptions: { openOptions: { optionValues: { permissionMode: 'allowAll' } } },
+  workspaceOptions: {
+    openOptions: {
+      optionValues: { permissionMode: 'allowAll' },
+    },
+  },
 })

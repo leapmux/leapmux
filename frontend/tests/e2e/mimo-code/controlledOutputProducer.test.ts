@@ -7,7 +7,9 @@ describe('observeMiMoNativeOutputSize', () => {
     let changed: () => void = () => {
       throw new Error('The native watcher has no handler.')
     }
-    let files = [{ path: '/native/tool_one', byteLength: 3, identity: 'native-file' }]
+    let files = [
+      { path: '/native/tool_one', byteLength: 3, identity: 'native-file' },
+    ]
     const release = vi.fn()
     const stop = vi.fn()
     const control = observeMiMoNativeOutputSize('complete', new Set(), {
@@ -20,7 +22,9 @@ describe('observeMiMoNativeOutputSize', () => {
       },
     })
     expect(release).not.toHaveBeenCalled()
-    files = [{ path: '/native/tool_one', byteLength: 8, identity: 'native-file' }]
+    files = [
+      { path: '/native/tool_one', byteLength: 8, identity: 'native-file' },
+    ]
     changed()
     await expect(control.observedPath).resolves.toBe('/native/tool_one')
     changed()
@@ -31,7 +35,9 @@ describe('observeMiMoNativeOutputSize', () => {
   it('does not release for a prior file with the expected size', () => {
     const release = vi.fn()
     const control = observeMiMoNativeOutputSize('complete', new Set(['/native/prior']), {
-      files: () => [{ path: '/native/prior', byteLength: 8, identity: 'native-file' }],
+      files: () => [
+        { path: '/native/prior', byteLength: 8, identity: 'native-file' },
+      ],
       release,
       subscribeFile: () => () => {},
       subscribe: () => () => {},
@@ -78,12 +84,24 @@ describe('observeMiMoNativeOutputSize diagnostics', () => {
   it('records partial native state without releasing the held producer', async () => {
     const release = vi.fn()
     const control = observeMiMoNativeOutputSize('complete', new Set(['/native/prior']), {
-      files: () => [{ path: '/native/prior', byteLength: 8, identity: 'native-file' }, { path: '/native/current', byteLength: 3, identity: 'native-file' }],
+      files: () => [
+        { path: '/native/prior', byteLength: 8, identity: 'native-file' },
+        { path: '/native/current', byteLength: 3, identity: 'native-file' },
+      ],
       release,
       subscribeFile: () => () => {},
       subscribe: () => () => {},
     })
-    expect(control.diagnostic()).toMatchObject({ expectedBytes: 8, finished: false, released: false, inspections: 1, lastFiles: [{ path: '/native/prior', byteLength: 8, prior: true }, { path: '/native/current', byteLength: 3, prior: false }] })
+    expect(control.diagnostic()).toMatchObject({
+      expectedBytes: 8,
+      finished: false,
+      released: false,
+      inspections: 1,
+      lastFiles: [
+        { path: '/native/prior', byteLength: 8, prior: true },
+        { path: '/native/current', byteLength: 3, prior: false },
+      ],
+    })
     const copied = control.diagnostic()
     const prior = copied.lastFiles[0]
     if (!prior)
@@ -108,7 +126,9 @@ describe('observeMiMoNativeOutputSize file notifications', () => {
       return stopFile
     })
     const control = observeMiMoNativeOutputSize('complete', new Set(), {
-      files: () => [{ path: '/native/tool_partial', byteLength: bytes, identity: 'native-file' }],
+      files: () => [
+        { path: '/native/tool_partial', byteLength: bytes, identity: 'native-file' },
+      ],
       release,
       subscribe: () => () => {},
       subscribeFile,
@@ -179,7 +199,9 @@ describe('observeMiMoNativeOutputSize observer lifecycle', () => {
     let bytes = 3
     const release = vi.fn()
     const control = observeMiMoNativeOutputSize('complete', new Set(), {
-      files: () => [{ path: '/native/tool_current', byteLength: bytes, identity: 'first' }],
+      files: () => [
+        { path: '/native/tool_current', byteLength: bytes, identity: 'first' },
+      ],
       release,
       subscribe: () => () => {},
       subscribeFile: () => {
@@ -193,13 +215,19 @@ describe('observeMiMoNativeOutputSize observer lifecycle', () => {
   })
 
   it('replaces the old inode observer before observing the new file', async () => {
-    const native = fileNotificationFixture([{ path: '/native/tool_current', byteLength: 3, identity: 'first' }])
-    native.replaceFiles([{ path: '/native/tool_current', byteLength: 3, identity: 'second' }])
+    const native = fileNotificationFixture([
+      { path: '/native/tool_current', byteLength: 3, identity: 'first' },
+    ])
+    native.replaceFiles([
+      { path: '/native/tool_current', byteLength: 3, identity: 'second' },
+    ])
     native.notifyFile('/native/tool_current')
     expect(native.fileStops).toHaveLength(2)
     expect(native.fileStops[0]).toHaveBeenCalledTimes(1)
     expect(native.release).not.toHaveBeenCalled()
-    native.replaceFiles([{ path: '/native/tool_current', byteLength: 8, identity: 'second' }])
+    native.replaceFiles([
+      { path: '/native/tool_current', byteLength: 8, identity: 'second' },
+    ])
     native.notifyFile('/native/tool_current')
     await expect(native.control.observedPath).resolves.toBe('/native/tool_current')
     expect(native.fileStops[1]).toHaveBeenCalledTimes(1)
@@ -208,11 +236,15 @@ describe('observeMiMoNativeOutputSize observer lifecycle', () => {
   })
 
   it('closes a removed file observer and discovers its replacement path', async () => {
-    const native = fileNotificationFixture([{ path: '/native/tool_removed', byteLength: 3, identity: 'first' }])
+    const native = fileNotificationFixture([
+      { path: '/native/tool_removed', byteLength: 3, identity: 'first' },
+    ])
     native.replaceFiles([])
     native.notifyDirectory()
     expect(native.fileStops[0]).toHaveBeenCalledTimes(1)
-    native.replaceFiles([{ path: '/native/tool_current', byteLength: 8, identity: 'second' }])
+    native.replaceFiles([
+      { path: '/native/tool_current', byteLength: 8, identity: 'second' },
+    ])
     native.notifyDirectory()
     await expect(native.control.observedPath).resolves.toBe('/native/tool_current')
     expect(native.fileStops[1]).toHaveBeenCalledTimes(1)
@@ -247,7 +279,9 @@ describe('observeMiMoNativeOutputSize observer lifecycle', () => {
     const directoryStop = vi.fn()
     const release = vi.fn()
     const control = observeMiMoNativeOutputSize('complete', new Set(), {
-      files: () => [{ path: '/native/tool_current', byteLength: 3, identity: 'first' }],
+      files: () => [
+        { path: '/native/tool_current', byteLength: 3, identity: 'first' },
+      ],
       release,
       subscribe: () => directoryStop,
       subscribeFile: () => { throw failure },
@@ -264,7 +298,9 @@ describe('observeMiMoNativeOutputSize observer lifecycle', () => {
     const release = vi.fn()
     const stop = vi.fn()
     const control = observeMiMoNativeOutputSize('complete', new Set(), {
-      files: () => [{ path: '/native/tool_current', byteLength: 3, identity }],
+      files: () => [
+        { path: '/native/tool_current', byteLength: 3, identity },
+      ],
       release,
       subscribe: () => () => {},
       subscribeFile: () => {
@@ -283,12 +319,16 @@ describe('observeMiMoNativeOutputSize observer lifecycle', () => {
     const directoryStop = vi.fn()
     const release = vi.fn()
     const control = observeMiMoNativeOutputSize('complete', new Set(), {
-      files: () => [{ path: '/native/tool_current', byteLength: 8, identity: 'first' }],
+      files: () => [
+        { path: '/native/tool_current', byteLength: 8, identity: 'first' },
+      ],
       release,
       subscribe: () => directoryStop,
       subscribeFile: () => () => { throw failure },
     })
-    await expect(control.observedPath).rejects.toMatchObject({ errors: [failure] })
+    await expect(control.observedPath).rejects.toMatchObject({
+      errors: [failure],
+    })
     expect(directoryStop).toHaveBeenCalledTimes(1)
     expect(release).not.toHaveBeenCalled()
     control.close()
@@ -305,7 +345,9 @@ describe('observeMiMoNativeOutputSize synchronous subscription failures', () => 
     }
     const release = vi.fn()
     const control = observeMiMoNativeOutputSize('complete', new Set(), {
-      files: () => [{ path: '/native/tool_current', byteLength: 3, identity: 'first' }],
+      files: () => [
+        { path: '/native/tool_current', byteLength: 3, identity: 'first' },
+      ],
       release,
       subscribe: (_changed, failed) => {
         if (source === 'directory') {
@@ -326,10 +368,20 @@ describe('observeMiMoNativeOutputSize synchronous subscription failures', () => 
 })
 
 describe('observeMiMoNativeOutputSize metadata limits', () => {
-  it.each([-1, 0, 3, 9, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1])('does not release for an invalid or different size %s', async (byteLength) => {
+  it.each([
+    -1,
+    0,
+    3,
+    9,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.MAX_SAFE_INTEGER + 1,
+  ])('does not release for an invalid or different size %s', async (byteLength) => {
     const release = vi.fn()
     const control = observeMiMoNativeOutputSize('complete', new Set(), {
-      files: () => [{ path: '/native/tool_current', byteLength, identity: 'current' }],
+      files: () => [
+        { path: '/native/tool_current', byteLength, identity: 'current' },
+      ],
       release,
       subscribe: () => () => {},
       subscribeFile: () => () => {},
@@ -344,7 +396,9 @@ describe('observeMiMoNativeOutputSize metadata limits', () => {
   it('does not release for an absent file identity', async () => {
     const release = vi.fn()
     const control = observeMiMoNativeOutputSize('complete', new Set(), {
-      files: () => [{ path: '/native/tool_current', byteLength: 8, identity: '' }],
+      files: () => [
+        { path: '/native/tool_current', byteLength: 8, identity: '' },
+      ],
       release,
       subscribe: () => () => {},
       subscribeFile: () => () => {},
@@ -357,7 +411,9 @@ describe('observeMiMoNativeOutputSize metadata limits', () => {
 
   it('uses UTF-8 size for the independently computed producer output', async () => {
     const control = observeMiMoNativeOutputSize('結果', new Set(), {
-      files: () => [{ path: '/native/tool_current', byteLength: 6, identity: 'current' }],
+      files: () => [
+        { path: '/native/tool_current', byteLength: 6, identity: 'current' },
+      ],
       release: () => {},
       subscribe: () => () => {},
       subscribeFile: () => () => {},
@@ -367,7 +423,10 @@ describe('observeMiMoNativeOutputSize metadata limits', () => {
     control.close()
   })
 
-  it.each(['', 'x'.repeat(4 * 1024 * 1024 + 1)])('rejects an empty or excessive expected output', (expected) => {
+  it.each([
+    '',
+    'x'.repeat(4 * 1024 * 1024 + 1),
+  ])('rejects an empty or excessive expected output', (expected) => {
     expect(() => observeMiMoNativeOutputSize(expected, new Set(), {
       files: () => [],
       release: () => {},
@@ -383,7 +442,9 @@ describe('observeMiMoNativeOutputSize metadata limits', () => {
       throw failure
     })
     const control = observeMiMoNativeOutputSize('complete', new Set(), {
-      files: () => [{ path: '/native/tool_current', byteLength: 8, identity: 'current' }],
+      files: () => [
+        { path: '/native/tool_current', byteLength: 8, identity: 'current' },
+      ],
       release,
       subscribe: () => stop,
       subscribeFile: () => stop,

@@ -3,12 +3,21 @@ import { MessageSource } from '../../../src/generated/proto/leapmux/v1/agent_pb'
 import { nativeFrameSnapshot, nativeOutputSnapshot } from '../helpers/nativeOutputReaderCases'
 import { openCodeCompactionEvents } from './compactionNotice'
 
-const completed = { id: 'evt-native-compaction', type: 'session.compacted', properties: { sessionID: 'native-session' } }
+const completed = {
+  id: 'evt-native-compaction',
+  type: 'session.compacted',
+  properties: { sessionID: 'native-session' },
+}
 const thread = (...messages: unknown[]) => ({ type: 'notification_thread', messages })
 
 describe('openCodeCompactionEvents', () => {
   it('reads the completed native event inside a stored notification thread', () => {
-    const snapshot = nativeFrameSnapshot(thread({ type: 'session.status', properties: { status: { type: 'idle' } } }, completed))
+    const snapshot = nativeFrameSnapshot(thread({
+      type: 'session.status',
+      properties: {
+        status: { type: 'idle' },
+      },
+    }, completed))
     expect(openCodeCompactionEvents(snapshot)).toEqual([completed])
   })
 
@@ -19,11 +28,21 @@ describe('openCodeCompactionEvents', () => {
   })
 
   it('requires both the stored row and the native event to belong to the session', () => {
-    const foreign = { ...completed, properties: { sessionID: 'other-session' } }
+    const foreign = {
+      ...completed,
+      properties: { sessionID: 'other-session' },
+    }
     const snapshot = nativeOutputSnapshot([
-      { frame: thread(completed), agentSessionId: 'other-session' },
-      { frame: thread(foreign) },
-      { frame: thread(completed) },
+      {
+        frame: thread(completed),
+        agentSessionId: 'other-session',
+      },
+      {
+        frame: thread(foreign),
+      },
+      {
+        frame: thread(completed),
+      },
     ])
     expect(openCodeCompactionEvents(snapshot)).toEqual([completed])
   })
@@ -37,8 +56,17 @@ describe('openCodeCompactionEvents', () => {
 
   it('does not search assistant or tool content for event tokens', () => {
     expect(openCodeCompactionEvents(nativeFrameSnapshot(
-      { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: JSON.stringify(thread(completed)) } },
-      { sessionUpdate: 'tool_call_update', rawOutput: thread(completed) },
+      {
+        sessionUpdate: 'agent_message_chunk',
+        content: {
+          type: 'text',
+          text: JSON.stringify(thread(completed)),
+        },
+      },
+      {
+        sessionUpdate: 'tool_call_update',
+        rawOutput: thread(completed),
+      },
       completed,
     ))).toEqual([])
   })
@@ -54,8 +82,14 @@ describe('openCodeCompactionEvents', () => {
     thread({ type: 'session.compacted' }),
     thread({ type: 'session.compacted', properties: null }),
     thread({ type: 'session.compacted', properties: [] }),
-    thread({ type: 'session.compacted', properties: { sessionID: '' } }),
-    thread({ type: 'session.compacted', properties: { sessionID: 0 } }),
+    thread({
+      type: 'session.compacted',
+      properties: { sessionID: '' },
+    }),
+    thread({
+      type: 'session.compacted',
+      properties: { sessionID: 0 },
+    }),
   ])('ignores a malformed or empty frame: %j', (frame) => {
     expect(openCodeCompactionEvents(nativeFrameSnapshot(frame))).toEqual([])
   })

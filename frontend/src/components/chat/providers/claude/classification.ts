@@ -71,7 +71,9 @@ const CLAUDE_NOTIFICATION_CLASSIFIERS: Record<string, ClaudeTypeClassifier> = {
     // A known subtype that states no words draws nothing. An unknown subtype
     // keeps the no-display card, because that card is the signal that a new
     // frame exists.
-    return classifyNotifications([parent], input.agentProvider, claudeNotificationEntry, claudeReadsSystemSubtype(subtype) ? 'hidden' : 'notification')
+    return classifyNotifications([parent], input.agentProvider, claudeNotificationEntry, claudeReadsSystemSubtype(subtype)
+      ? 'hidden'
+      : 'notification')
   },
   rate_limit_event(parent, input) {
     if (isHiddenClaudeNotification(parent))
@@ -104,7 +106,9 @@ const CLAUDE_CONTENT_CLASSIFIERS: Record<string, ClaudeTypeClassifier> = {
       // A proposed plan leaves the tool path: every provider draws one the same
       // way, through the shared plan card. BOTH layers read it here, so the row
       // the list measures and the row the transcript draws cannot disagree.
-      return claudeExitPlanText(toolUse) ? { kind: 'assistant_plan' } : { kind: 'tool_use' }
+      return claudeExitPlanText(toolUse)
+        ? { kind: 'assistant_plan' }
+        : { kind: 'tool_use' }
     }
     if (blocks.some(c => isObject(c) && c.type === 'text'))
       return { kind: 'assistant_text' }
@@ -115,7 +119,9 @@ const CLAUDE_CONTENT_CLASSIFIERS: Record<string, ClaudeTypeClassifier> = {
       const hasText = blocks.some(c =>
         isObject(c) && c.type === 'thinking'
         && typeof c.thinking === 'string' && c.thinking.length > 0)
-      return hasText ? { kind: 'assistant_thinking' } : { kind: 'hidden' }
+      return hasText
+        ? { kind: 'assistant_thinking' }
+        : { kind: 'hidden' }
     }
     return { kind: 'unknown' }
   },
@@ -175,7 +181,9 @@ export function classifyClaudeCodeMessage(
     // `Object.hasOwn`, not a bare read: `type` comes straight off the wire, and a
     // value that spells an `Object.prototype` member answers with a function the
     // call below would then run.
-    const notif = Object.hasOwn(CLAUDE_NOTIFICATION_CLASSIFIERS, type) ? CLAUDE_NOTIFICATION_CLASSIFIERS[type] : undefined
+    const notif = Object.hasOwn(CLAUDE_NOTIFICATION_CLASSIFIERS, type)
+      ? CLAUDE_NOTIFICATION_CLASSIFIERS[type]
+      : undefined
     if (notif)
       return notif(parentObject, input)
   }
@@ -190,7 +198,9 @@ export function classifyClaudeCodeMessage(
   // Content-shaped types (assistant / user).
   if (type) {
     // `Object.hasOwn`, for the reason the notification lookup above gives.
-    const content = Object.hasOwn(CLAUDE_CONTENT_CLASSIFIERS, type) ? CLAUDE_CONTENT_CLASSIFIERS[type] : undefined
+    const content = Object.hasOwn(CLAUDE_CONTENT_CLASSIFIERS, type)
+      ? CLAUDE_CONTENT_CLASSIFIERS[type]
+      : undefined
     if (content)
       return content(parentObject, input, context)
   }

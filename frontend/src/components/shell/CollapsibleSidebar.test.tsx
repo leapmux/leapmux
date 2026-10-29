@@ -34,9 +34,15 @@ function renderSidebar(props: {
       isCollapsed={false}
       onExpand={() => {}}
       // The optional fixtures stay omitted when the harness passed none.
-      {...(props.initialOpenSections !== undefined ? { initialOpenSections: props.initialOpenSections } : {})}
-      {...(props.initialSectionSizes !== undefined ? { initialSectionSizes: props.initialSectionSizes } : {})}
-      {...(props.onStateChange !== undefined ? { onStateChange: props.onStateChange } : {})}
+      {...(props.initialOpenSections !== undefined
+        ? { initialOpenSections: props.initialOpenSections }
+        : {})}
+      {...(props.initialSectionSizes !== undefined
+        ? { initialSectionSizes: props.initialSectionSizes }
+        : {})}
+      {...(props.onStateChange !== undefined
+        ? { onStateChange: props.onStateChange }
+        : {})}
     />
   ))
 }
@@ -234,7 +240,11 @@ describe('CollapsibleSidebar', () => {
     it('renders the actions of a COLLAPSED section', () => {
       renderSidebar({
         sections: [
-          makeSection({ id: 'a', title: 'Section A', headerActions: () => <button type="button" data-testid="hdr-a" /> }),
+          makeSection({
+            id: 'a',
+            title: 'Section A',
+            headerActions: () => <button type="button" data-testid="hdr-a" />,
+          }),
           makeSection({ id: 'b', title: 'Section B' }),
         ],
         initialOpenSections: { a: false, b: true },
@@ -267,7 +277,9 @@ describe('CollapsibleSidebar', () => {
       expect(build).toHaveBeenCalledTimes(1)
 
       // A fresh def array for the same section id -- one workspace rename.
-      setSections([makeSection({ id: 'a', title: 'Section A', headerActions: build })])
+      setSections([
+        makeSection({ id: 'a', title: 'Section A', headerActions: build }),
+      ])
 
       // The call count alone is vacuous: the old inline form also evaluated
       // once on first render. The node identity is what says the trigger --
@@ -279,7 +291,11 @@ describe('CollapsibleSidebar', () => {
     it('renders no actions box for a section that supplies none', () => {
       renderSidebar({
         sections: [
-          makeSection({ id: 'a', title: 'Section A', headerActions: () => <button type="button" data-testid="hdr-a" /> }),
+          makeSection({
+            id: 'a',
+            title: 'Section A',
+            headerActions: () => <button type="button" data-testid="hdr-a" />,
+          }),
           makeSection({ id: 'b', title: 'Section B' }),
         ],
       })
@@ -295,7 +311,9 @@ describe('CollapsibleSidebar', () => {
   it('renders collapsed rail when isCollapsed is true', () => {
     render(() => (
       <CollapsibleSidebar
-        sections={[makeSection({ id: 'a', title: 'Section A' })]}
+        sections={[
+          makeSection({ id: 'a', title: 'Section A' }),
+        ]}
         side="left"
         isCollapsed={true}
         onExpand={() => {}}

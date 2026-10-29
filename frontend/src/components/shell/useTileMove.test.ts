@@ -39,7 +39,13 @@ describe('useTileMove.moveTabToTile', () => {
 
   /** Place a tab through the op path and read it back off the projection. */
   function place(view: ReturnType<typeof setup>['view'], id: string, tileId: string, position: string): AgentTab {
-    emitAddTab({ type: TabType.AGENT, id, tileId, position, workerId: 'w-1' })
+    emitAddTab({
+      type: TabType.AGENT,
+      id,
+      tileId,
+      position,
+      workerId: 'w-1',
+    })
     return view.getAgentTab(id)!
   }
 
@@ -77,7 +83,9 @@ describe('useTileMove.moveTabToTile', () => {
       // The split produced exactly two leaves; the throw is the type-level guard alone.
       if (tileA === undefined || tileB === undefined)
         throw new Error('expected two tiles after split')
-      const fromTile = tileB === toTile ? tileA : tileB
+      const fromTile = tileB === toTile
+        ? tileA
+        : tileB
       const tab = place(view, 'a-bg', fromTile, 'a')
       place(view, 'a-active', fromTile, 'b')
       selection.setActiveById(TabType.AGENT, 'a-active')
@@ -109,7 +117,9 @@ describe('useTileMove.moveTabToTile', () => {
       // The split produced exactly two leaves; the throw is the type-level guard alone.
       if (tileA === undefined || tileB === undefined)
         throw new Error('expected two tiles after split')
-      const fromTile = tileB === toTile ? tileA : tileB
+      const fromTile = tileB === toTile
+        ? tileA
+        : tileB
       const dragged = place(view, 'a-bg', fromTile, 'a')
       const reading = place(view, 'a-active', fromTile, 'b')
       selection.setActiveById(TabType.AGENT, 'a-active')
@@ -134,7 +144,9 @@ describe('useTileMove.moveTabToTile', () => {
       // The split produced exactly two leaves; the throw is the type-level guard alone.
       if (tileA === undefined || tileB === undefined)
         throw new Error('expected two tiles after split')
-      const fromTile = tileB === toTile ? tileA : tileB
+      const fromTile = tileB === toTile
+        ? tileA
+        : tileB
       const dragged = place(view, 'a-bg', fromTile, 'a')
       place(view, 'a-active', fromTile, 'b')
       selection.setActiveById(TabType.AGENT, 'a-active')
@@ -175,7 +187,9 @@ describe('useTileMove.moveTabToTile', () => {
       // The split produced exactly two leaves; the throw is the type-level guard alone.
       if (tileA === undefined || tileB === undefined)
         throw new Error('expected two tiles after split')
-      const fromTile = tileB === toTile ? tileA : tileB
+      const fromTile = tileB === toTile
+        ? tileA
+        : tileB
       const tab = place(view, 'a-1', fromTile, 'a')
 
       // removeEmptyFloatingWindow short-circuits for main-tree
@@ -201,7 +215,13 @@ describe('useTileMove.moveTabToTile', () => {
     createRoot((dispose) => {
       const { view, selection, layoutStore, ops } = setup()
       const mainTile = rootTile(layoutStore)
-      const tab: AgentTab = { type: TabType.AGENT, id: 'orphan', workspaceId: 'ws-1', tileId: undefined, workerId: 'w-1' }
+      const tab: AgentTab = {
+        type: TabType.AGENT,
+        id: 'orphan',
+        workspaceId: 'ws-1',
+        tileId: undefined,
+        workerId: 'w-1',
+      }
 
       ops.moveTabToTile(tab, mainTile, { takeFocus: true, cleanupSource: true })
 

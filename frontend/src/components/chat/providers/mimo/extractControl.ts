@@ -46,12 +46,16 @@ const COMMAND_PERMISSIONS: ReadonlySet<string> = new Set([MIMO_TOOL.Bash, ...MIM
  */
 function planDetails(payload: Record<string, unknown>): string[] {
   const questions = pickObject(payload, 'properties')?.questions
-  const question = Array.isArray(questions) && isObject(questions[0]) ? questions[0] : {}
+  const question = Array.isArray(questions) && isObject(questions[0])
+    ? questions[0]
+    : {}
   const path = pickString(pickObject(question, 'params'), 'plan').trim()
   if (path)
     return [`Plan file: ${path}`]
   const words = pickString(question, 'question').trim()
-  return words ? [words] : []
+  return words
+    ? [words]
+    : []
 }
 
 /**
@@ -77,7 +81,12 @@ export function mimoExtractControl(input: ControlExtractionInput): ExtractedCont
     if (plan)
       return { kind: 'plan', text: plan }
     const details = planDetails(payload)
-    return { kind: 'plan', ...(details.length > 0 ? { details } : {}) }
+    return {
+      kind: 'plan',
+      ...(details.length > 0
+        ? { details }
+        : {}),
+    }
   }
   if (type !== MIMO_EVENT.PermissionAsked)
     return null
@@ -91,7 +100,9 @@ export function mimoExtractControl(input: ControlExtractionInput): ExtractedCont
     : ''
   // A shell permission's patterns ARE the command, which the banner draws as code, so
   // the arguments leave them out rather than state the command twice.
-  const statedPatterns = command ? [] : patterns
+  const statedPatterns = command
+    ? []
+    : patterns
   const options = mimoPermissionOptions(permission, always)
   const offersAlways = options.some(option => option.optionId === MIMO_PERMISSION_REPLY.Always)
   return {
@@ -101,11 +112,17 @@ export function mimoExtractControl(input: ControlExtractionInput): ExtractedCont
       // What the request asks for, and what `Always allow` would approve from now on,
       // for a request that offers it.
       input: {
-        ...(statedPatterns.length > 0 ? { patterns: statedPatterns } : {}),
-        ...(offersAlways ? { always } : {}),
+        ...(statedPatterns.length > 0
+          ? { patterns: statedPatterns }
+          : {}),
+        ...(offersAlways
+          ? { always }
+          : {}),
         ...metadata,
       },
-      ...(command ? { command } : {}),
+      ...(command
+        ? { command }
+        : {}),
       options,
     },
   }

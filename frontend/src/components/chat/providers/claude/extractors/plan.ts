@@ -24,5 +24,7 @@ export function claudeExitPlanText(toolUse: Record<string, unknown> | undefined)
 /** The plan a whole Claude assistant envelope proposes, or '' when it proposes none. */
 export function claudePlanFromEnvelope(payload: Record<string, unknown> | undefined): string {
   const block = getMessageContentArray(payload)?.find(item => isObject(item) && item.type === 'tool_use')
-  return claudeExitPlanText(isObject(block) ? block : undefined)
+  return claudeExitPlanText(isObject(block)
+    ? block
+    : undefined)
 }

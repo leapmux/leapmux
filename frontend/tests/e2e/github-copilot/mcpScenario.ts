@@ -54,9 +54,25 @@ export async function withCopilotMcpServer(
     throw new Error('The Copilot MCP test needs the isolated Copilot home.')
   const directory = newProviderWorkingDir(COPILOT_AGENT, 'copilot-mcp-probe-')
   const server = createServer(directory)
-  const content = JSON.stringify({ mcpServers: { [server.name]: { type: 'local', command: server.command, args: server.args, tools: ['*'] } } })
-  await withNativeConfigurationFile({ path: join(home, 'mcp-config.json'), content, runDir: getGlobalState().tmpDir }, async () => {
-    await openProviderAgent(leapmuxServer, workspaceId, COPILOT_AGENT, { workingDir: directory, optionValues: { permissionMode: COPILOT_PERMISSION_MODE.AllowAll } })
+  const content = JSON.stringify({
+    mcpServers: {
+      [server.name]: {
+        type: 'local',
+        command: server.command,
+        args: server.args,
+        tools: ['*'],
+      },
+    },
+  })
+  await withNativeConfigurationFile({
+    path: join(home, 'mcp-config.json'),
+    content,
+    runDir: getGlobalState().tmpDir,
+  }, async () => {
+    await openProviderAgent(leapmuxServer, workspaceId, COPILOT_AGENT, {
+      workingDir: directory,
+      optionValues: { permissionMode: COPILOT_PERMISSION_MODE.AllowAll },
+    })
     await openWorkspace(page, workspaceId)
     await exercise(await nativeContext(fixtures), server)
   })

@@ -14,13 +14,17 @@ const eslintRoot = dirname(fileURLToPath(import.meta.url))
 const frontendRoot = resolve(eslintRoot, '..')
 
 function moduleText(node: TSESTree.Node | null | undefined): string | null {
-  return node?.type === AST_NODE_TYPES.Literal && typeof node.value === 'string' ? node.value : null
+  return node?.type === AST_NODE_TYPES.Literal && typeof node.value === 'string'
+    ? node.value
+    : null
 }
 
 function canonicalModule(filename: string, specifier: string): string {
   const path = specifier.startsWith('~/')
     ? resolve(frontendRoot, 'src', specifier.slice(2))
-    : specifier.startsWith('.') ? resolve(dirname(filename), specifier) : specifier
+    : specifier.startsWith('.')
+      ? resolve(dirname(filename), specifier)
+      : specifier
   const extension = extname(path)
   return extension === '.ts' || extension === '.tsx' || extension === '.js' || extension === '.jsx'
     ? path.slice(0, -extension.length)
@@ -65,18 +69,29 @@ const layerImports = createRule<[], 'forbiddenImport'>({
       return {}
     const check = (node: TSESTree.Node, source: TSESTree.Node | null | undefined) => {
       const specifier = moduleText(source)
-      if (specifier !== null && pipelineImportIsForbidden(filename, specifier))
-        context.report({ node, messageId: 'forbiddenImport', data: { specifier } })
+      if (specifier !== null && pipelineImportIsForbidden(filename, specifier)) {
+        context.report({
+          node,
+          messageId: 'forbiddenImport',
+          data: { specifier },
+        })
+      }
     }
     return {
       ImportDeclaration: node => check(node, node.source),
       ExportNamedDeclaration: node => check(node, node.source),
       ExportAllDeclaration: node => check(node, node.source),
       ImportExpression(node) {
-        if (moduleText(node.source) === null)
-          context.report({ node, messageId: 'forbiddenImport', data: { specifier: '<computed>' } })
-        else
+        if (moduleText(node.source) === null) {
+          context.report({
+            node,
+            messageId: 'forbiddenImport',
+            data: { specifier: '<computed>' },
+          })
+        }
+        else {
           check(node, node.source)
+        }
       },
       TSImportType: node => check(node, node.source),
       TSImportEqualsDeclaration(node) {
@@ -86,11 +101,19 @@ const layerImports = createRule<[], 'forbiddenImport'>({
       CallExpression(node) {
         if (node.callee.type !== AST_NODE_TYPES.Identifier || node.callee.name !== 'require')
           return
-        const source = node.arguments[0]?.type === AST_NODE_TYPES.SpreadElement ? null : node.arguments[0]
-        if (moduleText(source) === null)
-          context.report({ node, messageId: 'forbiddenImport', data: { specifier: '<computed>' } })
-        else
+        const source = node.arguments[0]?.type === AST_NODE_TYPES.SpreadElement
+          ? null
+          : node.arguments[0]
+        if (moduleText(source) === null) {
+          context.report({
+            node,
+            messageId: 'forbiddenImport',
+            data: { specifier: '<computed>' },
+          })
+        }
+        else {
           check(node, source)
+        }
       },
     }
   },
@@ -105,7 +128,10 @@ function typeContainsName(checker: ts.TypeChecker, type: ts.Type, pattern: RegEx
   if (type.isUnionOrIntersection() && type.types.some(member => typeContainsName(checker, member, pattern, seen)))
     return true
   const references = type as ts.TypeReference
-  return [...(type.aliasTypeArguments ?? []), ...(references.typeArguments ?? [])]
+  return [
+    ...(type.aliasTypeArguments ?? []),
+    ...(references.typeArguments ?? []),
+  ]
     .some(member => typeContainsName(checker, member, pattern, seen))
 }
 
@@ -142,8 +168,16 @@ const noProviderDecision = createRule<[], 'providerDecision' | 'wireToken'>({
     const isWireToken = (text: string): boolean => wireTokenSources(PROVIDER_WIRE_TOKENS, text).length > 0
     const reportWireToken = (node: TSESTree.Node, token: string): void => {
       const sources = wireTokenSources(PROVIDER_WIRE_TOKENS, token)
-      if (sources.length > 0)
-        context.report({ node, messageId: 'wireToken', data: { token, sources: sources.join(', ') } })
+      if (sources.length > 0) {
+        context.report({
+          node,
+          messageId: 'wireToken',
+          data: {
+            token,
+            sources: sources.join(', '),
+          },
+        })
+      }
     }
     const tsIsProvider = (node: ts.Node): boolean =>
       typeContainsName(checker, checker.getTypeAtLocation(node), /(?:^|\.)AgentProvider(?:$|\.)/)
@@ -159,7 +193,12 @@ const noProviderDecision = createRule<[], 'providerDecision' | 'wireToken'>({
         if (decision)
           return
         if (ts.isBinaryExpression(node)
-          && [ts.SyntaxKind.EqualsEqualsToken, ts.SyntaxKind.EqualsEqualsEqualsToken, ts.SyntaxKind.ExclamationEqualsToken, ts.SyntaxKind.ExclamationEqualsEqualsToken].includes(node.operatorToken.kind)
+          && [
+            ts.SyntaxKind.EqualsEqualsToken,
+            ts.SyntaxKind.EqualsEqualsEqualsToken,
+            ts.SyntaxKind.ExclamationEqualsToken,
+            ts.SyntaxKind.ExclamationEqualsEqualsToken,
+          ].includes(node.operatorToken.kind)
           && (tsIsProvider(node.left) || tsIsProvider(node.right))
           && (tsIsProviderMember(node.left) || tsIsProviderMember(node.right))) {
           decision = true
@@ -196,13 +235,17 @@ const noProviderDecision = createRule<[], 'providerDecision' | 'wireToken'>({
       let current: ts.Node = node
       while (ts.isParenthesizedExpression(current) || ts.isAsExpression(current) || ts.isTypeAssertionExpression(current) || ts.isNonNullExpression(current) || ts.isSatisfiesExpression(current))
         current = current.expression
-      const symbolNode = ts.isPropertyAccessExpression(current) ? current.name : current
+      const symbolNode = ts.isPropertyAccessExpression(current)
+        ? current.name
+        : current
       return checker.getSymbolAtLocation(symbolNode)
     }
     const symbolMakesProviderDecision = (initial: ts.Symbol | undefined, seen = new Set<ts.Symbol>()): boolean => {
       if (initial === undefined)
         return false
-      const symbol = (initial.flags & ts.SymbolFlags.Alias) !== 0 ? checker.getAliasedSymbol(initial) : initial
+      const symbol = (initial.flags & ts.SymbolFlags.Alias) !== 0
+        ? checker.getAliasedSymbol(initial)
+        : initial
       if (seen.has(symbol))
         return false
       seen.add(symbol)
@@ -242,7 +285,9 @@ const noProviderDecision = createRule<[], 'providerDecision' | 'wireToken'>({
         }
         if (node.callee.type !== AST_NODE_TYPES.MemberExpression || node.callee.computed)
           return
-        const method = node.callee.property.type === AST_NODE_TYPES.Identifier ? node.callee.property.name : ''
+        const method = node.callee.property.type === AST_NODE_TYPES.Identifier
+          ? node.callee.property.name
+          : ''
         if ((method === 'get' || method === 'has' || method === 'includes')
           && (isProvider(node.callee.object) || node.arguments.some(argument => argument.type !== AST_NODE_TYPES.SpreadElement && isProvider(argument)))) {
           report(node)
@@ -327,7 +372,9 @@ const pluginRegistrationOnly = createRule<[], 'inlineHook'>({
         for (const specifier of statement.specifiers)
           importedBindings.add(specifier.local.name)
       }
-      const declaration = statement.type === AST_NODE_TYPES.ExportNamedDeclaration ? statement.declaration : statement
+      const declaration = statement.type === AST_NODE_TYPES.ExportNamedDeclaration
+        ? statement.declaration
+        : statement
       if (declaration?.type === AST_NODE_TYPES.FunctionDeclaration && declaration.id?.name.startsWith('register')) {
         for (const parameter of declaration.params) {
           if (parameter.type === AST_NODE_TYPES.Identifier)
@@ -365,18 +412,27 @@ const pluginRegistrationOnly = createRule<[], 'inlineHook'>({
       return false
     }
     const checkHook = (node: TSESTree.Node, key: string, value: TSESTree.Node): void => {
-      if (isCallable(value) && !arrivesFromApprovedSource(value))
-        context.report({ node, messageId: 'inlineHook', data: { hook: key } })
+      if (isCallable(value) && !arrivesFromApprovedSource(value)) {
+        context.report({
+          node,
+          messageId: 'inlineHook',
+          data: { hook: key },
+        })
+      }
     }
     return {
       Property(node) {
         const key = node.key.type === AST_NODE_TYPES.Identifier
           ? node.key.name
-          : node.key.type === AST_NODE_TYPES.Literal && typeof node.key.value === 'string' ? node.key.value : ''
+          : node.key.type === AST_NODE_TYPES.Literal && typeof node.key.value === 'string'
+            ? node.key.value
+            : ''
         checkHook(node.value, key, node.value)
       },
       PropertyDefinition(node) {
-        const key = node.key.type === AST_NODE_TYPES.Identifier ? node.key.name : ''
+        const key = node.key.type === AST_NODE_TYPES.Identifier
+          ? node.key.name
+          : ''
         if (node.value !== null)
           checkHook(node.value, key, node.value)
       },
@@ -405,11 +461,17 @@ function ruleModules(): Array<[name: string, source: string]> {
   return readdirSync(eslintRoot)
     .filter(file => file.endsWith('.ts') && !file.endsWith('.test.ts'))
     .sort()
-    .map(file => [file, readFileSync(join(eslintRoot, file), 'utf8')])
+    .map(file => [
+      file,
+      readFileSync(join(eslintRoot, file), 'utf8'),
+    ])
 }
 
 const plugin: TSESLint.FlatConfig.Plugin = {
-  meta: { name: 'chat-pipeline', version: rulesVersion(ruleModules(), PROVIDER_FRAME_KINDS) },
+  meta: {
+    name: 'chat-pipeline',
+    version: rulesVersion(ruleModules(), PROVIDER_FRAME_KINDS),
+  },
   rules: {
     'layer-imports': layerImports,
     'no-provider-decision': noProviderDecision,

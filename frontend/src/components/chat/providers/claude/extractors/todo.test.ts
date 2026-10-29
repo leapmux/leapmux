@@ -27,15 +27,39 @@ describe('claudeTodoItems', () => {
         { content: 'Do C', status: 'completed', activeForm: 'Doing C' },
       ],
     })).toEqual([
-      { rowKey: '0:Do A', content: 'Do A', status: 'pending', activeForm: 'Doing A' },
-      { rowKey: '1:Do B', content: 'Do B', status: 'in_progress', activeForm: 'Doing B' },
-      { rowKey: '2:Do C', content: 'Do C', status: 'completed', activeForm: 'Doing C' },
+      {
+        rowKey: '0:Do A',
+        content: 'Do A',
+        status: 'pending',
+        activeForm: 'Doing A',
+      },
+      {
+        rowKey: '1:Do B',
+        content: 'Do B',
+        status: 'in_progress',
+        activeForm: 'Doing B',
+      },
+      {
+        rowKey: '2:Do C',
+        content: 'Do C',
+        status: 'completed',
+        activeForm: 'Doing C',
+      },
     ])
   })
 
   it('coerces missing fields to empty strings and unknown statuses to pending', () => {
-    expect(claudeTodoItems({ todos: [{ status: 'unknown' }] })).toEqual([
-      { rowKey: '0:', content: '', status: 'pending', activeForm: '' },
+    expect(claudeTodoItems({
+      todos: [
+        { status: 'unknown' },
+      ],
+    })).toEqual([
+      {
+        rowKey: '0:',
+        content: '',
+        status: 'pending',
+        activeForm: '',
+      },
     ])
   })
 })

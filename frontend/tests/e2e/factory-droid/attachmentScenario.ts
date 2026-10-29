@@ -18,5 +18,11 @@ export async function prepareDroidAttachments(
     primary: { handle: DROID_MOCK_MODEL_IDS.primary, model: MOCK_MODELS.droid, provider: primaryProvider },
     alternate: { handle: DROID_MOCK_MODEL_IDS.alternate, model: MOCK_MODELS.droidAlt, provider: alternateProvider },
   })
-  return { agentEnv: { ...environment.env, ...nativeEnv }, setup: undefined }
+  return {
+    agentEnv: {
+      ...environment.env,
+      ...nativeEnv,
+    },
+    setup: undefined,
+  }
 }

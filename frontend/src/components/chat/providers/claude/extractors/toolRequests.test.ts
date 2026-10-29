@@ -65,27 +65,73 @@ const OVERRIDE_CASES: ReadonlyArray<readonly [ToolKind, string, Record<string, u
     'agents',
     CLAUDE_TOOL_NAMES.TEAM_CREATE,
     { team_name: '  parsers  ', channel: 'never read', q: 'never read' },
-    { team: { name: 'parsers' } },
+    {
+      team: { name: 'parsers' },
+    },
     { channel: 'never read', query: 'never read' },
   ],
   [
     'edit',
     CLAUDE_TOOL_NAMES.EDIT,
-    { file_path: '/project/a.ts', old_string: 'before', new_string: 'after', replace_all: true },
-    { changes: [{ filePath: '/project/a.ts', structuredPatch: null, oldStr: 'before', newStr: 'after' }], replaceAll: true },
+    {
+      file_path: '/project/a.ts',
+      old_string: 'before',
+      new_string: 'after',
+      replace_all: true,
+    },
+    {
+      changes: [
+        {
+          filePath: '/project/a.ts',
+          structuredPatch: null,
+          oldStr: 'before',
+          newStr: 'after',
+        },
+      ],
+      replaceAll: true,
+    },
     // The shared entry reads the same file and the same two sides, and it states the
     // operation beside them. `replace_all` is the deviation: it is Claude's own key.
-    { changes: [{ filePath: '/project/a.ts', operation: 'edit', structuredPatch: null, oldStr: 'before', newStr: 'after' }] },
+    {
+      changes: [
+        {
+          filePath: '/project/a.ts',
+          operation: 'edit',
+          structuredPatch: null,
+          oldStr: 'before',
+          newStr: 'after',
+        },
+      ],
+    },
   ],
   [
     'write',
     CLAUDE_TOOL_NAMES.WRITE,
     { file_path: '/project/b.ts', content: 'hello' },
     // A write that states no `replace_all` OMITS the key rather than stating undefined.
-    { changes: [{ filePath: '/project/b.ts', structuredPatch: null, oldStr: '', newStr: 'hello' }] },
+    {
+      changes: [
+        {
+          filePath: '/project/b.ts',
+          structuredPatch: null,
+          oldStr: '',
+          newStr: 'hello',
+        },
+      ],
+    },
     // The shared entry states the file and the addition, and no BODY: `content` is a
     // best-effort reading that each provider spells for itself.
-    { changes: [{ filePath: '/project/b.ts', operation: 'add', structuredPatch: null, oldStr: '', newStr: '' }] },
+    {
+      changes: [
+        {
+          filePath: '/project/b.ts',
+          operation: 'add',
+          structuredPatch: null,
+          oldStr: '',
+          newStr: '',
+        },
+      ],
+    },
   ],
   [
     'execute',
@@ -105,21 +151,54 @@ const OVERRIDE_CASES: ReadonlyArray<readonly [ToolKind, string, Record<string, u
     'mcp',
     'mcp__docs__lookup',
     { query: 'renderer', server: 'never read', tool: 'never read' },
-    { server: 'docs', tool: 'lookup', args: { query: 'renderer', server: 'never read', tool: 'never read' } },
-    { server: 'never read', tool: 'never read', args: { query: 'renderer', server: 'never read', tool: 'never read' } },
+    {
+      server: 'docs',
+      tool: 'lookup',
+      args: { query: 'renderer', server: 'never read', tool: 'never read' },
+    },
+    {
+      server: 'never read',
+      tool: 'never read',
+      args: { query: 'renderer', server: 'never read', tool: 'never read' },
+    },
   ],
   [
     'message',
     CLAUDE_TOOL_NAMES.SEND_MESSAGE,
-    { to: '  peer-1  ', message: { body: 'the whole record' }, summary: 'Ship it', text: 'never read' },
+    {
+      to: '  peer-1  ',
+      message: { body: 'the whole record' },
+      summary: 'Ship it',
+      text: 'never read',
+    },
     { to: 'peer-1', text: 'Ship it', summary: 'Ship it' },
     { to: '  peer-1  ', text: 'never read', summary: 'Ship it' },
   ],
   [
     'question',
     CLAUDE_TOOL_NAMES.ASK_USER_QUESTION,
-    { questions: [{ header: 'Parser', question: 'Which parser should I write?', options: [{ label: 'PEG', description: 'A grammar' }] }] },
-    { questions: [{ header: 'Parser', question: 'Which parser should I write?', options: [{ label: 'PEG', description: 'A grammar' }] }] },
+    {
+      questions: [
+        {
+          header: 'Parser',
+          question: 'Which parser should I write?',
+          options: [
+            { label: 'PEG', description: 'A grammar' },
+          ],
+        },
+      ],
+    },
+    {
+      questions: [
+        {
+          header: 'Parser',
+          question: 'Which parser should I write?',
+          options: [
+            { label: 'PEG', description: 'A grammar' },
+          ],
+        },
+      ],
+    },
     { questions: [] },
   ],
   [
@@ -130,37 +209,79 @@ const OVERRIDE_CASES: ReadonlyArray<readonly [ToolKind, string, Record<string, u
     // `prettifyArgsJson` rather than a JSON literal: the claim is that the shared entry
     // prettifies the WHOLE arguments record, and its exact line breaks are that
     // formatter's business rather than this table's.
-    { name: 'never read', args: prettifyArgsJson({ skill: 'deep-review', args: '--fix', name: 'never read' }) },
+    {
+      name: 'never read',
+      args: prettifyArgsJson({ skill: 'deep-review', args: '--fix', name: 'never read' }),
+    },
   ],
   [
     'switch_mode',
     CLAUDE_TOOL_NAMES.ENTER_WORKTREE,
-    { name: 'feature-x', mode: 'never read', targetModeId: 'never read', target: 'never read' },
+    {
+      name: 'feature-x',
+      mode: 'never read',
+      targetModeId: 'never read',
+      target: 'never read',
+    },
     { mode: 'worktree', target: 'feature-x' },
     { mode: 'never read', target: 'never read' },
   ],
   [
     'task',
     CLAUDE_TOOL_NAMES.TASK_OUTPUT,
-    { shell_id: 's-1', taskId: 'never read', timeout: 5000, block: true },
-    { action: 'output', taskId: 's-1', timeoutMs: 5000, block: true },
+    {
+      shell_id: 's-1',
+      taskId: 'never read',
+      timeout: 5000,
+      block: true,
+    },
+    {
+      action: 'output',
+      taskId: 's-1',
+      timeoutMs: 5000,
+      block: true,
+    },
     { action: 'other', taskId: 'never read' },
   ],
   [
     'todo',
     CLAUDE_TOOL_NAMES.TODO_WRITE,
-    { todos: [{ content: 'Write the parser', status: 'pending' }] },
-    { items: [expect.objectContaining({ content: 'Write the parser', status: 'pending' })] },
+    {
+      todos: [
+        { content: 'Write the parser', status: 'pending' },
+      ],
+    },
+    {
+      items: [
+        expect.objectContaining({ content: 'Write the parser', status: 'pending' }),
+      ],
+    },
     { items: [] },
   ],
   [
     'trigger',
     CLAUDE_TOOL_NAMES.REMOTE_TRIGGER,
-    { action: 'create', body: { name: 'Nightly' }, trigger_id: 't-1', name: 'never read', schedule: '0 0 * * *' },
-    { action: 'create', triggerId: 't-1', name: 'Nightly', schedule: '0 0 * * *' },
+    {
+      action: 'create',
+      body: { name: 'Nightly' },
+      trigger_id: 't-1',
+      name: 'never read',
+      schedule: '0 0 * * *',
+    },
+    {
+      action: 'create',
+      triggerId: 't-1',
+      name: 'Nightly',
+      schedule: '0 0 * * *',
+    },
     // The id and the schedule come from the shared entry, which reads the same
     // spellings, so the two answers differ on the action and the label alone.
-    { action: 'other', triggerId: 't-1', name: 'never read', schedule: '0 0 * * *' },
+    {
+      action: 'other',
+      triggerId: 't-1',
+      name: 'never read',
+      schedule: '0 0 * * *',
+    },
   ],
   [
     'wait',
@@ -236,17 +357,29 @@ describe('CLAUDE_TOOL_REQUEST_OVERRIDES', () => {
     const request = requestOf(
       CLAUDE_TOOL_NAMES.TASK_CREATE,
       { subject: 'Write the parser' },
-      { pairedResult: { task: { task_id: 'task-7', subject: 'Write the parser' } } },
+      {
+        pairedResult: {
+          task: { task_id: 'task-7', subject: 'Write the parser' },
+        },
+      },
     )
     // A task with no description OMITS the note rather than stating it undefined.
-    expect(request).toStrictEqual({ items: [expect.objectContaining({ id: 'task-7', content: 'Write the parser' })] })
+    expect(request).toStrictEqual({
+      items: [
+        expect.objectContaining({ id: 'task-7', content: 'Write the parser' }),
+      ],
+    })
   })
 
   // The mcp entry answers from the tool NAME, so a name that spells no server/tool pair
   // states the whole name as the tool rather than leaving both halves empty.
   it('states the whole tool name as the tool when the name spells no pair', () => {
     expect(claudeRequestFor('mcp', { q: 1 }, { toolName: 'Plain', result: undefined, context: {} }))
-      .toStrictEqual({ server: '', tool: 'Plain', args: { q: 1 } })
+      .toStrictEqual({
+        server: '',
+        tool: 'Plain',
+        args: { q: 1 },
+      })
   })
 })
 
@@ -259,13 +392,44 @@ describe('CLAUDE_TOOL_REQUEST_OVERRIDES', () => {
  * The widening itself is pinned in the block after this one.
  */
 const ROUTED_CASES: ReadonlyArray<readonly [ToolKind, string, Record<string, unknown>]> = [
-  ['read', CLAUDE_TOOL_NAMES.READ, { file_path: '/project/a.ts', offset: 10, limit: 20 }],
-  ['grep', CLAUDE_TOOL_NAMES.GREP, { pattern: 'needle', path: '/project' }],
-  ['glob', CLAUDE_TOOL_NAMES.GLOB, { pattern: '**/*.ts', path: '/project' }],
-  ['fetch', CLAUDE_TOOL_NAMES.WEB_FETCH, { url: 'https://example.com', prompt: 'Summarize it' }],
-  ['web_search', CLAUDE_TOOL_NAMES.WEB_SEARCH, { query: 'renderer', allowed_domains: ['example.com'] }],
-  ['report', CLAUDE_TOOL_NAMES.STRUCTURED_OUTPUT, { summary: 'done', findings: [] }],
-  ['unspecified', 'ToolNobodyNames', { anything: 1 }],
+  [
+    'read',
+    CLAUDE_TOOL_NAMES.READ,
+    { file_path: '/project/a.ts', offset: 10, limit: 20 },
+  ],
+  [
+    'grep',
+    CLAUDE_TOOL_NAMES.GREP,
+    { pattern: 'needle', path: '/project' },
+  ],
+  [
+    'glob',
+    CLAUDE_TOOL_NAMES.GLOB,
+    { pattern: '**/*.ts', path: '/project' },
+  ],
+  [
+    'fetch',
+    CLAUDE_TOOL_NAMES.WEB_FETCH,
+    { url: 'https://example.com', prompt: 'Summarize it' },
+  ],
+  [
+    'web_search',
+    CLAUDE_TOOL_NAMES.WEB_SEARCH,
+    {
+      query: 'renderer',
+      allowed_domains: ['example.com'],
+    },
+  ],
+  [
+    'report',
+    CLAUDE_TOOL_NAMES.STRUCTURED_OUTPUT,
+    { summary: 'done', findings: [] },
+  ],
+  [
+    'unspecified',
+    'ToolNobodyNames',
+    { anything: 1 },
+  ],
 ]
 
 describe('claudeRequestFor', () => {
@@ -319,6 +483,8 @@ describe('claudeRequestFor', () => {
   // what `ReportRequest.payload` being optional means.
   it('states an absent report payload for a call that carries no arguments', () => {
     expect(requestOf(CLAUDE_TOOL_NAMES.STRUCTURED_OUTPUT, {})).toStrictEqual({})
-    expect(requestOf(CLAUDE_TOOL_NAMES.STRUCTURED_OUTPUT, { summary: 'done' })).toStrictEqual({ payload: { summary: 'done' } })
+    expect(requestOf(CLAUDE_TOOL_NAMES.STRUCTURED_OUTPUT, { summary: 'done' })).toStrictEqual({
+      payload: { summary: 'done' },
+    })
   })
 })

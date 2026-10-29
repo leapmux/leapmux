@@ -4,7 +4,7 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "tsBuildInfoFile": "./node_modules/.cache/tsc/e2e.tsbuildinfo",
-    "types": ["@playwright/test", "node", "vinxi/types/client"]
+    "types": ["@playwright/test", "node", "@solidjs/start/env"]
   },
   "include": ["tests/e2e", "src/types/**/*.d.ts", "src/lib/oat.ts"],
   // The main configuration owns co-located unit tests. This follows the runner split by file extension.

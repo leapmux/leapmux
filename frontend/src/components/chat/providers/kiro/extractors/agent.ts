@@ -17,14 +17,26 @@ const KIRO_SUBAGENT_FALLBACK = 'Subagent'
  * by the call that spawned it.
  */
 export function kiroAgentRequest(input: Record<string, unknown>, title: string, toolCallId: string): AgentRequest {
-  const name = pickString(input, 'name') || (title.startsWith(KIRO_SUBAGENT_TITLE_PREFIX) ? title.slice(KIRO_SUBAGENT_TITLE_PREFIX.length) : '')
+  const name = pickString(input, 'name') || (title.startsWith(KIRO_SUBAGENT_TITLE_PREFIX)
+    ? title.slice(KIRO_SUBAGENT_TITLE_PREFIX.length)
+    : '')
   const explanation = pickString(input, 'explanation').trim()
   return {
     description: name || KIRO_SUBAGENT_FALLBACK,
-    ...(name ? { agentType: name } : {}),
+    ...(name
+      ? { agentType: name }
+      : {}),
     prompt: pickString(input, 'prompt'),
-    ...(explanation ? { metadata: [{ label: 'Reason', value: explanation }] } : {}),
-    ...(toolCallId ? { registryKey: toolCallId } : {}),
+    ...(explanation
+      ? {
+          metadata: [
+            { label: 'Reason', value: explanation },
+          ],
+        }
+      : {}),
+    ...(toolCallId
+      ? { registryKey: toolCallId }
+      : {}),
   }
 }
 
@@ -37,11 +49,27 @@ export function kiroAgentRequest(input: Record<string, unknown>, title: string, 
  * still have run to its end.
  */
 export function kiroAgentRun(facts: ACPToolFacts, request: AgentRequest, subtaskId: string): AgentRun {
-  const base = { description: request.description, ...(request.registryKey !== undefined ? { registryKey: request.registryKey } : {}), agentId: subtaskId, metadata: [] }
-  if (facts.status === 'failed' || facts.status === 'cancelled')
-    return { ...base, outcome: facts.status === 'failed' ? 'failed' : 'stopped', body: facts.text }
+  const base = {
+    description: request.description,
+    ...(request.registryKey !== undefined
+      ? { registryKey: request.registryKey }
+      : {}),
+    agentId: subtaskId,
+    metadata: [],
+  }
+  if (facts.status === 'failed' || facts.status === 'cancelled') {
+    return {
+      ...base,
+      outcome: facts.status === 'failed'
+        ? 'failed'
+        : 'stopped',
+      body: facts.text,
+    }
+  }
   if (!acpResultAvailable(facts))
     return { ...base, outcome: 'unknown', body: '' }
-  const answer = typeof facts.tool.rawOutput === 'string' ? facts.tool.rawOutput : facts.text
+  const answer = typeof facts.tool.rawOutput === 'string'
+    ? facts.tool.rawOutput
+    : facts.text
   return { ...base, outcome: 'completed', body: answer }
 }

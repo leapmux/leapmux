@@ -31,7 +31,9 @@ function cacheWeek(key, prefix) {
     if (firstDay !== 4 && !(firstDay === 3 && leap))
       return null
   }
-  return match ? { week: match[1] ?? null } : null
+  return match
+    ? { week: match[1] ?? null }
+    : null
 }
 
 function validatePlan(plan) {
@@ -53,7 +55,14 @@ function validatePlan(plan) {
 
 // Capture the exact writer inputs before compilation. Post execution must use the same plan.
 export function createReplacementPlan({ key, prefix, repository, ref, eventName }, now = new Date()) {
-  return validatePlan({ key, prefix, repository, ref, eventName, startedAt: now.toISOString() })
+  return validatePlan({
+    key,
+    prefix,
+    repository,
+    ref,
+    eventName,
+    startedAt: now.toISOString(),
+  })
 }
 
 function validateArchive(archive) {
@@ -69,7 +78,7 @@ function validateArchive(archive) {
 export function selectArchivesToReplace(plan, archives) {
   validatePlan(plan)
   if (!Array.isArray(archives))
-    throw new Error('The cache list is invalid.')
+    throw new TypeError('The cache list is invalid.')
   const ids = new Set()
   for (const archive of archives) {
     validateArchive(archive)
@@ -123,7 +132,14 @@ export async function pruneBuildCaches(plan, { token, apiUrl = 'https://api.gith
   const seenIds = new Set()
   for (let page = 1; ; page++) {
     const url = new URL(endpoint)
-    url.search = new URLSearchParams({ ref: mainRef, key: plan.prefix, sort: 'created_at', direction: 'asc', per_page: String(pageSize), page: String(page) }).toString()
+    url.search = new URLSearchParams({
+      ref: mainRef,
+      key: plan.prefix,
+      sort: 'created_at',
+      direction: 'asc',
+      per_page: String(pageSize),
+      page: String(page),
+    }).toString()
     const response = await request(url, 'GET')
     if (response.status !== 200)
       throw new Error(`GitHub cache listing failed with HTTP ${response.status}.`)

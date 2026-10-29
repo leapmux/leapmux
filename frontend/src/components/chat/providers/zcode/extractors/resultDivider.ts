@@ -36,15 +36,24 @@ export function zcodeResultDivider(parsed: unknown, completion?: MessageCompleti
     const duration = pickNumber(payload, 'duration')
     const resultType = pickString(payload, 'resultType')
     // A cancelled turn is not an error: the reader asked for it.
-    if (completion === MessageCompletion.INTERRUPTED || resultType === ZCODE_RESULT.Cancelled)
-      return { label: turnEndLabel('interrupted', { durationMs: duration }) }
+    if (completion === MessageCompletion.INTERRUPTED || resultType === ZCODE_RESULT.Cancelled) {
+      return {
+        label: turnEndLabel('interrupted', { durationMs: duration }),
+      }
+    }
     // `turn.completed` reports a FAILURE too. Every `error_*` result used to read
     // as a plain end in the ordinary colour, so a turn that hit its budget or its
     // turn cap looked exactly like one that finished its work.
     const failure = ZCODE_FAILED_RESULTS.get(resultType)
-    if (failure)
-      return { label: turnEndLabel('failed', { durationMs: duration, reason: failure }), isError: true }
-    return { label: turnEndLabel('ended', { durationMs: duration }) }
+    if (failure) {
+      return {
+        label: turnEndLabel('failed', { durationMs: duration, reason: failure }),
+        isError: true,
+      }
+    }
+    return {
+      label: turnEndLabel('ended', { durationMs: duration }),
+    }
   }
 
   if (envelope.type === ZCODE_EVENT.TurnFailed) {
@@ -53,7 +62,10 @@ export function zcodeResultDivider(parsed: unknown, completion?: MessageCompleti
     const code = pickString(error, 'code') || pickString(error, 'type')
     const detail = pickString(error, 'detail')
     const model: TurnEnd = {
-      label: turnEndLabel('failed', { qualifiers: [code], reason: message }),
+      label: turnEndLabel('failed', {
+        qualifiers: [code],
+        reason: message,
+      }),
       isError: true,
     }
     // `detail` is the app-server's long-form explanation (a provider response body,

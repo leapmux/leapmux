@@ -158,12 +158,22 @@ describe('CollapsibleContent', () => {
 })
 
 describe('CollapsibleContent output ownership', () => {
-  it.each(['pre', 'ansi-or-pre', 'markdown', 'markdown-tool-result', 'json'] as const)('marks the existing output element for kind %s without adding a wrapper', (kind) => {
-    const text = kind === 'json' ? '{"count":0,"enabled":false}' : 'native output'
+  it.each([
+    'pre',
+    'ansi-or-pre',
+    'markdown',
+    'markdown-tool-result',
+    'json',
+  ] as const)('marks the existing output element for kind %s without adding a wrapper', (kind) => {
+    const text = kind === 'json'
+      ? '{"count":0,"enabled":false}'
+      : 'native output'
     const { container } = render(() => <CollapsibleContent outputPreview kind={kind} text={text} display={text} isCollapsed={false} />)
     expect(container.querySelectorAll('[data-tool-output-preview]')).toHaveLength(1)
     expect(container.firstElementChild?.getAttribute('data-tool-output-preview')).toBe('')
-    expect(container.textContent).toContain(kind === 'json' ? '"count"' : 'native output')
+    expect(container.textContent).toContain(kind === 'json'
+      ? '"count"'
+      : 'native output')
   })
 
   it.each([false, true])('keeps output ownership on styled text when collapsed is %s', (isCollapsed) => {
@@ -175,7 +185,16 @@ describe('CollapsibleContent output ownership', () => {
   })
 
   it.each([false, undefined])('does not mark request or metadata text for ownership %j', (outputPreview) => {
-    const { container } = render(() => <CollapsibleContent {...(outputPreview !== undefined ? { outputPreview } : {})} kind="pre" text="same marker" isCollapsed={false} />)
+    const { container } = render(() => (
+      <CollapsibleContent
+        {...(outputPreview !== undefined
+          ? { outputPreview }
+          : {})}
+        kind="pre"
+        text="same marker"
+        isCollapsed={false}
+      />
+    ))
     expect(container.textContent).toBe('same marker')
     expect(container.querySelector('[data-tool-output-preview]')).toBeNull()
   })
@@ -189,8 +208,20 @@ describe('CollapsibleContent output ownership', () => {
     { kind: 'json', text: '{"same":"marker"}' },
   ] as const)('does not mark kind $kind text $text without output ownership', ({ kind, text }) => {
     for (const outputPreview of [false, undefined]) {
-      const { container, unmount } = render(() => <CollapsibleContent {...(outputPreview !== undefined ? { outputPreview } : {})} kind={kind} text={text} display={text} isCollapsed={false} />)
-      expect(container.textContent).toContain(kind === 'json' ? 'same' : 'same marker')
+      const { container, unmount } = render(() => (
+        <CollapsibleContent
+          {...(outputPreview !== undefined
+            ? { outputPreview }
+            : {})}
+          kind={kind}
+          text={text}
+          display={text}
+          isCollapsed={false}
+        />
+      ))
+      expect(container.textContent).toContain(kind === 'json'
+        ? 'same'
+        : 'same marker')
       expect(container.querySelector('[data-tool-output-preview]')).toBeNull()
       unmount()
     }

@@ -106,24 +106,55 @@ describe('chatScrollDiagnostics createScrollDiagnostics', () => {
     return vi.spyOn(console, 'warn').mockImplementation(() => {})
   }
   function clampInfo(overrides: Partial<RepinClampInfo> = {}): RepinClampInfo {
-    return { anchorId: 'a', clampPx: 200, fromTop: 0, idealTop: 0, targetTop: 0, clientHeight: 800, maxScrollTop: 1000, ...overrides }
+    return {
+      anchorId: 'a',
+      clampPx: 200,
+      fromTop: 0,
+      idealTop: 0,
+      targetTop: 0,
+      clientHeight: 800,
+      maxScrollTop: 1000,
+      ...overrides,
+    }
   }
   function driftInfo(overrides: Partial<AnchorDriftInfo> = {}): AnchorDriftInfo {
-    return { anchorId: 'a', residualPx: 40, reason: 'absorbed', fromTop: 0, clientHeight: 800, ...overrides }
+    return {
+      anchorId: 'a',
+      residualPx: 40,
+      reason: 'absorbed',
+      fromTop: 0,
+      clientHeight: 800,
+      ...overrides,
+    }
   }
   function jumpInfo(overrides: Partial<UnexplainedJumpInfo> = {}): UnexplainedJumpInfo {
-    return { deltaFromLast: 300, scrollTop: 300, lastScrollTop: 0, msSinceLastScrollEvent: 20, speedPxPerMs: 0, wasActivelyFlinging: false, ...overrides }
+    return {
+      deltaFromLast: 300,
+      scrollTop: 300,
+      lastScrollTop: 0,
+      msSinceLastScrollEvent: 20,
+      speedPxPerMs: 0,
+      wasActivelyFlinging: false,
+      ...overrides,
+    }
   }
 
   describe('emitRepinClamp (detector a)', () => {
     it('warns clampedAt top when a top clamp still had older history to hold the row', () => {
       const warn = spyWarn()
-      const { diag } = makeDiagnostics({ hasOlder: true, dom: { scrollTop: 5 } })
+      const { diag } = makeDiagnostics({
+        hasOlder: true,
+        dom: { scrollTop: 5 },
+      })
       diag.emitRepinClamp(clampInfo({ clampPx: 200 }))
       expect(warn).toHaveBeenCalledWith(
         '[chatScroll]',
         expect.stringContaining('anchor re-pin clamped'),
-        expect.objectContaining({ clampedAt: 'top', clampPx: 200, dom: { scrollTop: 5 } }),
+        expect.objectContaining({
+          clampedAt: 'top',
+          clampPx: 200,
+          dom: { scrollTop: 5 },
+        }),
       )
     })
 
@@ -179,7 +210,10 @@ describe('chatScrollDiagnostics createScrollDiagnostics', () => {
   describe('emitAnchorDrift (detector c)', () => {
     it('warns on an absorbed drift above the floor, with the running total + measurement', () => {
       const warn = spyWarn()
-      const { diag } = makeDiagnostics({ measurement: { commit: 9 }, dom: { scrollTop: 3 } })
+      const { diag } = makeDiagnostics({
+        measurement: { commit: 9 },
+        dom: { scrollTop: 3 },
+      })
       diag.emitAnchorDrift(driftInfo({ residualPx: 40 }), 1000)
       expect(warn).toHaveBeenCalledWith(
         '[chatScroll]',
@@ -322,7 +356,14 @@ describe('chatScrollDiagnostics createScrollDiagnostics', () => {
         dom: { scrollTop: 2 },
       })
       diag.emitUnexplainedJump(
-        jumpInfo({ deltaFromLast: 300, scrollTop: 300, lastScrollTop: 0, msSinceLastScrollEvent: 20, speedPxPerMs: 1.5, wasActivelyFlinging: false }),
+        jumpInfo({
+          deltaFromLast: 300,
+          scrollTop: 300,
+          lastScrollTop: 0,
+          msSinceLastScrollEvent: 20,
+          speedPxPerMs: 1.5,
+          wasActivelyFlinging: false,
+        }),
         5000,
       )
       expect(warn).toHaveBeenCalledWith(

@@ -29,7 +29,10 @@ export async function createMiMoControlDeletion(context: ManagedNativeScenarioCo
   const command = gate.hold(`rm -f ${quotePosixShellArgument(file)}; printf 'NATIVECONTROL%s\\n' "$((40 + 2))"`)
   return {
     toolCall: bashToolCall(context.provider, callId, command),
-    outputGate: { gate, shown: () => expect(messageContents(context.page).filter({ hasText: 'NATIVECONTROL42' }).first(), 'the live view shows the output of the held command').toBeVisible() },
+    outputGate: {
+      gate,
+      shown: () => expect(messageContents(context.page).filter({ hasText: 'NATIVECONTROL42' }).first(), 'the live view shows the output of the held command').toBeVisible(),
+    },
     beforeDecision: () => {
       expect(existsSync(file)).toBe(true)
     },

@@ -33,8 +33,15 @@ describe('BackgroundTaskPanel', () => {
 
   it('renders the four background-task tabs in order', () => {
     const { container } = renderPanel()
-    const labels = [...container.querySelectorAll('[role="tab"]')].map(value => value.textContent)
-    expect(labels).toEqual(['All', 'Subagents', 'Shell', 'Workflows'])
+    const labels = [
+      ...container.querySelectorAll('[role="tab"]'),
+    ].map(value => value.textContent)
+    expect(labels).toEqual([
+      'All',
+      'Subagents',
+      'Shell',
+      'Workflows',
+    ])
   })
 
   it('filters the task list with the selected tab', () => {
@@ -58,7 +65,9 @@ describe('BackgroundTaskPanel', () => {
     ))
     const before = tab(container, 'all')
 
-    setTasks([row({ rowKey: 'b', title: 'New task' })])
+    setTasks([
+      row({ rowKey: 'b', title: 'New task' }),
+    ])
 
     expect(tab(container, 'all')).toBe(before)
     expect(container.textContent).toContain('New task')

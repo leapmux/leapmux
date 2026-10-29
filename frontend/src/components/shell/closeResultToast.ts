@@ -45,7 +45,12 @@ export function summarizeWorktreeCloses(results: readonly (CloseTabResult | unde
         break
     }
   }
-  return { removed, failed, stillReferenced, unknown }
+  return {
+    removed,
+    failed,
+    stillReferenced,
+    unknown,
+  }
 }
 
 /**
@@ -121,7 +126,9 @@ export function worktreeRemovalToast(
 export function toastCloseFailure(result: CloseTabResult | undefined): void {
   if (!result || !result.failureMessage)
     return
-  showWarnToast(result.failureDetail ? `${result.failureMessage}: ${result.failureDetail}` : result.failureMessage)
+  showWarnToast(result.failureDetail
+    ? `${result.failureMessage}: ${result.failureDetail}`
+    : result.failureMessage)
 }
 
 // warnWorktreeUnreachable surfaces the "tab closed locally, but no

@@ -117,7 +117,9 @@ describe('FileActionsMenu — common items', () => {
 
   it('writes the path to the clipboard on Copy path click', () => {
     const writeText = vi.fn().mockResolvedValue(undefined)
-    Object.assign(navigator, { clipboard: { writeText } })
+    Object.assign(navigator, {
+      clipboard: { writeText },
+    })
     renderMenu()
     fireEvent.click(screen.getByTestId('file-actions-copy-path-button'))
     expect(writeText).toHaveBeenCalledWith('/repo/src/file.ts')
@@ -125,7 +127,9 @@ describe('FileActionsMenu — common items', () => {
 
   it('writes the relative path on Copy relative path click', () => {
     const writeText = vi.fn().mockResolvedValue(undefined)
-    Object.assign(navigator, { clipboard: { writeText } })
+    Object.assign(navigator, {
+      clipboard: { writeText },
+    })
     renderMenu()
     fireEvent.click(screen.getByTestId('file-actions-copy-relative-path-button'))
     expect(writeText).toHaveBeenCalledWith('src/file.ts')
@@ -250,7 +254,9 @@ describe('FileActionsMenu — size and modified info', () => {
 
   it('copies the path, size and modified time, and toasts', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined)
-    Object.assign(navigator, { clipboard: { writeText } })
+    Object.assign(navigator, {
+      clipboard: { writeText },
+    })
     renderMenu({ size: 2048, modTime })
     openMenu()
 
@@ -270,8 +276,15 @@ describe('FileActionsMenu — size and modified info', () => {
 
   it('leaves the size out of the copied text for a directory', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined)
-    Object.assign(navigator, { clipboard: { writeText } })
-    renderMenu({ isDir: true, size: 4096, modTime, path: '/repo/src' })
+    Object.assign(navigator, {
+      clipboard: { writeText },
+    })
+    renderMenu({
+      isDir: true,
+      size: 4096,
+      modTime,
+      path: '/repo/src',
+    })
     openMenu()
 
     fireEvent.click(screen.getByTestId('file-actions-info-button'))

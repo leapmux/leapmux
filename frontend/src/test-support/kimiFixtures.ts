@@ -20,12 +20,25 @@ export function kimiToolStart(
   display?: Record<string, unknown>,
   agentId = 'main',
 ): Record<string, unknown> {
-  return kimiFrame(KIMI_EVENT.ToolCallStarted, { turnId: 0, toolCallId, name, args, ...(display ? { display } : {}) }, agentId)
+  return kimiFrame(KIMI_EVENT.ToolCallStarted, {
+    turnId: 0,
+    toolCallId,
+    name,
+    args,
+    ...(display
+      ? { display }
+      : {}),
+  }, agentId)
 }
 
 /** The `tool.result` row that closes one tool call. */
 export function kimiToolResult(toolCallId: string, output: unknown, extra: Record<string, unknown> = {}, agentId = 'main'): Record<string, unknown> {
-  return kimiFrame(KIMI_EVENT.ToolResult, { turnId: 0, toolCallId, output, ...extra }, agentId)
+  return kimiFrame(KIMI_EVENT.ToolResult, {
+    turnId: 0,
+    toolCallId,
+    output,
+    ...extra,
+  }, agentId)
 }
 
 /** One pending approval, as the control surface receives it. */

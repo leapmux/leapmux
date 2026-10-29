@@ -13,7 +13,12 @@ function storedReply(decision: Record<string, unknown>): Record<string, unknown>
 }
 
 function storedCr(response: Record<string, unknown>, request?: Record<string, unknown>): PersistedControlResponse {
-  return { requestId: 'req-1', claimToken: 'claim-1', response, request }
+  return {
+    requestId: 'req-1',
+    claimToken: 'claim-1',
+    response,
+    request,
+  }
 }
 
 describe('lettaControlResponseSummary', () => {
@@ -35,8 +40,22 @@ describe('lettaControlResponseSummary', () => {
       tool_call_id: 'ask-1',
       tool_input: {
         questions: [
-          { question: 'Which database?', header: 'Database', options: [{ label: 'Postgres', description: 'p' }, { label: 'SQLite', description: 's' }] },
-          { question: 'Run migrations?', header: 'Migrations', options: [{ label: 'Yes', description: 'y' }, { label: 'No', description: 'n' }] },
+          {
+            question: 'Which database?',
+            header: 'Database',
+            options: [
+              { label: 'Postgres', description: 'p' },
+              { label: 'SQLite', description: 's' },
+            ],
+          },
+          {
+            question: 'Run migrations?',
+            header: 'Migrations',
+            options: [
+              { label: 'Yes', description: 'y' },
+              { label: 'No', description: 'n' },
+            ],
+          },
         ],
       },
     }
@@ -57,19 +76,38 @@ describe('lettaControlResponseSummary', () => {
     })
 
     it('reads a dismissal as Dismissed', () => {
-      const response = { type: 'ask_user_question_response', version: 2, toolCallId: 'ask-1', questions, status: 'dismissed' }
+      const response = {
+        type: 'ask_user_question_response',
+        version: 2,
+        toolCallId: 'ask-1',
+        questions,
+        status: 'dismissed',
+      }
       expect(resolveControlResponseSummary(storedCr(response, request), lettaControls.controlResponseDisplay))
         .toEqual({ kind: 'label', text: 'Dismissed' })
     })
 
     it('reads an answered response that states no answer as no answer', () => {
-      const response = { type: 'ask_user_question_response', version: 2, toolCallId: 'ask-1', questions, status: 'answered', answers: {} }
+      const response = {
+        type: 'ask_user_question_response',
+        version: 2,
+        toolCallId: 'ask-1',
+        questions,
+        status: 'answered',
+        answers: {},
+      }
       expect(resolveControlResponseSummary(storedCr(response, request), lettaControls.controlResponseDisplay))
         .toEqual({ kind: 'label', text: 'No answer' })
     })
 
     it('keeps the neutral display for a response of another type', () => {
-      const response = { type: 'ask_user_question', version: 2, toolCallId: 'ask-1', questions, status: 'dismissed' }
+      const response = {
+        type: 'ask_user_question',
+        version: 2,
+        toolCallId: 'ask-1',
+        questions,
+        status: 'dismissed',
+      }
       expect(resolveControlResponseSummary(storedCr(response, request), lettaControls.controlResponseDisplay))
         .toEqual({ kind: 'label', text: 'Responded' })
     })

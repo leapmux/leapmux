@@ -156,7 +156,9 @@ export function signalPasskeyRemoved(rpId: string, credentialId: string): void {
   // a best-effort hint, so this handler logs a rejection and discards it --
   // an unhandled rejection would fire right after the success toast.
   publicKeyCredentialSignal()?.signalUnknownCredential?.({ rpId, credentialId }).catch((err) => {
-    log.warn('signalUnknownCredential rejected', { error: String(err) })
+    log.warn('signalUnknownCredential rejected', {
+      error: String(err),
+    })
   })
 }
 
@@ -169,6 +171,8 @@ export function signalAcceptedPasskeys(rpId: string, userId: string, allAccepted
     userId: encodeWebAuthnUserId(userId),
     allAcceptedCredentialIds,
   }).catch((err) => {
-    log.warn('signalAllAcceptedCredentials rejected', { error: String(err) })
+    log.warn('signalAllAcceptedCredentials rejected', {
+      error: String(err),
+    })
   })
 }

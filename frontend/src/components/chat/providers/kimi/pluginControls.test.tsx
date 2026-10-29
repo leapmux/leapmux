@@ -51,7 +51,9 @@ describe('kimi control channel', () => {
     const payload = kimiApprovalRequest(KIMI_TOOL.ExitPlanMode, {
       kind: KIMI_DISPLAY.PlanReview,
       plan: '# Plan',
-      options: [{ label: 'Option A' }],
+      options: [
+        { label: 'Option A' },
+      ],
     })
     const { onRespond } = renderActions(request(payload))
     expect(screen.getByTestId('plan-approve-btn')).toBeInTheDocument()
@@ -74,7 +76,9 @@ describe('kimi control channel', () => {
     const payload = kimiApprovalRequest(KIMI_TOOL.ExitPlanMode, {
       kind: KIMI_DISPLAY.PlanReview,
       plan: '# Split the parser',
-      options: [{ label: 'Option A' }],
+      options: [
+        { label: 'Option A' },
+      ],
     }, { agent_id: 'agent-0', agentId: 'agent-0' })
     const { onRespond } = renderActions(request(payload))
     expect(screen.queryByTestId('plan-approve-btn')).not.toBeInTheDocument()
@@ -110,19 +114,45 @@ describe('kimi control channel', () => {
   })
 
   it('submits the selected option ids as the answers of a question request', async () => {
-    const payload = kimiQuestionRequest([{ id: 'q_0', question: 'Which color?', options: [{ id: 'opt_0_0', label: 'Red' }, { id: 'opt_0_1', label: 'Blue' }] }])
-    const answerState = createControlAnswerState({ selections: { 0: ['opt_0_1'] } })
+    const payload = kimiQuestionRequest([
+      {
+        id: 'q_0',
+        question: 'Which color?',
+        options: [
+          { id: 'opt_0_0', label: 'Red' },
+          { id: 'opt_0_1', label: 'Blue' },
+        ],
+      },
+    ])
+    const answerState = createControlAnswerState({
+      selections: {
+        0: ['opt_0_1'],
+      },
+    })
     const onRespond = vi.fn().mockResolvedValue(undefined)
     render(() => (
       <ControlRequestActions request={request(payload, 'question_1')} answerState={answerState} agentProvider={AgentProvider.KIMI_CODE} onRespond={onRespond} hasEditorContent={false} onTriggerSend={() => {}} />
     ))
     fireEvent.click(screen.getByTestId('control-submit-btn'))
     await vi.waitFor(() => expect(onRespond).toHaveBeenCalledOnce())
-    expect(sentBody(onRespond)).toStrictEqual({ behavior: 'allow', answers: { q_0: { kind: 'single', option_id: 'opt_0_1' } } })
+    expect(sentBody(onRespond)).toStrictEqual({
+      behavior: 'allow',
+      answers: {
+        q_0: { kind: 'single', option_id: 'opt_0_1' },
+      },
+    })
   })
 
   it('stops a question request as a refusal that carries the stop reason', async () => {
-    const payload = kimiQuestionRequest([{ id: 'q_0', question: 'Which color?', options: [{ id: 'opt_0_0', label: 'Red' }] }])
+    const payload = kimiQuestionRequest([
+      {
+        id: 'q_0',
+        question: 'Which color?',
+        options: [
+          { id: 'opt_0_0', label: 'Red' },
+        ],
+      },
+    ])
     const onRespond = vi.fn().mockResolvedValue(undefined)
     render(() => (
       <ControlRequestActions request={request(payload, 'question_1')} answerState={createControlAnswerState()} agentProvider={AgentProvider.KIMI_CODE} onRespond={onRespond} hasEditorContent={false} onTriggerSend={() => {}} />
@@ -133,7 +163,16 @@ describe('kimi control channel', () => {
   })
 
   it('draws the questions of a question request', () => {
-    const payload = kimiQuestionRequest([{ id: 'q_0', question: 'Which color?', options: [{ id: 'opt_0_0', label: 'Red' }, { id: 'opt_0_1', label: 'Blue' }] }])
+    const payload = kimiQuestionRequest([
+      {
+        id: 'q_0',
+        question: 'Which color?',
+        options: [
+          { id: 'opt_0_0', label: 'Red' },
+          { id: 'opt_0_1', label: 'Blue' },
+        ],
+      },
+    ])
     render(() => (
       <ControlRequestContent request={request(payload, 'question_1')} answerState={createControlAnswerState()} agentProvider={AgentProvider.KIMI_CODE} />
     ))

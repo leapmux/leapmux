@@ -23,7 +23,11 @@ export async function prepareFastModeOhMyPi(runDirectory: string, mockModelUrl: 
     mcpEchoServer: writeMcpEchoServer(runDirectory),
   })
   return {
-    agentEnv: { ...environment.env, ...nativeEnv, LEAPMUX_OHMYPI_DEFAULT_MODEL: OH_MY_PI_FAST_MODEL_ID },
+    agentEnv: {
+      ...environment.env,
+      ...nativeEnv,
+      LEAPMUX_OHMYPI_DEFAULT_MODEL: OH_MY_PI_FAST_MODEL_ID,
+    },
     setup: undefined,
   }
 }

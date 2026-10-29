@@ -15,7 +15,7 @@ export function ampToolResult(request: MockModelRequestRecord, nativeCallId: str
     throw new Error(`Amp returned no unique executor run for ${nativeCallId}.`, { cause })
   }
   if (typeof content !== 'string')
-    throw new Error(`Amp returned no unique executor run for ${nativeCallId}.`)
+    throw new TypeError(`Amp returned no unique executor run for ${nativeCallId}.`)
   let run: unknown
   try {
     run = JSON.parse(content)
@@ -28,7 +28,9 @@ export function ampToolResult(request: MockModelRequestRecord, nativeCallId: str
   const raw = run.result ?? run.error ?? run.reason
   if (raw === undefined || raw === null)
     throw new Error(`Amp executor run ${nativeCallId} contains no result.`)
-  const text = typeof raw === 'string' ? raw : JSON.stringify(raw)
+  const text = typeof raw === 'string'
+    ? raw
+    : JSON.stringify(raw)
   let value: unknown = raw
   if (typeof raw === 'string') {
     try {
@@ -38,13 +40,19 @@ export function ampToolResult(request: MockModelRequestRecord, nativeCallId: str
       value = undefined
     }
   }
-  const code = isObject(value) ? value.exitCode : undefined
+  const code = isObject(value)
+    ? value.exitCode
+    : undefined
   if (code !== undefined && (typeof code !== 'number' || !Number.isSafeInteger(code)))
     throw new Error('Amp returned an invalid native exit code.')
   return {
     text,
-    ...(run.status === 'error' ? { failed: true } : {}),
-    ...(typeof code === 'number' ? { exitCode: code } : {}),
+    ...(run.status === 'error'
+      ? { failed: true }
+      : {}),
+    ...(typeof code === 'number'
+      ? { exitCode: code }
+      : {}),
   }
 }
 

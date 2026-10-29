@@ -18,14 +18,20 @@ junieTest.describe('native credential isolation', () => {
     if (!shimDir)
       throw new Error('the Junie test needs a private credential stub')
     const logPath = join(shimDir, CREDENTIAL_STORE_SHIM_LOG)
-    const count = () => existsSync(logPath) ? readFileSync(logPath, 'utf8').split('\n').filter(Boolean).length : 0
+    const count = () => existsSync(logPath)
+      ? readFileSync(logPath, 'utf8').split('\n').filter(Boolean).length
+      : 0
     const before = count()
 
     const workingDir = newProviderWorkingDir(JUNIE_AGENT, 'junie-credential-stub-')
     await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, JUNIE_AGENT, { workingDir })
     await loginViaToken(page, leapmuxServer.adminToken)
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
-    const step = await modelScript.queue({ toolCalls: [junieAnswerToolCall('junie-credential-answer', 'The isolated turn completed.')] })
+    const step = await modelScript.queue({
+      toolCalls: [
+        junieAnswerToolCall('junie-credential-answer', 'The isolated turn completed.'),
+      ],
+    })
     await sendMessage(page, modelScript.prompt('Reply once through the isolated Junie process.'))
     await modelScript.waitForSteps(step + 1)
 

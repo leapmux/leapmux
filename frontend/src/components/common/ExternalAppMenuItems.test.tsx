@@ -62,7 +62,10 @@ describe('ExternalAppMenuItems', () => {
   })
 
   it('separates the two groups with one rule', () => {
-    const { container } = renderList([editorApp('cursor', 'Cursor'), fileManagerApp()])
+    const { container } = renderList([
+      editorApp('cursor', 'Cursor'),
+      fileManagerApp(),
+    ])
 
     // One between the groups, one before the refresh action.
     expect(container.querySelectorAll('hr')).toHaveLength(2)
@@ -70,14 +73,18 @@ describe('ExternalAppMenuItems', () => {
 
   // A rule above an empty list reads as a menu that lost an item.
   it('draws no group rule when there is no file manager', () => {
-    const { container } = renderList([editorApp('cursor', 'Cursor')])
+    const { container } = renderList([
+      editorApp('cursor', 'Cursor'),
+    ])
 
     expect(container.querySelectorAll('hr')).toHaveLength(1)
     expect(labels()).toEqual(['Cursor'])
   })
 
   it('draws no group rule when there is no editor', () => {
-    const { container } = renderList([fileManagerApp()])
+    const { container } = renderList([
+      fileManagerApp(),
+    ])
 
     expect(container.querySelectorAll('hr')).toHaveLength(1)
     expect(labels()).toEqual(['Finder'])
@@ -91,7 +98,10 @@ describe('ExternalAppMenuItems', () => {
   })
 
   it('reports the picked application by id', () => {
-    const { onSelect } = renderList([editorApp('zed', 'Zed'), fileManagerApp()])
+    const { onSelect } = renderList([
+      editorApp('zed', 'Zed'),
+      fileManagerApp(),
+    ])
 
     fireEvent.click(screen.getByTestId('apps-item-zed'))
     expect(onSelect).toHaveBeenCalledWith('zed')
@@ -105,7 +115,10 @@ describe('ExternalAppMenuItems', () => {
   // tree, so a row that only LOOKS marked announces no state at all.
   it('marks the remembered application, and only that one', () => {
     renderList(
-      [editorApp('zed', 'Zed'), editorApp('cursor', 'Cursor')],
+      [
+        editorApp('zed', 'Zed'),
+        editorApp('cursor', 'Cursor'),
+      ],
       { preferredId: 'zed' },
     )
 
@@ -113,7 +126,10 @@ describe('ExternalAppMenuItems', () => {
   })
 
   it('announces every row as a radio, so the marked one carries a state', () => {
-    renderList([editorApp('zed', 'Zed'), fileManagerApp()], { preferredId: 'zed' })
+    renderList([
+      editorApp('zed', 'Zed'),
+      fileManagerApp(),
+    ], { preferredId: 'zed' })
 
     const rows = screen.getAllByRole('menuitemradio', { hidden: true })
     expect(rows).toHaveLength(2)
@@ -123,13 +139,18 @@ describe('ExternalAppMenuItems', () => {
 
   // The file manager is a first-class default, not a second-class row.
   it('can mark the file manager as the remembered application', () => {
-    renderList([fileManagerApp(), editorApp('zed', 'Zed')], { preferredId: 'file-manager' })
+    renderList([
+      fileManagerApp(),
+      editorApp('zed', 'Zed'),
+    ], { preferredId: 'file-manager' })
 
     expect(checkedIds()).toEqual(['apps-item-file-manager'])
   })
 
   it('marks nothing when the remembered id is no longer detected', () => {
-    renderList([editorApp('zed', 'Zed')], { preferredId: 'goland' })
+    renderList([
+      editorApp('zed', 'Zed'),
+    ], { preferredId: 'goland' })
 
     expect(checkedIds()).toEqual([])
   })
@@ -138,21 +159,27 @@ describe('ExternalAppMenuItems', () => {
   // not join the radio group -- a screen reader would otherwise offer it as a
   // fourth application to remember.
   it('leaves the refresh action a plain menu item', () => {
-    renderList([editorApp('zed', 'Zed')])
+    renderList([
+      editorApp('zed', 'Zed'),
+    ])
 
     expect(screen.getByTestId('apps-refresh').getAttribute('role')).toBe('menuitem')
     expect(screen.getByTestId('apps-refresh').hasAttribute('aria-checked')).toBe(false)
   })
 
   it('asks for a re-probe from the refresh action', () => {
-    const { onRefresh } = renderList([editorApp('zed', 'Zed')])
+    const { onRefresh } = renderList([
+      editorApp('zed', 'Zed'),
+    ])
 
     fireEvent.click(screen.getByTestId('apps-refresh'))
     expect(onRefresh).toHaveBeenCalledTimes(1)
   })
 
   it('disables the refresh action while one is already in flight', () => {
-    const { onRefresh } = renderList([editorApp('zed', 'Zed')], { refreshing: true })
+    const { onRefresh } = renderList([
+      editorApp('zed', 'Zed'),
+    ], { refreshing: true })
 
     const refresh = screen.getByTestId('apps-refresh') as HTMLButtonElement
     expect(refresh).toBeDisabled()

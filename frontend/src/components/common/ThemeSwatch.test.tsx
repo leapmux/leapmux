@@ -26,7 +26,9 @@ function variantById(id: string): ThemeVariant {
 }
 
 function pipFills(container: HTMLElement): (string | null)[] {
-  return [...container.querySelectorAll('rect')].map(r => r.getAttribute('fill'))
+  return [
+    ...container.querySelectorAll('rect'),
+  ].map(r => r.getAttribute('fill'))
 }
 
 describe('ThemeSwatch', () => {
@@ -109,7 +111,10 @@ describe('ThemeSwatch', () => {
     // paints a rect with no fill BLACK, which reads as a colour the theme chose.
     const broken: ThemeVariant = {
       ...variantById('default-light'),
-      palette: { ...variantById('default-light').palette, '--warning': undefined as unknown as string },
+      palette: {
+        ...variantById('default-light').palette,
+        '--warning': undefined as unknown as string,
+      },
     }
     const { container } = render(() => <ThemeSwatch variant={broken} />)
     expect(pipFills(container)[SWATCH_TOKENS.indexOf('--warning')]).toBe('transparent')
@@ -205,7 +210,10 @@ describe('ThemeSwatch palette invariants (every catalogue variant)', () => {
       expect(deltaE(palette[a]!, palette[b]!), `${variant} no longer collides on ${a}/${b}`)
         .toBeLessThan(MIN_NEIGHBOUR_DELTA_E)
 
-      const [x, y] = [SWATCH_TOKENS.indexOf(a), SWATCH_TOKENS.indexOf(b)]
+      const [x, y] = [
+        SWATCH_TOKENS.indexOf(a),
+        SWATCH_TOKENS.indexOf(b),
+      ]
       const row = (i: number) => Math.floor(i / PIP_GRID_COLUMNS)
       const column = (i: number) => i % PIP_GRID_COLUMNS
       expect(row(x), `${a} and ${b} share a row`).not.toBe(row(y))

@@ -28,7 +28,9 @@ export function codebuddyExtractControl(input: ControlExtractionInput): Extracte
     permission: {
       title: toolName,
       input: toolInput,
-      ...(command !== undefined ? { command } : {}),
+      ...(command !== undefined
+        ? { command }
+        : {}),
       options: [],
     },
   }

@@ -35,22 +35,34 @@ function commandActionDescription(action: Exclude<CommandAction, { kind: 'unknow
       )
     }
     case 'list': {
-      const path = action.path ? actionPath(action.path, context) : ''
+      const path = action.path
+        ? actionPath(action.path, context)
+        : ''
       return (
         <>
           <span>{path ? 'List files in ' : 'List files'}</span>
-          {path ? <span class={commandActionCodeText}>{path}</span> : null}
+          {path
+            ? <span class={commandActionCodeText}>{path}</span>
+            : null}
         </>
       )
     }
     case 'search': {
-      const path = action.path ? actionPath(action.path, context) : ''
+      const path = action.path
+        ? actionPath(action.path, context)
+        : ''
       return (
         <>
           <span>{action.query ? 'Search for ' : 'Search'}</span>
-          {action.query ? <span class={commandActionCodeText}>{`"${action.query}"`}</span> : null}
-          {path ? <span> in </span> : null}
-          {path ? <span class={commandActionCodeText}>{path}</span> : null}
+          {action.query
+            ? <span class={commandActionCodeText}>{`"${action.query}"`}</span>
+            : null}
+          {path
+            ? <span> in </span>
+            : null}
+          {path
+            ? <span class={commandActionCodeText}>{path}</span>
+            : null}
         </>
       )
     }
@@ -69,13 +81,19 @@ function KnownCommandAction(props: {
       contentFactory={() => (
         <CommandInputSummary
           command={props.action.command}
-          {...(props.language !== undefined ? { language: props.language } : {})}
-          {...(props.context !== undefined ? { context: props.context } : {})}
+          {...(props.language !== undefined
+            ? { language: props.language }
+            : {})}
+          {...(props.context !== undefined
+            ? { context: props.context }
+            : {})}
         />
       )}
     >
       <span
-        class={props.title ? `${toolInputText} ${commandActionLine}` : commandActionLine}
+        class={props.title
+          ? `${toolInputText} ${commandActionLine}`
+          : commandActionLine}
         data-command-action={props.title ? undefined : props.action.kind}
         data-testid={props.title ? 'execute-title' : undefined}
       >
@@ -91,8 +109,12 @@ function commandActionEntry(action: CommandAction, language: CommandLanguage | u
       <div data-command-action={action.kind}>
         <CommandInputSummary
           command={action.command}
-          {...(language !== undefined ? { language } : {})}
-          {...(view.context !== undefined ? { context: view.context } : {})}
+          {...(language !== undefined
+            ? { language }
+            : {})}
+          {...(view.context !== undefined
+            ? { context: view.context }
+            : {})}
         />
       </div>
     )
@@ -104,8 +126,12 @@ function commandActionEntry(action: CommandAction, language: CommandLanguage | u
 function knownActionForTitle(call: ParsedCall<'execute'>): Exclude<CommandAction, { kind: 'unknown' }> | undefined {
   if (call.request.description || (call.title && call.title !== 'Run command'))
     return undefined
-  const action = call.request.actions?.length === 1 ? call.request.actions[0] : undefined
-  return action?.kind === 'unknown' ? undefined : action
+  const action = call.request.actions?.length === 1
+    ? call.request.actions[0]
+    : undefined
+  return action?.kind === 'unknown'
+    ? undefined
+    : action
 }
 
 function CommandActionSummary(props: {
@@ -114,7 +140,9 @@ function CommandActionSummary(props: {
   view: ToolRowView
 }): JSX.Element {
   const collapsed = () => !props.view.expanded()
-  const omittedCount = () => collapsed() ? Math.max(0, props.actions.length - (COLLAPSED_ACTION_ROW_LIMIT - 1)) : 0
+  const omittedCount = () => collapsed()
+    ? Math.max(0, props.actions.length - (COLLAPSED_ACTION_ROW_LIMIT - 1))
+    : 0
   const displayedActions = () => omittedCount() > 0
     ? props.actions.slice(0, COLLAPSED_ACTION_ROW_LIMIT - 1)
     : props.actions
@@ -129,7 +157,9 @@ function CommandActionSummary(props: {
     collapsed() && commandInputCollapsed,
     collapsed() && overflow.overflowing() && commandInputCollapsedFade,
   ].filter(Boolean).join(' ')
-  const singleAction = () => props.actions.length === 1 ? props.actions[0] : undefined
+  const singleAction = () => props.actions.length === 1
+    ? props.actions[0]
+    : undefined
   return (
     <Show
       when={singleAction()}
@@ -139,7 +169,11 @@ function CommandActionSummary(props: {
             {action => <li>{commandActionEntry(action, props.language, props.view)}</li>}
           </For>
           <Show when={omittedCount() > 0}>
-            <li>{`${omittedCount()} ${omittedCount() === 1 ? 'action' : 'actions'} omitted`}</li>
+            <li>
+              {`${omittedCount()} ${omittedCount() === 1
+                ? 'action'
+                : 'actions'} omitted`}
+            </li>
           </Show>
         </ul>
       )}
@@ -155,8 +189,19 @@ function CommandActionSummary(props: {
 
 function commandMetadata(request: ExecuteRequest, workingDir?: string, homeDir?: string): ToolMetadataEntry[] {
   return [
-    ...(request.cwd ? [{ label: 'Working directory', value: relativizePath(request.cwd, workingDir, homeDir) }] : []),
-    ...(request.processId ? [{ label: 'Process ID', value: request.processId }] : []),
+    ...(request.cwd
+      ? [
+          {
+            label: 'Working directory',
+            value: relativizePath(request.cwd, workingDir, homeDir),
+          },
+        ]
+      : []),
+    ...(request.processId
+      ? [
+          { label: 'Process ID', value: request.processId },
+        ]
+      : []),
   ]
 }
 
@@ -181,9 +226,13 @@ export const executeRenderer: ToolKindRenderer<'execute'> = {
     const clipped = description !== undefined && description.length > DESCRIPTION_LIMIT
       ? `${description.slice(0, DESCRIPTION_LIMIT)}…`
       : description
-    const frameTitle = call.title === 'Run command' ? undefined : call.title
+    const frameTitle = call.title === 'Run command'
+      ? undefined
+      : call.title
     const knownAction = knownActionForTitle(call)
-    const defaultTitle = (call.request.actions?.length ?? 0) > 1 ? 'Run commands' : 'Run command'
+    const defaultTitle = (call.request.actions?.length ?? 0) > 1
+      ? 'Run commands'
+      : 'Run command'
     // ONE classed span over every branch. `ToolUseLayout` wraps a STRING title in
     // `toolInputText` itself and leaves a JSX title alone, so the bare fragment this
     // used to answer reached the header with no class at all: no monospace face, and
@@ -219,12 +268,26 @@ export const executeRenderer: ToolKindRenderer<'execute'> = {
         <Show when={knownActionForTitle(call) === undefined}>
           <Show
             when={call.request.actions?.length ? call.request.actions : undefined}
-            fallback={<CommandInputSummary command={call.request.command} {...(call.request.language !== undefined ? { language: call.request.language } : {})} {...(view.context !== undefined ? { context: view.context } : {})} collapsed={!view.expanded()} onOverflowChange={view.onSummaryOverflow} />}
+            fallback={(
+              <CommandInputSummary
+                command={call.request.command}
+                {...(call.request.language !== undefined
+                  ? { language: call.request.language }
+                  : {})}
+                {...(view.context !== undefined
+                  ? { context: view.context }
+                  : {})}
+                collapsed={!view.expanded()}
+                onOverflowChange={view.onSummaryOverflow}
+              />
+            )}
           >
             {actions => (
               <CommandActionSummary
                 actions={actions()}
-                {...(call.request.language !== undefined ? { language: call.request.language } : {})}
+                {...(call.request.language !== undefined
+                  ? { language: call.request.language }
+                  : {})}
                 view={view}
               />
             )}
@@ -246,8 +309,29 @@ export const executeRenderer: ToolKindRenderer<'execute'> = {
         <For each={call.result.unresolvedTerminals ?? []}>{id => <ToolHeaderRow icon={Terminal} title={`Terminal ${id}`} />}</For>
         {/* The single-command gate doubles as the read: `commands[0]` is defined
             exactly when the count is one, and `Show` narrows the value it holds. */}
-        <Show when={commands.length === 1 ? commands[0] : undefined} fallback={<CommandResultList entries={commands} status={call.status} {...(view.context !== undefined ? { context: view.context } : {})} />}>
-          {command => <CommandResultBody source={command()} status={call.status} {...(view.context !== undefined ? { context: view.context } : {})} />}
+        <Show
+          when={commands.length === 1
+            ? commands[0]
+            : undefined}
+          fallback={(
+            <CommandResultList
+              entries={commands}
+              status={call.status}
+              {...(view.context !== undefined
+                ? { context: view.context }
+                : {})}
+            />
+          )}
+        >
+          {command => (
+            <CommandResultBody
+              source={command()}
+              status={call.status}
+              {...(view.context !== undefined
+                ? { context: view.context }
+                : {})}
+            />
+          )}
         </Show>
       </>
     )

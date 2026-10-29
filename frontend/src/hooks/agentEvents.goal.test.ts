@@ -17,7 +17,12 @@ describe('wireGoalProgressToUpdate', () => {
       token_budget: 50000,
       time_used_seconds: 90,
       iterations: 4,
-    })).toEqual({ tokensUsed: 1200, tokenBudget: 50000, timeUsedSeconds: 90, iterations: 4 })
+    })).toEqual({
+      tokensUsed: 1200,
+      tokenBudget: 50000,
+      timeUsedSeconds: 90,
+      iterations: 4,
+    })
   })
 
   /**

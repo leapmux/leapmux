@@ -55,7 +55,12 @@ describe('terminal link dialog', () => {
   it('warns about the missing encryption, and drops the text row when there is none', () => {
     render(() => (
       <UntrustedLinkDialog
-        request={requestOf({ uri: 'http://example.test/', label: '', labelMismatch: false, insecure: true })}
+        request={requestOf({
+          uri: 'http://example.test/',
+          label: '',
+          labelMismatch: false,
+          insecure: true,
+        })}
         onResolve={() => {}}
       />
     ))
@@ -88,7 +93,12 @@ describe('terminal link dialog', () => {
     const onResolve = vi.fn()
     render(() => (
       <UntrustedLinkDialog
-        request={requestOf({ uri: 'http://foo.test/bar', label: 'foo.test/bar', labelMismatch: false, insecure: true })}
+        request={requestOf({
+          uri: 'http://foo.test/bar',
+          label: 'foo.test/bar',
+          labelMismatch: false,
+          insecure: true,
+        })}
         onResolve={onResolve}
       />
     ))

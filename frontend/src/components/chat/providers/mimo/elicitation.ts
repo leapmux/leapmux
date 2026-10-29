@@ -35,10 +35,14 @@ export function mimoElicitation(payload: Record<string, unknown>): ElicitationRe
   // MiMo puts the server in front of the message, and the form states the server on
   // its own line already.
   const prefix = `${server}\n\n`
-  const message = server && text.startsWith(prefix) ? text.slice(prefix.length) : text
+  const message = server && text.startsWith(prefix)
+    ? text.slice(prefix.length)
+    : text
   return {
     mode: MCP_ELICITATION_MODE.Form,
-    ...(server ? { server } : {}),
+    ...(server
+      ? { server }
+      : {}),
     message,
     schema: { type: 'object', properties: {} },
   }

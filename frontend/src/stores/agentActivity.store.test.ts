@@ -5,7 +5,13 @@ import { activityInterruptsWork, createAgentActivityStore } from '~/stores/agent
 const { WORKING, IDLE, WAITING_FOR_USER } = AgentActivityState
 
 describe('createAgentActivityStore', () => {
-  const invalidCases = [AgentActivityState.UNSPECIFIED, -1, -2147483648, 99, 2147483647]
+  const invalidCases = [
+    AgentActivityState.UNSPECIFIED,
+    -1,
+    -2147483648,
+    99,
+    2147483647,
+  ]
     .flatMap(value => [
       { value, baseline: 'cold', expected: IDLE },
       { value, baseline: 'working', expected: WORKING },

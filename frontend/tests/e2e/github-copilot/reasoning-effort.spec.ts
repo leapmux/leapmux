@@ -41,7 +41,10 @@ copilotTest('hides the effort for a model without levels and settles the runtime
     via: MOCK_MODELS.goose,
     viaEfforts: 'hidden',
     settled: 'high',
-    nativeProof: request => expect(request.body).toMatchObject({ model: MOCK_MODELS.gooseReasoning, reasoning: { effort: 'high' } }),
+    nativeProof: request => expect(request.body).toMatchObject({
+      model: MOCK_MODELS.gooseReasoning,
+      reasoning: { effort: 'high' },
+    }),
   })
   const runtimeTier = nativeOptionValue(await currentNativeAgent(native), 'effort')
   if (runtimeTier === undefined)

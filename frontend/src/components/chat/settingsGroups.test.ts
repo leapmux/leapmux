@@ -31,7 +31,10 @@ describe('hasOptions', () => {
 })
 
 describe('groupHasOptions', () => {
-  const catalog = [group('model', ['opus', 'sonnet']), group('effort', [])]
+  const catalog = [
+    group('model', ['opus', 'sonnet']),
+    group('effort', []),
+  ]
 
   it('finds a populated group by id', () => {
     expect(groupHasOptions(catalog, 'model')).toBe(true)
@@ -54,14 +57,23 @@ describe('groupHasOptions', () => {
 
 describe('optionSideEffectText', () => {
   const catalog = [
-    { id: 'allow_all', label: 'Allow All', options: [{ id: 'off', name: 'Off' }, { id: 'on', name: 'On' }] },
+    {
+      id: 'allow_all',
+      label: 'Allow All',
+      options: [
+        { id: 'off', name: 'Off' },
+        { id: 'on', name: 'On' },
+      ],
+    },
     { id: 'copilot_assisted_approval', label: 'Assisted Approval', options: [] },
   ] as unknown as AvailableOptionGroup[]
   const option = (clears: { groupId: string, value: string }[]) =>
     ({ id: 'on', name: 'On', clears }) as unknown as AvailableOption
 
   it('names the group and value a selection also settles, using catalog labels', () => {
-    expect(optionSideEffectText(catalog, option([{ groupId: 'allow_all', value: 'off' }])))
+    expect(optionSideEffectText(catalog, option([
+      { groupId: 'allow_all', value: 'off' },
+    ])))
       .toBe('Also sets Allow All to Off.')
   })
 
@@ -79,11 +91,15 @@ describe('optionSideEffectText', () => {
   it('skips a side effect whose group the catalog does not carry', () => {
     // A worker can name a group this session never reported; describing it by its wire
     // id would say less than saying nothing.
-    expect(optionSideEffectText(catalog, option([{ groupId: 'absent', value: 'off' }]))).toBeUndefined()
+    expect(optionSideEffectText(catalog, option([
+      { groupId: 'absent', value: 'off' },
+    ]))).toBeUndefined()
   })
 
   it('falls back to the wire ids when the group is present but the value is not', () => {
-    expect(optionSideEffectText(catalog, option([{ groupId: 'allow_all', value: 'unknown' }])))
+    expect(optionSideEffectText(catalog, option([
+      { groupId: 'allow_all', value: 'unknown' },
+    ])))
       .toBe('Also sets Allow All to unknown.')
   })
 })

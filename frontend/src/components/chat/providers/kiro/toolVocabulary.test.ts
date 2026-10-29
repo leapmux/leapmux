@@ -23,7 +23,17 @@ const MINIMAL_INPUT: Readonly<Record<string, Record<string, unknown>>> = {
 /** One pending call, as Kiro's first `tool_call` states it: the title, the arguments and `_meta.kiro`. */
 function kindOf(title: string) {
   return acpToolCall(
-    { sessionUpdate: 'tool_call', toolCallId: 'kiro-vocab', status: 'pending', title, kind: 'other', rawInput: MINIMAL_INPUT[title] ?? {}, _meta: { kiro: { toolOrigin: 'default' } } },
+    {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'kiro-vocab',
+      status: 'pending',
+      title,
+      kind: 'other',
+      rawInput: MINIMAL_INPUT[title] ?? {},
+      _meta: {
+        kiro: { toolOrigin: 'default' },
+      },
+    },
     kiroToolCallAdapter,
     undefined,
   ).kind
@@ -61,15 +71,48 @@ describe('kiro tool vocabulary', () => {
   })
 
   it('reads a shell command by its wire kind, whatever its title', () => {
-    expect(acpToolCall({ sessionUpdate: 'tool_call', toolCallId: 'run_command_1', status: 'pending', title: 'Print a marker', kind: 'execute', rawInput: { command: 'echo hi' } }, kiroToolCallAdapter, undefined).kind).toBe('execute')
+    expect(acpToolCall({
+      sessionUpdate: 'tool_call',
+      toolCallId: 'run_command_1',
+      status: 'pending',
+      title: 'Print a marker',
+      kind: 'execute',
+      rawInput: { command: 'echo hi' },
+    }, kiroToolCallAdapter, undefined).kind).toBe('execute')
   })
 
   it('reads a subagent, a question and an MCP tool by their identity', () => {
-    const spawn = acpToolCall({ sessionUpdate: 'tool_call', toolCallId: 'invoke_subagent_1', status: 'pending', title: 'Sub-agent: helper', kind: 'other', rawInput: { name: 'helper', prompt: 'go' }, _meta: { kiro: { kind: KIRO_KIND.AgentSubtask, agentSubtaskId: 's' } } }, kiroToolCallAdapter, undefined)
+    const spawn = acpToolCall({
+      sessionUpdate: 'tool_call',
+      toolCallId: 'invoke_subagent_1',
+      status: 'pending',
+      title: 'Sub-agent: helper',
+      kind: 'other',
+      rawInput: { name: 'helper', prompt: 'go' },
+      _meta: {
+        kiro: { kind: KIRO_KIND.AgentSubtask, agentSubtaskId: 's' },
+      },
+    }, kiroToolCallAdapter, undefined)
     expect(spawn.kind).toBe('agent')
-    const question = acpToolCall({ sessionUpdate: 'tool_call', toolCallId: 't_q', status: 'pending', title: 'Which DB?', kind: 'other', _meta: { kiro: { toolId: 'user_input', userInputOptions: [] } } }, kiroToolCallAdapter, undefined)
+    const question = acpToolCall({
+      sessionUpdate: 'tool_call',
+      toolCallId: 't_q',
+      status: 'pending',
+      title: 'Which DB?',
+      kind: 'other',
+      _meta: {
+        kiro: { toolId: 'user_input', userInputOptions: [] },
+      },
+    }, kiroToolCallAdapter, undefined)
     expect(question.kind).toBe('question')
-    const mcp = acpToolCall({ sessionUpdate: 'tool_call', toolCallId: 'm', status: 'pending', title: '@probe/echo', kind: 'other', rawInput: { text: 'hi' } }, kiroToolCallAdapter, undefined)
+    const mcp = acpToolCall({
+      sessionUpdate: 'tool_call',
+      toolCallId: 'm',
+      status: 'pending',
+      title: '@probe/echo',
+      kind: 'other',
+      rawInput: { text: 'hi' },
+    }, kiroToolCallAdapter, undefined)
     expect(mcp.kind).toBe('mcp')
   })
 

@@ -37,7 +37,9 @@ export function calcPopoverPosition(
   options: PopoverPositionOptions = {},
 ): { top: number, left: number, flipped: boolean } {
   const { placement = 'auto', offset = 0, xOffset = 0, yOffset = 0 } = options
-  const triggerRect = 'getBoundingClientRect' in anchor ? anchor.getBoundingClientRect() : anchor
+  const triggerRect = 'getBoundingClientRect' in anchor
+    ? anchor.getBoundingClientRect()
+    : anchor
   const popoverRect = popover.getBoundingClientRect()
   const viewportHeight = window.innerHeight
 

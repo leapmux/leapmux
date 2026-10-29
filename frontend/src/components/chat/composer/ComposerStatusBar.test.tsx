@@ -48,20 +48,30 @@ function renderBar(
     isWorktree: extra.isWorktree ?? false,
     name: extra.branchName ?? '',
     directory: extra.directory ?? '',
-    ...(extra.homeDir === undefined ? {} : { homeDir: extra.homeDir }),
-    ...(extra.branchStats === undefined ? {} : { stats: extra.branchStats }),
+    ...(extra.homeDir === undefined
+      ? {}
+      : { homeDir: extra.homeDir }),
+    ...(extra.branchStats === undefined
+      ? {}
+      : { stats: extra.branchStats }),
   }
   return render(() => (
     <ComposerStatusBar
-      {...(a === undefined ? {} : { agent: a })}
+      {...(a === undefined
+        ? {}
+        : { agent: a })}
       workingTree={workingTree}
       optionValues={{}}
       onSettingChange={extra.onSettingChange ?? (() => {})}
       branchActions={stubBranchMenuActions()}
       branchWorkerId="w-1"
       infoTrigger={() => <span data-testid="info" />}
-      {...(extra.disabledReason === undefined ? {} : { disabledReason: extra.disabledReason })}
-      {...(extra.branchDisabledReason === undefined ? {} : { branchDisabledReason: extra.branchDisabledReason })}
+      {...(extra.disabledReason === undefined
+        ? {}
+        : { disabledReason: extra.disabledReason })}
+      {...(extra.branchDisabledReason === undefined
+        ? {}
+        : { branchDisabledReason: extra.branchDisabledReason })}
     />
   ))
 }
@@ -82,7 +92,11 @@ describe('ComposerStatusBar', () => {
   })
 
   it('hides a chip whose group is absent', () => {
-    renderBar(agent({ optionGroups: [group('model', 'Model', ['opus'])] } as Partial<AgentInfo>))
+    renderBar(agent({
+      optionGroups: [
+        group('model', 'Model', ['opus']),
+      ],
+    } as Partial<AgentInfo>))
 
     expect(screen.getByTestId('composer-model-trigger')).toBeInTheDocument()
     expect(screen.queryByTestId('composer-effort-trigger')).toBeNull()
@@ -92,7 +106,11 @@ describe('ComposerStatusBar', () => {
   it('hides a chip whose group exists but offers no options', () => {
     // A transient catalog on first handshake reports the group with an empty
     // option list; a chip with nothing to pick is a dead control.
-    renderBar(agent({ optionGroups: [group('model', 'Model', [])] } as Partial<AgentInfo>))
+    renderBar(agent({
+      optionGroups: [
+        group('model', 'Model', []),
+      ],
+    } as Partial<AgentInfo>))
 
     expect(screen.queryByTestId('composer-model-trigger')).toBeNull()
   })
@@ -108,7 +126,9 @@ describe('ComposerStatusBar', () => {
     // Codex calls its mode axis `collaboration_mode`, not `permissionMode`.
     renderBar(agent({
       agentProvider: AgentProvider.CODEX,
-      optionGroups: [group('collaboration_mode', 'Mode', ['chat', 'agent'])],
+      optionGroups: [
+        group('collaboration_mode', 'Mode', ['chat', 'agent']),
+      ],
     } as Partial<AgentInfo>))
 
     expect(screen.getByTestId('composer-mode-trigger')).toHaveTextContent('chat')
@@ -133,7 +153,9 @@ describe('ComposerStatusBar', () => {
     // Goose reports its reasoning axis under its own id, and the chip follows it.
     renderBar(agent({
       agentProvider: AgentProvider.GOOSE,
-      optionGroups: [group('thinking_effort', 'Thinking Effort', ['high', 'low'])],
+      optionGroups: [
+        group('thinking_effort', 'Thinking Effort', ['high', 'low']),
+      ],
     } as Partial<AgentInfo>))
 
     expect(screen.getByTestId('composer-effort-trigger')).toHaveTextContent('high')
@@ -144,7 +166,9 @@ describe('ComposerStatusBar', () => {
     // chip, and Goose's own axis is not the well-known id.
     renderBar(agent({
       agentProvider: AgentProvider.CLAUDE_CODE,
-      optionGroups: [group('reasoning_effort', 'Reasoning Effort', ['high'])],
+      optionGroups: [
+        group('reasoning_effort', 'Reasoning Effort', ['high']),
+      ],
     } as Partial<AgentInfo>))
     expect(screen.queryByTestId('composer-effort-trigger')).toBeNull()
   })
@@ -155,25 +179,35 @@ describe('ComposerStatusBar', () => {
     const onSettingChange = vi.fn()
     renderBar(agent({
       agentProvider: AgentProvider.GOOSE,
-      optionGroups: [group('thinking_effort', 'Thinking Effort', ['high', 'low'])],
+      optionGroups: [
+        group('thinking_effort', 'Thinking Effort', ['high', 'low']),
+      ],
     } as Partial<AgentInfo>), { onSettingChange })
 
     fireEvent.click(screen.getByTestId('composer-effort-trigger'))
     await fireEvent.click(screen.getByTestId('composer-effort-low'))
-    expect(onSettingChange).toHaveBeenCalledWith({ sets: { thinking_effort: 'low' } })
+    expect(onSettingChange).toHaveBeenCalledWith({
+      sets: { thinking_effort: 'low' },
+    })
   })
 
   it('ignores a well-known effort group for a provider that declares its own axis', () => {
     renderBar(agent({
       agentProvider: AgentProvider.GOOSE,
-      optionGroups: [group('effort', 'Effort', ['high'])],
+      optionGroups: [
+        group('effort', 'Effort', ['high']),
+      ],
     } as Partial<AgentInfo>))
     expect(screen.queryByTestId('composer-effort-trigger')).toBeNull()
   })
 
   it('disables every chip when the composer accepts no input', async () => {
     renderBar(
-      agent({ optionGroups: [group('model', 'Model', ['opus', 'sonnet'])] } as Partial<AgentInfo>),
+      agent({
+        optionGroups: [
+          group('model', 'Model', ['opus', 'sonnet']),
+        ],
+      } as Partial<AgentInfo>),
       { disabledReason: 'This subagent doesn\'t accept messages.' },
     )
 

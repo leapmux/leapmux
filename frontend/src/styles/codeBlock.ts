@@ -51,7 +51,7 @@ export const codeWrap: StyleRule = {
  * An outline was tried and removed as too loud for what a run of code in a
  * message should be. The radius stays, because it is what shapes the field.
  *
- * The radius is Oat's own for a `<pre>` -- `--radius-medium`, three times the
+ * The radius is Oat's own for a `<pre>` -- `--radius-medium`, twice the
  * `--radius-small` it gives INLINE `code`. This restated it as `small` and so
  * rounded a block at the inline corner. Oat's rule is in its `base` layer, and
  * `codeBlockPre` is applied through an unlayered class, so the value here always

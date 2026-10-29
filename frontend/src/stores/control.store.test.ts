@@ -7,7 +7,12 @@ import { createControlStore, pendingQuestionCount, requestInstanceId, shownContr
 // claimToken defaults to a per-requestId token (so a re-add of the SAME id models a reconnect replay of
 // the SAME instance); pass an explicit token to model a REISSUED instance that reused the request_id.
 function makeRequest(requestId: string, agentId: string, payload: Record<string, unknown> = { data: requestId }, claimToken: string = `tok-${requestId}`): ControlRequest {
-  return { requestId, agentId, payload, claimToken }
+  return {
+    requestId,
+    agentId,
+    payload,
+    claimToken,
+  }
 }
 
 describe('createControlStore', () => {
@@ -25,7 +30,10 @@ describe('createControlStore', () => {
   it('retains an owned copy of the original request bytes', () => {
     const store = createControlStore()
     const originalPayload = new TextEncoder().encode('{"n":9007199254740993}')
-    store.addRequest('agent', { ...makeRequest('request', 'agent'), originalPayload })
+    store.addRequest('agent', {
+      ...makeRequest('request', 'agent'),
+      originalPayload,
+    })
     originalPayload.fill(0)
     expect(new TextDecoder().decode(store.getRequests('agent')[0]?.originalPayload)).toBe('{"n":9007199254740993}')
   })
@@ -42,7 +50,12 @@ describe('createControlStore', () => {
   it('keeps a new instance when an identical earlier request still awaits cancellation', () => {
     createRoot((dispose) => {
       const store = createControlStore()
-      const payload = { request: { tool_name: 'Read', input: { path: 'sample.txt' } } }
+      const payload = {
+        request: {
+          tool_name: 'Read',
+          input: { path: 'sample.txt' },
+        },
+      }
       store.addRequest('agent-1', makeRequest('1', 'agent-1', payload, 'first'))
       store.addRequest('agent-1', makeRequest('1', 'agent-1', payload, 'second'))
       store.addRequest('agent-1', makeRequest('1', 'agent-1', payload, 'second'))
@@ -119,7 +132,10 @@ describe('createControlStore', () => {
   // request with no token must keep the bare id it had before the token existed.
   it('should distinguish two instances of one request id on requestInstanceId', () => {
     const first = makeRequest('r1', 'agent-1')
-    const second = { ...makeRequest('r1', 'agent-1'), claimToken: 'tok-other' }
+    const second = {
+      ...makeRequest('r1', 'agent-1'),
+      claimToken: 'tok-other',
+    }
     expect(requestInstanceId(first)).toBe('r1:tok-r1')
     expect(requestInstanceId(second)).toBe('r1:tok-other')
     expect(requestInstanceId(first)).not.toBe(requestInstanceId(second))
@@ -155,7 +171,10 @@ describe('createControlStore', () => {
       // The flag opens only while a question waits, so give agent-2 one.
       // Otherwise the flag stays false, and the check after clearAll proves
       // nothing.
-      store.addRequest('agent-2', { ...makeRequest('q2', 'agent-2'), nonBlocking: true })
+      store.addRequest('agent-2', {
+        ...makeRequest('q2', 'agent-2'),
+        nonBlocking: true,
+      })
       store.setQuestionsOpen('agent-2', true)
       expect(store.questionsOpen('agent-2')).toBe(true)
       store.clearAll()
@@ -214,17 +233,26 @@ describe('createControlStore', () => {
     createRoot((dispose) => {
       const store = createControlStore()
       store.addRequest('agent-1', makeRequest('r1', 'agent-1', {
-        request: { tool_name: 'ExitPlanMode', input: { plan: 'first plan' } },
+        request: {
+          tool_name: 'ExitPlanMode',
+          input: { plan: 'first plan' },
+        },
       }, 'tok-r1-first'))
       store.removeRequest('agent-1', 'r1', 'tok-r1-first')
 
       // The reissued prompt carries a fresh claimToken (a new PersistControlRequest instance).
       store.addRequest('agent-1', makeRequest('r1', 'agent-1', {
-        request: { tool_name: 'ExitPlanMode', input: { plan: 'revised plan' } },
+        request: {
+          tool_name: 'ExitPlanMode',
+          input: { plan: 'revised plan' },
+        },
       }, 'tok-r1-revised'))
       expect(store.getRequests('agent-1')).toHaveLength(1)
       expect(store.getRequests('agent-1')[0]?.payload).toEqual({
-        request: { tool_name: 'ExitPlanMode', input: { plan: 'revised plan' } },
+        request: {
+          tool_name: 'ExitPlanMode',
+          input: { plan: 'revised plan' },
+        },
       })
       dispose()
     })
@@ -238,7 +266,12 @@ describe('createControlStore', () => {
   it('shows an identical re-ask (same payload) that carries a fresh claimToken after a prior answer', () => {
     createRoot((dispose) => {
       const store = createControlStore()
-      const payload = { request: { tool_name: 'Bash', input: { command: 'ls' } } }
+      const payload = {
+        request: {
+          tool_name: 'Bash',
+          input: { command: 'ls' },
+        },
+      }
       store.addRequest('agent-1', makeRequest('1', 'agent-1', payload, 'instA'))
       store.removeRequest('agent-1', '1', 'instA')
 
@@ -259,8 +292,18 @@ describe('createControlStore', () => {
   it('falls back to the payload fingerprint when a request carries no claimToken', () => {
     createRoot((dispose) => {
       const store = createControlStore()
-      const p1 = { request: { tool_name: 'Bash', input: { command: 'ls' } } }
-      const p2 = { request: { tool_name: 'Bash', input: { command: 'rm -rf /' } } }
+      const p1 = {
+        request: {
+          tool_name: 'Bash',
+          input: { command: 'ls' },
+        },
+      }
+      const p2 = {
+        request: {
+          tool_name: 'Bash',
+          input: { command: 'rm -rf /' },
+        },
+      }
       store.addRequest('agent-1', makeRequest('1', 'agent-1', p1, ''))
       store.removeRequest('agent-1', '1', '')
 
@@ -276,10 +319,16 @@ describe('createControlStore', () => {
     createRoot((dispose) => {
       const store = createControlStore()
       const firstPayload = {
-        request: { tool_name: 'ExitPlanMode', input: { plan: 'first plan' } },
+        request: {
+          tool_name: 'ExitPlanMode',
+          input: { plan: 'first plan' },
+        },
       }
       const revisedPayload = {
-        request: { tool_name: 'ExitPlanMode', input: { plan: 'revised plan' } },
+        request: {
+          tool_name: 'ExitPlanMode',
+          input: { plan: 'revised plan' },
+        },
       }
       store.addRequest('agent-1', makeRequest('r1', 'agent-1', firstPayload, 'old-claim'))
       store.addRequest('agent-1', makeRequest('r1', 'agent-1', revisedPayload, 'new-claim'))
@@ -321,7 +370,10 @@ describe('createControlStore', () => {
     createRoot((dispose) => {
       const store = createControlStore()
       store.addRequest('agent-1', makeRequest('B1', 'agent-1'))
-      store.addRequest('agent-1', { ...makeRequest('Q1', 'agent-1'), nonBlocking: true })
+      store.addRequest('agent-1', {
+        ...makeRequest('Q1', 'agent-1'),
+        nonBlocking: true,
+      })
       store.addRequest('agent-1', makeRequest('B2', 'agent-1'))
       expect(store.getRequests('agent-1').map(request => request.requestId)).toEqual(['B1', 'B2', 'Q1'])
       expect(pendingQuestionCount(store.getRequests('agent-1'))).toBe(1)
@@ -337,7 +389,10 @@ describe('createControlStore', () => {
       const store = createControlStore()
       store.addRequest('agent-1', makeRequest('Q1', 'agent-1'))
       store.addRequest('agent-1', makeRequest('B1', 'agent-1'))
-      store.addRequest('agent-1', { ...makeRequest('Q1', 'agent-1'), nonBlocking: true })
+      store.addRequest('agent-1', {
+        ...makeRequest('Q1', 'agent-1'),
+        nonBlocking: true,
+      })
       const requests = store.getRequests('agent-1')
       expect(requests.map(request => request.requestId)).toEqual(['B1', 'Q1'])
       expect(requests).toHaveLength(2)
@@ -352,9 +407,19 @@ describe('createControlStore', () => {
   it('keeps DELIVERED and non-blocking requests when the provider stops', () => {
     createRoot((dispose) => {
       const store = createControlStore()
-      store.addRequest('agent-1', { ...makeRequest('blocking', 'agent-1'), responseState: ControlResponseState.READY })
-      store.addRequest('agent-1', { ...makeRequest('delivered', 'agent-1'), responseState: ControlResponseState.DELIVERED })
-      store.addRequest('agent-1', { ...makeRequest('question', 'agent-1'), nonBlocking: true, responseState: ControlResponseState.READY })
+      store.addRequest('agent-1', {
+        ...makeRequest('blocking', 'agent-1'),
+        responseState: ControlResponseState.READY,
+      })
+      store.addRequest('agent-1', {
+        ...makeRequest('delivered', 'agent-1'),
+        responseState: ControlResponseState.DELIVERED,
+      })
+      store.addRequest('agent-1', {
+        ...makeRequest('question', 'agent-1'),
+        nonBlocking: true,
+        responseState: ControlResponseState.READY,
+      })
       store.clearProviderRequests('agent-1')
       expect(store.getRequests('agent-1').map(request => request.requestId)).toEqual(['delivered', 'question'])
       dispose()
@@ -364,7 +429,10 @@ describe('createControlStore', () => {
   it('closes the questions when the last one leaves, so a later question does not open by itself', () => {
     createRoot((dispose) => {
       const store = createControlStore()
-      store.addRequest('agent-A', { ...makeRequest('Q1', 'agent-A'), nonBlocking: true })
+      store.addRequest('agent-A', {
+        ...makeRequest('Q1', 'agent-A'),
+        nonBlocking: true,
+      })
       store.setQuestionsOpen('agent-A', true)
       expect(store.questionsOpen('agent-A')).toBe(true)
       expect(store.shownRequest('agent-A')?.requestId).toBe('Q1')
@@ -372,7 +440,10 @@ describe('createControlStore', () => {
       store.removeRequest('agent-A', 'Q1', 'tok-Q1')
       expect(store.questionsOpen('agent-A')).toBe(false)
 
-      store.addRequest('agent-A', { ...makeRequest('Q2', 'agent-A'), nonBlocking: true })
+      store.addRequest('agent-A', {
+        ...makeRequest('Q2', 'agent-A'),
+        nonBlocking: true,
+      })
       expect(store.questionsOpen('agent-A')).toBe(false)
       expect(store.shownRequest('agent-A')).toBeNull()
       dispose()
@@ -391,7 +462,10 @@ describe('createControlStore', () => {
       store.setQuestionsOpen('agent-1', true)
       expect(store.questionsOpen('agent-1')).toBe(false)
 
-      store.addRequest('agent-1', { ...makeRequest('Q1', 'agent-1'), nonBlocking: true })
+      store.addRequest('agent-1', {
+        ...makeRequest('Q1', 'agent-1'),
+        nonBlocking: true,
+      })
       expect(store.questionsOpen('agent-1')).toBe(false)
       expect(store.shownRequest('agent-1')?.requestId).toBe('B1')
 
@@ -404,7 +478,10 @@ describe('createControlStore', () => {
   it('opens and closes the questions while one waits', () => {
     createRoot((dispose) => {
       const store = createControlStore()
-      store.addRequest('agent-1', { ...makeRequest('Q1', 'agent-1'), nonBlocking: true })
+      store.addRequest('agent-1', {
+        ...makeRequest('Q1', 'agent-1'),
+        nonBlocking: true,
+      })
       store.setQuestionsOpen('agent-1', true)
       expect(store.questionsOpen('agent-1')).toBe(true)
       expect(store.shownRequest('agent-1')?.requestId).toBe('Q1')
@@ -419,14 +496,20 @@ describe('createControlStore', () => {
   it('closes the questions on clearAgent, so a later question does not open by itself', () => {
     createRoot((dispose) => {
       const store = createControlStore()
-      store.addRequest('agent-A', { ...makeRequest('Q1', 'agent-A'), nonBlocking: true })
+      store.addRequest('agent-A', {
+        ...makeRequest('Q1', 'agent-A'),
+        nonBlocking: true,
+      })
       store.setQuestionsOpen('agent-A', true)
       expect(store.questionsOpen('agent-A')).toBe(true)
 
       store.clearAgent('agent-A')
       expect(store.questionsOpen('agent-A')).toBe(false)
 
-      store.addRequest('agent-A', { ...makeRequest('Q2', 'agent-A'), nonBlocking: true })
+      store.addRequest('agent-A', {
+        ...makeRequest('Q2', 'agent-A'),
+        nonBlocking: true,
+      })
       expect(store.shownRequest('agent-A')).toBeNull()
       dispose()
     })
@@ -438,7 +521,10 @@ describe('createControlStore', () => {
     createRoot((dispose) => {
       const store = createControlStore()
       store.addRequest('agent-A', makeRequest('B1', 'agent-A'))
-      store.addRequest('agent-A', { ...makeRequest('Q1', 'agent-A'), nonBlocking: true })
+      store.addRequest('agent-A', {
+        ...makeRequest('Q1', 'agent-A'),
+        nonBlocking: true,
+      })
       store.setQuestionsOpen('agent-A', true)
       expect(store.shownRequest('agent-A')?.requestId).toBe('B1')
 
@@ -452,12 +538,18 @@ describe('createControlStore', () => {
   it('resets the questions-open map on clearAll', () => {
     createRoot((dispose) => {
       const store = createControlStore()
-      store.addRequest('agent-A', { ...makeRequest('Q1', 'agent-A'), nonBlocking: true })
+      store.addRequest('agent-A', {
+        ...makeRequest('Q1', 'agent-A'),
+        nonBlocking: true,
+      })
       store.setQuestionsOpen('agent-A', true)
       store.clearAll()
       expect(store.questionsOpen('agent-A')).toBe(false)
 
-      store.addRequest('agent-A', { ...makeRequest('Q2', 'agent-A'), nonBlocking: true })
+      store.addRequest('agent-A', {
+        ...makeRequest('Q2', 'agent-A'),
+        nonBlocking: true,
+      })
       expect(store.shownRequest('agent-A')).toBeNull()
       dispose()
     })
@@ -472,13 +564,19 @@ describe('shownControlRequest', () => {
 
   it('returns the blocking head whatever the questions state is', () => {
     const blocking = makeRequest('B1', 'agent-1')
-    const question = { ...makeRequest('Q1', 'agent-1'), nonBlocking: true }
+    const question = {
+      ...makeRequest('Q1', 'agent-1'),
+      nonBlocking: true,
+    }
     expect(shownControlRequest([blocking], false)?.requestId).toBe('B1')
     expect(shownControlRequest([blocking, question], true)?.requestId).toBe('B1')
   })
 
   it('hides a non-blocking head until the reader opens the questions', () => {
-    const question = { ...makeRequest('Q1', 'agent-1'), nonBlocking: true }
+    const question = {
+      ...makeRequest('Q1', 'agent-1'),
+      nonBlocking: true,
+    }
     expect(shownControlRequest([question], false)).toBeNull()
     expect(shownControlRequest([question], true)?.requestId).toBe('Q1')
   })
@@ -490,15 +588,27 @@ describe('pendingQuestionCount', () => {
   })
 
   it('returns zero when every request blocks', () => {
-    expect(pendingQuestionCount([makeRequest('B1', 'agent-1'), makeRequest('B2', 'agent-1')])).toBe(0)
+    expect(pendingQuestionCount([
+      makeRequest('B1', 'agent-1'),
+      makeRequest('B2', 'agent-1'),
+    ])).toBe(0)
   })
 
   it('counts only the non-blocking requests of a mixed list', () => {
     const requests = [
       makeRequest('B1', 'agent-1'),
-      { ...makeRequest('B2', 'agent-1'), nonBlocking: false },
-      { ...makeRequest('Q1', 'agent-1'), nonBlocking: true },
-      { ...makeRequest('Q2', 'agent-1'), nonBlocking: true },
+      {
+        ...makeRequest('B2', 'agent-1'),
+        nonBlocking: false,
+      },
+      {
+        ...makeRequest('Q1', 'agent-1'),
+        nonBlocking: true,
+      },
+      {
+        ...makeRequest('Q2', 'agent-1'),
+        nonBlocking: true,
+      },
     ]
     expect(pendingQuestionCount(requests)).toBe(2)
   })

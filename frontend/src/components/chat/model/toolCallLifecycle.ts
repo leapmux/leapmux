@@ -16,16 +16,22 @@ export function deriveToolCallStatus(
   statusOverride?: 'completed' | 'failed' | 'cancelled' | 'declined',
 ): ToolCallStatus {
   const completedStatus = (): ToolCallStatus => resultAvailable ? 'completed' : 'incomplete'
-  if (statusOverride !== undefined)
-    return statusOverride === 'completed' ? completedStatus() : statusOverride
+  if (statusOverride !== undefined) {
+    return statusOverride === 'completed'
+      ? completedStatus()
+      : statusOverride
+  }
   if (facts.providerOutcome === 'interrupted' || facts.retainedOutcome === 'interrupted')
     return 'cancelled'
   if (facts.providerOutcome === 'failed')
     return 'failed'
   if (facts.providerOutcome === 'declined')
     return 'declined'
-  if (isFinishedToolCallStatus(facts.frameStatus))
-    return facts.frameStatus === 'completed' ? completedStatus() : facts.frameStatus
+  if (isFinishedToolCallStatus(facts.frameStatus)) {
+    return facts.frameStatus === 'completed'
+      ? completedStatus()
+      : facts.frameStatus
+  }
   if (facts.retainedOutcome === 'failed')
     return 'failed'
   if (facts.resultFrameLanded || facts.rowFinal)

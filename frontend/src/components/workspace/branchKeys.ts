@@ -33,7 +33,9 @@ const LOCAL_PREFIX = '\x00local:'
  * any real branch name.
  */
 export function branchNameSegment(branchName: string | null): string {
-  return branchName === null ? NO_BRANCH_NAME_SEGMENT : branchName
+  return branchName === null
+    ? NO_BRANCH_NAME_SEGMENT
+    : branchName
 }
 
 /**
@@ -119,7 +121,9 @@ export function isLocalRepoKey(key: string): boolean {
  * hand a `\x00local:`-prefixed path to anything expecting a URL.
  */
 export function repoOriginUrlFromKey(key: string): string {
-  return isLocalRepoKey(key) ? '' : key
+  return isLocalRepoKey(key)
+    ? ''
+    : key
 }
 
 /**
@@ -128,7 +132,9 @@ export function repoOriginUrlFromKey(key: string): string {
  * tooltip on the repo group header.
  */
 export function repoKeyTooltip(key: string): string {
-  return isLocalRepoKey(key) ? key.slice(LOCAL_PREFIX.length) : key
+  return isLocalRepoKey(key)
+    ? key.slice(LOCAL_PREFIX.length)
+    : key
 }
 
 const SSH_ORIGIN_RE = /^git@([^:]+):(.+)$/
@@ -182,8 +188,12 @@ export function repoKeyAndLabel(
   store: RepoGitStore,
   git: RepoGitView = repoGitView(tab, store),
 ): { key: string, label: string } | null {
-  if (git.originUrl)
-    return { key: git.originUrl, label: formatGitOriginUrl(git.originUrl) }
+  if (git.originUrl) {
+    return {
+      key: git.originUrl,
+      label: formatGitOriginUrl(git.originUrl),
+    }
+  }
   // Through the shared helper, so the group key and the branch bucket resolve
   // the toplevel the same way. A second copy of the chain here is what let a
   // stale row value override the worker's "not a git repository" answer. The
@@ -191,7 +201,10 @@ export function repoKeyAndLabel(
   const toplevel = tabGitToplevelForKey(tab, store, git)
   if (toplevel) {
     const label = basename(toplevel) || toplevel
-    return { key: repoKeyForLocal(toplevel), label }
+    return {
+      key: repoKeyForLocal(toplevel),
+      label,
+    }
   }
   return null
 }

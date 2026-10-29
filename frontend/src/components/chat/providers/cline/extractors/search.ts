@@ -18,7 +18,12 @@ const MATCH_LINE = /^(.+):(\d+):\d+$/
 /** The patterns one call states. */
 export function clineSearchRequest(args: Record<string, unknown>): GrepRequest {
   const queries = stringArray(args.queries)
-  return { pattern: queries.length > 0 ? queries.join(' | ') : pickString(args, 'query'), paths: [] }
+  return {
+    pattern: queries.length > 0
+      ? queries.join(' | ')
+      : pickString(args, 'query'),
+    paths: [],
+  }
 }
 
 /** What one call found, across all its searches. */
@@ -31,11 +36,18 @@ export function clineSearchResult(output: unknown): SearchResult {
     content.push(text)
     for (const line of text.split('\n')) {
       const match = MATCH_LINE.exec(line.trim())
-      if (match?.[1] && match[2])
-        matches.push({ filePath: match[1], lineNumber: Number(match[2]), text: '' })
+      if (match?.[1] && match[2]) {
+        matches.push({
+          filePath: match[1],
+          lineNumber: Number(match[2]),
+          text: '',
+        })
+      }
     }
   }
-  const filenames = [...new Set(matches.map(match => match.filePath))]
+  const filenames = [
+    ...new Set(matches.map(match => match.filePath)),
+  ]
   const text = content.join('\n\n')
   return {
     filenames,

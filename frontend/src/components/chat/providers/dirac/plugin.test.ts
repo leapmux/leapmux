@@ -6,7 +6,9 @@ import './plugin'
 describe('dirac provider', () => {
   it('maps Bypass to native yolo without changing the model or Plan mode', () => {
     const plugin = providerFor(AgentProvider.DIRAC)
-    expect(plugin?.controls?.permissionPresets?.bypass).toEqual({ sets: { yolo: 'true' } })
+    expect(plugin?.controls?.permissionPresets?.bypass).toEqual({
+      sets: { yolo: 'true' },
+    })
     expect(plugin?.controls?.permissionPresets?.smart).toBeUndefined()
     expect(plugin?.configuration?.planMode).toMatchObject({ groupKey: 'permissionMode', planValue: 'plan', defaultValue: 'act' })
   })

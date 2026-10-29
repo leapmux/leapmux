@@ -39,8 +39,15 @@ describe('createGoalStore', () => {
       store.setProgress('outcome', { tokensUsed: 150 })
       const next = change === 'clear'
         ? undefined
-        : protoGoal({ nativeId: change === 'replacement' ? 'second' : 'first', createdAt: 'first-time' })
-      const result = store.replace('outcome', next, [AgentGoalAction.CLEAR], change === 'stale' ? STAMP_1 : STAMP_3)
+        : protoGoal({
+            nativeId: change === 'replacement'
+              ? 'second'
+              : 'first',
+            createdAt: 'first-time',
+          })
+      const result = store.replace('outcome', next, [AgentGoalAction.CLEAR], change === 'stale'
+        ? STAMP_1
+        : STAMP_3)
       const wanted: GoalReplacementResult = expected
       expect(result).toBe(wanted)
       if (expected === 'progress-cleared')
@@ -330,9 +337,21 @@ describe('unknown goal snapshots', () => {
     createRoot((dispose) => {
       onTestFinished(dispose)
       const store = createGoalStore()
-      const wire = create(AgentGoalSchema, { nativeId: 'unknown-native', objective: 'Keep the objective', status: AgentGoalStatus.UNKNOWN, statusDetail: 'unreadable-native-state', createdAt: STAMP_1 })
+      const wire = create(AgentGoalSchema, {
+        nativeId: 'unknown-native',
+        objective: 'Keep the objective',
+        status: AgentGoalStatus.UNKNOWN,
+        statusDetail: 'unreadable-native-state',
+        createdAt: STAMP_1,
+      })
       store.replace('unknown-agent', wire, [AgentGoalAction.SET, AgentGoalAction.CLEAR], STAMP_2)
-      expect(store.get('unknown-agent')).toMatchObject({ nativeId: 'unknown-native', objective: 'Keep the objective', status: 'unknown', statusDetail: 'unreadable-native-state', createdAt: STAMP_1 })
+      expect(store.get('unknown-agent')).toMatchObject({
+        nativeId: 'unknown-native',
+        objective: 'Keep the objective',
+        status: 'unknown',
+        statusDetail: 'unreadable-native-state',
+        createdAt: STAMP_1,
+      })
       expect(store.supportedActions('unknown-agent')).toEqual(['set', 'clear'])
       expect(store.progress('unknown-agent')).toEqual({})
       dispose()
@@ -343,14 +362,29 @@ describe('unknown goal snapshots', () => {
     createRoot((dispose) => {
       onTestFinished(dispose)
       const store = createGoalStore()
-      const wire = create(AgentGoalSchema, { nativeId: 'same-goal', objective: 'Keep the objective', status: AgentGoalStatus.ACTIVE, createdAt: STAMP_1 })
+      const wire = create(AgentGoalSchema, {
+        nativeId: 'same-goal',
+        objective: 'Keep the objective',
+        status: AgentGoalStatus.ACTIVE,
+        createdAt: STAMP_1,
+      })
       store.replace('unknown-agent', wire, [AgentGoalAction.CLEAR], STAMP_1)
-      store.setProgress('unknown-agent', { tokensUsed: 0, tokenBudget: 1000, timeUsedSeconds: 30, iterations: 2 })
+      store.setProgress('unknown-agent', {
+        tokensUsed: 0,
+        tokenBudget: 1000,
+        timeUsedSeconds: 30,
+        iterations: 2,
+      })
       const original = unwrap(store.get('unknown-agent')!)
       store.replace('unknown-agent', create(AgentGoalSchema, { ...wire, status: AgentGoalStatus.UNKNOWN, statusDetail: 'future-state' }), [AgentGoalAction.CLEAR], STAMP_2)
       const unknownStatus = store.get('unknown-agent')?.status
       expect(unwrap(store.get('unknown-agent')!)).toBe(original)
-      expect(store.progress('unknown-agent')).toEqual({ tokensUsed: 0, tokenBudget: 1000, timeUsedSeconds: 30, iterations: 2 })
+      expect(store.progress('unknown-agent')).toEqual({
+        tokensUsed: 0,
+        tokenBudget: 1000,
+        timeUsedSeconds: 30,
+        iterations: 2,
+      })
       store.replace('unknown-agent', create(AgentGoalSchema, { ...wire, status: AgentGoalStatus.PAUSED }), [AgentGoalAction.RESUME], STAMP_3)
       expect(store.get('unknown-agent')?.status).toBe('paused')
       expect(store.progress('unknown-agent').iterations).toBe(2)

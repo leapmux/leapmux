@@ -13,9 +13,20 @@ beforeAll(() => {
 describe('search renderer', () => {
   checkKindModule({
     kind: 'search',
-    request: { pattern: 'needle', paths: ['/p'] },
+    request: {
+      pattern: 'needle',
+      paths: ['/p'],
+    },
     minimalTitlePart: '"x"',
     titlePart: 'needle',
-    result: { filenames: [], content: '', numFiles: 0, numLines: 0, truncated: false, fallbackContent: '', empty: false },
+    result: {
+      filenames: [],
+      content: '',
+      numFiles: 0,
+      numLines: 0,
+      truncated: false,
+      fallbackContent: '',
+      empty: false,
+    },
   })
 })

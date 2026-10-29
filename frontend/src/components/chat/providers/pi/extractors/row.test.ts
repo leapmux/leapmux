@@ -3,7 +3,12 @@ import { describe, expect, it } from 'vitest'
 import { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { piExtractRow } from './row'
 
-const NO_SIDES = { request: undefined, result: undefined, role: 'other' as const, visibleRows: { request: false, result: false } }
+const NO_SIDES = {
+  request: undefined,
+  result: undefined,
+  role: 'other' as const,
+  visibleRows: { request: false, result: false },
+}
 
 function toolRow(payload: Record<string, unknown>, completion?: MessageCompletion): ToolCallRow | null {
   const parsed = {
@@ -21,7 +26,9 @@ function toolRow(payload: Record<string, unknown>, completion?: MessageCompletio
     span: NO_SIDES,
     completion,
   } as never)
-  return row && row.kind === 'tool' ? row : null
+  return row && row.kind === 'tool'
+    ? row
+    : null
 }
 
 describe('pi retained outcome', () => {

@@ -6,7 +6,11 @@ import { resolveTaskBin } from './resolve-task-bin'
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>()
   const execFileSync = vi.fn()
-  return { ...actual, execFileSync, default: { ...actual, execFileSync } }
+  return {
+    ...actual,
+    execFileSync,
+    default: { ...actual, execFileSync },
+  }
 })
 
 beforeEach(() => {
@@ -16,7 +20,12 @@ beforeEach(() => {
 // The probe list resolveTaskBin walks, in order, on this platform: Windows
 // names the suffixed executable first, and both spellings answer everywhere.
 const probeOrder = process.platform === 'win32'
-  ? ['task.exe', 'go-task.exe', 'task', 'go-task']
+  ? [
+      'task.exe',
+      'go-task.exe',
+      'task',
+      'go-task',
+    ]
   : ['task', 'go-task']
 
 describe('task executable lookup', () => {

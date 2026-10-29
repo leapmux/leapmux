@@ -125,7 +125,9 @@ export function useEditorMinHeight(opts: UseEditorMinHeightOptions): UseEditorMi
 
   const maxEditorHeight = () => {
     const h = opts.containerHeight() ?? 0
-    return h > 0 ? Math.floor(h * 0.5) : 200
+    return h > 0
+      ? Math.floor(h * 0.5)
+      : 200
   }
 
   const handleResizeStart = (e: PointerEvent) => {

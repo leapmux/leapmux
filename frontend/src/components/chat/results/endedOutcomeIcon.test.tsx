@@ -7,11 +7,19 @@ import { StatusResultBody } from './statusResult'
 import '../providers/testMocks'
 
 function glyphOf(container: HTMLElement): string | undefined {
-  return [...container.querySelectorAll('svg')].map(node => node.getAttribute('class') ?? '').find(name => name.includes('lucide-'))
+  return [
+    ...container.querySelectorAll('svg'),
+  ].map(node => node.getAttribute('class') ?? '').find(name => name.includes('lucide-'))
 }
 
 function agentGlyph(outcome: AgentRun['outcome']): string | undefined {
-  const source: AgentRun = { description: 'Inspect the parser', agentId: 'a-1', outcome, metadata: [], body: '' }
+  const source: AgentRun = {
+    description: 'Inspect the parser',
+    agentId: 'a-1',
+    outcome,
+    metadata: [],
+    body: '',
+  }
   return glyphOf(render(() => <AgentResultBody source={source} />).container)
 }
 

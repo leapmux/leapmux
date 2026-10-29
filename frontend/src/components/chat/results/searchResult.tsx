@@ -22,9 +22,14 @@ function structuredLines(source: SearchResult) {
 
 export function searchResultText(source: SearchResult, context?: { workingDir?: string | undefined, homeDir?: string | undefined }): string {
   const lines = structuredLines(source)
-  if (lines)
-    return lines.map(line => `${relativizePath(line.filePath, context?.workingDir, context?.homeDir)}${line.lineNumber !== undefined ? `:${line.lineNumber}` : ''}:${line.text}`).join('\n')
-  return source.content || (source.filenames.length === 0 ? source.fallbackContent : '')
+  if (lines) {
+    return lines.map(line => `${relativizePath(line.filePath, context?.workingDir, context?.homeDir)}${line.lineNumber !== undefined
+      ? `:${line.lineNumber}`
+      : ''}:${line.text}`).join('\n')
+  }
+  return source.content || (source.filenames.length === 0
+    ? source.fallbackContent
+    : '')
 }
 
 export function searchResultCopyable(source: SearchResult, context?: { workingDir?: string | undefined, homeDir?: string | undefined }): string {
@@ -151,7 +156,9 @@ export function SearchResultBody(props: {
       return ''
     const text = searchResultText(props.source, props.context)
     // The body says nothing the summary above has not said, so it draws nothing.
-    return isSummaryRepeated(text, summary()) ? '' : text
+    return isSummaryRepeated(text, summary())
+      ? ''
+      : text
   })
   const filenameCollapse = useCollapsedItems<string>({ items: filenames, expanded })
   const contentCollapse = useCollapsedLines({ text: content, expanded })
@@ -173,12 +180,20 @@ export function SearchResultBody(props: {
   }))
 
   return (
-    <div class={`${toolMessage}${isCollapsed() ? ` ${toolResultCollapsed}` : ''}`}>
+    <div class={`${toolMessage}${isCollapsed()
+      ? ` ${toolResultCollapsed}`
+      : ''}`}
+    >
       <Show when={summary()}>
         <div class={toolResultPrompt}>{summary()}</div>
       </Show>
       <Show when={displayFilenames().length > 0}>
-        <FileListView entries={fileEntries()} {...(props.context !== undefined ? { context: props.context } : {})} />
+        <FileListView
+          entries={fileEntries()}
+          {...(props.context !== undefined
+            ? { context: props.context }
+            : {})}
+        />
       </Show>
       <Show when={safeContent().text}>
         <div class={toolResultContentPre}>{safeContent().text}</div>

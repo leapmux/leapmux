@@ -48,7 +48,12 @@ function setSelectionAt(pos: number) {
 function dispatchTab(shift = false) {
   editor?.action((ctx) => {
     const view = ctx.get(editorViewCtx)
-    const event = new KeyboardEvent('keydown', { key: 'Tab', shiftKey: shift, bubbles: true, cancelable: true })
+    const event = new KeyboardEvent('keydown', {
+      key: 'Tab',
+      shiftKey: shift,
+      bubbles: true,
+      cancelable: true,
+    })
     view.someProp('handleKeyDown', f => f(view, event))
   })
 }
@@ -76,7 +81,9 @@ function getDoc(): { topNodeName: string, level?: number, html: string } {
   })
   return {
     topNodeName,
-    ...(level !== undefined ? { level } : {}),
+    ...(level !== undefined
+      ? { level }
+      : {}),
     html,
   }
 }
@@ -269,7 +276,12 @@ describe('tab key plugin — modifier guards', () => {
 
     editor?.action((ctx) => {
       const view = ctx.get(editorViewCtx)
-      const event = new KeyboardEvent('keydown', { key: 'Tab', metaKey: true, bubbles: true, cancelable: true })
+      const event = new KeyboardEvent('keydown', {
+        key: 'Tab',
+        metaKey: true,
+        bubbles: true,
+        cancelable: true,
+      })
       view.someProp('handleKeyDown', f => f(view, event))
     })
 
@@ -285,7 +297,13 @@ describe('tab key plugin — modifier guards', () => {
 
     editor?.action((ctx) => {
       const view = ctx.get(editorViewCtx)
-      const event = new KeyboardEvent('keydown', { key: 'Tab', ctrlKey: true, shiftKey: true, bubbles: true, cancelable: true })
+      const event = new KeyboardEvent('keydown', {
+        key: 'Tab',
+        ctrlKey: true,
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+      })
       view.someProp('handleKeyDown', f => f(view, event))
     })
 
@@ -345,7 +363,11 @@ function getSelection() {
     const view = ctx.get(editorViewCtx)
     const sel = view.state.selection
     info = {
-      type: sel instanceof AllSelection ? 'all' : sel instanceof TextSelection ? 'text' : 'other',
+      type: sel instanceof AllSelection
+        ? 'all'
+        : sel instanceof TextSelection
+          ? 'text'
+          : 'other',
       from: sel.from,
       to: sel.to,
       docSize: view.state.doc.content.size,

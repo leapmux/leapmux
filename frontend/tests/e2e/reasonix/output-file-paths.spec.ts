@@ -28,7 +28,9 @@ for (const failed of [false, true]) {
     expect(command).not.toContain(output.omittedMarker)
     const callId = `native-record-${randomUUID()}`
     await runNativeToolTurn(native, {
-      toolCalls: [bashToolCall(native.provider, callId, command)],
+      toolCalls: [
+        bashToolCall(native.provider, callId, command),
+      ],
       prompt: 'Run the real large-output command once.',
       answer: 'The native record scenario ended.',
     })
@@ -56,16 +58,35 @@ for (const failed of [false, true]) {
     for (const value of [output.firstMarker, output.omittedMarker, output.lastMarker])
       expect(saved).toContain(value)
     const digest = createHash('sha256').update(nativeOutput.text).digest('hex')
-    await testInfo.attach('reasonix-native-result-reference', { body: JSON.stringify({ agentId: agent.id, sessionId: agent.agentSessionId, callId, path: nativeOutput.path, outputBytes: Buffer.byteLength(saved), outputSHA256: createHash('sha256').update(saved).digest('hex'), excerpt: nativeOutput.excerpt, previewText: nativeOutput.previewText, text: nativeOutput.text, bytes: Buffer.byteLength(nativeOutput.text), sha256: digest }), contentType: 'application/json' })
+    await testInfo.attach('reasonix-native-result-reference', {
+      body: JSON.stringify({
+        agentId: agent.id,
+        sessionId: agent.agentSessionId,
+        callId,
+        path: nativeOutput.path,
+        outputBytes: Buffer.byteLength(saved),
+        outputSHA256: createHash('sha256').update(saved).digest('hex'),
+        excerpt: nativeOutput.excerpt,
+        previewText: nativeOutput.previewText,
+        text: nativeOutput.text,
+        bytes: Buffer.byteLength(nativeOutput.text),
+        sha256: digest,
+      }),
+      contentType: 'application/json',
+    })
     await proveNativeToolOutputFilePaths({
       context: native,
       callId,
       previewText: nativeOutput.previewText,
       paths: [nativeOutput.path],
       status: failed ? 'failed' : 'completed',
-      previewMarkers: [failed ? nativeOutput.previewText : output.firstMarker],
+      previewMarkers: [
+        failed ? nativeOutput.previewText : output.firstMarker,
+      ],
       absentMarkers: [output.omittedMarker, output.lastMarker],
-      ...(failed ? {} : { prepareView: expandNativeResultView }),
+      ...(failed
+        ? {}
+        : { prepareView: expandNativeResultView }),
       workerProof: () => expectUnchangedNativeRecord(native, agent, readNativeOutput, nativeOutput),
     })
   })

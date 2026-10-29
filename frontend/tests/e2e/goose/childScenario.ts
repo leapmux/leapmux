@@ -22,7 +22,11 @@ export const GOOSE_CHILD: NativeChildProfile = {
   resolveTaskId: (context, parentId, child) => readGooseChildTaskId(context, parentId, child.spawn.id, child.prompt),
   // The child ends through its built-in final-output tool. A plain-text answer
   // leaves its runtime requesting another turn, which no script serves.
-  finalStep: child => ({ toolCalls: [gooseFinalOutputToolCall(`final-${child.spawn.id}`, child.report)] }),
+  finalStep: child => ({
+    toolCalls: [
+      gooseFinalOutputToolCall(`final-${child.spawn.id}`, child.report),
+    ],
+  }),
 }
 
 /**
@@ -44,14 +48,20 @@ export async function exerciseGooseDelegateTranscript(context: ManagedNativeScen
   await modelScript.rule({
     name: 'the child reports the shell result',
     when: gooseChildTaskMatcher('Run `echo goose-done`'),
-    respond: { toolCalls: [gooseFinalOutputToolCall('child-final-goose', 'The command printed goose-done.')] },
+    respond: {
+      toolCalls: [
+        gooseFinalOutputToolCall('child-final-goose', 'The command printed goose-done.'),
+      ],
+    },
   })
   const start = await modelScript.queue(
     {
-      toolCalls: [spawnSubagentToolCall(context.provider, 'spawn-goose', {
-        description: 'Run the shell probe',
-        prompt: modelScript.prompt('Run `echo goose-done` and tell me the result.'),
-      })],
+      toolCalls: [
+        spawnSubagentToolCall(context.provider, 'spawn-goose', {
+          description: 'Run the shell probe',
+          prompt: modelScript.prompt('Run `echo goose-done` and tell me the result.'),
+        }),
+      ],
     },
     { text: 'The subagent reported goose-done.' },
   )

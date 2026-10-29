@@ -26,7 +26,12 @@ describe('execute renderer', () => {
     kind: 'execute',
     request: { command: 'ls', description: 'List files' },
     titlePart: 'List files',
-    result: { commands: [{ output: 'a.ts' }], unresolvedTerminals: [] },
+    result: {
+      commands: [
+        { output: 'a.ts' },
+      ],
+      unresolvedTerminals: [],
+    },
     resultPart: 'a.ts',
   })
 
@@ -35,7 +40,12 @@ describe('execute renderer', () => {
   describe('the command line', () => {
     const call = toolCallFixture('execute', {
       request: { command: 'rg --files' },
-      result: { commands: [{ output: 'a.ts' }], unresolvedTerminals: [] },
+      result: {
+        commands: [
+          { output: 'a.ts' },
+        ],
+        unresolvedTerminals: [],
+      },
     })
 
     it('stays off a result row whose request is beside it', () => {
@@ -49,9 +59,21 @@ describe('execute renderer', () => {
         request: {
           command: 'cat a.ts',
           processId: '79860',
-          actions: [{ kind: 'read', command: 'cat a.ts', name: 'a.ts', path: '/repo/a.ts' }],
+          actions: [
+            {
+              kind: 'read',
+              command: 'cat a.ts',
+              name: 'a.ts',
+              path: '/repo/a.ts',
+            },
+          ],
         },
-        result: { commands: [{ output: 'file body' }], unresolvedTerminals: [] },
+        result: {
+          commands: [
+            { output: 'file body' },
+          ],
+          unresolvedTerminals: [],
+        },
       })
       const { container } = render(() => <ToolMessage row={toolRow(paired, 'result', { request: true })} />)
 
@@ -77,9 +99,19 @@ describe('execute renderer', () => {
       cwd: '/repo',
       processId: '79860',
       actions: [
-        { kind: 'read' as const, command: 'sed -n \'380,430p\' frontend/tests/e2e/helpers/ui.ts', name: 'ui.ts', path: '/repo/frontend/tests/e2e/helpers/ui.ts' },
+        {
+          kind: 'read' as const,
+          command: 'sed -n \'380,430p\' frontend/tests/e2e/helpers/ui.ts',
+          name: 'ui.ts',
+          path: '/repo/frontend/tests/e2e/helpers/ui.ts',
+        },
         { kind: 'list' as const, command: 'rg --files frontend/tests', path: 'frontend/tests' },
-        { kind: 'search' as const, command: 'rg -n \'loginViaToken\' frontend/tests/e2e', query: 'loginViaToken', path: 'frontend/tests/e2e' },
+        {
+          kind: 'search' as const,
+          command: 'rg -n \'loginViaToken\' frontend/tests/e2e',
+          query: 'loginViaToken',
+          path: 'frontend/tests/e2e',
+        },
         { kind: 'unknown' as const, command: 'head -100' },
       ],
     }
@@ -93,7 +125,9 @@ describe('execute renderer', () => {
     it('draws known actions as descriptions and unknown actions as commands', () => {
       const call = toolCallFixture('execute', { request })
       const { container } = render(() => <ToolMessage row={toolRow(call)} context={{ workingDir: '/repo' }} />)
-      const items = () => [...container.querySelectorAll('li')].map(item => item.textContent)
+      const items = () => [
+        ...container.querySelectorAll('li'),
+      ].map(item => item.textContent)
 
       expect(items()).toEqual([
         'Read frontend/tests/e2e/helpers/ui.ts',
@@ -117,7 +151,9 @@ describe('execute renderer', () => {
       const call = toolCallFixture('execute', { request })
       const { container } = render(() => <ToolMessage row={toolRow(call)} context={{ workingDir: '/repo' }} />)
       expandActions(container)
-      const codeText = [...container.querySelectorAll(classSelector(commandActionCodeText))].map(element => element.textContent)
+      const codeText = [
+        ...container.querySelectorAll(classSelector(commandActionCodeText)),
+      ].map(element => element.textContent)
 
       expect(codeText).toContain('frontend/tests/e2e/helpers/ui.ts')
       expect(codeText).toContain('frontend/tests/e2e')
@@ -129,7 +165,14 @@ describe('execute renderer', () => {
         title: 'Inspect source',
         request: {
           command: 'cat a.ts',
-          actions: [{ kind: 'read', command: 'cat a.ts', name: 'a.ts', path: '/repo/a.ts' }],
+          actions: [
+            {
+              kind: 'read',
+              command: 'cat a.ts',
+              name: 'a.ts',
+              path: '/repo/a.ts',
+            },
+          ],
         },
       })
       const { container } = render(() => <ToolMessage row={toolRow(call)} context={{ workingDir: '/repo' }} />)
@@ -150,7 +193,9 @@ describe('execute renderer', () => {
     })
 
     it('keeps the raw command fallback when no actions exist', () => {
-      const call = toolCallFixture('execute', { request: { command: 'printf raw-fallback', cwd: '/repo', processId: '7' } })
+      const call = toolCallFixture('execute', {
+        request: { command: 'printf raw-fallback', cwd: '/repo', processId: '7' },
+      })
       const { container } = render(() => <ToolMessage row={toolRow(call)} context={{ workingDir: '/repo' }} />)
 
       expect(container).toHaveTextContent('printf raw-fallback')
@@ -210,8 +255,14 @@ describe('the execute row header (executeRenderer)', () => {
   // The clip is `> DESCRIPTION_LIMIT`, so a description of exactly the limit is drawn
   // whole. An off-by-one here truncates a header that fits and marks a cut that the
   // reader cannot act on, because the full words are nowhere else on the row.
-  it.each([[100, false], [101, true]])('clips a %i-character description: %s', (length, clipped) => {
-    const header = headerOf({ command: 'ls', description: 'x'.repeat(length) })
+  it.each([
+    [100, false],
+    [101, true],
+  ])('clips a %i-character description: %s', (length, clipped) => {
+    const header = headerOf({
+      command: 'ls',
+      description: 'x'.repeat(length),
+    })
     expect(header.includes('…')).toBe(clipped)
     expect(header).toContain('x'.repeat(100))
   })
@@ -235,7 +286,14 @@ describe('the execute row header (executeRenderer)', () => {
       title: 'Run command',
       request: {
         command: '/bin/zsh -lc "sed"',
-        actions: [{ kind: 'read', command, name: 'main.ts', path: '/repo/src/main.ts' }],
+        actions: [
+          {
+            kind: 'read',
+            command,
+            name: 'main.ts',
+            path: '/repo/src/main.ts',
+          },
+        ],
       },
     })
     const { container } = render(() => <ToolMessage row={toolRow(call)} context={{ workingDir: '/repo' }} />)
@@ -252,7 +310,14 @@ describe('the execute row header (executeRenderer)', () => {
       title: 'Inspect source',
       request: {
         command: '/bin/zsh -lc "sed"',
-        actions: [{ kind: 'read', command: 'sed -n \'1,5p\' src/main.ts', name: 'main.ts', path: '/repo/src/main.ts' }],
+        actions: [
+          {
+            kind: 'read',
+            command: 'sed -n \'1,5p\' src/main.ts',
+            name: 'main.ts',
+            path: '/repo/src/main.ts',
+          },
+        ],
       },
     })
     const { container } = render(() => <ToolMessage row={toolRow(call)} context={{ workingDir: '/repo' }} />)
@@ -266,7 +331,9 @@ describe('the execute row header (executeRenderer)', () => {
       title: 'Run command',
       request: {
         command: 'printf raw-action',
-        actions: [{ kind: 'unknown', command: 'printf raw-action' }],
+        actions: [
+          { kind: 'unknown', command: 'printf raw-action' },
+        ],
       },
     })
     const { container } = render(() => <ToolMessage row={toolRow(call)} />)
@@ -279,8 +346,18 @@ describe('the execute row header (executeRenderer)', () => {
     expect(headerOf({
       command: 'cat a.ts && cat b.ts',
       actions: [
-        { kind: 'read', command: 'cat a.ts', name: 'a.ts', path: '/repo/a.ts' },
-        { kind: 'read', command: 'cat b.ts', name: 'b.ts', path: '/repo/b.ts' },
+        {
+          kind: 'read',
+          command: 'cat a.ts',
+          name: 'a.ts',
+          path: '/repo/a.ts',
+        },
+        {
+          kind: 'read',
+          command: 'cat b.ts',
+          name: 'b.ts',
+          path: '/repo/b.ts',
+        },
       ],
     })).toContain('Run commands')
   })

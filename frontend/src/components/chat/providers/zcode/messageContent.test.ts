@@ -3,7 +3,12 @@ import { ZCODE_EVENT } from '~/generated/contracts/zcode-protocol'
 import { zcodeAssistantText } from './messageContent'
 
 function sessionUpdated(payload: Record<string, unknown>): Record<string, unknown> {
-  return { type: ZCODE_EVENT.SessionUpdated, payload, sessionId: 's-1', seq: 1 }
+  return {
+    type: ZCODE_EVENT.SessionUpdated,
+    payload,
+    sessionId: 's-1',
+    seq: 1,
+  }
 }
 
 describe('zcodeAssistantText', () => {
@@ -17,7 +22,10 @@ describe('zcodeAssistantText', () => {
   })
 
   it('returns empty for a row that is not session.updated', () => {
-    expect(zcodeAssistantText({ type: ZCODE_EVENT.TurnCompleted, payload: { content: 'no' } })).toBe('')
+    expect(zcodeAssistantText({
+      type: ZCODE_EVENT.TurnCompleted,
+      payload: { content: 'no' },
+    })).toBe('')
   })
 
   it('returns empty when there is no envelope at all', () => {

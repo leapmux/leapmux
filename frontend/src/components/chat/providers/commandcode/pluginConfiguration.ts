@@ -4,6 +4,12 @@ import { buildPlanMode } from '../../settingsGroups'
 
 export const commandCodeConfiguration: ProviderConfigurationCapability = {
   triggerModeGroupKey: 'permissionMode',
-  attachments: { text: true, image: true, pdf: false, audio: false, binary: false },
+  attachments: {
+    text: true,
+    image: true,
+    pdf: false,
+    audio: false,
+    binary: false,
+  },
   planMode: buildPlanMode('permissionMode', COMMAND_CODE_PERMISSION_MODE.Plan, COMMAND_CODE_PERMISSION_MODE.Default),
 }

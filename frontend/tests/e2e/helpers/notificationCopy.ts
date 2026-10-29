@@ -21,12 +21,16 @@ export function expectSettingsNotificationEnvelope(text: string, change: Setting
   const content = envelope.content
   if (requireThread)
     expect(content.type, 'Copy must return a consolidated notification thread.').toBe(NOTIFICATION_THREAD_TYPE)
-  const entries = content.type === NOTIFICATION_THREAD_TYPE ? content.messages : [content]
+  const entries = content.type === NOTIFICATION_THREAD_TYPE
+    ? content.messages
+    : [content]
   if (!Array.isArray(entries))
-    throw new Error('The copied notification thread must contain its messages.')
+    throw new TypeError('The copied notification thread must contain its messages.')
   const settings = entries.filter(isObject).filter(message => message.type === NOTIFICATION_TYPE.SettingsChanged)
   expect(settings, 'Copy must contain exactly one settings notification.').toHaveLength(1)
-  expect(settings[0]?.changes, 'Copy must preserve the original setting transition.').toMatchObject({ [change.groupId]: { old: change.oldValue, new: change.value } })
+  expect(settings[0]?.changes, 'Copy must preserve the original setting transition.').toMatchObject({
+    [change.groupId]: { old: change.oldValue, new: change.value },
+  })
   // Copy writes null when the received message has no supplemental bytes.
   if (envelope.supplemental_content !== undefined && envelope.supplemental_content !== null) {
     expect(isObject(envelope.supplemental_content), 'The copied supplement must be an object.').toBe(true)

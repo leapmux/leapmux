@@ -91,7 +91,9 @@ export function acpToolSupplement(
 function identityValue(value: unknown): string | null {
   if (value === null)
     return ''
-  return typeof value === 'string' ? value : null
+  return typeof value === 'string'
+    ? value
+    : null
 }
 
 /** The state fields the original frame did not carry. */
@@ -134,7 +136,11 @@ export function acpSupplementTerminals(supplement: ACPToolSupplement | undefined
       truncated: pickBoolean(entry, ACP_TERMINAL_RESULT.Truncated) ?? false,
       // The signal answers only when no code does, exactly as the worker wrote it,
       // and a terminal still running states neither.
-      ...(signal ? { signal } : exitCode !== undefined ? { exitCode } : {}),
+      ...(signal
+        ? { signal }
+        : exitCode !== undefined
+          ? { exitCode }
+          : {}),
     })
   }
   return terminals

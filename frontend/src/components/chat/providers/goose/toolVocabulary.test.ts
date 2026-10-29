@@ -9,8 +9,12 @@ import { GOOSE_DEVELOPER_TOOL, GOOSE_TOOL_KINDS } from './toolKinds'
 /** The kind the adapter answers for one `_meta` tool name. */
 function kindOf(toolName: string, extensionName?: string, rawInput: Record<string, unknown> = {}): ToolKind {
   const separator = toolName.indexOf('__')
-  const extension = extensionName ?? (separator >= 0 ? toolName.slice(0, separator) : '')
-  const name = separator >= 0 ? toolName.slice(separator + 2) : toolName
+  const extension = extensionName ?? (separator >= 0
+    ? toolName.slice(0, separator)
+    : '')
+  const name = separator >= 0
+    ? toolName.slice(separator + 2)
+    : toolName
   return acpToolCall(
     {
       sessionUpdate: 'tool_call',
@@ -18,7 +22,16 @@ function kindOf(toolName: string, extensionName?: string, rawInput: Record<strin
       status: 'pending',
       kind: 'other',
       title: toolName,
-      _meta: { goose: { toolCall: { toolName: name, ...(extension ? { extensionName: extension } : {}) } } },
+      _meta: {
+        goose: {
+          toolCall: {
+            toolName: name,
+            ...(extension
+              ? { extensionName: extension }
+              : {}),
+          },
+        },
+      },
       rawInput,
     },
     gooseToolCallAdapter,
@@ -48,7 +61,11 @@ const INPUT_OF: Readonly<Record<string, Record<string, unknown>>> = {
 }
 
 const CHECK: ToolVocabularyCheck = {
-  names: [...Object.keys(GOOSE_TOOL_KINDS), 'delegate', 'todo_write'],
+  names: [
+    ...Object.keys(GOOSE_TOOL_KINDS),
+    'delegate',
+    'todo_write',
+  ],
   kindOf: name => kindOf(name, EXTENSION_OF[name] ?? 'developer', INPUT_OF[name] ?? {}),
   generic: {},
   // The uncategorized trio folds to `mcp`: the card that identifies what ran when

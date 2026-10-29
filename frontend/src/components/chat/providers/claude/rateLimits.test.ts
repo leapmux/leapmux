@@ -63,7 +63,12 @@ describe('claudeRateLimitInfo', () => {
 
 describe('claudeRateLimitsFromMessage', () => {
   it('answers null for a frame that is no rate-limit event', () => {
-    const assistant: ParsedMessageContent = { wrapper: null, topLevel: null, parentObject: { type: 'assistant' }, rawText: '' }
+    const assistant: ParsedMessageContent = {
+      wrapper: null,
+      topLevel: null,
+      parentObject: { type: 'assistant' },
+      rawText: '',
+    }
     expect(claudeRateLimitsFromMessage(assistant)).toBeNull()
   })
 
@@ -76,7 +81,12 @@ describe('claudeRateLimitsFromMessage', () => {
 
   it('keys a tier that states no type as unknown', () => {
     expect(claudeRateLimitsFromMessage(event({ status: 'exceeded' })))
-      .toStrictEqual({ mode: 'merge', values: { unknown: { status: 'exceeded' } } })
+      .toStrictEqual({
+        mode: 'merge',
+        values: {
+          unknown: { status: 'exceeded' },
+        },
+      })
   })
 
   it('answers an empty merge for an event whose info is no object', () => {
@@ -89,6 +99,8 @@ describe('claudeRateLimitsFromMessage', () => {
   // -- a row on the usage meter that states nothing. A record is what the reader needs.
   it('answers an empty merge for an event whose info is an array', () => {
     expect(claudeRateLimitsFromMessage(event([]))).toStrictEqual({ mode: 'merge', values: {} })
-    expect(claudeRateLimitsFromMessage(event([{ ...FULL }]))).toStrictEqual({ mode: 'merge', values: {} })
+    expect(claudeRateLimitsFromMessage(event([
+      { ...FULL },
+    ]))).toStrictEqual({ mode: 'merge', values: {} })
   })
 })

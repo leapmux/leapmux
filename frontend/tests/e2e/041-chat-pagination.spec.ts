@@ -39,7 +39,9 @@ test.describe('Chat Pagination & Scroll', () => {
     const rowTransform = (row: typeof seqElements) =>
       readAttached(row, 'the row transform', (matches) => {
         const el = matches.find(candidate => candidate.isConnected)
-        return el ? getComputedStyle(el).transform : null
+        return el
+          ? getComputedStyle(el).transform
+          : null
       })
     expect(await rowTransform(seqElements.last())).toMatch(/^matrix/)
 

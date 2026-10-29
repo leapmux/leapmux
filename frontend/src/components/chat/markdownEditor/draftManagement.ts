@@ -31,7 +31,9 @@ export function restoreCursor(editor: Editor, savedCursor: number): void {
       return
     }
 
-    const pos = savedCursor >= 0 ? Math.min(savedCursor, maxPos) : maxPos
+    const pos = savedCursor >= 0
+      ? Math.min(savedCursor, maxPos)
+      : maxPos
     if (pos > 0) {
       const tr = view.state.tr.setSelection(TextSelection.create(doc, pos))
       view.dispatch(tr)
@@ -52,7 +54,9 @@ export function readDraftFromEditor(editor: Editor): Draft {
     const view = ctx.get(editorViewCtx)
     const raw = serializeEditorDocument(view.state.doc, serializer)
     return {
-      content: typeof raw === 'string' ? raw.trim() : '',
+      content: typeof raw === 'string'
+        ? raw.trim()
+        : '',
       cursor: view.state.selection.from,
     }
   })
@@ -89,7 +93,9 @@ export function createDraftSwapper(read: (key: string) => Promise<Draft> = loadD
   let token = 0
   return async (draftKey, apply) => {
     const mine = ++token
-    const draft = draftKey ? await read(draftKey) : EMPTY_DRAFT
+    const draft = draftKey
+      ? await read(draftKey)
+      : EMPTY_DRAFT
     // A later swap won. Replacing the document now would install an older key's
     // prose over the one the user is looking at.
     if (mine !== token)

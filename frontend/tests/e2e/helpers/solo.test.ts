@@ -5,7 +5,10 @@ import { fakeLocatorTree } from '~/test-support/fakeLocator'
 import { startSoloServer, stopSoloServer } from './devServer'
 import { completeSoloPasswordSetup, signInToSoloViaUI, SOLO_PASSWORD, soloServerFixtures } from './solo'
 
-vi.mock('./devServer', () => ({ startSoloServer: vi.fn(), stopSoloServer: vi.fn(async () => {}) }))
+vi.mock('./devServer', () => ({
+  startSoloServer: vi.fn(),
+  stopSoloServer: vi.fn(async () => {}),
+}))
 
 /**
  * A fake page whose locators record each action in `log`. Each assertion records its expression and the locator path,
@@ -19,9 +22,11 @@ function fakePage(log: string[], answer: (expression: string, path: string) => b
       reload: async () => {
         log.push('reload')
       },
-      context: () => ({ clearCookies: async () => {
-        log.push('clear cookies')
-      } }),
+      context: () => ({
+        clearCookies: async () => {
+          log.push('clear cookies')
+        },
+      }),
     },
   }).page
 }
@@ -86,7 +91,10 @@ describe('soloServerFixtures', () => {
   const handle = { hubUrl: 'http://127.0.0.1:1', listen: '127.0.0.1:1' } as SoloServerHandle
 
   it('listens on loopback unless the spec asks for another host', () => {
-    expect(soloServerFixtures.soloListenHost).toEqual(['127.0.0.1', { option: true }])
+    expect(soloServerFixtures.soloListenHost).toEqual([
+      '127.0.0.1',
+      { option: true },
+    ])
   })
 
   it('starts the hub on the host of the spec, and stops it after the test', async () => {

@@ -108,9 +108,13 @@ export async function getRecordedToasts(page: Page): Promise<RecordedToast[]> {
 export async function expectToastRecorded(page: Page, text: string | RegExp): Promise<void> {
   if (text === '')
     throw new Error('A toast check needs text, because every toast contains an empty text.')
-  const matcher = typeof text === 'string' ? expect.stringContaining(text) : expect.stringMatching(text)
+  const matcher = typeof text === 'string'
+    ? expect.stringContaining(text)
+    : expect.stringMatching(text)
   await expect.poll(async () => (await getRecordedToasts(page)).map(toast => toast.message), {
-    message: `the page shows a toast that holds ${typeof text === 'string' ? JSON.stringify(text) : String(text)}`,
+    message: `the page shows a toast that holds ${typeof text === 'string'
+      ? JSON.stringify(text)
+      : String(text)}`,
   }).toContainEqual(matcher)
 }
 
@@ -138,7 +142,10 @@ export async function attachToastLog(page: Page, testInfo: TestInfo, name = 'toa
   const toasts = await getRecordedToasts(page).catch(() => [])
   if (toasts.length === 0)
     return
-  await testInfo.attach(name, { body: formatToastLog(toasts), contentType: 'text/plain' })
+  await testInfo.attach(name, {
+    body: formatToastLog(toasts),
+    contentType: 'text/plain',
+  })
 }
 
 /**

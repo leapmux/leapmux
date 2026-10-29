@@ -35,7 +35,9 @@ export const EXIT_PLAN_PROMPT = 'Please use ExitPlanMode tool to exit plan mode.
 
 /** The plan text the exit call raises for approval. `testId` keeps two runs apart. */
 export function planText(testId?: string): string {
-  return `# Dummy plan${testId ? ` ${testId}` : ''}\n\n${PLAN_BODY}`
+  return `# Dummy plan${testId
+    ? ` ${testId}`
+    : ''}\n\n${PLAN_BODY}`
 }
 
 /**
@@ -51,7 +53,9 @@ function planFilePath(testId?: string): string {
   const home = getGlobalState().agentEnv.HOME
   if (!home)
     throw new Error('The run state carries no agent HOME, so no plan path can be built')
-  return join(home, '.claude', 'plans', `dummy-plan${testId ? `-${testId}` : ''}.md`)
+  return join(home, '.claude', 'plans', `dummy-plan${testId
+    ? `-${testId}`
+    : ''}.md`)
 }
 
 /**
@@ -66,8 +70,19 @@ export async function enterPlanMode(context: PlanModeContext, options: PlanModeO
   const { page, modelScript: script, provider } = context
   await planFallback(script)
   await script.queue(
-    { toolCalls: [enterPlanModeToolCall(provider, 'enter-plan')] },
-    { toolCalls: [writeToolCall(provider, 'write-plan', { path: planFilePath(options.testId), content: script.prompt(planText(options.testId)) })] },
+    {
+      toolCalls: [
+        enterPlanModeToolCall(provider, 'enter-plan'),
+      ],
+    },
+    {
+      toolCalls: [
+        writeToolCall(provider, 'write-plan', {
+          path: planFilePath(options.testId),
+          content: script.prompt(planText(options.testId)),
+        }),
+      ],
+    },
     { text: 'I am in plan mode and the plan is written.' },
   )
   await sendMessage(page, script.prompt(ENTER_PLAN_PROMPT))
@@ -101,7 +116,11 @@ export async function exitPlanMode(context: PlanModeContext, options: PlanModeOp
   // on a fresh session seeded from the plan, so the original user message — and
   // the marker with it — is gone from that history. Without the marker there,
   // the restarted agent's turns reach the ambient scenario and are refused.
-  await script.queue({ toolCalls: [exitPlanModeToolCall(provider, 'exit-plan', script.prompt(planText(options.testId)))] })
+  await script.queue({
+    toolCalls: [
+      exitPlanModeToolCall(provider, 'exit-plan', script.prompt(planText(options.testId))),
+    ],
+  })
   await sendMessage(page, script.prompt(EXIT_PLAN_PROMPT))
   await script.waitForSteps()
   return waitForControlBanner(page)

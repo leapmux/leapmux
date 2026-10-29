@@ -27,7 +27,7 @@ function registeredFixture<T>(start: (use: (server: DedicatedServer) => Promise<
   devServerTest(start)
   const fixture = extend.fixtures.at(-1)?.[name]
   if (typeof fixture !== 'function')
-    throw new Error(`devServerTest registers no fixture function ${name}.`)
+    throw new TypeError(`devServerTest registers no fixture function ${name}.`)
   return fixture as FixtureBody<T>
 }
 
@@ -71,7 +71,9 @@ describe('devServerTest', () => {
   it('points the base URL of the page at the hub of the server', async () => {
     const baseURL = registeredFixture<string>(async use => use(SERVER), 'baseURL')
     const use = vi.fn(async (_url: string) => {})
-    await baseURL({ server: { hubUrl: 'http://127.0.0.1:4200' } }, use)
+    await baseURL({
+      server: { hubUrl: 'http://127.0.0.1:4200' },
+    }, use)
     expect(use).toHaveBeenCalledExactlyOnceWith('http://127.0.0.1:4200')
   })
 })

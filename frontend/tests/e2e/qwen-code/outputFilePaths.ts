@@ -24,12 +24,14 @@ function nativeNoticePath(text: string): string | undefined {
   if (pointer === undefined || !pointer.startsWith(label))
     return undefined
   const path = pointer.substring(label.length)
-  return isFilesystemPath(path) ? path : undefined
+  return isFilesystemPath(path)
+    ? path
+    : undefined
 }
 
 function nativeTextBlocks(value: unknown): string[] {
   if (!Array.isArray(value))
-    throw new Error('The native Qwen result requires a content array.')
+    throw new TypeError('The native Qwen result requires a content array.')
   return value.map((block: unknown) => {
     if (!isObject(block) || block.type !== 'content' || !isObject(block.content)
       || block.content.type !== 'text' || typeof block.content.text !== 'string') {
@@ -55,18 +57,30 @@ export function qwenOutputPathReceipt(value: unknown): QwenOutputPathReceipt {
     preview = content.join('\n')
   }
   else {
-    const nativePaths = isObject(raw) ? raw[QWEN_OUTPUT_FILES] : undefined
+    const nativePaths = isObject(raw)
+      ? raw[QWEN_OUTPUT_FILES]
+      : undefined
     if (!isObject(raw) || raw.type !== QWEN_SHELL_RESULT || raw.version !== 1 || !Array.isArray(nativePaths)
       || nativePaths.length === 0 || !nativePaths.every((path): path is string => isFilesystemPath(path))
       || typeof raw.output !== 'string' || (raw.error !== null && typeof raw.error !== 'string')) {
       throw new Error('The native Qwen shell result requires its original paths and preview.')
     }
-    paths = [...new Set(nativePaths)]
+    paths = [
+      ...new Set(nativePaths),
+    ]
     preview = [raw.output, raw.error ?? ''].filter(text => text !== '').join('\n')
     if (typeof raw.exitCode === 'number' && Number.isSafeInteger(raw.exitCode))
       exitCode = raw.exitCode
   }
-  return { callId: value.toolCallId, status: value.status, paths, preview, ...(exitCode === undefined ? {} : { exitCode }) }
+  return {
+    callId: value.toolCallId,
+    status: value.status,
+    paths,
+    preview,
+    ...(exitCode === undefined
+      ? {}
+      : { exitCode }),
+  }
 }
 
 /** Read the pointer Qwen sends back to the model. It supplies no file contents. */
@@ -104,5 +118,8 @@ export function qwenModelOutputPath(text: string): string {
  */
 export function qwenOutputPathCommand(prefix: string, exitCode = 0): ComputedNativeToolOutput & { command: string } {
   const output = computedNativeToolOutput({ prefix, lineCount: 8000, padding: 30 })
-  return { ...output, command: nativeOutputFileCommand(output, { exitCode }) }
+  return {
+    ...output,
+    command: nativeOutputFileCommand(output, { exitCode }),
+  }
 }

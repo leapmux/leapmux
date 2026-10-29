@@ -56,10 +56,17 @@ kiroTest.describe('Kiro session goal', () => {
     const objective = scriptedObjective(modelScript, 'Keep inspecting the repository.')
     const staleAnswer = 'Still working on the objective.'
     await withCleanup(async () => {
-      const { agentId, workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, KIRO_AGENT, { optionValues: { policyPreset: 'allow-all' } })
+      const { agentId, workingDir } = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, KIRO_AGENT, {
+        optionValues: { policyPreset: 'allow-all' },
+      })
       await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
       await waitForSettingsHydrated(page)
-      const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+      const context = await nativeContext({
+        page,
+        modelScript,
+        leapmuxServer,
+        workspaceId: authenticatedEmptyWorkspace.workspaceId,
+      })
       const parent = await currentNativeAgent(context)
       expect(parent.id).toBe(agentId)
       const home = leapmuxServer.agentEnv.HOME
@@ -85,14 +92,22 @@ kiroTest.describe('Kiro session goal', () => {
               return
             }
             const detail: unknown = event.detail
-            events.push({ at: performance.now(), detail })
+            events.push({
+              at: performance.now(),
+              detail,
+            })
           },
         }
         window.__kiroPremeasureObservation = observation
         window.addEventListener(eventName, observation.listener)
       }, 'leapmux:chat-premeasure')
       await installPremeasureObservation()
-      await modelScript.rule({ name: setRule, when: { protocol: 'aws-event-stream', user: 'original_user_request' }, respond: { text: staleAnswer, gate: setGate }, once: true })
+      await modelScript.rule({
+        name: setRule,
+        when: { protocol: 'aws-event-stream', user: 'original_user_request' },
+        respond: { text: staleAnswer, gate: setGate },
+        once: true,
+      })
       // Kiro can notify its parent when a work step ends. This fallback answers those native notification turns.
       await modelScript.fallback({ text: 'The native goal notification completed.' })
       modelScript.allowUnconsumed('Native Pause and Clear stop the held goal executions on purpose.')
@@ -122,11 +137,26 @@ kiroTest.describe('Kiro session goal', () => {
       expect(child?.parentAgentId).toBe(agentId)
       expect(child?.rootAgentId).toBe(agentId)
       expect(child?.spawnSpanId).toBe(sessionId)
-      const identity = { home, runDir: getGlobalState().tmpDir, workingDir, sessionId, parentSessionId: parent.agentSessionId }
+      const identity = {
+        home,
+        runDir: getGlobalState().tmpDir,
+        workingDir,
+        sessionId,
+        parentSessionId: parent.agentSessionId,
+      }
       const nativeMessages = () => readKiroGoalMessages(identity) ?? []
       const attachBarrierEvidence = async (stage: string, knownModel: MockModelScenarioStatus, answer: string) => {
-        const evidence: Record<string, unknown> = { stage, agentId, childAgentId: step.childAgentId, parentSessionId: parent.agentSessionId, stepSessionId: sessionId, workingDir }
-        const errorText = (error: unknown) => error instanceof Error ? error.message : String(error)
+        const evidence: Record<string, unknown> = {
+          stage,
+          agentId,
+          childAgentId: step.childAgentId,
+          parentSessionId: parent.agentSessionId,
+          stepSessionId: sessionId,
+          workingDir,
+        }
+        const errorText = (error: unknown) => error instanceof Error
+          ? error.message
+          : String(error)
         // Diagnostics preserve raw native files, including malformed or incomplete text.
         // The feature reader instead requires complete records and the exact child-parent relation.
         evidence.nativeFiles = [parent.agentSessionId, sessionId].map((id) => {
@@ -152,17 +182,27 @@ kiroTest.describe('Kiro session goal', () => {
                 if (isObject(value))
                   metadata = { id: value.id, workspacePaths: value.workspacePaths, rootConversationId: value.rootConversationId }
               }
-              return { path: messageFile, metadata, text: readFileSync(messageFile, 'utf8') }
+              return {
+                path: messageFile,
+                metadata,
+                text: readFileSync(messageFile, 'utf8'),
+              }
             }).filter(file => file !== undefined)
             return { sessionId: id, files }
           }
           catch (error) {
-            return { sessionId: id, readError: errorText(error) }
+            return {
+              sessionId: id,
+              readError: errorText(error),
+            }
           }
         })
         evidence.model = knownModel
         // Save native bytes before a Worker RPC can wait on the missing-output defect.
-        await testInfo.attach(`kiro-${stage}-native-evidence`, { body: Buffer.from(JSON.stringify(evidence)), contentType: 'application/json' })
+        await testInfo.attach(`kiro-${stage}-native-evidence`, {
+          body: Buffer.from(JSON.stringify(evidence)),
+          contentType: 'application/json',
+        })
         try {
           evidence.browser = await page.evaluate((expectedAnswer) => {
             const elementBox = (element: HTMLElement) => {
@@ -170,7 +210,12 @@ kiroTest.describe('Kiro session goal', () => {
               const style = getComputedStyle(element)
               return {
                 isConnected: element.isConnected,
-                rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+                rect: {
+                  x: rect.x,
+                  y: rect.y,
+                  width: rect.width,
+                  height: rect.height,
+                },
                 clientWidth: element.clientWidth,
                 clientHeight: element.clientHeight,
                 scrollWidth: element.scrollWidth,
@@ -204,7 +249,11 @@ kiroTest.describe('Kiro session goal', () => {
               visibilityState: document.visibilityState,
               viewport: { width: window.innerWidth, height: window.innerHeight },
               measurement: observation
-                ? { events: [...observation.events], omittedEvents: observation.omittedEvents, invalidEvents: observation.invalidEvents }
+                ? {
+                    events: [...observation.events],
+                    omittedEvents: observation.omittedEvents,
+                    invalidEvents: observation.invalidEvents,
+                  }
                 : { readError: 'The premeasure observation is absent.' },
               chats: chats.map(chat => ({
                 chatInstanceId: chat.getAttribute('data-chat-instance-id'),
@@ -228,10 +277,15 @@ kiroTest.describe('Kiro session goal', () => {
           }, answer)
         }
         catch (error) {
-          evidence.browser = { readError: errorText(error) }
+          evidence.browser = {
+            readError: errorText(error),
+          }
         }
         // Inspect both copies without changing their geometry or reveal state.
-        await testInfo.attach(`kiro-${stage}-browser-evidence`, { body: Buffer.from(JSON.stringify(evidence)), contentType: 'application/json' })
+        await testInfo.attach(`kiro-${stage}-browser-evidence`, {
+          body: Buffer.from(JSON.stringify(evidence)),
+          contentType: 'application/json',
+        })
         // Keep time for the original UI proof. The API abort cancels only this diagnostic request.
         const diagnosticBudget = Math.max(1, Math.min(30_000, testInfo.timeout - (Date.now() - testStartedAt) - 30_000))
         const diagnosticSignal = AbortSignal.timeout(diagnosticBudget)
@@ -239,13 +293,22 @@ kiroTest.describe('Kiro session goal', () => {
           try {
             const channel = await getTestChannel(leapmuxServer.hubUrl, leapmuxServer.adminToken)
             const snapshot = await channel.callWorker(leapmuxServer.workerId, 'ListAgentMessages', ListAgentMessagesRequestSchema, ListAgentMessagesResponseSchema, { agentId: id, limit: 100 }, { signal: diagnosticSignal })
-            return { agentId: id, snapshot: toJson(ListAgentMessagesResponseSchema, snapshot) }
+            return {
+              agentId: id,
+              snapshot: toJson(ListAgentMessagesResponseSchema, snapshot),
+            }
           }
           catch (error) {
-            return { agentId: id, readError: errorText(error) }
+            return {
+              agentId: id,
+              readError: errorText(error),
+            }
           }
         }))
-        await testInfo.attach(`kiro-${stage}-worker-evidence`, { body: Buffer.from(JSON.stringify(evidence)), contentType: 'application/json' })
+        await testInfo.attach(`kiro-${stage}-worker-evidence`, {
+          body: Buffer.from(JSON.stringify(evidence)),
+          contentType: 'application/json',
+        })
       }
       const sendBarrier = (stage: string, prompt: string, answer: string) => sendKiroGoalBarrier(context, {
         name: `kiro-${stage}-barrier-${marker}`,
@@ -315,7 +378,12 @@ kiroTest.describe('Kiro session goal', () => {
       await assertNoSavedStaleAnswer()
 
       // Register this rule after cancellation and reload. An earlier rule could capture a retry before Resume.
-      await modelScript.rule({ name: resumeRule, when: { protocol: 'aws-event-stream', user: 'original_user_request' }, respond: { text: staleAnswer, gate: resumeGate }, once: true })
+      await modelScript.rule({
+        name: resumeRule,
+        when: { protocol: 'aws-event-stream', user: 'original_user_request' },
+        respond: { text: staleAnswer, gate: resumeGate },
+        once: true,
+      })
       await openGoalMenu(page)
       const resumeBaseline = (await modelScript.status()).requests.length
       await goalAction(page, 'resume').click()

@@ -194,11 +194,16 @@ export function inInt64Range(n: bigint): boolean {
  * monotonically tracks how far confirmedState has caught up.
  */
 export function hlcMax(a: HLC | undefined, b: HLC | undefined): HLC | undefined {
-  if (!a)
-    return b ? hlcClone(b) : undefined
+  if (!a) {
+    return b
+      ? hlcClone(b)
+      : undefined
+  }
   if (!b)
     return hlcClone(a)
-  return hlcCmp(a, b) >= 0 ? hlcClone(a) : hlcClone(b)
+  return hlcCmp(a, b) >= 0
+    ? hlcClone(a)
+    : hlcClone(b)
 }
 
 /**

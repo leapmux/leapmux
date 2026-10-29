@@ -86,7 +86,12 @@ describe('SignupPage', () => {
 
   it('renders oauth buttons with password form when providers configured', async () => {
     mockLoadOAuthProviders.mockResolvedValue([
-      { id: 'p1', name: 'Google', providerType: 'oidc', loginUrl: '/auth/idp/p1/login' },
+      {
+        id: 'p1',
+        name: 'Google',
+        providerType: 'oidc',
+        loginUrl: '/auth/idp/p1/login',
+      },
     ])
 
     renderSignupPage()

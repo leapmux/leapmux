@@ -2,7 +2,15 @@ import { describe, expect, it } from 'vitest'
 import { MessageCompletion } from '~/generated/proto/leapmux/v1/agent_pb'
 import { clineEndsRun, clineResultDivider } from './resultDivider'
 
-const end = (name: string, payload: Record<string, unknown>, extra: Record<string, unknown> = {}) => ({ version: 'v1', event: name, sessionId: 's1', payload, ...extra })
+function end(name: string, payload: Record<string, unknown>, extra: Record<string, unknown> = {}) {
+  return {
+    version: 'v1',
+    event: name,
+    sessionId: 's1',
+    payload,
+    ...extra,
+  }
+}
 
 describe('clineResultDivider', () => {
   it('reads a run that completed, with the duration the worker measured', () => {
@@ -17,7 +25,10 @@ describe('clineResultDivider', () => {
   it('reads a run that failed, with Cline\'s error', () => {
     expect(clineResultDivider(end('run.failed', { reason: 'error', error: 'mock failure' })))
       .toEqual({ label: 'Turn failed — mock failure', isError: true })
-    expect(clineResultDivider(end('run.failed', { reason: 'mistake_limit', result: { text: 'Too many mistakes.' } })))
+    expect(clineResultDivider(end('run.failed', {
+      reason: 'mistake_limit',
+      result: { text: 'Too many mistakes.' },
+    })))
       .toEqual({ label: 'Turn failed (mistake limit) — Too many mistakes.', isError: true })
     expect(clineResultDivider(end('run.completed', { reason: 'completed' }), MessageCompletion.ERROR)).toEqual({ label: 'Turn failed', isError: true })
   })

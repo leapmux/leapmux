@@ -22,7 +22,14 @@ describe('qoderResultDivider', () => {
   })
 
   it('labels a finished turn ended', () => {
-    const divider = qoderResultDivider({ type: 'result', subtype: 'success', duration_ms: 377, is_error: false, result: 'done', stop_reason: 'end_turn' })
+    const divider = qoderResultDivider({
+      type: 'result',
+      subtype: 'success',
+      duration_ms: 377,
+      is_error: false,
+      result: 'done',
+      stop_reason: 'end_turn',
+    })
     expect(divider).toEqual({ label: 'Turn ended (377ms)' })
   })
 
@@ -65,23 +72,49 @@ describe('qoderResultDivider', () => {
   it('labels a failure that states the success subtype by its error flag', () => {
     // The CLI writes this shape for an authentication failure. The assistant
     // row before it already states the text, so the divider adds no detail.
-    const divider = qoderResultDivider({ type: 'result', subtype: 'success', is_error: true, duration_ms: 0, num_turns: 1, result: 'Sign in again.', stop_reason: 'stop_sequence' })
+    const divider = qoderResultDivider({
+      type: 'result',
+      subtype: 'success',
+      is_error: true,
+      duration_ms: 0,
+      num_turns: 1,
+      result: 'Sign in again.',
+      stop_reason: 'stop_sequence',
+    })
     expect(divider).toEqual({ label: 'Turn failed (0ms)', isError: true })
   })
 
   it('puts each error on a line of its own', () => {
-    const divider = qoderResultDivider({ ...ABORTED_RESULT, errors: ['first', 'second'] })
+    const divider = qoderResultDivider({
+      ...ABORTED_RESULT,
+      errors: ['first', 'second'],
+    })
     expect(divider?.detail).toBe('first\nsecond')
   })
 
   it.each([
     ['absent', undefined],
     ['empty', []],
-    ['blank', ['', '  ']],
-    ['not text', [{ message: 'x' }, 42]],
+    [
+      'blank',
+      ['', '  '],
+    ],
+    [
+      'not text',
+      [
+        { message: 'x' },
+        42,
+      ],
+    ],
     ['not an array', 'Operation aborted'],
   ])('omits the detail when the errors are %s', (_case, errors) => {
-    const divider = qoderResultDivider({ type: 'result', subtype: 'error_during_execution', is_error: true, duration_ms: 5, errors })
+    const divider = qoderResultDivider({
+      type: 'result',
+      subtype: 'error_during_execution',
+      is_error: true,
+      duration_ms: 5,
+      errors,
+    })
     expect(divider).toEqual({ label: 'Turn failed (5ms)', isError: true })
   })
 })

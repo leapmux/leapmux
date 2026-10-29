@@ -56,7 +56,10 @@ test.describe('app registration visibility', () => {
     await elevateSessionViaAPI(hubUrl, strangerCookie, 'password123')
     const consent = await page.request.get(
       authorizeURL(hubUrl, { clientId, redirectUri: 'https://owner.example.com/callback', state: 'state-visibility' }),
-      { headers: { Cookie: strangerCookie }, maxRedirects: 0 },
+      {
+        headers: { Cookie: strangerCookie },
+        maxRedirects: 0,
+      },
     )
     const body = await consent.text()
     expect(body).not.toContain('Owner private app')
@@ -87,7 +90,10 @@ test.describe('app registration visibility', () => {
     // it, which is what hub-wide means.
     const consent = await page.request.get(
       authorizeURL(hubUrl, { clientId, redirectUri: 'https://hubwide.example.com/callback', state: 'state-visibility' }),
-      { headers: { Cookie: userCookie }, maxRedirects: 0 },
+      {
+        headers: { Cookie: userCookie },
+        maxRedirects: 0,
+      },
     )
     expect(consent.status()).toBe(200)
     const body = await consent.text()

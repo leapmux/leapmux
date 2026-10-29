@@ -16,7 +16,10 @@ export const CODEBUDDY_COMPACTION: NativeCompactionOptions = {
 
 /** Prove the native summarizer request and the replaced context, and require that no compaction notice shows. */
 export async function exerciseContextCompaction(context: NativeScenarioContext, hold: NativeCompactionHold = {}): Promise<MockModelRequestRecord | undefined> {
-  const { summaryRequest } = await exerciseNativeCompaction(context, { ...CODEBUDDY_COMPACTION, ...hold })
+  const { summaryRequest } = await exerciseNativeCompaction(context, {
+    ...CODEBUDDY_COMPACTION,
+    ...hold,
+  })
   if (!summaryRequest)
     throw new Error('The queued CodeBuddy compaction returned no summarizer request.')
   // CodeBuddy sends its summarizer request as its native compact agent.

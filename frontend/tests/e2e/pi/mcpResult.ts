@@ -9,7 +9,10 @@ export function piMcpResultFromSnapshot(snapshot: NativeMessageSnapshot, callId:
   if (!callId || !toolName || !snapshot.agentId || !snapshot.agentSessionId)
     throw new Error('The native Pi result requires a started session and exact tool identity.')
   const matches = snapshot.messages
-    .map(message => ({ message, frame: nativeMessageBody(message) }))
+    .map(message => ({
+      message,
+      frame: nativeMessageBody(message),
+    }))
     .filter(({ frame }) => isObject(frame) && frame.type === 'tool_execution_end' && frame.toolCallId === callId && frame.toolName === toolName)
   if (matches.length !== 1)
     throw new Error(`The native Pi transcript contains ${matches.length} completed results for ${callId}.`)

@@ -14,17 +14,42 @@ function turnEnd(reason: Record<string, unknown>, durationMs?: unknown): Record<
     seq: 4,
     time: 1_700_000_002_300,
     data: { turn: 1, reason },
-    ...(durationMs === undefined ? {} : { [MESSAGE_METADATA_FIELD.DurationMs]: durationMs }),
+    ...(durationMs === undefined
+      ? {}
+      : { [MESSAGE_METADATA_FIELD.DurationMs]: durationMs }),
   }
 }
 
 describe('deepseekHarnessResultDivider', () => {
   it.each(['user', 'parent', 'disposed', 'legacy'])('shows a native aborted turn as interrupted for %s', (kind) => {
-    expect(deepseekHarnessResultDivider({ type: 'turn/end', data: { turn: 1, reason: { kind: 'aborted', reason: { kind } } } })).toMatchObject({ label: expect.stringContaining('Turn interrupted') })
+    expect(deepseekHarnessResultDivider({
+      type: 'turn/end',
+      data: {
+        turn: 1,
+        reason: {
+          kind: 'aborted',
+          reason: { kind },
+        },
+      },
+    })).toMatchObject({
+      label: expect.stringContaining('Turn interrupted'),
+    })
   })
 
   it('shows the message from the native structured error', () => {
-    expect(deepseekHarnessResultDivider({ type: 'turn/end', data: { turn: 1, reason: { kind: 'error', error: { message: 'The exact native failure.', code: 'HTTP_400', status: 400 } } } })).toMatchObject({ isError: true, label: expect.stringContaining('The exact native failure.') })
+    expect(deepseekHarnessResultDivider({
+      type: 'turn/end',
+      data: {
+        turn: 1,
+        reason: {
+          kind: 'error',
+          error: { message: 'The exact native failure.', code: 'HTTP_400', status: 400 },
+        },
+      },
+    })).toMatchObject({
+      isError: true,
+      label: expect.stringContaining('The exact native failure.'),
+    })
   })
 
   // The native turn end states no duration. The Worker measures each turn from the times of its native start and end
@@ -42,12 +67,18 @@ describe('deepseekHarnessResultDivider', () => {
   })
 
   it('states the duration of a turn that the user interrupted', () => {
-    expect(deepseekHarnessResultDivider(turnEnd({ kind: 'aborted', reason: { kind: 'user' } }, 1500))).toEqual({ label: 'Turn interrupted (1.5s)' })
+    expect(deepseekHarnessResultDivider(turnEnd({
+      kind: 'aborted',
+      reason: { kind: 'user' },
+    }, 1500))).toEqual({ label: 'Turn interrupted (1.5s)' })
     expect(deepseekHarnessResultDivider(turnEnd({ kind: 'completed' }, 1500), MessageCompletion.INTERRUPTED)).toEqual({ label: 'Turn interrupted (1.5s)' })
   })
 
   it('states the duration and the native error of a failed turn', () => {
-    expect(deepseekHarnessResultDivider(turnEnd({ kind: 'error', error: { message: 'The exact native failure.' } }, 900)))
+    expect(deepseekHarnessResultDivider(turnEnd({
+      kind: 'error',
+      error: { message: 'The exact native failure.' },
+    }, 900)))
       .toEqual({ label: 'Turn failed (900ms) — The exact native failure.', isError: true })
   })
 
@@ -69,6 +100,8 @@ describe('deepseekHarnessResultDivider', () => {
       messageMetadata: { [MESSAGE_METADATA_FIELD.DurationMs]: 2300, [MESSAGE_METADATA_FIELD.ToolUses]: 0 },
     }, AgentProvider.DEEPSEEK_HARNESS)
     const row = extractedRow(extractChatRow(AgentProvider.DEEPSEEK_HARNESS, resolved, { kind: 'result_divider' }))
-    expect(row?.kind === 'divider' ? row.divider.label : null).toBe('Turn ended (2.3s)')
+    expect(row?.kind === 'divider'
+      ? row.divider.label
+      : null).toBe('Turn ended (2.3s)')
   })
 })

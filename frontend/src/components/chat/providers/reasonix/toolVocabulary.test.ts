@@ -19,7 +19,12 @@ const MINIMAL_INPUT: Readonly<Record<string, Record<string, unknown>>> = {
   [REASONIX_TOOL_NAME.DeleteSymbol]: { path: '/p/a.ts' },
   [REASONIX_TOOL_NAME.EditFile]: { path: '/p/a.ts', old_string: 'before', new_string: 'after' },
   [REASONIX_TOOL_NAME.MoveFile]: { source_path: '/p/a.ts', destination_path: '/p/b.ts' },
-  [REASONIX_TOOL_NAME.MultiEdit]: { path: '/p/a.ts', edits: [{ old_string: 'before', new_string: 'after' }] },
+  [REASONIX_TOOL_NAME.MultiEdit]: {
+    path: '/p/a.ts',
+    edits: [
+      { old_string: 'before', new_string: 'after' },
+    ],
+  },
   [REASONIX_TOOL_NAME.TodoWrite]: { todos: [] },
   [REASONIX_TOOL_NAME.WriteFile]: { path: '/p/a.ts', content: 'export const a = 1\n' },
 }
@@ -27,14 +32,26 @@ const MINIMAL_INPUT: Readonly<Record<string, Record<string, unknown>>> = {
 /** One pending call titled with the name, the way every Reasonix call states its own. */
 function kindOf(name: string) {
   return acpToolCall(
-    { sessionUpdate: 'tool_call', toolCallId: 'rx-vocab', status: 'pending', kind: 'other', title: name, rawInput: MINIMAL_INPUT[name] ?? {} },
+    {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'rx-vocab',
+      status: 'pending',
+      kind: 'other',
+      title: name,
+      rawInput: MINIMAL_INPUT[name] ?? {},
+    },
     reasonixToolCallAdapter,
     undefined,
   ).kind
 }
 
 const CHECK: ToolVocabularyCheck = {
-  names: [...Object.keys(REASONIX_TOOL_KINDS), REASONIX_TOOL.Task, REASONIX_TOOL.ReadOnlyTask, 'todo_write'],
+  names: [
+    ...Object.keys(REASONIX_TOOL_KINDS),
+    REASONIX_TOOL.Task,
+    REASONIX_TOOL.ReadOnlyTask,
+    'todo_write',
+  ],
   kindOf,
   generic: {},
   // The uncategorized trio folds to `mcp`: the card that identifies what ran when

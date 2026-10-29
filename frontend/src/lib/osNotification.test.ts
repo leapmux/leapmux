@@ -102,8 +102,13 @@ describe('osNotification', () => {
     vi.stubGlobal('Notification', notify)
     Object.defineProperty(globalThis.Notification, 'permission', { value: 'granted', configurable: true })
     expect(() => {
-      for (let i = 0; i < 1000; i++)
-        notifyOs({ title: 'T', body: String(i), tag: `tag-${i}` })
+      for (let i = 0; i < 1000; i++) {
+        notifyOs({
+          title: 'T',
+          body: String(i),
+          tag: `tag-${i}`,
+        })
+      }
     }).not.toThrow()
     // Every distinct tag is a first occurrence → all notify.
     expect(notify).toHaveBeenCalledTimes(1000)

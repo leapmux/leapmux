@@ -11,7 +11,18 @@ const execute = promisify(execFile)
 export async function readProtectionWithCli(path, run = execute) {
   if (!/^\/repos\/leapmux\/leapmux\/(?:rules\/branches\/main\?per_page=100&page=[1-9]\d*|rulesets\/[1-9]\d*)$/.test(path))
     throw new Error('The snapshot CLI can only read leapmux/leapmux main protection.')
-  const { stdout } = await run('gh', ['api', '--hostname', 'github.com', '--method', 'GET', '-H', 'X-GitHub-Api-Version: 2022-11-28', '-H', 'Cache-Control: no-cache', path], { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024, timeout: 30000 })
+  const { stdout } = await run('gh', [
+    'api',
+    '--hostname',
+    'github.com',
+    '--method',
+    'GET',
+    '-H',
+    'X-GitHub-Api-Version: 2022-11-28',
+    '-H',
+    'Cache-Control: no-cache',
+    path,
+  ], { encoding: 'utf8', maxBuffer: 4 * 1024 * 1024, timeout: 30000 })
   return JSON.parse(stdout)
 }
 

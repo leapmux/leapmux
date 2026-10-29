@@ -57,11 +57,21 @@ function storesForCapture(includeUsage = true) {
     chatStore: createChatStore(),
     getActiveWorkspaceId: () => 'captured-transcript-workspace',
   }
-  stores.agentSessionStore.applyProgress(agentId, { revision: 10, thinkingTokens: 17, output: { bytes: 8, minimum: false } })
-  if (includeUsage)
-    stores.agentSessionStore.updateInfo(agentId, { totalCostUsd: 2, contextUsage: { inputTokens: 100, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 } })
+  stores.agentSessionStore.applyProgress(agentId, {
+    revision: 10,
+    thinkingTokens: 17,
+    output: { bytes: 8, minimum: false },
+  })
+  if (includeUsage) {
+    stores.agentSessionStore.updateInfo(agentId, {
+      totalCostUsd: 2,
+      contextUsage: { inputTokens: 100, cacheCreationInputTokens: 0, cacheReadInputTokens: 0 },
+    })
+  }
   stores.chatStore.applyToolProgress(agentId, { ...identity, outputTail: 'current output' })
-  stores.chatStore.todos.replace(agentId, [create(TodoItemSchema, { id: 'current-task', content: 'Current task', status: TodoStatus.IN_PROGRESS })])
+  stores.chatStore.todos.replace(agentId, [
+    create(TodoItemSchema, { id: 'current-task', content: 'Current task', status: TodoStatus.IN_PROGRESS }),
+  ])
   return stores
 }
 
@@ -91,13 +101,26 @@ describe('handleAgentMessage', () => {
       stores.agentSessionStore.updateInfo(agentId, { planFilePath: '/current-plan' })
       stores.metadata.patch(agentId, { title: 'Current title' })
       const row = message({ type: 'result', subtype: 'success', total_cost_usd: 9 }, transcriptOnly)
-      row.supplementalContent = new TextEncoder().encode(JSON.stringify({ metadata: { total_cost_usd: 8, context_usage: { input_tokens: 9 } } }))
+      row.supplementalContent = new TextEncoder().encode(JSON.stringify({
+        metadata: {
+          total_cost_usd: 8,
+          context_usage: { input_tokens: 9 },
+        },
+      }))
       row.supplementalContentCompression = ContentCompression.NONE
       const content = row.content.slice()
       const supplemental = row.supplementalContent.slice()
       handleAgentMessage(agentId, row, stores, phase, 1n, 'retain-transcript')
-      expect(stores.agentSessionStore.getInfo(agentId)).toMatchObject({ totalCostUsd: 2, contextUsage: { inputTokens: 100 }, planFilePath: '/current-plan' })
-      expect(stores.agentSessionStore.getProgress(agentId)).toEqual({ revision: 10, thinkingTokens: 17, output: { bytes: 8, minimum: false } })
+      expect(stores.agentSessionStore.getInfo(agentId)).toMatchObject({
+        totalCostUsd: 2,
+        contextUsage: { inputTokens: 100 },
+        planFilePath: '/current-plan',
+      })
+      expect(stores.agentSessionStore.getProgress(agentId)).toEqual({
+        revision: 10,
+        thinkingTokens: 17,
+        output: { bytes: 8, minimum: false },
+      })
       expect(stores.chatStore.getToolProgress(agentId, identity)?.outputTail).toBe('current output')
       expect(stores.chatStore.todos.getById(agentId, 'current-task')?.status).toBe('in_progress')
       expect(stores.metadata.get(agentId)?.title).toBe('Current title')
@@ -114,14 +137,32 @@ describe('handleAgentMessage', () => {
       stores.agentSessionStore.updateInfo(agentId, { planFilePath: '/current-plan' })
       stores.metadata.patch(agentId, { title: 'Current title' })
       const row = message(kind === 'plan_updated'
-        ? { type: kind, plan_file_path: '/old-plan', plan_title: 'Old title', update_agent_title: true }
+        ? {
+            type: kind,
+            plan_file_path: '/old-plan',
+            plan_title: 'Old title',
+            update_agent_title: true,
+          }
         : kind === 'tool_result'
-          ? { type: 'user', message: { content: [{ type: kind, tool_use_id: identity.spanId, content: 'Old output' }] } }
-          : { type: kind }, false, kind === 'tool_result' ? MessageSource.AGENT : MessageSource.LEAPMUX)
+          ? {
+              type: 'user',
+              message: {
+                content: [
+                  { type: kind, tool_use_id: identity.spanId, content: 'Old output' },
+                ],
+              },
+            }
+          : { type: kind }, false, kind === 'tool_result'
+        ? MessageSource.AGENT
+        : MessageSource.LEAPMUX)
       row.spanId = identity.spanId
       const content = row.content.slice()
       handleAgentMessage(agentId, row, stores, 'live', 0n, 'retain-transcript')
-      expect(stores.agentSessionStore.getInfo(agentId)).toMatchObject({ totalCostUsd: 2, contextUsage: { inputTokens: 100 }, planFilePath: '/current-plan' })
+      expect(stores.agentSessionStore.getInfo(agentId)).toMatchObject({
+        totalCostUsd: 2,
+        contextUsage: { inputTokens: 100 },
+        planFilePath: '/current-plan',
+      })
       expect(stores.agentSessionStore.getProgress(agentId).thinkingTokens).toBe(17)
       expect(stores.chatStore.getToolProgress(agentId, identity)?.outputTail).toBe('current output')
       expect(stores.chatStore.todos.getById(agentId, 'current-task')?.status).toBe('in_progress')
@@ -137,12 +178,25 @@ describe('handleAgentMessage', () => {
       const stores = storesForCapture()
       stores.agentSessionStore.beginReplay(agentId, 1n)
       stores.chatStore.goal.setProgress(agentId, { tokensUsed: 150 })
-      const row = message({ type: 'agent_session_info', info: { total_cost_usd: 9, generation_progress_revision: 11, thinking_tokens: 0, running_tool: { span_id: identity.spanId, agent_session_id: identity.agentSessionId, output_tail: 'Old output' }, goal_progress: { tokens_used: 100 } } }, false, MessageSource.LEAPMUX)
+      const row = message({
+        type: 'agent_session_info',
+        info: {
+          total_cost_usd: 9,
+          generation_progress_revision: 11,
+          thinking_tokens: 0,
+          running_tool: { span_id: identity.spanId, agent_session_id: identity.agentSessionId, output_tail: 'Old output' },
+          goal_progress: { tokens_used: 100 },
+        },
+      }, false, MessageSource.LEAPMUX)
       row.seq = -1n
       const content = row.content.slice()
       handleAgentMessage(agentId, row, stores, 'catchingUp', 1n, 'retain-transcript')
       expect(stores.agentSessionStore.getInfo(agentId).totalCostUsd).toBe(2)
-      expect(stores.agentSessionStore.getProgress(agentId)).toEqual({ revision: 10, thinkingTokens: 17, output: { bytes: 8, minimum: false } })
+      expect(stores.agentSessionStore.getProgress(agentId)).toEqual({
+        revision: 10,
+        thinkingTokens: 17,
+        output: { bytes: 8, minimum: false },
+      })
       expect(stores.chatStore.getToolProgress(agentId, identity)?.outputTail).toBe('current output')
       expect(stores.chatStore.goal.progress(agentId)).toEqual({ tokensUsed: 150 })
       expect(stores.chatStore.getMessages(agentId)).toEqual([])
@@ -154,7 +208,11 @@ describe('handleAgentMessage', () => {
   it('trims background history after a refused transcript row arrives', () => {
     withCaptureRoot(() => {
       const stores = storesForCapture()
-      stores.chatStore.setMessages(agentId, Array.from({ length: MAX_BACKGROUND_CHAT_MESSAGES }, (_, index) => create(AgentChatMessageSchema, { id: `history-${index}`, seq: BigInt(index + 1), source: MessageSource.USER })))
+      stores.chatStore.setMessages(agentId, Array.from({ length: MAX_BACKGROUND_CHAT_MESSAGES }, (_, index) => create(AgentChatMessageSchema, {
+        id: `history-${index}`,
+        seq: BigInt(index + 1),
+        source: MessageSource.USER,
+      })))
       const row = message({ type: 'assistant', total_cost_usd: 9 }, false)
       row.seq = BigInt(MAX_BACKGROUND_CHAT_MESSAGES + 1)
       handleAgentMessage(agentId, row, stores, 'live', 0n, 'retain-transcript')
@@ -169,12 +227,22 @@ describe('handleAgentMessage', () => {
     withCaptureRoot(() => {
       const stores = storesForCapture(false)
       stores.agentSessionStore.beginReplay(agentId, 1n)
-      const live = message({ type: 'agent_session_info', info: { goal_progress: { tokens_used: tokensUsed } } }, false, MessageSource.LEAPMUX)
+      const live = message({
+        type: 'agent_session_info',
+        info: {
+          goal_progress: { tokens_used: tokensUsed },
+        },
+      }, false, MessageSource.LEAPMUX)
       live.seq = -1n
       live.agentProvider = AgentProvider.UNSPECIFIED
       handleAgentMessage(agentId, live, stores, 'live')
       expect(stores.chatStore.goal.progress(agentId).tokensUsed).toBe(tokensUsed)
-      const snapshot = message({ type: 'agent_session_info', info: { goal_progress: { tokens_used: 100 } } }, false, MessageSource.LEAPMUX)
+      const snapshot = message({
+        type: 'agent_session_info',
+        info: {
+          goal_progress: { tokens_used: 100 },
+        },
+      }, false, MessageSource.LEAPMUX)
       snapshot.seq = -1n
       snapshot.agentProvider = AgentProvider.UNSPECIFIED
       handleAgentMessage(agentId, snapshot, stores, 'catchingUp', 1n)
@@ -186,10 +254,20 @@ describe('handleAgentMessage', () => {
     withCaptureRoot(() => {
       const stores = storesForCapture(false)
       stores.agentSessionStore.beginReplay(agentId, 1n)
-      const live = message({ type: 'agent_session_info', info: { goal_progress: { tokens_used: 150 } } }, false, MessageSource.LEAPMUX)
+      const live = message({
+        type: 'agent_session_info',
+        info: {
+          goal_progress: { tokens_used: 150 },
+        },
+      }, false, MessageSource.LEAPMUX)
       live.seq = -1n
       handleAgentMessage(agentId, live, stores, 'live')
-      const snapshot = message({ type: 'agent_session_info', info: { goal_progress: { tokens_used: 100, iterations: 3, time_used_seconds: 0 } } }, false, MessageSource.LEAPMUX)
+      const snapshot = message({
+        type: 'agent_session_info',
+        info: {
+          goal_progress: { tokens_used: 100, iterations: 3, time_used_seconds: 0 },
+        },
+      }, false, MessageSource.LEAPMUX)
       snapshot.seq = -1n
       handleAgentMessage(agentId, snapshot, stores, 'catchingUp', 1n)
       expect(stores.chatStore.goal.progress(agentId)).toEqual({ tokensUsed: 150, iterations: 3, timeUsedSeconds: 0 })
@@ -200,10 +278,25 @@ describe('handleAgentMessage', () => {
     withCaptureRoot(() => {
       const stores = storesForCapture(false)
       stores.agentSessionStore.beginReplay(agentId, 1n)
-      const snapshot = message({ type: 'agent_session_info', info: { goal_progress: { tokens_used: 0, token_budget: 200, time_used_seconds: 3, iterations: 4 } } }, false, MessageSource.LEAPMUX)
+      const snapshot = message({
+        type: 'agent_session_info',
+        info: {
+          goal_progress: {
+            tokens_used: 0,
+            token_budget: 200,
+            time_used_seconds: 3,
+            iterations: 4,
+          },
+        },
+      }, false, MessageSource.LEAPMUX)
       snapshot.seq = -1n
       handleAgentMessage(agentId, snapshot, stores, 'catchingUp', 1n)
-      expect(stores.chatStore.goal.progress(agentId)).toEqual({ tokensUsed: 0, tokenBudget: 200, timeUsedSeconds: 3, iterations: 4 })
+      expect(stores.chatStore.goal.progress(agentId)).toEqual({
+        tokensUsed: 0,
+        tokenBudget: 200,
+        timeUsedSeconds: 3,
+        iterations: 4,
+      })
     })
   })
 
@@ -216,7 +309,12 @@ describe('handleAgentMessage', () => {
         stores.agentSessionStore.retireReplay(agentId, 1n)
       else
         stores.agentSessionStore.beginReplay(agentId, 2n)
-      const snapshot = message({ type: 'agent_session_info', info: { goal_progress: { tokens_used: 100 } } }, false, MessageSource.LEAPMUX)
+      const snapshot = message({
+        type: 'agent_session_info',
+        info: {
+          goal_progress: { tokens_used: 100 },
+        },
+      }, false, MessageSource.LEAPMUX)
       snapshot.seq = -1n
       handleAgentMessage(agentId, snapshot, stores, 'catchingUp', 1n)
       expect(stores.chatStore.goal.progress(agentId).tokensUsed).toBe(150)
@@ -284,12 +382,29 @@ describe('handleAgentMessage', () => {
       const stores = storesForCapture(false)
       expect(stores.agentSessionStore.getInfo(agentId)).toEqual({})
       stores.agentSessionStore.beginReplay(agentId, 1n)
-      const earlier = message({ type: 'assistant', total_cost_usd: 1, context_usage: { input_tokens: 10 } }, false)
+      const earlier = message({
+        type: 'assistant',
+        total_cost_usd: 1,
+        context_usage: { input_tokens: 10 },
+      }, false)
       handleAgentMessage(agentId, earlier, stores, 'catchingUp', 1n)
-      const later = message({ type: 'result', total_cost_usd: 2, context_usage: { input_tokens: 20 } }, false)
+      const later = message({
+        type: 'result',
+        total_cost_usd: 2,
+        context_usage: { input_tokens: 20 },
+      }, false)
       handleAgentMessage(agentId, later, stores, 'catchingUp', 1n)
-      handleAgentMessage(agentId, message({ type: 'plan_updated', plan_file_path: '/history-plan', plan_title: 'Historical title', update_agent_title: true }, false, MessageSource.LEAPMUX), stores, 'catchingUp', 1n)
-      expect(stores.agentSessionStore.getInfo(agentId)).toMatchObject({ totalCostUsd: 2, contextUsage: { inputTokens: 20 }, planFilePath: '/history-plan' })
+      handleAgentMessage(agentId, message({
+        type: 'plan_updated',
+        plan_file_path: '/history-plan',
+        plan_title: 'Historical title',
+        update_agent_title: true,
+      }, false, MessageSource.LEAPMUX), stores, 'catchingUp', 1n)
+      expect(stores.agentSessionStore.getInfo(agentId)).toMatchObject({
+        totalCostUsd: 2,
+        contextUsage: { inputTokens: 20 },
+        planFilePath: '/history-plan',
+      })
       expect(stores.metadata.get(agentId)?.title).not.toBe('Historical title')
       expect(stores.agentSessionStore.getProgress(agentId).thinkingTokens).toBe(17)
       expect(stores.chatStore.getToolProgress(agentId, identity)?.outputTail).toBe('current output')
@@ -305,7 +420,9 @@ describe('handleAgentMessage', () => {
       const history = message({ type: 'result', total_cost_usd: 2 }, false)
       history.seq = seq
       handleAgentMessage(agentId, history, stores, 'catchingUp', 1n)
-      expect(stores.agentSessionStore.getInfo(agentId).totalCostUsd).toBe(seq > 20n ? 2 : 3)
+      expect(stores.agentSessionStore.getInfo(agentId).totalCostUsd).toBe(seq > 20n
+        ? 2
+        : 3)
     })
   })
 
@@ -313,14 +430,21 @@ describe('handleAgentMessage', () => {
     withCaptureRoot(() => {
       const stores = storesForCapture()
       stores.agentSessionStore.beginReplay(agentId, 1n)
-      const ephemeral = message({ type: 'agent_session_info', info: { total_cost_usd: 0 } }, false)
+      const ephemeral = message({
+        type: 'agent_session_info',
+        info: { total_cost_usd: 0 },
+      }, false)
       ephemeral.seq = -1n
       handleAgentMessage(agentId, ephemeral, stores, 'live')
       handleAgentMessage(agentId, message({ type: 'result', total_cost_usd: 9 }, false), stores, 'catchingUp', 1n)
       expect(stores.agentSessionStore.getInfo(agentId).totalCostUsd).toBe(0)
       const clear = message({ type: 'context_cleared' }, false, MessageSource.LEAPMUX)
       handleAgentMessage(agentId, clear, stores, 'live')
-      handleAgentMessage(agentId, message({ type: 'assistant', total_cost_usd: 9, context_usage: { input_tokens: 10 } }, false), stores, 'catchingUp', 1n)
+      handleAgentMessage(agentId, message({
+        type: 'assistant',
+        total_cost_usd: 9,
+        context_usage: { input_tokens: 10 },
+      }, false), stores, 'catchingUp', 1n)
       expect(stores.agentSessionStore.getInfo(agentId).totalCostUsd).toBeUndefined()
       expect(stores.agentSessionStore.getInfo(agentId).contextUsage).toBeUndefined()
     })
@@ -343,8 +467,18 @@ describe('handleAgentMessage', () => {
     withCaptureRoot(() => {
       const stores = storesForCapture(false)
       stores.agentSessionStore.beginReplay(agentId, 1n)
-      const native = { type: 'result', subtype: 'success', total_cost_usd: 9, context_usage: { input_tokens: 1000 } }
-      const supplement = { metadata: { total_cost_usd: 0, context_usage: { input_tokens: 12, context_window: 100 } } }
+      const native = {
+        type: 'result',
+        subtype: 'success',
+        total_cost_usd: 9,
+        context_usage: { input_tokens: 1000 },
+      }
+      const supplement = {
+        metadata: {
+          total_cost_usd: 0,
+          context_usage: { input_tokens: 12, context_window: 100 },
+        },
+      }
       const row = message(native, false)
       row.supplementalContent = new TextEncoder().encode(JSON.stringify(supplement))
       row.supplementalContentCompression = ContentCompression.NONE

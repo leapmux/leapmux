@@ -10,10 +10,12 @@ codexTest.describe('Codex to-do sidebar', () => {
     const { page, modelScript } = native
     await modelScript.queue(
       {
-        toolCalls: [updateTodosToolCall(AgentProvider.CODEX, 'codex-todos', [
-          { step: 'Inspect the input', status: 'completed' },
-          { step: 'Check the output', status: 'in_progress' },
-        ])],
+        toolCalls: [
+          updateTodosToolCall(AgentProvider.CODEX, 'codex-todos', [
+            { step: 'Inspect the input', status: 'completed' },
+            { step: 'Check the output', status: 'in_progress' },
+          ]),
+        ],
       },
       { text: 'The checklist is ready.' },
     )

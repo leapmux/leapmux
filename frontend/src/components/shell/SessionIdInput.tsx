@@ -31,8 +31,12 @@ export const SessionIdInput: Component<SessionIdInputProps> = props => (
   <input
     type="text"
     aria-label={RESUME_SESSION_LABEL}
-    aria-invalid={props.state.error() ? 'true' : undefined}
-    aria-describedby={props.state.error() ? RESUME_SESSION_ERROR_ID : undefined}
+    aria-invalid={props.state.error()
+      ? 'true'
+      : undefined}
+    aria-describedby={props.state.error()
+      ? RESUME_SESSION_ERROR_ID
+      : undefined}
     value={props.state.value()}
     onInput={e => props.state.setValue(e.currentTarget.value)}
     placeholder={resumeHandlePlaceholder(props.state.isFilePath())}

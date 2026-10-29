@@ -59,7 +59,9 @@ function lastOps(harness: Harness) {
 
 /** The register each `setTabRegister` op writes, in order. */
 function lastFields(harness: Harness): string[] {
-  return lastOps(harness).map(o => (o.body.case === 'setTabRegister' ? o.body.value.field.case ?? '' : ''))
+  return lastOps(harness).map(o => (o.body.case === 'setTabRegister'
+    ? o.body.value.field.case ?? ''
+    : ''))
 }
 
 /**
@@ -83,7 +85,13 @@ function batchCount(harness: Harness): number {
 
 /** A `Tab`-shaped value for the helpers that take tab lists. */
 function tab(id: string, tileId: string, position: string, type = TabType.AGENT): Tab {
-  return { type, id, workspaceId: 'ws-test', tileId, position } as Tab
+  return {
+    type,
+    id,
+    workspaceId: 'ws-test',
+    tileId,
+    position,
+  } as Tab
 }
 
 describe('tabOps', () => {
@@ -104,7 +112,12 @@ describe('tabOps', () => {
 
     it('lands in speculativeState synchronously — the op IS the optimistic update', () => {
       withTestBridge((harness) => {
-        emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: 'N' })
+        emitAddTab({
+          type: TabType.AGENT,
+          id: 'a1',
+          tileId: harness.rootTileId,
+          position: 'N',
+        })
         // No local write accompanies the emit, so if pending ops were not
         // applied on enqueue the tab would not exist anywhere until the hub
         // acked it, and every optimistic open would flicker.
@@ -115,7 +128,12 @@ describe('tabOps', () => {
 
     it('omits the worker_id op when there is no worker', () => {
       withTestBridge((harness) => {
-        emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: 'N' })
+        emitAddTab({
+          type: TabType.AGENT,
+          id: 'a1',
+          tileId: harness.rootTileId,
+          position: 'N',
+        })
         expect(lastFields(harness)).toEqual(['tileId', 'position'])
       })
     })
@@ -124,7 +142,12 @@ describe('tabOps', () => {
   describe('emitRemoveTab', () => {
     it('enqueues a single TombstoneTab op', () => {
       withTestBridge((harness) => {
-        emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: 'N' })
+        emitAddTab({
+          type: TabType.AGENT,
+          id: 'a1',
+          tileId: harness.rootTileId,
+          position: 'N',
+        })
         const before = batchCount(harness)
 
         emitRemoveTab(TabType.AGENT, 'a1')
@@ -140,7 +163,12 @@ describe('tabOps', () => {
     // representation to keep in step.
     it('removes the tab from the speculative state', () => {
       withTestBridge((harness) => {
-        emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: 'N' })
+        emitAddTab({
+          type: TabType.AGENT,
+          id: 'a1',
+          tileId: harness.rootTileId,
+          position: 'N',
+        })
         emitRemoveTab(TabType.AGENT, 'a1')
         const rec = harness.pending.state.speculativeState.tabs.a1
         expect(rec?.tombstoneAt, 'the record carries a tombstone').toBeDefined()
@@ -158,8 +186,14 @@ describe('tabOps', () => {
      */
     it('tombstones every id in ONE batch', () => {
       withTestBridge((harness) => {
-        for (const id of ['a1', 'a2', 'a3'])
-          emitAddTab({ type: TabType.AGENT, id, tileId: harness.rootTileId, position: id })
+        for (const id of ['a1', 'a2', 'a3']) {
+          emitAddTab({
+            type: TabType.AGENT,
+            id,
+            tileId: harness.rootTileId,
+            position: id,
+          })
+        }
         const before = batchCount(harness)
 
         emitRemoveTabs(TabType.AGENT, ['a1', 'a2', 'a3'])
@@ -179,7 +213,12 @@ describe('tabOps', () => {
     // An empty batch is a round trip that says nothing.
     it('emits nothing for an empty list', () => {
       withTestBridge((harness) => {
-        emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: 'N' })
+        emitAddTab({
+          type: TabType.AGENT,
+          id: 'a1',
+          tileId: harness.rootTileId,
+          position: 'N',
+        })
         const before = batchCount(harness)
 
         expect(emitRemoveTabs(TabType.AGENT, [])).toBeNull()
@@ -198,7 +237,12 @@ describe('tabOps', () => {
      */
     it('answers for a live tab, an unknown id, and a tombstoned one', () => {
       withTestBridge((harness) => {
-        emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: 'N' })
+        emitAddTab({
+          type: TabType.AGENT,
+          id: 'a1',
+          tileId: harness.rootTileId,
+          position: 'N',
+        })
 
         expect(hasLiveTabRecord('a1'), 'a tab this account holds').toBe(true)
         expect(hasLiveTabRecord('never-opened'), 'a subagent nobody opened').toBe(false)
@@ -212,7 +256,12 @@ describe('tabOps', () => {
   describe('emitSetTabPosition', () => {
     it('emits a single SetTabRegister(position)', () => {
       withTestBridge((harness) => {
-        emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: 'M' })
+        emitAddTab({
+          type: TabType.AGENT,
+          id: 'a1',
+          tileId: harness.rootTileId,
+          position: 'M',
+        })
         const before = batchCount(harness)
 
         emitSetTabPosition(TabType.AGENT, 'a1', 'V')
@@ -227,7 +276,12 @@ describe('tabOps', () => {
     it('emits SetTabRegister(tile_id) when the tile changes', () => {
       withTestBridge((harness) => {
         seedLeafChild(harness, 'leaf-2')
-        emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: 'N' })
+        emitAddTab({
+          type: TabType.AGENT,
+          id: 'a1',
+          tileId: harness.rootTileId,
+          position: 'N',
+        })
         const before = batchCount(harness)
 
         emitMoveTabToTile(TabType.AGENT, 'a1', 'leaf-2')
@@ -242,7 +296,12 @@ describe('tabOps', () => {
     // apply.
     it('is a no-op when the target tile is the current one', () => {
       withTestBridge((harness) => {
-        emitAddTab({ type: TabType.AGENT, id: 'a1', tileId: harness.rootTileId, position: 'N' })
+        emitAddTab({
+          type: TabType.AGENT,
+          id: 'a1',
+          tileId: harness.rootTileId,
+          position: 'N',
+        })
         const before = batchCount(harness)
 
         expect(emitMoveTabToTile(TabType.AGENT, 'a1', harness.rootTileId)).toBeNull()
@@ -276,7 +335,10 @@ describe('tabOps', () => {
       withTestBridge((harness) => {
         seedLeafChild(harness, 'leaf-x')
         seedLeafChild(harness, 'leaf-z')
-        const tabs = [tab('a1', 'leaf-x', 'M'), tab('elsewhere', 'other-tile', 'M')]
+        const tabs = [
+          tab('a1', 'leaf-x', 'M'),
+          tab('elsewhere', 'other-tile', 'M'),
+        ]
         emitReassignTabsToTile(tabs, ['leaf-x'], 'leaf-z')
         expect(lastOps(harness)).toHaveLength(1)
       })
@@ -286,7 +348,9 @@ describe('tabOps', () => {
       withTestBridge((harness) => {
         seedLeafChild(harness, 'leaf-z')
         const before = batchCount(harness)
-        expect(emitReassignTabsToTile([tab('a1', 'other', 'M')], ['leaf-x'], 'leaf-z')).toBeNull()
+        expect(emitReassignTabsToTile([
+          tab('a1', 'other', 'M'),
+        ], ['leaf-x'], 'leaf-z')).toBeNull()
         expect(batchCount(harness)).toBe(before)
       })
     })
@@ -297,14 +361,22 @@ describe('tabOps', () => {
       withTestBridge((harness) => {
         seedLeafChild(harness, 'leaf-src')
         seedLeafChild(harness, 'leaf-dst')
-        const sourceTabs = [tab('a1', 'leaf-src', 'M'), tab('t1', 'leaf-src', 'V', TabType.TERMINAL)]
+        const sourceTabs = [
+          tab('a1', 'leaf-src', 'M'),
+          tab('t1', 'leaf-src', 'V', TabType.TERMINAL),
+        ]
         const before = batchCount(harness)
 
         emitMergeTabsIntoTile(sourceTabs, [], 'leaf-dst')
 
         expect(batchCount(harness)).toBe(before + 1)
         // 2 tabs x (tile_id + position) = 4 ops in one batch.
-        expect(lastFields(harness)).toEqual(['tileId', 'position', 'tileId', 'position'])
+        expect(lastFields(harness)).toEqual([
+          'tileId',
+          'position',
+          'tileId',
+          'position',
+        ])
       })
     })
 
@@ -429,7 +501,10 @@ describe('tabOps', () => {
 
     it('is a no-op when the tab is dropped on itself', () => {
       withTestBridge((harness) => {
-        const tabs = [tab('a1', harness.rootTileId, 'A'), tab('a2', harness.rootTileId, 'B')]
+        const tabs = [
+          tab('a1', harness.rootTileId, 'A'),
+          tab('a2', harness.rootTileId, 'B'),
+        ]
         const before = batchCount(harness)
         const key = tabKey({ type: TabType.AGENT, id: 'a1' })
         expect(emitReorderTabs(tabs, key, key)).toBeNull()
@@ -439,7 +514,9 @@ describe('tabOps', () => {
 
     it('is a no-op when either key names no tab in the tile', () => {
       withTestBridge((harness) => {
-        const tabs = [tab('a1', harness.rootTileId, 'A')]
+        const tabs = [
+          tab('a1', harness.rootTileId, 'A'),
+        ]
         const before = batchCount(harness)
         expect(emitReorderTabs(tabs, tabKey({ type: TabType.AGENT, id: 'a1' }), 'ghost')).toBeNull()
         expect(batchCount(harness)).toBe(before)
@@ -452,7 +529,10 @@ describe('tabOps', () => {
   // move, with no error anywhere.
   describe('position helpers', () => {
     it('positionAtEnd sorts after every existing tab', () => {
-      const tabs = [tab('a1', 't', 'A'), tab('a2', 't', 'B')]
+      const tabs = [
+        tab('a1', 't', 'A'),
+        tab('a2', 't', 'B'),
+      ]
       const pos = positionAtEnd(tabs)
       expect(pos > 'B').toBe(true)
     })
@@ -462,7 +542,11 @@ describe('tabOps', () => {
     })
 
     it('positionAfterKey slots between the named tab and its successor', () => {
-      const tabs = [tab('a1', 't', 'A'), tab('a2', 't', 'B'), tab('a3', 't', 'C')]
+      const tabs = [
+        tab('a1', 't', 'A'),
+        tab('a2', 't', 'B'),
+        tab('a3', 't', 'C'),
+      ]
       const pos = positionAfterKey(tabs, tabKey({ type: TabType.AGENT, id: 'a1' }))
       expect(pos > 'A').toBe(true)
       expect(pos < 'B').toBe(true)
@@ -471,12 +555,18 @@ describe('tabOps', () => {
     it('positionAfterKey appends when no key is given', () => {
       // "after nothing" means the end, not the front: the callers that pass
       // undefined are dropping onto empty tile space, which appends.
-      const tabs = [tab('a1', 't', 'B'), tab('a2', 't', 'C')]
+      const tabs = [
+        tab('a1', 't', 'B'),
+        tab('a2', 't', 'C'),
+      ]
       expect(positionAfterKey(tabs, undefined) > 'C').toBe(true)
     })
 
     it('positionAfterKey falls back to the end for an unknown key', () => {
-      const tabs = [tab('a1', 't', 'A'), tab('a2', 't', 'B')]
+      const tabs = [
+        tab('a1', 't', 'A'),
+        tab('a2', 't', 'B'),
+      ]
       const pos = positionAfterKey(tabs, 'ghost')
       expect(pos > 'B').toBe(true)
     })

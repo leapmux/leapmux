@@ -568,7 +568,13 @@ describe('isFilesystemPath', () => {
     expect(isFilesystemPath(value, true)).toBe(false)
   })
 
-  it.each(['output.txt', './output.txt', '../output.txt', 'native/path.txt', 'native\\path.txt'])('accepts a relative spelling only for an explicit producer: %j', (value) => {
+  it.each([
+    'output.txt',
+    './output.txt',
+    '../output.txt',
+    'native/path.txt',
+    'native\\path.txt',
+  ])('accepts a relative spelling only for an explicit producer: %j', (value) => {
     expect(isFilesystemPath(value)).toBe(false)
     expect(isFilesystemPath(value, true)).toBe(true)
   })

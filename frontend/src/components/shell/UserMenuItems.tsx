@@ -12,7 +12,9 @@ import { openPreferences, setShowAboutDialog } from './UserMenuState'
 
 export const AppAboutMenuItem: Component = () => (
   <button role="menuitem" onClick={() => setShowAboutDialog(true)}>
-    {isDesktopApp() ? 'About LeapMux Desktop...' : 'About...'}
+    {isDesktopApp()
+      ? 'About LeapMux Desktop...'
+      : 'About...'}
   </button>
 )
 
@@ -56,7 +58,12 @@ export const UserMenuItems: Component = () => {
     <>
       <AppAboutMenuItem />
       <button role="menuitem" onClick={() => openPreferences()}>
-        <DropdownMenuItemContent label="Preferences..." {...(preferencesHint !== undefined ? { detail: preferencesHint } : {})} />
+        <DropdownMenuItemContent
+          label="Preferences..."
+          {...(preferencesHint !== undefined
+            ? { detail: preferencesHint }
+            : {})}
+        />
       </button>
 
       {/*

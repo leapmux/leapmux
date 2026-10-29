@@ -18,8 +18,15 @@ describe.each([AgentProvider.OPENCODE, AgentProvider.KILO])('opencode protocol r
       kind: 'think',
       rawInput: { description: 'Inspect project structure', subagent_type: 'explore', prompt: 'Inspect the entry points.' },
     }, {
-      rawOutput: { metadata: { sessionId: 'child-1', parentSessionId: 'parent-1' } },
-      content: [{ type: 'content', content: { type: 'text', text: '<task id="child-1" state="completed">\n<task_result>\n**Findings**\n\n- Read the entry point.\n</task_result>\n</task>' } }],
+      rawOutput: {
+        metadata: { sessionId: 'child-1', parentSessionId: 'parent-1' },
+      },
+      content: [
+        {
+          type: 'content',
+          content: { type: 'text', text: '<task id="child-1" state="completed">\n<task_result>\n**Findings**\n\n- Read the entry point.\n</task_result>\n</task>' },
+        },
+      ],
     })
     expect(container.textContent).toContain('Inspect project structure (explore)')
     expect(container.textContent).toContain('Agent "Inspect project structure" completed')
@@ -35,8 +42,15 @@ describe.each([AgentProvider.OPENCODE, AgentProvider.KILO])('opencode protocol r
       kind: 'think',
       rawInput: { description: 'Inspect project structure', subagent_type: 'explore', prompt: 'Inspect the entry points.' },
     }, {
-      rawOutput: { metadata: { sessionId: 'child-1', background: true, jobId: 'child-1' } },
-      content: [{ type: 'content', content: { type: 'text', text: '<task id="child-1" state="running">\n<summary>Background task started</summary>\n<task_result>\nModel-facing background instructions\n</task_result>\n</task>' } }],
+      rawOutput: {
+        metadata: { sessionId: 'child-1', background: true, jobId: 'child-1' },
+      },
+      content: [
+        {
+          type: 'content',
+          content: { type: 'text', text: '<task id="child-1" state="running">\n<summary>Background task started</summary>\n<task_result>\nModel-facing background instructions\n</task_result>\n</task>' },
+        },
+      ],
     })
     expect(container.textContent).toContain('launched asynchronously')
     expect(container.textContent).toContain('Prompt')
@@ -45,12 +59,19 @@ describe.each([AgentProvider.OPENCODE, AgentProvider.KILO])('opencode protocol r
   })
 
   it('renders a to-do update through one shared checklist', () => {
-    const todos = [{ content: 'Inspect sample', status: 'in_progress', priority: 'medium' }, { content: 'Report findings', status: 'pending', priority: 'medium' }]
+    const todos = [
+      { content: 'Inspect sample', status: 'in_progress', priority: 'medium' },
+      { content: 'Report findings', status: 'pending', priority: 'medium' },
+    ]
     const { container } = renderACPToolPair(provider, {
       title: 'todowrite',
       kind: 'other',
       rawInput: { todos },
-    }, { rawOutput: { metadata: { todos } } })
+    }, {
+      rawOutput: {
+        metadata: { todos },
+      },
+    })
     expect(container.querySelectorAll(`.${todoList}`)).toHaveLength(1)
     expect(container.textContent).toContain('Inspect sample')
     expect(container.textContent).toContain('Report findings')
@@ -61,25 +82,61 @@ describe.each([AgentProvider.OPENCODE, AgentProvider.KILO])('opencode protocol r
     const { container } = renderACPToolPair(provider, {
       title: 'calendar_sync',
       kind: 'other',
-      rawInput: { todos: [{ content: 'Publish schedule', status: 'pending' }] },
-    }, { content: [{ type: 'content', content: { type: 'text', text: 'Schedule published' } }] })
+      rawInput: {
+        todos: [
+          { content: 'Publish schedule', status: 'pending' },
+        ],
+      },
+    }, {
+      content: [
+        {
+          type: 'content',
+          content: { type: 'text', text: 'Schedule published' },
+        },
+      ],
+    })
     expect(container.querySelectorAll(`.${todoList}`)).toHaveLength(0)
     expect(container.textContent).toContain('Schedule published')
   })
 
   it('shows the requested checklist while the tool is pending', () => {
-    const { container } = renderTool({ sessionUpdate: 'tool_call', status: 'pending', title: 'todowrite', kind: 'other', rawInput: { todos: [{ content: 'Inspect sample', status: 'pending' }] } })
+    const { container } = renderTool({
+      sessionUpdate: 'tool_call',
+      status: 'pending',
+      title: 'todowrite',
+      kind: 'other',
+      rawInput: {
+        todos: [
+          { content: 'Inspect sample', status: 'pending' },
+        ],
+      },
+    })
     expect(container.querySelector(`.${todoList}`)?.textContent).toContain('Inspect sample')
   })
 
   it('marks a cancelled native to-do as finished', () => {
-    const { container } = renderTool({ title: 'todowrite', kind: 'other', rawOutput: { metadata: { todos: [{ content: 'Cancelled task', status: 'cancelled' }] } } })
+    const { container } = renderTool({
+      title: 'todowrite',
+      kind: 'other',
+      rawOutput: {
+        metadata: {
+          todos: [
+            { content: 'Cancelled task', status: 'cancelled' },
+          ],
+        },
+      },
+    })
     expect(container.querySelector(`.${todoList}`)?.textContent).toContain('Cancelled task')
     expect(container.querySelector('[data-task-checkbox="deleted"]')).not.toBeNull()
   })
 
   function renderTool(fields: Record<string, unknown>) {
-    const tool = { sessionUpdate: 'tool_call_update', status: 'completed', toolCallId: 'tool', ...fields }
+    const tool = {
+      sessionUpdate: 'tool_call_update',
+      status: 'completed',
+      toolCallId: 'tool',
+      ...fields,
+    }
     return render(() => renderMessageContent(tool, { premeasureMode: true }, providerFor(provider)!.transcript.classify(input(tool)), provider))
   }
 
@@ -88,8 +145,24 @@ describe.each([AgentProvider.OPENCODE, AgentProvider.KILO])('opencode protocol r
       kind: 'read',
       title: 'read',
       rawInput: { filePath: '/project' },
-      content: [{ type: 'content', content: { type: 'text', text: 'provider directory wrapper' } }],
-      rawOutput: { metadata: { display: { type: 'directory', path: '/project', entries: ['a.ts', 'src/'], offset: 1, totalEntries: 2, truncated: false } } },
+      content: [
+        {
+          type: 'content',
+          content: { type: 'text', text: 'provider directory wrapper' },
+        },
+      ],
+      rawOutput: {
+        metadata: {
+          display: {
+            type: 'directory',
+            path: '/project',
+            entries: ['a.ts', 'src/'],
+            offset: 1,
+            totalEntries: 2,
+            truncated: false,
+          },
+        },
+      },
     })
     expect(container.textContent).toContain('2 entries')
     expect(container.textContent).toContain('a.ts')
@@ -107,10 +180,20 @@ describe.each([AgentProvider.OPENCODE, AgentProvider.KILO])('opencode protocol r
       // refused by the model and degrades to the uncategorized row, so a frame with no
       // arguments at all would test that row rather than the metadata below.
       rawInput: { filePath: '/project/old.ts', patch: first + second },
-      rawOutput: { metadata: { diff: first + second, files: [
-        { filePath: '/project/old.ts', movePath: '/project/new.ts', type: 'move', patch: first },
-        { filePath: '/project/deleted.ts', type: 'delete', patch: second },
-      ] } },
+      rawOutput: {
+        metadata: {
+          diff: first + second,
+          files: [
+            {
+              filePath: '/project/old.ts',
+              movePath: '/project/new.ts',
+              type: 'move',
+              patch: first,
+            },
+            { filePath: '/project/deleted.ts', type: 'delete', patch: second },
+          ],
+        },
+      },
     })
     expect(container.textContent).toContain('/project/old.ts')
     expect(container.textContent).toContain('/project/new.ts')
@@ -125,8 +208,22 @@ describe.each([AgentProvider.OPENCODE, AgentProvider.KILO])('opencode protocol r
       toolCallId: 'read',
       kind: 'read',
       status: 'completed',
-      content: [{ type: 'content', content: { type: 'text', text: '<file>model-facing wrapper</file>' } }],
-      rawOutput: { metadata: { display: { type: 'file', path: '/project/code.ts', text: 'const value = 42\n', lineStart: 1 } } },
+      content: [
+        {
+          type: 'content',
+          content: { type: 'text', text: '<file>model-facing wrapper</file>' },
+        },
+      ],
+      rawOutput: {
+        metadata: {
+          display: {
+            type: 'file',
+            path: '/project/code.ts',
+            text: 'const value = 42\n',
+            lineStart: 1,
+          },
+        },
+      },
     }
     const meta = providerToolMeta(provider, tool)
     expect(meta?.copyableContent()).toBe('const value = 42\n')
@@ -136,8 +233,24 @@ describe.each([AgentProvider.OPENCODE, AgentProvider.KILO])('opencode protocol r
     const { container } = renderTool({
       kind: 'read',
       rawInput: { filePath: '/project/code.py', offset: 7 },
-      content: [{ type: 'content', content: { type: 'text', text: 'answer = 42\nprint(answer)' } }],
-      rawOutput: { metadata: { display: { type: 'file', path: '/project/code.py', text: 'answer = 42\nprint(answer)', lineStart: 7, lineEnd: 8, totalLines: 12 } } },
+      content: [
+        {
+          type: 'content',
+          content: { type: 'text', text: 'answer = 42\nprint(answer)' },
+        },
+      ],
+      rawOutput: {
+        metadata: {
+          display: {
+            type: 'file',
+            path: '/project/code.py',
+            text: 'answer = 42\nprint(answer)',
+            lineStart: 7,
+            lineEnd: 8,
+            totalLines: 12,
+          },
+        },
+      },
     })
     expect(container.textContent).toContain('answer = 42')
     expect(container.textContent).toContain('8')
@@ -147,8 +260,15 @@ describe.each([AgentProvider.OPENCODE, AgentProvider.KILO])('opencode protocol r
     const { container } = renderTool({
       kind: 'search',
       rawInput: { pattern: 'answer' },
-      content: [{ type: 'content', content: { type: 'text', text: '/project/code.py:7:answer = 42' } }],
-      rawOutput: { metadata: { matches: 1 } },
+      content: [
+        {
+          type: 'content',
+          content: { type: 'text', text: '/project/code.py:7:answer = 42' },
+        },
+      ],
+      rawOutput: {
+        metadata: { matches: 1 },
+      },
     })
     expect(container.textContent).toContain('answer = 42')
   })
@@ -158,8 +278,15 @@ describe.each([AgentProvider.OPENCODE, AgentProvider.KILO])('opencode protocol r
       kind: 'search',
       title: 'grep',
       rawInput: { pattern: 'answer' },
-      content: [{ type: 'content', content: { type: 'text', text: 'Found 2 matches\n/project/code.ts:\n  Line 7: const answer = 42\n\n  Line 8: console.log(answer)\n' } }],
-      rawOutput: { metadata: { matches: 2, truncated: false } },
+      content: [
+        {
+          type: 'content',
+          content: { type: 'text', text: 'Found 2 matches\n/project/code.ts:\n  Line 7: const answer = 42\n\n  Line 8: console.log(answer)\n' },
+        },
+      ],
+      rawOutput: {
+        metadata: { matches: 2, truncated: false },
+      },
     })
     expect(container.textContent).toContain('2 matches in 1 file')
     expect(container.textContent).toContain('/project/code.ts:7:const answer = 42')
@@ -174,8 +301,15 @@ describe.each([AgentProvider.OPENCODE, AgentProvider.KILO])('opencode protocol r
       status: 'completed',
       kind: 'search',
       title: 'grep',
-      content: [{ type: 'content', content: { type: 'text', text: 'Found 2 matches\n/project/a:\n  Line 1: first\n\n/project/b:\n  Line 1: second\n' } }],
-      rawOutput: { metadata: { matches: 2 } },
+      content: [
+        {
+          type: 'content',
+          content: { type: 'text', text: 'Found 2 matches\n/project/a:\n  Line 1: first\n\n/project/b:\n  Line 1: second\n' },
+        },
+      ],
+      rawOutput: {
+        metadata: { matches: 2 },
+      },
     }
     const meta = providerToolMeta(provider, tool)
     expect(meta?.collapsible).toBe(false)
@@ -185,8 +319,17 @@ describe.each([AgentProvider.OPENCODE, AgentProvider.KILO])('opencode protocol r
     const { container } = renderTool({
       kind: 'edit',
       rawInput: { filePath: '/project/code.py', oldString: '41', newString: '42' },
-      content: [{ type: 'diff', path: '/project/code.py', oldText: '41', newText: '42' }],
-      rawOutput: { metadata: { diff: '--- /project/code.py\n+++ /project/code.py\n@@ -7,2 +7,2 @@\n-answer = 41\n+answer = 42\n print(answer)\n' } },
+      content: [
+        {
+          type: 'diff',
+          path: '/project/code.py',
+          oldText: '41',
+          newText: '42',
+        },
+      ],
+      rawOutput: {
+        metadata: { diff: '--- /project/code.py\n+++ /project/code.py\n@@ -7,2 +7,2 @@\n-answer = 41\n+answer = 42\n print(answer)\n' },
+      },
     })
     expect(container.textContent).toContain('answer = 41')
     expect(container.textContent).toContain('answer = 42')

@@ -41,7 +41,10 @@ function sessionInfoMessage(info: unknown) {
 }
 
 function stores(): Pick<AgentMessageStores, 'agentSessionStore' | 'chatStore'> {
-  return { agentSessionStore: createAgentSessionStore(), chatStore: createChatStore() }
+  return {
+    agentSessionStore: createAgentSessionStore(),
+    chatStore: createChatStore(),
+  }
 }
 
 describe('handleAgentSessionInfo turn_retry_offer', () => {
@@ -75,7 +78,9 @@ describe('handleAgentSessionInfo turn_retry_offer', () => {
       const s = stores()
       const { learn_more_url: _omitted, ...withoutURL } = OFFER_WIRE
       handleAgentSessionInfo('a1', parseMessageContent(sessionInfoMessage({ turn_retry_offer: OFFER_WIRE })), s)
-      handleAgentSessionInfo('a1', parseMessageContent(sessionInfoMessage({ turn_retry_offer: { ...withoutURL, turn_id: 'turn-2' } })), s)
+      handleAgentSessionInfo('a1', parseMessageContent(sessionInfoMessage({
+        turn_retry_offer: { ...withoutURL, turn_id: 'turn-2' },
+      })), s)
       expect(s.chatStore.getTurnRetryOffer('a1')).toEqual({ turnId: 'turn-2', model: 'gpt-6-luna' })
       dispose()
     })
@@ -86,7 +91,9 @@ describe('handleAgentSessionInfo turn_retry_offer', () => {
   it('keeps only the contract fields of the offer', () => {
     createRoot((dispose) => {
       const s = stores()
-      handleAgentSessionInfo('a1', parseMessageContent(sessionInfoMessage({ turn_retry_offer: { ...OFFER_WIRE, agent_session_id: 'sess-1' } })), s)
+      handleAgentSessionInfo('a1', parseMessageContent(sessionInfoMessage({
+        turn_retry_offer: { ...OFFER_WIRE, agent_session_id: 'sess-1' },
+      })), s)
       expect(s.chatStore.getTurnRetryOffer('a1')).toEqual(OFFER)
       dispose()
     })
@@ -107,8 +114,12 @@ describe('handleAgentSessionInfo turn_retry_offer', () => {
   it('ignores an offer that gives no turn or no model', () => {
     createRoot((dispose) => {
       const s = stores()
-      handleAgentSessionInfo('a1', parseMessageContent(sessionInfoMessage({ turn_retry_offer: { turn_id: 'turn-1' } })), s)
-      handleAgentSessionInfo('a1', parseMessageContent(sessionInfoMessage({ turn_retry_offer: { model: 'gpt-6-luna' } })), s)
+      handleAgentSessionInfo('a1', parseMessageContent(sessionInfoMessage({
+        turn_retry_offer: { turn_id: 'turn-1' },
+      })), s)
+      handleAgentSessionInfo('a1', parseMessageContent(sessionInfoMessage({
+        turn_retry_offer: { model: 'gpt-6-luna' },
+      })), s)
       handleAgentSessionInfo('a1', parseMessageContent(sessionInfoMessage({ turn_retry_offer: 42 })), s)
       expect(s.chatStore.getTurnRetryOffer('a1')).toBeUndefined()
       dispose()
@@ -131,7 +142,9 @@ describe('handleAgentSessionInfo turn_retry_offer', () => {
     createRoot((dispose) => {
       const s = stores()
       handleAgentSessionInfo('a1', parseMessageContent(sessionInfoMessage({ turn_retry_offer: OFFER_WIRE })), s)
-      handleAgentSessionInfo('a1', parseMessageContent(sessionInfoMessage({ turn_retry_offer: { ...OFFER_WIRE, turn_id: 'turn-2', model: 'gpt-6-nano' } })), s)
+      handleAgentSessionInfo('a1', parseMessageContent(sessionInfoMessage({
+        turn_retry_offer: { ...OFFER_WIRE, turn_id: 'turn-2', model: 'gpt-6-nano' },
+      })), s)
       expect(s.chatStore.getTurnRetryOffer('a1')).toEqual({ ...OFFER, turnId: 'turn-2', model: 'gpt-6-nano' })
       dispose()
     })
@@ -143,7 +156,13 @@ describe('handleAgentSessionInfo turn_retry_offer', () => {
     createRoot((dispose) => {
       const s = stores()
       handleAgentSessionInfo('a1', parseMessageContent(sessionInfoMessage({ turn_retry_offer: OFFER_WIRE })), s)
-      for (const value of [{ turn_id: 'turn-2' }, { model: 'gpt-6-nano' }, {}, 42, 'x'])
+      for (const value of [
+        { turn_id: 'turn-2' },
+        { model: 'gpt-6-nano' },
+        {},
+        42,
+        'x',
+      ])
         handleAgentSessionInfo('a1', parseMessageContent(sessionInfoMessage({ turn_retry_offer: value })), s)
       expect(s.chatStore.getTurnRetryOffer('a1')).toEqual(OFFER)
       dispose()
@@ -158,7 +177,9 @@ describe('handleAgentSessionInfo turn_retry_offer', () => {
       handleAgentSessionInfo('a1', parseMessageContent(sessionInfoMessage({ turn_retry_offer: OFFER_WIRE })), s, { phase: 'live' }, true)
       expect(s.chatStore.getTurnRetryOffer('a1')).toBeUndefined()
       handleAgentSessionInfo('a1', parseMessageContent(sessionInfoMessage({ turn_retry_offer: OFFER_WIRE })), s)
-      handleAgentSessionInfo('a1', parseMessageContent(sessionInfoMessage({ turn_retry_offer: { ...OFFER_WIRE, turn_id: 'turn-2' } })), s, { phase: 'live' }, true)
+      handleAgentSessionInfo('a1', parseMessageContent(sessionInfoMessage({
+        turn_retry_offer: { ...OFFER_WIRE, turn_id: 'turn-2' },
+      })), s, { phase: 'live' }, true)
       expect(s.chatStore.getTurnRetryOffer('a1')).toEqual(OFFER)
       dispose()
     })

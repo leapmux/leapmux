@@ -4,11 +4,17 @@ import { qoderTest } from '../qoder-fixtures'
 import { nativeLaunch } from './scenarios'
 
 qoderTest('delivers input queued while the actual native process starts', async ({ native }) => {
-  await exerciseAgentStartup(native, { launch: nativeLaunch(native), failed: false })
+  await exerciseAgentStartup(native, {
+    launch: nativeLaunch(native),
+    failed: false,
+  })
 })
 
 qoderTest('keeps queued input when the actual native launch fails', async ({ native }) => {
-  await exerciseAgentStartup(native, { launch: nativeLaunch(native), failed: true })
+  await exerciseAgentStartup(native, {
+    launch: nativeLaunch(native),
+    failed: true,
+  })
 })
 
 qoderTest('opens another provider agent from the menu and button', async ({ native }) => {

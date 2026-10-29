@@ -28,10 +28,12 @@ clineTest.describe('Cline subagent registry', () => {
     })
     const start = await modelScript.queue(
       {
-        toolCalls: [spawnSubagentToolCall(native.provider, 'spawn-cline', {
-          description: 'Ask for one word',
-          prompt: modelScript.prompt('Reply with the single word PONG.'),
-        })],
+        toolCalls: [
+          spawnSubagentToolCall(native.provider, 'spawn-cline', {
+            description: 'Ask for one word',
+            prompt: modelScript.prompt('Reply with the single word PONG.'),
+          }),
+        ],
       },
       { text: 'The subagent reported PONG.' },
     )
@@ -67,8 +69,16 @@ clineTest.describe('Cline subagent registry', () => {
     await expectNoRegistryRows(page, leapmuxServer)
 
     await modelScript.rule(
-      { name: 'the first child answers', when: { user: 'Reply with the single word ALPHA' }, respond: { text: 'ALPHA' } },
-      { name: 'the second child answers', when: { user: 'Reply with the single word BRAVO' }, respond: { text: 'BRAVO' } },
+      {
+        name: 'the first child answers',
+        when: { user: 'Reply with the single word ALPHA' },
+        respond: { text: 'ALPHA' },
+      },
+      {
+        name: 'the second child answers',
+        when: { user: 'Reply with the single word BRAVO' },
+        respond: { text: 'BRAVO' },
+      },
     )
     // Both spawns in one model answer run in parallel.
     const start = await modelScript.queue(
@@ -103,7 +113,10 @@ clineTest.describe('Cline subagent registry', () => {
     // Each child tab holds its own task and its own answer, and never the other's. A
     // swap of the two transcripts, or of the two rows, fails one of the pairs.
     const childTabIds: string[] = []
-    for (const [row, own, other] of [[alpha, 'ALPHA', 'BRAVO'], [bravo, 'BRAVO', 'ALPHA']] as const) {
+    for (const [row, own, other] of [
+      [alpha, 'ALPHA', 'BRAVO'],
+      [bravo, 'BRAVO', 'ALPHA'],
+    ] as const) {
       await tabById(page, parentTabId).click()
       // `openChildTabFromRow` waits until the row links a child agent.
       const childTabId = await openChildTabFromRow(page, row)

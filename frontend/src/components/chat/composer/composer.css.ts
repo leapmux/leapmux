@@ -58,22 +58,28 @@ globalStyle(`${statusBar} [data-chip-optional]`, {
 // reuses the visual register of the old fused settings trigger (faint text,
 // hover -> foreground + card bg) so the status bar reads as the same surface,
 // just split into independent axes.
-export const axisChip = style([chipBase, {
-  gap: 'var(--space-1)',
-  padding: '2px var(--space-1)',
-  fontSize: 'var(--text-8)',
-  lineHeight: 1,
-  whiteSpace: 'nowrap',
-  userSelect: 'none',
-}])
+export const axisChip = style([
+  chipBase,
+  {
+    gap: 'var(--space-1)',
+    padding: '2px var(--space-1)',
+    fontSize: 'var(--text-8)',
+    lineHeight: 1,
+    whiteSpace: 'nowrap',
+    userSelect: 'none',
+  },
+])
 
 // `clippedText` restates the `nowrap` that `axisChip` above already passes down
 // by inheritance, and adds the `min-width: 0` this was missing. The chip is a
 // flex container, so without it the label kept the width of its own text and
 // the ellipsis declared here waited on `max-width` alone to trigger.
-export const axisChipLabel = style([clippedText, {
-  maxWidth: '14em',
-}])
+export const axisChipLabel = style([
+  clippedText,
+  {
+    maxWidth: '14em',
+  },
+])
 
 // --- Popovers ---
 
@@ -92,20 +98,26 @@ export const axisChipLabel = style([clippedText, {
  * `popoverCard` class from `~/styles/popover.css.ts`, which carries Oat's card
  * surface and the compact inset every floating card shares.
  */
-const composerMenuPopover = style([popoverColumnClamp, {
-  backgroundColor: 'var(--background)',
-  border: '1px solid var(--border)',
-  borderRadius: 'var(--radius-medium)',
-  boxShadow: 'var(--shadow-large)',
-}])
+const composerMenuPopover = style([
+  popoverColumnClamp,
+  {
+    backgroundColor: 'var(--background)',
+    border: '1px solid var(--border)',
+    borderRadius: 'var(--radius-medium)',
+    boxShadow: 'var(--shadow-large)',
+  },
+])
 
 // A chip's popover hosts OptionGroupMenuItems (radio menu items, or a
 // filterable listbox once the group exceeds the searchable threshold).
-export const axisPopover = style([composerMenuPopover, {
-  padding: 'var(--space-1)',
-  zIndex: 300,
-  minWidth: '200px',
-}])
+export const axisPopover = style([
+  composerMenuPopover,
+  {
+    padding: 'var(--space-1)',
+    zIndex: 300,
+    minWidth: '200px',
+  },
+])
 
 // --- `[+]` button ---
 
@@ -129,11 +141,14 @@ export const plusButton = style({
   },
 })
 
-export const plusPopover = style([composerMenuPopover, {
-  padding: 'var(--space-1)',
-  zIndex: 300,
-  minWidth: '220px',
-}])
+export const plusPopover = style([
+  composerMenuPopover,
+  {
+    padding: 'var(--space-1)',
+    zIndex: 300,
+    minWidth: '220px',
+  },
+])
 
 // --- Submenu (nested DropdownMenu for each option group under `[+]` ▸ settings) ---
 //
@@ -143,11 +158,14 @@ export const plusPopover = style([composerMenuPopover, {
 // below is composer-specific, because it stacks against the composer's own
 // z-index band.
 
-export const subPopover = style([composerMenuPopover, {
-  padding: 'var(--space-1)',
-  zIndex: 310,
-  minWidth: '200px',
-}])
+export const subPopover = style([
+  composerMenuPopover,
+  {
+    padding: 'var(--space-1)',
+    zIndex: 310,
+    minWidth: '200px',
+  },
+])
 
 // The `[+]` menu's "Agent info" submenu has no style here. Its content is a card
 // of labelled rows rather than a list of menu items, so it uses the shared

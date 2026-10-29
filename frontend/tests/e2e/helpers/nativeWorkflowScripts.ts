@@ -18,7 +18,9 @@ export function nativeWorkflowScripts(marker: string): readonly NativeWorkflowSc
       name,
       source: [
         `export const meta = { name: ${JSON.stringify(name)}, description: 'Compute one local value.' };`,
-        failed ? `throw new Error(${JSON.stringify(marker)} + (70 + 7));` : `return ${JSON.stringify(marker)} + (40 + 2);`,
+        failed
+          ? `throw new Error(${JSON.stringify(marker)} + (70 + 7));`
+          : `return ${JSON.stringify(marker)} + (40 + 2);`,
       ].join('\n'),
       expected: `${marker}${failed ? 77 : 42}`,
       failed,

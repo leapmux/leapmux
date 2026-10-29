@@ -12,10 +12,24 @@ describe('summarizeWorktreeCloses', () => {
   const r = (worktreeRemoval: WorktreeRemovalOutcome) => ({ worktreeRemoval } as CloseTabResult)
 
   it('folds one worker outcome into its flag', () => {
-    expect(summarizeWorktreeCloses([r(WorktreeRemovalOutcome.REMOVED)]))
-      .toEqual({ removed: true, failed: false, stillReferenced: false, unknown: false })
-    expect(summarizeWorktreeCloses([r(WorktreeRemovalOutcome.STILL_REFERENCED)]))
-      .toEqual({ removed: false, failed: false, stillReferenced: true, unknown: false })
+    expect(summarizeWorktreeCloses([
+      r(WorktreeRemovalOutcome.REMOVED),
+    ]))
+      .toEqual({
+        removed: true,
+        failed: false,
+        stillReferenced: false,
+        unknown: false,
+      })
+    expect(summarizeWorktreeCloses([
+      r(WorktreeRemovalOutcome.STILL_REFERENCED),
+    ]))
+      .toEqual({
+        removed: false,
+        failed: false,
+        stillReferenced: true,
+        unknown: false,
+      })
   })
 
   it('treats a missing result as UNKNOWN, not as a clean no-op', () => {
@@ -24,30 +38,67 @@ describe('summarizeWorktreeCloses', () => {
     // is always a CloseTabResult -- even a degraded-to-KEEP close returns one
     // with UNSPECIFIED -- so a missing result genuinely means "we do not know".
     expect(summarizeWorktreeCloses([undefined]))
-      .toEqual({ removed: false, failed: false, stillReferenced: false, unknown: true })
+      .toEqual({
+        removed: false,
+        failed: false,
+        stillReferenced: false,
+        unknown: true,
+      })
     // UNSPECIFIED is the definitive no-op, and must NOT read as unknown.
-    expect(summarizeWorktreeCloses([r(WorktreeRemovalOutcome.UNSPECIFIED)]))
-      .toEqual({ removed: false, failed: false, stillReferenced: false, unknown: false })
+    expect(summarizeWorktreeCloses([
+      r(WorktreeRemovalOutcome.UNSPECIFIED),
+    ]))
+      .toEqual({
+        removed: false,
+        failed: false,
+        stillReferenced: false,
+        unknown: false,
+      })
   })
 
   it('combines a mixed group with OR rather than picking one verdict', () => {
-    expect(summarizeWorktreeCloses([r(WorktreeRemovalOutcome.REMOVED), undefined, r(WorktreeRemovalOutcome.FAILED)]))
-      .toEqual({ removed: true, failed: true, stillReferenced: false, unknown: true })
+    expect(summarizeWorktreeCloses([
+      r(WorktreeRemovalOutcome.REMOVED),
+      undefined,
+      r(WorktreeRemovalOutcome.FAILED),
+    ]))
+      .toEqual({
+        removed: true,
+        failed: true,
+        stillReferenced: false,
+        unknown: true,
+      })
   })
 
   it('reports nothing for an empty group', () => {
     expect(summarizeWorktreeCloses([]))
-      .toEqual({ removed: false, failed: false, stillReferenced: false, unknown: false })
+      .toEqual({
+        removed: false,
+        failed: false,
+        stillReferenced: false,
+        unknown: false,
+      })
   })
 })
 
 describe('worktreeRemovalToast', () => {
   // Fill the summary defaults so each case sets only the flags it exercises.
   const s = (o: Partial<{ removed: boolean, failed: boolean, stillReferenced: boolean, unknown: boolean }> = {}) =>
-    ({ removed: false, failed: false, stillReferenced: false, unknown: false, ...o })
+    ({
+      removed: false,
+      failed: false,
+      stillReferenced: false,
+      unknown: false,
+      ...o,
+    })
 
   it('removed wins over everything, including a stale untracked snapshot and a sibling failure', () => {
-    expect(worktreeRemovalToast(s({ removed: true, failed: true, stillReferenced: true, unknown: true }), false)).toBe('Worktree removed')
+    expect(worktreeRemovalToast(s({
+      removed: true,
+      failed: true,
+      stillReferenced: true,
+      unknown: true,
+    }), false)).toBe('Worktree removed')
     expect(worktreeRemovalToast(s({ removed: true }), true)).toBe('Worktree removed')
   })
 

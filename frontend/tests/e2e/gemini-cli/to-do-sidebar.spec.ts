@@ -24,7 +24,13 @@ geminiTest('stores an exact native task snapshot and preserves it after reload',
 
 geminiTest('preserves all native task statuses and replaces and clears the saved snapshot', async ({ native }) => {
   const { page } = native
-  const statuses = ['pending', 'in_progress', 'completed', 'cancelled', 'blocked'] as const
+  const statuses = [
+    'pending',
+    'in_progress',
+    'completed',
+    'cancelled',
+    'blocked',
+  ] as const
   const nativeTodos = statuses.map(status => ({ description: `GEMINI_NATIVE_TASK_${status}`, status }))
   const canonicalStatuses = {
     pending: { value: TodoStatus.PENDING, checkbox: 'pending' },
@@ -33,17 +39,23 @@ geminiTest('preserves all native task statuses and replaces and clears the saved
     cancelled: { value: TodoStatus.DELETED, checkbox: 'deleted' },
     blocked: { value: TodoStatus.BLOCKED, checkbox: 'blocked' },
   } as const
-  const replacement = [{ description: 'GEMINI_NATIVE_REPLACEMENT', status: 'blocked' }] as const
+  const replacement = [
+    { description: 'GEMINI_NATIVE_REPLACEMENT', status: 'blocked' },
+  ] as const
   const snapshots = [nativeTodos, replacement, []] as const
   for (const [index, todos] of snapshots.entries()) {
     const callId = `gemini-native-todo-snapshot-${index}`
     const turn = await runNativeToolTurn(native, {
-      toolCalls: [geminiTodoSnapshotToolCall(callId, todos)],
+      toolCalls: [
+        geminiTodoSnapshotToolCall(callId, todos),
+      ],
       prompt: 'Replace the native task list with the scripted snapshot.',
       answer: 'The native task snapshot completed.',
     })
     const returned = nativeToolResult(turn.resultRequest, callId)
-    expect(returned).toContain(todos.length === 0 ? 'Successfully cleared the todo list.' : 'Successfully updated the todo list.')
+    expect(returned).toContain(todos.length === 0
+      ? 'Successfully cleared the todo list.'
+      : 'Successfully updated the todo list.')
     for (const todo of todos)
       expect(returned).toContain(`[${todo.status}] ${todo.description}`)
     const verifySnapshot = async () => {

@@ -23,8 +23,20 @@ async function proveKimiOutputFilePaths(options: {
   await applyPermissionPreset(native.page, 'bypass')
   await captureNativeToolOutput(native, testInfo, {
     output: options.output,
-    callId: format === 'header' ? KIMI_OUTPUT_PATH_CALL_IDS.Header : format === 'per-line' ? KIMI_OUTPUT_PATH_CALL_IDS.PerLine : KIMI_OUTPUT_PATH_CALL_IDS.AmbiguousMcp,
-    ...(format === 'mcp' ? { call: (output: NativeToolOutput, id: string) => mcpToolCall(native.provider, id, { server: MCP_ECHO_SERVER_NAME, tool: 'echo', input: { value: output.text } }) } : {}),
+    callId: format === 'header'
+      ? KIMI_OUTPUT_PATH_CALL_IDS.Header
+      : format === 'per-line'
+        ? KIMI_OUTPUT_PATH_CALL_IDS.PerLine
+        : KIMI_OUTPUT_PATH_CALL_IDS.AmbiguousMcp,
+    ...(format === 'mcp'
+      ? {
+          call: (output: NativeToolOutput, id: string) => mcpToolCall(native.provider, id, {
+            server: MCP_ECHO_SERVER_NAME,
+            tool: 'echo',
+            input: { value: output.text },
+          }),
+        }
+      : {}),
     // Kimi's reader also checks the tool name that its pointer header states.
     proof: capture => proveNativeOutputReceipt(capture, testInfo, (snapshot, callId) => readKimiNativeOutput(snapshot, callId, capture.call.name), {
       // The MCP echo call takes the complete output as its argument, and the result row draws that argument.
@@ -43,13 +55,28 @@ async function proveKimiOutputFilePaths(options: {
 }
 
 kimiTest('keeps the native output header path and exact preview after reload', async ({ native }, testInfo) => {
-  await proveKimiOutputFilePaths({ native, testInfo, output: computedNativeToolOutput({ lineCount: 6000, padding: 48 }), format: 'header' })
+  await proveKimiOutputFilePaths({
+    native,
+    testInfo,
+    output: computedNativeToolOutput({ lineCount: 6000, padding: 48 }),
+    format: 'header',
+  })
 })
 
 kimiTest('keeps the native per-line output path and exact preview after reload', async ({ native }, testInfo) => {
-  await proveKimiOutputFilePaths({ native, testInfo, output: computedKimiPerLineOutputFileOutput(), format: 'per-line' })
+  await proveKimiOutputFilePaths({
+    native,
+    testInfo,
+    output: computedKimiPerLineOutputFileOutput(),
+    format: 'per-line',
+  })
 })
 
 kimiTest('keeps the native MCP output path and its original preview after reload', async ({ native }, testInfo) => {
-  await proveKimiOutputFilePaths({ native, testInfo, output: computedNativeToolOutput({ lineCount: 3000, padding: 30 }), format: 'mcp' })
+  await proveKimiOutputFilePaths({
+    native,
+    testInfo,
+    output: computedNativeToolOutput({ lineCount: 3000, padding: 30 }),
+    format: 'mcp',
+  })
 })

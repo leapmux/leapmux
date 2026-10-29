@@ -13,7 +13,13 @@ import { qwenQuestionHandling } from './pluginControls'
 
 registerACPProvider({
   provider: AgentProvider.QWEN_CODE,
-  attachments: { text: true, image: true, pdf: true, audio: [...QWEN_AUDIO_MIME], binary: false },
+  attachments: {
+    text: true,
+    image: true,
+    pdf: true,
+    audio: [...QWEN_AUDIO_MIME],
+    binary: false,
+  },
   effortGroupKey: QWEN_CONFIG.ReasoningEffort,
   toolCallAdapter: qwenToolCallAdapter,
   outputFilePaths: qwenOutputFilePaths,

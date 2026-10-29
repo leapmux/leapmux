@@ -12,8 +12,13 @@ claudeTest('refuses a message to a real running child without delivering it to t
     operation: 'send',
     openChild: () => openRunningNativeChild(native, {
       gate: 'root-child-send-proof',
-      child: { matcher: { user: 'ROOT_SEND_CHILD_MARKER' } },
-      spawn: spawnSubagentToolCall(AgentProvider.CLAUDE_CODE, 'spawn-readonly-child', { description: 'root send child', prompt: modelScript.prompt('Wait for ROOT_SEND_CHILD_MARKER.') }),
+      child: {
+        matcher: { user: 'ROOT_SEND_CHILD_MARKER' },
+      },
+      spawn: spawnSubagentToolCall(AgentProvider.CLAUDE_CODE, 'spawn-readonly-child', {
+        description: 'root send child',
+        prompt: modelScript.prompt('Wait for ROOT_SEND_CHILD_MARKER.'),
+      }),
       beforeRelease: async () => {
         await registerClaudeChildReportRules(modelScript, { spawnCallId: 'spawn-readonly-child', report: NATIVE_CHILD_FINAL_REPLY, reply: 'The read-only child report arrived.' })
       },

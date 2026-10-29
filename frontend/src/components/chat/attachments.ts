@@ -192,7 +192,9 @@ export function buildAcceptAttribute(capabilities: AttachmentCapabilities | unde
       accepted.add(mime)
   }
 
-  return accepted.size > 0 ? [...accepted].join(',') : undefined
+  return accepted.size > 0
+    ? [...accepted].join(',')
+    : undefined
 }
 
 function normalizeMimeType(mime: string): string {
@@ -233,7 +235,9 @@ export function inferAttachmentDetails(filename: string, mimeType: string, data:
   const isTextData = () => utf8 ??= isUtf8Text(data)
   const effectiveMime = !GENERIC_BINARY_MIME_TYPES.has(normalizedMime)
     ? normalizedMime
-    : (inferredMime || (isTextData() ? 'text/plain' : 'application/octet-stream'))
+    : (inferredMime || (isTextData()
+        ? 'text/plain'
+        : 'application/octet-stream'))
 
   if (SUPPORTED_IMAGE_MIME_TYPES.has(effectiveMime))
     return { kind: ATTACHMENT_MEDIA_KIND.Image, mimeType: effectiveMime }
@@ -254,7 +258,9 @@ export function inferAttachmentDetails(filename: string, mimeType: string, data:
 }
 
 function acceptsMediaType(policy: boolean | readonly string[], mimeType: string | undefined): boolean {
-  return typeof policy === 'boolean' ? policy : policy.includes(normalizeMimeType(mimeType ?? ''))
+  return typeof policy === 'boolean'
+    ? policy
+    : policy.includes(normalizeMimeType(mimeType ?? ''))
 }
 
 export function isAttachmentSupported(kind: AttachmentKind, capabilities: AttachmentCapabilities | undefined, mimeType?: string): boolean {
@@ -372,7 +378,9 @@ export async function collectDroppedAttachmentFiles(
   currentSize = 0,
 ): Promise<{ files: PendingAttachmentFile[], sizeLimitHit: boolean, failures: AttachmentReadFailure[] }> {
   const collection: DroppedFileCollection = { files: [], size: currentSize, failures: [] }
-  const items = [...(dataTransfer.items ?? [])] as WebkitDataTransferItem[]
+  const items = [
+    ...(dataTransfer.items ?? []),
+  ] as WebkitDataTransferItem[]
   const entries: FileSystemEntry[] = []
   for (const item of items) {
     try {

@@ -35,13 +35,19 @@ export function clineControlResponseSummary(cr: PersistedControlResponse): Contr
 function approvalSummary(toolName: string, reply: Record<string, unknown>): ControlResponseSummary | null {
   if (typeof reply[CLINE_APPROVAL_REPLY.Approved] !== 'boolean')
     return null
-  const words = toolName === CLINE_TOOL.SwitchToActMode ? CONTROL_DECISION_WORDS.plan : CONTROL_DECISION_WORDS.permission
+  const words = toolName === CLINE_TOOL.SwitchToActMode
+    ? CONTROL_DECISION_WORDS.plan
+    : CONTROL_DECISION_WORDS.permission
   if (reply[CLINE_APPROVAL_REPLY.Approved] === true) {
     const mode = PLAN_MODE_WORDS.get(pickString(reply, CLINE_APPROVAL_REPLY.PermissionMode))
-    return label(mode ? `${words.allow} (${mode})` : words.allow)
+    return label(mode
+      ? `${words.allow} (${mode})`
+      : words.allow)
   }
   const reason = pickString(reply, CLINE_APPROVAL_REPLY.Reason).trim()
-  return feedbackOrLabel(reason === CLINE_DECLINE_REASON.Tool ? '' : reason, words.deny)
+  return feedbackOrLabel(reason === CLINE_DECLINE_REASON.Tool
+    ? ''
+    : reason, words.deny)
 }
 
 function questionSummary(reply: Record<string, unknown>): ControlResponseSummary | null {
@@ -52,5 +58,7 @@ function questionSummary(reply: Record<string, unknown>): ControlResponseSummary
   if (reply[CLINE_CAPABILITY_REPLY.Ok] !== false)
     return null
   const error = pickString(reply, CLINE_CAPABILITY_REPLY.Error).trim()
-  return feedbackOrLabel(error === CLINE_DECLINE_REASON.Question ? '' : error, 'Declined')
+  return feedbackOrLabel(error === CLINE_DECLINE_REASON.Question
+    ? ''
+    : error, 'Declined')
 }

@@ -19,8 +19,16 @@ function request(userText: string, toolNames: readonly string[]) {
     systemText: '',
     userText,
     body: {
-      messages: [{ role: 'user', content: userText }],
-      tools: toolNames.map(name => ({ type: 'function', function: { name, parameters: { type: 'object' } } })),
+      messages: [
+        { role: 'user', content: userText },
+      ],
+      tools: toolNames.map(name => ({
+        type: 'function',
+        function: {
+          name,
+          parameters: { type: 'object' },
+        },
+      })),
     },
   }
 }
@@ -56,7 +64,13 @@ describe('ohMyPiHeldChild', () => {
   it('ends the held child through its yield tool and shows the name of the child', () => {
     const held = ohMyPiHeldChild()
     expect(held.rowTitle).toBe(HELD_CHILD_NAME)
-    expect(held.heldAnswer?.toolCalls).toEqual([{ id: 'held-child-yield', name: 'yield', arguments: { data: HELD_CHILD_REPORT } }])
+    expect(held.heldAnswer?.toolCalls).toEqual([
+      {
+        id: 'held-child-yield',
+        name: 'yield',
+        arguments: { data: HELD_CHILD_REPORT },
+      },
+    ])
   })
 
   // `openHeldChildTab` takes the case as its own, so two cells must not share one object.

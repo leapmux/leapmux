@@ -9,12 +9,18 @@ const platformDescriptor = Object.getOwnPropertyDescriptor(process, 'platform')
 
 vi.mock('node:child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:child_process')>()
-  return { ...actual, execFileSync: vi.fn(actual.execFileSync) }
+  return {
+    ...actual,
+    execFileSync: vi.fn(actual.execFileSync),
+  }
 })
 
 vi.mock('node:fs', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:fs')>()
-  return { ...actual, rmSync: vi.fn(actual.rmSync) }
+  return {
+    ...actual,
+    rmSync: vi.fn(actual.rmSync),
+  }
 })
 
 afterEach(async () => {
@@ -75,7 +81,10 @@ describe('withDescendants', () => {
   })
 
   it('ends on rows whose parents form a cycle', () => {
-    expect(withDescendants([{ pid: 1, ppid: 2, command: '' }, { pid: 2, ppid: 1, command: '' }], [1]).sort()).toEqual([1, 2])
+    expect(withDescendants([
+      { pid: 1, ppid: 2, command: '' },
+      { pid: 2, ppid: 1, command: '' },
+    ], [1]).sort()).toEqual([1, 2])
   })
 
   it('finds the rows in any order', () => {
@@ -175,33 +184,93 @@ describe('parseWindowsProcessTable', () => {
   })
 
   it('preserves a singleton executable path and command with spaces', () => {
-    const record = { ProcessId: 42, ParentProcessId: 7, CommandLine: '"C:\\project with spaces\\leapmux.exe" worker', ExecutablePath: 'C:\\project with spaces\\leapmux.exe' }
-    expect(parseWindowsProcessTable(JSON.stringify(record))).toEqual([{ pid: 42, ppid: 7, command: record.CommandLine, executable: record.ExecutablePath }])
+    const record = {
+      ProcessId: 42,
+      ParentProcessId: 7,
+      CommandLine: '"C:\\project with spaces\\leapmux.exe" worker',
+      ExecutablePath: 'C:\\project with spaces\\leapmux.exe',
+    }
+    expect(parseWindowsProcessTable(JSON.stringify(record))).toEqual([
+      {
+        pid: 42,
+        ppid: 7,
+        command: record.CommandLine,
+        executable: record.ExecutablePath,
+      },
+    ])
   })
 
   it('reads arrays and keeps a process whose parent is zero', () => {
     const rows = [
-      { ProcessId: 0, ParentProcessId: 0, CommandLine: null, ExecutablePath: null },
-      { ProcessId: 1, ParentProcessId: 0, CommandLine: 'worker', ExecutablePath: null },
-      { ProcessId: 2, ParentProcessId: 1, CommandLine: null, ExecutablePath: 'C:\\native.exe' },
+      {
+        ProcessId: 0,
+        ParentProcessId: 0,
+        CommandLine: null,
+        ExecutablePath: null,
+      },
+      {
+        ProcessId: 1,
+        ParentProcessId: 0,
+        CommandLine: 'worker',
+        ExecutablePath: null,
+      },
+      {
+        ProcessId: 2,
+        ParentProcessId: 1,
+        CommandLine: null,
+        ExecutablePath: 'C:\\native.exe',
+      },
     ]
-    expect(parseWindowsProcessTable(JSON.stringify(rows))).toEqual([{ pid: 1, ppid: 0, command: 'worker' }, { pid: 2, ppid: 1, command: 'C:\\native.exe', executable: 'C:\\native.exe' }])
+    expect(parseWindowsProcessTable(JSON.stringify(rows))).toEqual([
+      { pid: 1, ppid: 0, command: 'worker' },
+      {
+        pid: 2,
+        ppid: 1,
+        command: 'C:\\native.exe',
+        executable: 'C:\\native.exe',
+      },
+    ])
   })
 
   it('keeps an unknown command without inventing an executable', () => {
-    expect(parseWindowsProcessTable(JSON.stringify({ ProcessId: 2, ParentProcessId: 1 }))).toEqual([{ pid: 2, ppid: 1, command: '' }])
+    expect(parseWindowsProcessTable(JSON.stringify({ ProcessId: 2, ParentProcessId: 1 }))).toEqual([
+      { pid: 2, ppid: 1, command: '' },
+    ])
   })
 
   it('preserves an exact Windows creation identity above the safe integer range', () => {
-    const row = { ProcessId: 42, ParentProcessId: 7, CommandLine: 'private command', CreationTime: '134000000000000001' }
-    expect(parseWindowsProcessTable(JSON.stringify(row))).toEqual([{ pid: 42, ppid: 7, command: 'private command', creationTime: '134000000000000001' }])
+    const row = {
+      ProcessId: 42,
+      ParentProcessId: 7,
+      CommandLine: 'private command',
+      CreationTime: '134000000000000001',
+    }
+    expect(parseWindowsProcessTable(JSON.stringify(row))).toEqual([
+      {
+        pid: 42,
+        ppid: 7,
+        command: 'private command',
+        creationTime: '134000000000000001',
+      },
+    ])
   })
 
   it('keeps an inaccessible creation identity absent', () => {
-    expect(parseWindowsProcessTable(JSON.stringify({ ProcessId: 42, ParentProcessId: 7, CreationTime: null }))).toEqual([{ pid: 42, ppid: 7, command: '' }])
+    expect(parseWindowsProcessTable(JSON.stringify({ ProcessId: 42, ParentProcessId: 7, CreationTime: null }))).toEqual([
+      { pid: 42, ppid: 7, command: '' },
+    ])
   })
 
-  it.each([0, '', '0', '-1', '1.5', '9223372036854775808', [], {}])('refuses a malformed Windows creation identity: %j', (creationTime) => {
+  it.each([
+    0,
+    '',
+    '0',
+    '-1',
+    '1.5',
+    '9223372036854775808',
+    [],
+    {},
+  ])('refuses a malformed Windows creation identity: %j', (creationTime) => {
     expect(() => parseWindowsProcessTable(JSON.stringify({ ProcessId: 42, ParentProcessId: 7, CreationTime: creationTime }))).toThrow('creation identity')
   })
 

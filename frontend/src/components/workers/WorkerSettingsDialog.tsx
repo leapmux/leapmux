@@ -44,7 +44,9 @@ export const WorkerSettingsDialog: Component<WorkerSettingsDialogProps> = (props
         </button>
         <button data-variant="danger" onClick={() => handleDeregister()} disabled={submitting.loading()} data-testid="deregister-confirm">
           <Show when={submitting.loading()}><Spinner /></Show>
-          {submitting.loading() ? 'Deregistering...' : 'Deregister'}
+          {submitting.loading()
+            ? 'Deregistering...'
+            : 'Deregister'}
         </button>
       </footer>
     </Dialog>

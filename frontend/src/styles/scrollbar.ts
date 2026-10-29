@@ -30,6 +30,10 @@ export function hideNativeScrollbar(selector: string, media?: string): void {
   const hidden = { display: 'none' } as const
   globalStyle(
     `${selector}::-webkit-scrollbar`,
-    media === undefined ? hidden : { '@media': { [media]: hidden } },
+    media === undefined
+      ? hidden
+      : {
+          '@media': { [media]: hidden },
+        },
   )
 }

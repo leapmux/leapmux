@@ -123,7 +123,9 @@ function setup(storeWorkspaceId: string = 'ws-1', getWorkerId: () => string = ()
   } as any
 
   const repoGitStore = createRepoGitStore()
-  const agentInputQueueStore = { clearAgent: vi.fn() } as any
+  const agentInputQueueStore = {
+    clearAgent: vi.fn(),
+  } as any
   const agentActivityStore = createAgentActivityStore()
   const releaseAgentComposerActionState = vi.fn()
   const ops = useAgentOperations({
@@ -137,11 +139,21 @@ function setup(storeWorkspaceId: string = 'ws-1', getWorkerId: () => string = ()
     selection: stores.selection,
     getActiveWorkspaceId: () => storeWorkspaceId,
     layoutStore: stores.layoutStore,
-    settingsLoading: { start: vi.fn(), stop: vi.fn() },
+    settingsLoading: {
+      start: vi.fn(),
+      stop: vi.fn(),
+    },
     isActiveWorkspaceMutatable: () => true,
     activeWorkspace: () => ({ id: storeWorkspaceId } as Workspace),
-    getCurrentTabContext: () => ({ workerId: getWorkerId(), workingDir: '/tmp' }),
-    newAgentDialog: { open: vi.fn(), close: vi.fn(), value: () => null },
+    getCurrentTabContext: () => ({
+      workerId: getWorkerId(),
+      workingDir: '/tmp',
+    }),
+    newAgentDialog: {
+      open: vi.fn(),
+      close: vi.fn(),
+      value: () => null,
+    },
     setNewAgentLoadingProvider: vi.fn(),
     repoGitStore,
     releaseAgentComposerActionState,
@@ -190,7 +202,9 @@ describe('useAgentOperations', () => {
     it('uses the active agent tab provider for quick create', async () => {
       await createRoot(async (dispose) => {
         try {
-          mockListAvailableProviders.mockResolvedValue({ providers: [AgentProvider.CLAUDE_CODE, AgentProvider.CODEX] })
+          mockListAvailableProviders.mockResolvedValue({
+            providers: [AgentProvider.CLAUDE_CODE, AgentProvider.CODEX],
+          })
           mockOpenAgent.mockResolvedValue({
             agent: create(AgentInfoSchema, {
               id: 'new-agent',
@@ -229,7 +243,9 @@ describe('useAgentOperations', () => {
     it('opens on the target\'s worker and directory when one is given', async () => {
       await createRoot(async (dispose) => {
         try {
-          mockListAvailableProviders.mockResolvedValue({ providers: [AgentProvider.CLAUDE_CODE] })
+          mockListAvailableProviders.mockResolvedValue({
+            providers: [AgentProvider.CLAUDE_CODE],
+          })
           mockOpenAgent.mockResolvedValue({
             agent: create(AgentInfoSchema, { id: 'new-agent', workerId: 'w-2', workingDir: '/other/worktree' }),
           })
@@ -254,7 +270,9 @@ describe('useAgentOperations', () => {
     it('falls back to the current tab context when no target is given', async () => {
       await createRoot(async (dispose) => {
         try {
-          mockListAvailableProviders.mockResolvedValue({ providers: [AgentProvider.CLAUDE_CODE] })
+          mockListAvailableProviders.mockResolvedValue({
+            providers: [AgentProvider.CLAUDE_CODE],
+          })
           mockOpenAgent.mockResolvedValue({
             agent: create(AgentInfoSchema, { id: 'new-agent', workerId: 'w-1', workingDir: '/tmp' }),
           })
@@ -290,7 +308,9 @@ describe('useAgentOperations', () => {
     it('shows the active tab\'s branch until the worker reports, even across workers', async () => {
       await createRoot(async (dispose) => {
         try {
-          mockListAvailableProviders.mockResolvedValue({ providers: [AgentProvider.CLAUDE_CODE] })
+          mockListAvailableProviders.mockResolvedValue({
+            providers: [AgentProvider.CLAUDE_CODE],
+          })
           mockOpenAgent.mockResolvedValue({
             agent: create(AgentInfoSchema, {
               id: 'new-agent',
@@ -305,7 +325,12 @@ describe('useAgentOperations', () => {
           })
 
           const { ops, view, add, repoGitStore } = setup()
-          add({ id: 'active', workerId: 'w-other', workingDir: '/repo', gitToplevel: '/repo' })
+          add({
+            id: 'active',
+            workerId: 'w-other',
+            workingDir: '/repo',
+            gitToplevel: '/repo',
+          })
           repoGitStore.upsert(repoKey('w-other', '/repo'), {
             workerId: 'w-other',
             toplevel: '/repo',
@@ -342,7 +367,9 @@ describe('useAgentOperations', () => {
     it('prefers the response\'s own toplevel over the active tab\'s guess on the row', async () => {
       await createRoot(async (dispose) => {
         try {
-          mockListAvailableProviders.mockResolvedValue({ providers: [AgentProvider.CLAUDE_CODE] })
+          mockListAvailableProviders.mockResolvedValue({
+            providers: [AgentProvider.CLAUDE_CODE],
+          })
           mockOpenAgent.mockResolvedValue({
             agent: create(AgentInfoSchema, {
               id: 'new-agent',
@@ -356,7 +383,12 @@ describe('useAgentOperations', () => {
           })
 
           const { ops, view, add } = setup()
-          add({ id: 'active', workerId: 'w-other', workingDir: '/repo', gitToplevel: '/repo' })
+          add({
+            id: 'active',
+            workerId: 'w-other',
+            workingDir: '/repo',
+            gitToplevel: '/repo',
+          })
 
           await flush()
           await ops.handleOpenAgent()
@@ -376,7 +408,9 @@ describe('useAgentOperations', () => {
     it('falls back to the MRU provider when the active tab is not an agent tab', async () => {
       await createRoot(async (dispose) => {
         try {
-          mockListAvailableProviders.mockResolvedValue({ providers: [AgentProvider.CLAUDE_CODE, AgentProvider.CODEX] })
+          mockListAvailableProviders.mockResolvedValue({
+            providers: [AgentProvider.CLAUDE_CODE, AgentProvider.CODEX],
+          })
           mockOpenAgent.mockResolvedValue({
             agent: create(AgentInfoSchema, {
               id: 'new-agent',
@@ -409,7 +443,11 @@ describe('useAgentOperations', () => {
      * dialog cases below need one that resolves no complete pair.
      */
     function opsWithContext(ctx: { workerId: string, workingDir: string }) {
-      const newAgentDialog = { open: vi.fn(), close: vi.fn(), value: () => null }
+      const newAgentDialog = {
+        open: vi.fn(),
+        close: vi.fn(),
+        value: () => null,
+      }
       installTestBridge({ workspaceId: 'ws-1' })
       const stores = createTestTabStores('ws-1')
       const chatStore = {
@@ -419,7 +457,9 @@ describe('useAgentOperations', () => {
 
       const ops = useAgentOperations({
         agentSessionStore: createAgentSessionStore(),
-        agentInputQueueStore: { clearAgent: vi.fn() } as any,
+        agentInputQueueStore: {
+          clearAgent: vi.fn(),
+        } as any,
         agentActivityStore: createAgentActivityStore(),
         chatStore,
         controlStore: createControlStore(),
@@ -428,7 +468,10 @@ describe('useAgentOperations', () => {
         selection: stores.selection,
         getActiveWorkspaceId: () => 'ws-1',
         layoutStore: stores.layoutStore,
-        settingsLoading: { start: vi.fn(), stop: vi.fn() },
+        settingsLoading: {
+          start: vi.fn(),
+          stop: vi.fn(),
+        },
         isActiveWorkspaceMutatable: () => true,
         activeWorkspace: () => ({ id: 'ws-1' } as Workspace),
         getCurrentTabContext: () => ctx,
@@ -484,7 +527,9 @@ describe('useAgentOperations', () => {
     it('refuses before the worker RPC when the workspace has no projected tree', async () => {
       await createRoot(async (dispose) => {
         try {
-          mockListAvailableProviders.mockResolvedValue({ providers: [AgentProvider.CLAUDE_CODE] })
+          mockListAvailableProviders.mockResolvedValue({
+            providers: [AgentProvider.CLAUDE_CODE],
+          })
           // The bridge delivers ws-1's tree; the shell answers for a
           // workspace the bootstrap never delivered, so placement has no
           // projected tile to resolve to.
@@ -508,7 +553,9 @@ describe('useAgentOperations', () => {
     it('does not record an MRU provider use when the open is refused', async () => {
       await createRoot(async (dispose) => {
         try {
-          mockListAvailableProviders.mockResolvedValue({ providers: [AgentProvider.CLAUDE_CODE, AgentProvider.CODEX] })
+          mockListAvailableProviders.mockResolvedValue({
+            providers: [AgentProvider.CLAUDE_CODE, AgentProvider.CODEX],
+          })
           const { ops } = setup('ws-never-bootstrapped')
 
           await flush()
@@ -535,7 +582,10 @@ describe('useAgentOperations', () => {
             agentProvider: AgentProvider.CODEX,
             agentSessionId: 'thread-1',
           })
-          add({ id: agent.id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
+          add({
+            id: agent.id,
+            ...protoToAgentTabFields(fixtureStore, agent.workerId, agent),
+          })
           mockInterruptAgent.mockResolvedValue({})
           agentSessionStore.applyProgress('codex-1', { revision: 1, thinkingTokens: 100 })
 
@@ -563,7 +613,10 @@ describe('useAgentOperations', () => {
             agentProvider: AgentProvider.CODEX,
             agentSessionId: 'thread-1',
           })
-          add({ id: agent.id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
+          add({
+            id: agent.id,
+            ...protoToAgentTabFields(fixtureStore, agent.workerId, agent),
+          })
           mockInterruptAgent.mockRejectedValue(new Error('interrupt failed'))
           agentSessionStore.applyProgress('codex-1', { revision: 1, thinkingTokens: 100 })
 
@@ -589,26 +642,35 @@ describe('useAgentOperations', () => {
           const agent = create(AgentInfoSchema, {
             id: 'a-1',
             workerId: 'w-1',
-            optionGroups: [{
-              id: 'opencode_mode',
-              label: 'Execution Mode',
-              currentValue: 'safe',
-              defaultValue: 'safe',
-              options: [
-                { id: 'safe', name: 'Safe' },
-                { id: 'fast', name: 'Fast' },
-              ],
-            }],
+            optionGroups: [
+              {
+                id: 'opencode_mode',
+                label: 'Execution Mode',
+                currentValue: 'safe',
+                defaultValue: 'safe',
+                options: [
+                  { id: 'safe', name: 'Safe' },
+                  { id: 'fast', name: 'Fast' },
+                ],
+              },
+            ],
           })
-          add({ id: agent.id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
+          add({
+            id: agent.id,
+            ...protoToAgentTabFields(fixtureStore, agent.workerId, agent),
+          })
           mockUpdateAgentSettings.mockRejectedValueOnce(new Error('boom'))
 
-          await ops.handleAgentSettingChange('a-1', { sets: { opencode_mode: 'fast' } })
+          await ops.handleAgentSettingChange('a-1', {
+            sets: { opencode_mode: 'fast' },
+          })
 
           // One RPC carrying the uniform `{ options: { [groupKey]: value } }` payload.
           expect(mockUpdateAgentSettings).toHaveBeenCalledWith('w-1', {
             agentId: 'a-1',
-            settings: { options: { opencode_mode: 'fast' } },
+            settings: {
+              options: { opencode_mode: 'fast' },
+            },
           })
           // The failed change rolls back to the prior current value ('safe').
           expect(view.getAgentTab('a-1')?.optionValues?.opencode_mode).toBe('safe')
@@ -650,7 +712,10 @@ describe('useAgentOperations', () => {
               },
             ],
           })
-          add({ id: agent.id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
+          add({
+            id: agent.id,
+            ...protoToAgentTabFields(fixtureStore, agent.workerId, agent),
+          })
 
           // First call will fail; second succeeds.
           let rejectFirst!: (err: Error) => void
@@ -660,8 +725,12 @@ describe('useAgentOperations', () => {
           mockUpdateAgentSettings.mockResolvedValueOnce({})
 
           // Launch both changes concurrently.
-          const p1 = ops.handleAgentSettingChange('a-concurrent', { sets: { permission_profile: ':danger-full-access' } })
-          const p2 = ops.handleAgentSettingChange('a-concurrent', { sets: { service_tier: 'fast' } })
+          const p1 = ops.handleAgentSettingChange('a-concurrent', {
+            sets: { permission_profile: ':danger-full-access' },
+          })
+          const p2 = ops.handleAgentSettingChange('a-concurrent', {
+            sets: { service_tier: 'fast' },
+          })
 
           // Both optimistic updates should be applied.
           const mid = view.getAgentTab('a-concurrent')
@@ -695,19 +764,26 @@ describe('useAgentOperations', () => {
           const agent = create(AgentInfoSchema, {
             id: 'a-2',
             workerId: 'w-1',
-            optionGroups: [{
-              id: 'opencode_mode',
-              label: 'Execution Mode',
-              options: [
-                { id: 'safe', name: 'Safe' },
-                { id: 'fast', name: 'Fast' },
-              ],
-            }],
+            optionGroups: [
+              {
+                id: 'opencode_mode',
+                label: 'Execution Mode',
+                options: [
+                  { id: 'safe', name: 'Safe' },
+                  { id: 'fast', name: 'Fast' },
+                ],
+              },
+            ],
           })
-          add({ id: agent.id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
+          add({
+            id: agent.id,
+            ...protoToAgentTabFields(fixtureStore, agent.workerId, agent),
+          })
           mockUpdateAgentSettings.mockRejectedValueOnce(new Error('boom'))
 
-          await ops.handleAgentSettingChange('a-2', { sets: { opencode_mode: 'fast' } })
+          await ops.handleAgentSettingChange('a-2', {
+            sets: { opencode_mode: 'fast' },
+          })
 
           const values = view.getAgentTab('a-2')?.optionValues
           expect(values && 'opencode_mode' in values).toBe(false)
@@ -725,8 +801,16 @@ describe('useAgentOperations', () => {
         try {
           const { view, chatStore, agentInputQueueStore, releaseAgentComposerActionState, ops, add } = setup()
           const agent = create(AgentInfoSchema, { id: 'a-1', workerId: 'w-1' })
-          add({ id: agent.id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
-          add({ id: 'a-1', title: 'Agent Olivia', workerId: 'w-1', workingDir: '/tmp' })
+          add({
+            id: agent.id,
+            ...protoToAgentTabFields(fixtureStore, agent.workerId, agent),
+          })
+          add({
+            id: 'a-1',
+            title: 'Agent Olivia',
+            workerId: 'w-1',
+            workingDir: '/tmp',
+          })
 
           // Never-resolving RPC to prove the UI mutation is synchronous.
           mockCloseAgent.mockReturnValueOnce(new Promise(() => {}))
@@ -753,7 +837,10 @@ describe('useAgentOperations', () => {
         try {
           const { ops, add } = setup()
           const agent = create(AgentInfoSchema, { id: 'a-sched', workerId: 'w-1' })
-          add({ id: agent.id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
+          add({
+            id: agent.id,
+            ...protoToAgentTabFields(fixtureStore, agent.workerId, agent),
+          })
           setScheduleDraft('a-sched', '2030-01-01T18:45')
           setScheduleDraft(queueEditDraftKey('a-sched', 'input-1'), '')
           setScheduleDraft('a-other', '2030-01-02T18:45')
@@ -777,7 +864,10 @@ describe('useAgentOperations', () => {
         try {
           const { agentActivityStore, ops, add } = setup()
           const agent = create(AgentInfoSchema, { id: 'a-busy', workerId: 'w-1' })
-          add({ id: agent.id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
+          add({
+            id: agent.id,
+            ...protoToAgentTabFields(fixtureStore, agent.workerId, agent),
+          })
           agentActivityStore.apply('a-busy', AgentActivityState.WORKING)
           mockCloseAgent.mockReturnValueOnce(new Promise(() => {}))
 
@@ -801,8 +891,16 @@ describe('useAgentOperations', () => {
         try {
           const { ops, add } = setup()
           const agent = create(AgentInfoSchema, { id: 'a-remove', workerId: 'w-1' })
-          add({ id: agent.id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
-          add({ id: 'a-remove', title: 'Agent Remove', workerId: 'w-1', workingDir: '/tmp' })
+          add({
+            id: agent.id,
+            ...protoToAgentTabFields(fixtureStore, agent.workerId, agent),
+          })
+          add({
+            id: 'a-remove',
+            title: 'Agent Remove',
+            workerId: 'w-1',
+            workingDir: '/tmp',
+          })
 
           mockCloseAgent.mockResolvedValueOnce({
             result: {
@@ -829,8 +927,16 @@ describe('useAgentOperations', () => {
         try {
           const { view, ops, add } = setup()
           const agent = create(AgentInfoSchema, { id: 'a-fail', workerId: 'w-1' })
-          add({ id: agent.id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
-          add({ id: 'a-fail', title: 'Agent Fail', workerId: 'w-1', workingDir: '/tmp' })
+          add({
+            id: agent.id,
+            ...protoToAgentTabFields(fixtureStore, agent.workerId, agent),
+          })
+          add({
+            id: 'a-fail',
+            title: 'Agent Fail',
+            workerId: 'w-1',
+            workingDir: '/tmp',
+          })
 
           mockCloseAgent.mockResolvedValueOnce({
             result: {
@@ -859,8 +965,16 @@ describe('useAgentOperations', () => {
         try {
           const { view, ops, add } = setup()
           const agent = create(AgentInfoSchema, { id: 'a-reject', workerId: 'w-1' })
-          add({ id: agent.id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
-          add({ id: 'a-reject', title: 'Agent Reject', workerId: 'w-1', workingDir: '/tmp' })
+          add({
+            id: agent.id,
+            ...protoToAgentTabFields(fixtureStore, agent.workerId, agent),
+          })
+          add({
+            id: 'a-reject',
+            title: 'Agent Reject',
+            workerId: 'w-1',
+            workingDir: '/tmp',
+          })
 
           const err = new Error('network down')
           mockCloseAgent.mockRejectedValueOnce(err)
@@ -882,8 +996,16 @@ describe('useAgentOperations', () => {
         try {
           const { view, ops, add } = setup()
           const agent = create(AgentInfoSchema, { id: 'a-2', workerId: '' })
-          add({ id: agent.id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
-          add({ id: 'a-2', title: 'Agent Liam', workerId: '', workingDir: '' })
+          add({
+            id: agent.id,
+            ...protoToAgentTabFields(fixtureStore, agent.workerId, agent),
+          })
+          add({
+            id: 'a-2',
+            title: 'Agent Liam',
+            workerId: '',
+            workingDir: '',
+          })
 
           mockCloseAgent.mockClear()
 
@@ -932,15 +1054,28 @@ describe('useAgentOperations', () => {
           const { view, ops, add } = setup()
           for (const id of ['a-root', 'a-child', 'a-grandchild']) {
             const agent = create(AgentInfoSchema, { id, workerId: 'w-1' })
-            add({ id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
-            add({ id, title: id, workerId: 'w-1', workingDir: '/tmp' })
+            add({
+              id,
+              ...protoToAgentTabFields(fixtureStore, agent.workerId, agent),
+            })
+            add({
+              id,
+              title: id,
+              workerId: 'w-1',
+              workingDir: '/tmp',
+            })
           }
           // No parentAgentId on either child: the hydration that would set one
           // has not landed, which is exactly when the local sweep is blind.
           expect(view.getAgentTab('a-child')).toBeDefined()
 
           mockCloseAgent.mockResolvedValueOnce({
-            result: { worktreePath: '', worktreeId: '', failureMessage: '', failureDetail: '' },
+            result: {
+              worktreePath: '',
+              worktreeId: '',
+              failureMessage: '',
+              failureDetail: '',
+            },
             descendantAgentIds: ['a-grandchild', 'a-child'],
           } as CloseAgentResponse)
 
@@ -976,12 +1111,25 @@ describe('useAgentOperations', () => {
           const { view, ops, add, harness } = setup()
           for (const id of ['a-root3', 'a-real']) {
             const agent = create(AgentInfoSchema, { id, workerId: 'w-1' })
-            add({ id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
-            add({ id, title: id, workerId: 'w-1', workingDir: '/tmp' })
+            add({
+              id,
+              ...protoToAgentTabFields(fixtureStore, agent.workerId, agent),
+            })
+            add({
+              id,
+              title: id,
+              workerId: 'w-1',
+              workingDir: '/tmp',
+            })
           }
 
           mockCloseAgent.mockResolvedValueOnce({
-            result: { worktreePath: '', worktreeId: '', failureMessage: '', failureDetail: '' },
+            result: {
+              worktreePath: '',
+              worktreeId: '',
+              failureMessage: '',
+              failureDetail: '',
+            },
             // `a-never-opened` ran as a subagent but nobody opened its tab.
             descendantAgentIds: ['a-never-opened', 'a-real'],
           } as CloseAgentResponse)
@@ -1017,13 +1165,26 @@ describe('useAgentOperations', () => {
           const { ops, add, chatStore, agentInputQueueStore, controlStore, releaseAgentComposerActionState } = setup()
           for (const id of ['a-root4', 'a-kid']) {
             const agent = create(AgentInfoSchema, { id, workerId: 'w-1' })
-            add({ id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
-            add({ id, title: id, workerId: 'w-1', workingDir: '/tmp' })
+            add({
+              id,
+              ...protoToAgentTabFields(fixtureStore, agent.workerId, agent),
+            })
+            add({
+              id,
+              title: id,
+              workerId: 'w-1',
+              workingDir: '/tmp',
+            })
           }
           const clearAgent = vi.spyOn(controlStore, 'clearAgent')
 
           mockCloseAgent.mockResolvedValueOnce({
-            result: { worktreePath: '', worktreeId: '', failureMessage: '', failureDetail: '' },
+            result: {
+              worktreePath: '',
+              worktreeId: '',
+              failureMessage: '',
+              failureDetail: '',
+            },
             descendantAgentIds: ['a-kid'],
           } as CloseAgentResponse)
 
@@ -1049,8 +1210,16 @@ describe('useAgentOperations', () => {
           const { view, ops, add } = setup()
           for (const id of ['a-root2', 'a-child2']) {
             const agent = create(AgentInfoSchema, { id, workerId: 'w-1' })
-            add({ id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
-            add({ id, title: id, workerId: 'w-1', workingDir: '/tmp' })
+            add({
+              id,
+              ...protoToAgentTabFields(fixtureStore, agent.workerId, agent),
+            })
+            add({
+              id,
+              title: id,
+              workerId: 'w-1',
+              workingDir: '/tmp',
+            })
           }
           mockCloseAgent.mockRejectedValueOnce(new Error('worker unreachable'))
 
@@ -1068,19 +1237,37 @@ describe('useAgentOperations', () => {
 
   describe('handleControlResponse claim-token echo', () => {
     const answer = (requestId: string) =>
-      new TextEncoder().encode(JSON.stringify({ response: { request_id: requestId, response: { behavior: 'allow' } } }))
+      new TextEncoder().encode(JSON.stringify({
+        response: {
+          request_id: requestId,
+          response: { behavior: 'allow' },
+        },
+      }))
 
     const request = (requestId: string, claimToken?: string): ControlRequest =>
-      ({ requestId, agentId: 'a1', payload: { request: { tool_name: 'Bash' } }, ...(claimToken !== undefined ? { claimToken } : {}) })
+      ({
+        requestId,
+        agentId: 'a1',
+        payload: {
+          request: { tool_name: 'Bash' },
+        },
+        ...(claimToken !== undefined
+          ? { claimToken }
+          : {}),
+      })
 
     it('sends plan settings separately and retains explicit empty and false values', async () => {
       await createRoot(async (dispose) => {
         try {
           const { ops } = setup()
           const pending = request('plan', 'claim')
-          pending.payload = { request: { tool_name: 'ExitPlanMode' } }
+          pending.payload = {
+            request: { tool_name: 'ExitPlanMode' },
+          }
           const bytes = answer('plan')
-          await ops.handleControlResponse(pending, bytes, { planApproval: { permissionMode: '', clearContext: false } })
+          await ops.handleControlResponse(pending, bytes, {
+            planApproval: { permissionMode: '', clearContext: false },
+          })
           expect(workerRpc.sendControlResponse).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({
             requestId: 'plan',
             claimToken: 'claim',
@@ -1207,7 +1394,14 @@ describe('useAgentOperations', () => {
         try {
           const { ops, controlStore } = setup()
           vi.mocked(workerRpc.sendControlResponse).mockClear()
-          controlStore.addRequest('a1', { requestId: 'r1', agentId: 'a1', payload: { request: { tool_name: 'Bash' } }, claimToken: 'other-instance-token' })
+          controlStore.addRequest('a1', {
+            requestId: 'r1',
+            agentId: 'a1',
+            payload: {
+              request: { tool_name: 'Bash' },
+            },
+            claimToken: 'other-instance-token',
+          })
 
           await ops.handleControlResponse(request('r1'), answer('r1'))
 
@@ -1325,7 +1519,10 @@ describe('useAgentOperations', () => {
         agentProvider: AgentProvider.CODEX,
         agentSessionId: 'thread-1',
       })
-      ctx.add({ id: agent.id, ...protoToAgentTabFields(fixtureStore, agent.workerId, agent) })
+      ctx.add({
+        id: agent.id,
+        ...protoToAgentTabFields(fixtureStore, agent.workerId, agent),
+      })
       return ctx
     }
 
@@ -1384,7 +1581,9 @@ describe('useAgentOperations', () => {
       await createRoot(async (dispose) => {
         try {
           mockShowWarnToast.mockClear()
-          mockListAvailableProviders.mockResolvedValue({ providers: [AgentProvider.CLAUDE_CODE] })
+          mockListAvailableProviders.mockResolvedValue({
+            providers: [AgentProvider.CLAUDE_CODE],
+          })
           const { ops } = setup()
           await flush()
           expect(ops.availableProviders()).toEqual([AgentProvider.CLAUDE_CODE])
@@ -1418,7 +1617,9 @@ describe('useAgentOperations', () => {
       expect(mockListAvailableProviders).toHaveBeenCalledTimes(1)
 
       dispose()
-      resolveList({ providers: [AgentProvider.CLAUDE_CODE] })
+      resolveList({
+        providers: [AgentProvider.CLAUDE_CODE],
+      })
       await flush()
       expect(ops.availableProviders()).toBeUndefined()
       expect(mockShowWarnToast).not.toHaveBeenCalled()
@@ -1436,7 +1637,9 @@ describe('useAgentOperations', () => {
         try {
           // The mount effect settles first, so the manual refresh below is
           // the only call left in flight.
-          mockListAvailableProviders.mockResolvedValueOnce({ providers: [AgentProvider.CODEX] })
+          mockListAvailableProviders.mockResolvedValueOnce({
+            providers: [AgentProvider.CODEX],
+          })
           const { ops } = setup('ws-1', () => workerId)
           await flush()
           expect(ops.availableProviders()).toEqual([AgentProvider.CODEX])
@@ -1445,7 +1648,9 @@ describe('useAgentOperations', () => {
           ops.loadAvailableProviders()
           // The user moves to a tab on another worker while the scan runs.
           workerId = 'w-2'
-          pending.resolve({ providers: [AgentProvider.CLAUDE_CODE] })
+          pending.resolve({
+            providers: [AgentProvider.CLAUDE_CODE],
+          })
           await flush()
 
           expect(ops.availableProviders()).toEqual([AgentProvider.CODEX])
@@ -1466,7 +1671,9 @@ describe('useAgentOperations', () => {
           const { ops } = setup()
           await flush()
 
-          mockListAvailableProviders.mockResolvedValueOnce({ providers: [AgentProvider.CODEX] })
+          mockListAvailableProviders.mockResolvedValueOnce({
+            providers: [AgentProvider.CODEX],
+          })
           ops.loadAvailableProviders()
           await flush()
           expect(ops.availableProviders()).toEqual([AgentProvider.CODEX])
@@ -1474,7 +1681,9 @@ describe('useAgentOperations', () => {
           const signal = mockListAvailableProviders.mock.calls[0]?.[1].signal as AbortSignal
           expect(signal.aborted).toBe(true)
 
-          first.resolve({ providers: [AgentProvider.CLAUDE_CODE] })
+          first.resolve({
+            providers: [AgentProvider.CLAUDE_CODE],
+          })
           await flush()
           expect(ops.availableProviders()).toEqual([AgentProvider.CODEX])
         }

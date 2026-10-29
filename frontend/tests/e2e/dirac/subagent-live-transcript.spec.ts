@@ -11,6 +11,13 @@ const READ_CALL_ID = 'native-live-read'
 diracTest('keeps an actual child read out of live rows and restores it after the final native report', async ({ native }) => {
   const parent = await currentNativeAgent(native)
   const file = writeChildMarkerFile(parent.workingDir, 'native-child-read.txt')
-  const child = await runningChild(native, { childTool: readToolCall(native.provider, READ_CALL_ID, file.path) })
-  await expectChildToolOutputDeferred(native, child, { marker: file.marker, fileName: 'native-child-read.txt', readCallId: READ_CALL_ID, restoredAfterCompletion: true })
+  const child = await runningChild(native, {
+    childTool: readToolCall(native.provider, READ_CALL_ID, file.path),
+  })
+  await expectChildToolOutputDeferred(native, child, {
+    marker: file.marker,
+    fileName: 'native-child-read.txt',
+    readCallId: READ_CALL_ID,
+    restoredAfterCompletion: true,
+  })
 })

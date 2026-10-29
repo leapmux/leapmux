@@ -87,7 +87,14 @@ type ConfirmButtonTooltips = { tooltip: string, confirmTooltip?: string } | { to
  * on blur or after 10 seconds of inactivity.
  */
 export const ConfirmButton: Component<ConfirmButtonProps & ConfirmButtonTooltips> = (props) => {
-  const [local, buttonProps] = splitProps(props, ['confirmLabel', 'tooltip', 'confirmTooltip', 'blocked', 'onClick', 'children'])
+  const [local, buttonProps] = splitProps(props, [
+    'confirmLabel',
+    'tooltip',
+    'confirmTooltip',
+    'blocked',
+    'onClick',
+    'children',
+  ])
   const [armed, setArmed] = createSignal(false)
   let resetTimer: ReturnType<typeof setTimeout> | undefined
 
@@ -134,14 +141,18 @@ export const ConfirmButton: Component<ConfirmButtonProps & ConfirmButtonTooltips
   // the button one name still has a named button while it is armed, and an
   // icon-only control has no other source of a name: without the fallback the
   // armed state reached a screen reader as an unlabelled button.
-  const tooltipText = () => (armed() ? (local.confirmTooltip ?? local.tooltip) : local.tooltip)
+  const tooltipText = () => (armed()
+    ? (local.confirmTooltip ?? local.tooltip)
+    : local.tooltip)
 
   const button = (
     <button
       {...buttonProps}
       type="button"
       class={buttonProps.class ?? ''}
-      {...(armed() ? { 'data-variant': 'danger' } : {})}
+      {...(armed()
+        ? { 'data-variant': 'danger' }
+        : {})}
       data-armed={armed() || undefined}
       onClick={handleClick}
       onBlur={reset}
@@ -184,7 +195,9 @@ export const ConfirmButton: Component<ConfirmButtonProps & ConfirmButtonTooltips
   return (
     <Tooltip
       text={local.blocked?.reason ?? tooltipText() ?? ''}
-      {...(local.blocked?.reasonId !== undefined ? { describedBy: local.blocked.reasonId } : {})}
+      {...(local.blocked?.reasonId !== undefined
+        ? { describedBy: local.blocked.reasonId }
+        : {})}
       ariaLabel={tooltipText() ?? ''}
     >
       {button}

@@ -35,7 +35,11 @@ describe('claudeRemoteTriggerFromToolResult', () => {
       status: 200,
       json: '{"triggers":[{"id":"trig_a"}]}',
     }, '')
-    expect(source!.trigger).toEqual({ triggers: [{ id: 'trig_a' }] })
+    expect(source!.trigger).toEqual({
+      triggers: [
+        { id: 'trig_a' },
+      ],
+    })
   })
 
   it('keeps trigger null when JSON is not an object', () => {
@@ -102,12 +106,22 @@ describe('claudeTriggerSpec', () => {
     // An absent field is an omitted key, never an explicit undefined, so the bare
     // default answers the action alone.
     expect(Object.keys(requestOf({})).sort()).toStrictEqual(['action'])
-    expect(Object.keys(requestOf({ action: 'create', body: { name: 'Nightly' } })).sort())
+    expect(Object.keys(requestOf({
+      action: 'create',
+      body: { name: 'Nightly' },
+    })).sort())
       .toStrictEqual(['action', 'name'])
   })
 
   it('reads the action out of the `action` argument, which the shared entry answers `other` for', () => {
-    for (const action of ['list', 'get', 'create', 'update', 'run', 'delete'] as const)
+    for (const action of [
+      'list',
+      'get',
+      'create',
+      'update',
+      'run',
+      'delete',
+    ] as const)
       expect(requestOf({ action }).action).toBe(action)
     expect(DEFAULT_TOOL_REQUESTS.trigger({ action: 'list' }).action).toBe('other')
   })
@@ -140,21 +154,35 @@ describe('claudeTriggerSpec', () => {
   // decision in this reading. `body` is where `RemoteTrigger` states the label of the
   // trigger it creates or updates, so it wins over a root `name` beside it.
   it('reads the name out of `body`, ahead of a root `name`', () => {
-    expect(requestOf({ action: 'create', body: { name: 'From the body' }, name: 'From the root' }).name)
+    expect(requestOf({
+      action: 'create',
+      body: { name: 'From the body' },
+      name: 'From the root',
+    }).name)
       .toBe('From the body')
-    expect(requestOf({ action: 'create', body: { name: 'From the body' } }).name).toBe('From the body')
+    expect(requestOf({
+      action: 'create',
+      body: { name: 'From the body' },
+    }).name).toBe('From the body')
   })
 
   it('falls back to the shared root `name` when the body states none', () => {
     expect(requestOf({ action: 'create', name: 'From the root' }).name).toBe('From the root')
     expect(requestOf({ action: 'create', body: {}, name: 'From the root' }).name).toBe('From the root')
-    expect(requestOf({ action: 'create', body: { name: '' }, name: 'From the root' }).name).toBe('From the root')
+    expect(requestOf({
+      action: 'create',
+      body: { name: '' },
+      name: 'From the root',
+    }).name).toBe('From the root')
     expect(requestOf({ action: 'create', body: 'not an object', name: 'From the root' }).name).toBe('From the root')
   })
 
   it('leaves the name undefined when neither the body nor the root states one', () => {
     expect(requestOf({ action: 'create' }).name).toBeUndefined()
-    expect(requestOf({ action: 'create', body: { label: 'wrong key' } }).name).toBeUndefined()
+    expect(requestOf({
+      action: 'create',
+      body: { label: 'wrong key' },
+    }).name).toBeUndefined()
   })
 })
 

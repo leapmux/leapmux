@@ -73,7 +73,9 @@ export const CodeLanguagePopover: Component<CodeLanguagePopoverProps> = (props) 
         ariaLabel="Code language"
         placeholder="Filter languages..."
         testIdPrefix="code-lang"
-        onSelect={langId => props.onApply(langId === 'plaintext' ? '' : langId)}
+        onSelect={langId => props.onApply(langId === 'plaintext'
+          ? ''
+          : langId)}
         onEscape={() => popoverRef?.hidePopover()}
         filter={props.filter}
         setFilter={props.setFilter}

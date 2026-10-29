@@ -24,7 +24,14 @@ ampTest('loads private native configuration and calls only the suite mock', asyn
     const server = writeMcpEchoServer(configHome, { receiptLog })
     const configuration = join(configHome, 'amp', 'settings.json')
     mkdirSync(dirname(configuration), { recursive: true })
-    writeFileSync(configuration, JSON.stringify({ 'amp.mcpServers': { credential_probe: { command: server.command, args: [...server.args] } } }))
+    writeFileSync(configuration, JSON.stringify({
+      'amp.mcpServers': {
+        credential_probe: {
+          command: server.command,
+          args: [...server.args],
+        },
+      },
+    }))
     await withNativeWorker(leapmuxServer, {
       dataDirPrefix: 'amp-credential-worker',
       workerName: 'Amp credential profile',
@@ -32,7 +39,12 @@ ampTest('loads private native configuration and calls only the suite mock', asyn
     }, async ({ server, dataDir }) => {
       await withAgentWorkspace(server, { ...AMP_AGENT, prefix: 'amp-private-credential', openOptions: AMP_ALLOW_ALL }, async ({ workspaceId }) => {
         await openWorkspace(page, workspaceId)
-        const context = await nativeContext({ page, modelScript, leapmuxServer: server, workspaceId })
+        const context = await nativeContext({
+          page,
+          modelScript,
+          leapmuxServer: server,
+          workspaceId,
+        })
         const environment = server.agentEnv
         const home = environment.HOME
         if (!home)
@@ -46,7 +58,10 @@ ampTest('loads private native configuration and calls only the suite mock', asyn
           expectedCredential: MODEL_KEY,
           configurationMarkers: ['credential_probe'],
         })
-        const { tools, settings } = await readAmpExecutorCatalog(context, { workerDataDir: dataDir, onOwnershipDiagnostic: ampCatalogDiagnosticAttachment(testInfo) })
+        const { tools, settings } = await readAmpExecutorCatalog(context, {
+          workerDataDir: dataDir,
+          onOwnershipDiagnostic: ampCatalogDiagnosticAttachment(testInfo),
+        })
         expect(tools).toContain('mcp__credential_probe__echo')
         expect(settings['amp.mcpServers']).toHaveProperty('credential_probe')
         const profile: unknown = JSON.parse(readFileSync(configuration, 'utf8'))

@@ -58,17 +58,29 @@ export function claudeMcpFromToolResult(args: ClaudeMcpFromToolResultArgs): McpC
     // it left the row with fewer images than `imagesForRow`
     // numbers for the message -- which is the index an already-open image tab
     // addresses by, permanently.
-    content: args.isError ? content.filter(item => item.type !== 'text') : content,
+    content: args.isError
+      ? content.filter(item => item.type !== 'text')
+      : content,
     // Each optional half rides only when the wire stated it.
-    ...(structuredJson !== undefined ? { structuredJson } : {}),
-    ...(error !== undefined ? { error } : {}),
-    ...(args.isError ? { failed: true } : {}),
+    ...(structuredJson !== undefined
+      ? { structuredJson }
+      : {}),
+    ...(error !== undefined
+      ? { error }
+      : {}),
+    ...(args.isError
+      ? { failed: true }
+      : {}),
   }
 }
 
 function parseClaudeResultContent(raw: unknown): McpContentItem[] {
   if (typeof raw === 'string') {
-    return raw.length > 0 ? [{ type: 'text', text: raw }] : []
+    return raw.length > 0
+      ? [
+          { type: 'text', text: raw },
+        ]
+      : []
   }
   if (!Array.isArray(raw))
     return []
@@ -86,7 +98,9 @@ export function claudeMcpSpec(request: McpRequest, args: ClaudeToolRow, result: 
     toolInput: args.input,
     // Absent, not null: the arg type takes null as a stated "no structured
     // payload", which a result row that carries no record does not state.
-    ...(result.toolUseResult !== undefined ? { toolUseResult: result.toolUseResult } : {}),
+    ...(result.toolUseResult !== undefined
+      ? { toolUseResult: result.toolUseResult }
+      : {}),
     resultContent: result.rawResultContent,
     isError: result.isError === true,
   })
@@ -99,9 +113,15 @@ export function claudeMcpSpec(request: McpRequest, args: ClaudeToolRow, result: 
     result: {
       content,
       // Each optional half rides only when the facts carried one.
-      ...(source?.structuredJson !== undefined ? { structuredJson: source.structuredJson } : {}),
-      ...(source?.error !== undefined ? { error: source.error } : {}),
-      ...(source?.durationMs !== undefined ? { durationMs: source.durationMs } : {}),
+      ...(source?.structuredJson !== undefined
+        ? { structuredJson: source.structuredJson }
+        : {}),
+      ...(source?.error !== undefined
+        ? { error: source.error }
+        : {}),
+      ...(source?.durationMs !== undefined
+        ? { durationMs: source.durationMs }
+        : {}),
     },
   }
 }

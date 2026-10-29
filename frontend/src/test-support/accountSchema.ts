@@ -89,8 +89,12 @@ export function accountWireDescriptors(): SettingDescriptor[] {
       help: '',
       kind: KIND_BY_GOLDEN_NAME[field.kind] ?? SettingFieldKind.UNSPECIFIED,
       enumValues: (field.enumValues ?? []).map(o => ({ value: o.value, label: '', help: '' })),
-      min: field.min === undefined ? undefined : BigInt(field.min),
-      max: field.max === undefined ? undefined : BigInt(field.max),
+      min: field.min === undefined
+        ? undefined
+        : BigInt(field.min),
+      max: field.max === undefined
+        ? undefined
+        : BigInt(field.max),
       unit: field.unit ?? '',
       secret: false,
       placeholder: '',

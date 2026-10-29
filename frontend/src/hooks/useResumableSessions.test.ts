@@ -5,16 +5,26 @@ import * as workerRpc from '~/api/workerRpc'
 import { AgentProvider } from '~/generated/proto/leapmux/v1/agent_pb'
 import { useResumableSessions } from '~/hooks/useResumableSessions'
 
-vi.mock('~/api/workerRpc', () => ({ listAgentSessions: vi.fn() }))
+vi.mock('~/api/workerRpc', () => ({
+  listAgentSessions: vi.fn(),
+}))
 
 const listAgentSessions = vi.mocked(workerRpc.listAgentSessions)
 
 function session(sessionId: string) {
-  return { $typeName: 'leapmux.v1.AgentSessionSummary', sessionId, title: sessionId, updatedAt: '' }
+  return {
+    $typeName: 'leapmux.v1.AgentSessionSummary',
+    sessionId,
+    title: sessionId,
+    updatedAt: '',
+  }
 }
 
 function response(...ids: string[]) {
-  return { $typeName: 'leapmux.v1.ListAgentSessionsResponse', sessions: ids.map(session) } as never
+  return {
+    $typeName: 'leapmux.v1.ListAgentSessionsResponse',
+    sessions: ids.map(session),
+  } as never
 }
 
 const ARGS: UseResumableSessionsArgs = {
@@ -70,7 +80,9 @@ describe('useResumableSessions', () => {
         workerId: 'w-1',
         workingDir: '/repo',
         agentProvider: AgentProvider.CLAUDE_CODE,
-      }, expect.objectContaining({ signal: expect.anything() }))
+      }, expect.objectContaining({
+        signal: expect.anything(),
+      }))
       dispose()
     })
   })
@@ -112,9 +124,18 @@ describe('useResumableSessions', () => {
   // sessions under the Claude Code selector -- handles the chosen provider
   // cannot resume at all.
   it.each([
-    ['worker', { workerId: 'w-2' }],
-    ['directory', { workingDir: '/other' }],
-    ['provider', { agentProvider: AgentProvider.CODEX }],
+    [
+      'worker',
+      { workerId: 'w-2' },
+    ],
+    [
+      'directory',
+      { workingDir: '/other' },
+    ],
+    [
+      'provider',
+      { agentProvider: AgentProvider.CODEX },
+    ],
   ])('re-fetches when the %s changes', async (_name, change) => {
     listAgentSessions.mockResolvedValue(response('ses_a'))
 
@@ -124,11 +145,17 @@ describe('useResumableSessions', () => {
       await flush()
       expect(listAgentSessions).toHaveBeenCalledTimes(1)
 
-      setArgs({ ...ARGS, ...change })
+      setArgs({
+        ...ARGS,
+        ...change,
+      })
       await flush()
       expect(listAgentSessions).toHaveBeenCalledTimes(2)
       expect(listAgentSessions).toHaveBeenLastCalledWith(
-        { ...ARGS, ...change }.workerId,
+        {
+          ...ARGS,
+          ...change,
+        }.workerId,
         expect.objectContaining(change),
         expect.anything(),
       )

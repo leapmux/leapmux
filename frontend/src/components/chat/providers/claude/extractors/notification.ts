@@ -58,7 +58,9 @@ export function claudeCompactionBoundary(parsed: ParsedMessageContent): Compacti
     return null
   if (isCompactBoundary(inner))
     return compactionMetaFromBoundary(inner)
-  return isMicrocompactBoundary(inner) ? {} : null
+  return isMicrocompactBoundary(inner)
+    ? {}
+    : null
 }
 
 /** Read the entries of one `system` frame of a known subtype. */
@@ -67,7 +69,11 @@ type ClaudeSystemReader = (m: Record<string, unknown>) => NotificationEntry[]
 /** The line of a frame whose own `content` is the line that the interface shows. */
 function contentLine(m: Record<string, unknown>): NotificationEntry[] {
   const text = pickString(m, 'content')
-  return text ? [{ kind: 'text', text }] : []
+  return text
+    ? [
+        { kind: 'text', text },
+      ]
+    : []
 }
 
 /** The line of a plugin's `ui_log` or `ui_toast` frame, led by the plugin. */
@@ -76,22 +82,44 @@ function pluginLine(m: Record<string, unknown>): NotificationEntry[] {
   if (!text)
     return []
   const plugin = pickString(m, 'plugin')
-  return [{ kind: 'text', text: plugin ? `${plugin}: ${text}` : text }]
+  return [
+    {
+      kind: 'text',
+      text: plugin
+        ? `${plugin}: ${text}`
+        : text,
+    },
+  ]
 }
 
 /** Claude's API-retry status. Each optional field appears only when the frame states it. */
 function apiRetryEntries(m: Record<string, unknown>): NotificationEntry[] {
-  const errorStatus = m.error_status != null ? String(m.error_status) : ''
+  const errorStatus = m.error_status != null
+    ? String(m.error_status)
+    : ''
   const attempt = pickNumber(m, 'attempt', undefined)
   const maxAttempts = pickNumber(m, 'max_retries', undefined)
   const delayMs = pickNumber(m, 'retry_delay_ms', undefined)
-  const error = [errorStatus, pickString(m, 'error')].filter(Boolean).join(' ') || undefined
-  return [retryEntry('api', {
-    ...(attempt !== undefined ? { attempt } : {}),
-    ...(maxAttempts !== undefined ? { maxAttempts } : {}),
-    ...(delayMs !== undefined ? { delayMs } : {}),
-    ...(error !== undefined ? { error } : {}),
-  })]
+  const error = [
+    errorStatus,
+    pickString(m, 'error'),
+  ].filter(Boolean).join(' ') || undefined
+  return [
+    retryEntry('api', {
+      ...(attempt !== undefined
+        ? { attempt }
+        : {}),
+      ...(maxAttempts !== undefined
+        ? { maxAttempts }
+        : {}),
+      ...(delayMs !== undefined
+        ? { delayMs }
+        : {}),
+      ...(error !== undefined
+        ? { error }
+        : {}),
+    }),
+  ]
 }
 
 /** A failed hook. A hook with any other outcome states nothing to show. */
@@ -101,13 +129,21 @@ function hookResponseEntries(m: Record<string, unknown>): NotificationEntry[] {
   const name = pickString(m, 'hook_name')
   const event = pickString(m, 'hook_event')
   const exitCode = pickNumber(m, 'exit_code', undefined)
-  return [{
-    kind: 'hook',
-    outcome: 'failed',
-    ...(event ? { event } : {}),
-    ...(name ? { name } : {}),
-    ...(exitCode === undefined ? {} : { exitCode }),
-  }]
+  return [
+    {
+      kind: 'hook',
+      outcome: 'failed',
+      ...(event
+        ? { event }
+        : {}),
+      ...(name
+        ? { name }
+        : {}),
+      ...(exitCode === undefined
+        ? {}
+        : { exitCode }),
+    },
+  ]
 }
 
 /**
@@ -126,24 +162,61 @@ const SYSTEM_SUBTYPE_READERS: Record<string, ClaudeSystemReader> = {
     if (!claudeCompactionFailed(m))
       return []
     const error = pickString(m, 'compact_error')
-    return [{ kind: 'compaction', phase: 'end', outcome: 'failed', ...(error ? { error } : {}) }]
+    return [
+      {
+        kind: 'compaction',
+        phase: 'end',
+        outcome: 'failed',
+        ...(error
+          ? { error }
+          : {}),
+      },
+    ]
   },
   [CLAUDE_SYSTEM_SUBTYPE.ApiRetry]: apiRetryEntries,
-  [CLAUDE_SYSTEM_SUBTYPE.CompactBoundary]: m => [{ kind: 'compaction', phase: 'end', detail: compactionMetaFromBoundary(m) }],
-  [CLAUDE_SYSTEM_SUBTYPE.MicrocompactBoundary]: () => [{ kind: 'compaction', phase: 'end', micro: true }],
+  [CLAUDE_SYSTEM_SUBTYPE.CompactBoundary]: m => [
+    {
+      kind: 'compaction',
+      phase: 'end',
+      detail: compactionMetaFromBoundary(m),
+    },
+  ],
+  [CLAUDE_SYSTEM_SUBTYPE.MicrocompactBoundary]: () => [
+    { kind: 'compaction', phase: 'end', micro: true },
+  ],
   [CLAUDE_SYSTEM_SUBTYPE.PermissionDenied]: (m) => {
     const tool = pickString(m, 'tool_name')
     const reason = pickString(m, 'decision_reason') || pickString(m, 'message')
-    return [{ kind: 'text', text: [tool ? `Permission denied: ${tool}` : 'Permission denied', reason].filter(Boolean).join(' - ') }]
+    return [
+      {
+        kind: 'text',
+        text: [
+          tool
+            ? `Permission denied: ${tool}`
+            : 'Permission denied',
+          reason,
+        ].filter(Boolean).join(' - '),
+      },
+    ]
   },
   [CLAUDE_SYSTEM_SUBTYPE.Notification]: (m) => {
-    if (m.key === CLAUDE_STOP_HOOK_ERROR_KEY)
-      return [{ kind: 'hook', outcome: 'failed', event: 'Stop' }]
+    if (m.key === CLAUDE_STOP_HOOK_ERROR_KEY) {
+      return [
+        { kind: 'hook', outcome: 'failed', event: 'Stop' },
+      ]
+    }
     // The "Error: " prefix alone states no error, so an empty text gets no line.
     const text = pickString(m, 'text')
     if (!text)
       return []
-    return [{ kind: 'text', text: pickString(m, 'color') === 'error' ? `Error: ${text}` : text }]
+    return [
+      {
+        kind: 'text',
+        text: pickString(m, 'color') === 'error'
+          ? `Error: ${text}`
+          : text,
+      },
+    ]
   },
   [CLAUDE_SYSTEM_SUBTYPE.Informational]: contentLine,
   memory_recall: (m) => {
@@ -151,8 +224,16 @@ const SYSTEM_SUBTYPE_READERS: Record<string, ClaudeSystemReader> = {
     // line adds "local" only when a feature flag is on, and that build always
     // sets the flag off, so this line never adds it. A recall of no memory
     // states nothing that happened.
-    const count = Array.isArray(m.memories) ? m.memories.filter(isObject).length : 0
-    return count > 0 ? [{ kind: 'text', text: `Recalled ${count} ${count === 1 ? 'memory' : 'memories'}` }] : []
+    const count = Array.isArray(m.memories)
+      ? m.memories.filter(isObject).length
+      : 0
+    return count > 0
+      ? [
+          { kind: 'text', text: `Recalled ${count} ${count === 1
+            ? 'memory'
+            : 'memories'}` },
+        ]
+      : []
   },
   [CLAUDE_SYSTEM_SUBTYPE.HookResponse]: hookResponseEntries,
   ui_log: pluginLine,
@@ -171,7 +252,9 @@ const SYSTEM_SUBTYPE_READERS: Record<string, ClaudeSystemReader> = {
  * the caller would then run.
  */
 function systemSubtypeReader(subtype: string): ClaudeSystemReader | undefined {
-  return Object.hasOwn(SYSTEM_SUBTYPE_READERS, subtype) ? SYSTEM_SUBTYPE_READERS[subtype] : undefined
+  return Object.hasOwn(SYSTEM_SUBTYPE_READERS, subtype)
+    ? SYSTEM_SUBTYPE_READERS[subtype]
+    : undefined
 }
 
 /**
@@ -205,9 +288,20 @@ export function claudeNotificationEntry(m: Record<string, unknown>): Notificatio
       // A malformed payload still surfaces a generic line rather than vanishing --
       // `classify` routes it here only when the status is not "allowed", so it is a
       // real (if rare) notification.
-      return [{ kind: 'text', text: 'Rate limit update' }]
+      return [
+        { kind: 'text', text: 'Rate limit update' },
+      ]
     }
-    return info.status === 'allowed' ? [] : [{ kind: 'rate-limit', tiers: [claudeRateLimitInfo(info)] }]
+    return info.status === 'allowed'
+      ? []
+      : [
+          {
+            kind: 'rate-limit',
+            tiers: [
+              claudeRateLimitInfo(info),
+            ],
+          },
+        ]
   }
   if (m.type !== CLAUDE_FRAME_KIND.System)
     return []

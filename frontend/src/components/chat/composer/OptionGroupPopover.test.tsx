@@ -8,7 +8,10 @@ import { OptionGroupPopover } from './OptionGroupPopover'
 // A spy that passes each call through, so a case can count how often the popover resolves its current value.
 vi.mock('~/components/chat/settingsGroups', async (importOriginal) => {
   const actual = await importOriginal<typeof import('~/components/chat/settingsGroups')>()
-  return { ...actual, resolvedCurrent: vi.fn(actual.resolvedCurrent) }
+  return {
+    ...actual,
+    resolvedCurrent: vi.fn(actual.resolvedCurrent),
+  }
 })
 
 function group(overrides: Partial<Omit<AvailableOptionGroup, 'options'>> & { options: { id: string, name?: string }[] }): AvailableOptionGroup {
@@ -33,11 +36,23 @@ function renderPopover(opts: {
   render(() => (
     <OptionGroupPopover
       groupId="model"
-      optionGroups={opts.groups ?? [group({ options: [{ id: 'opus', name: 'Opus' }, { id: 'sonnet', name: 'Sonnet' }], currentValue: 'opus' })]}
+      optionGroups={opts.groups ?? [
+        group({
+          options: [
+            { id: 'opus', name: 'Opus' },
+            { id: 'sonnet', name: 'Sonnet' },
+          ],
+          currentValue: 'opus',
+        }),
+      ]}
       optionValues={opts.values ?? {}}
       onChange={onChange}
-      {...(opts.disabled ? { disabledReason: 'This subagent doesn\'t accept messages.' } : {})}
-      {...(opts.popoverTestId === undefined ? {} : { popoverTestId: opts.popoverTestId })}
+      {...(opts.disabled
+        ? { disabledReason: 'This subagent doesn\'t accept messages.' }
+        : {})}
+      {...(opts.popoverTestId === undefined
+        ? {}
+        : { popoverTestId: opts.popoverTestId })}
       trigger={(triggerProps, view) => (
         <button data-testid="trigger" {...triggerProps}>
           {view.currentLabel || view.label}
@@ -81,7 +96,9 @@ describe('OptionGroupPopover', () => {
   })
 
   it('prefers the optimistic value over the catalog current value', () => {
-    const { trigger } = renderPopover({ values: { model: 'sonnet' } })
+    const { trigger } = renderPopover({
+      values: { model: 'sonnet' },
+    })
     expect(trigger).toHaveTextContent('Sonnet')
   })
 
@@ -89,7 +106,15 @@ describe('OptionGroupPopover', () => {
     // The optimistic-switch case: an effort tier left over from the previous
     // model. The trigger and the checked radio must agree on the clamped value.
     const { trigger } = renderPopover({
-      groups: [group({ options: [{ id: 'opus', name: 'Opus' }], currentValue: 'gone', defaultValue: 'opus' })],
+      groups: [
+        group({
+          options: [
+            { id: 'opus', name: 'Opus' },
+          ],
+          currentValue: 'gone',
+          defaultValue: 'opus',
+        }),
+      ],
     })
     expect(trigger).toHaveTextContent('Opus')
     expect(screen.getByRole('menuitemradio', { name: /Opus/, hidden: true })).toHaveAttribute('aria-checked', 'true')
@@ -98,12 +123,23 @@ describe('OptionGroupPopover', () => {
   it('dispatches the selected value keyed by group id', async () => {
     const { onChange } = renderPopover()
     await fireEvent.click(screen.getByTestId('model-sonnet'))
-    expect(onChange).toHaveBeenCalledWith({ sets: { model: 'sonnet' } })
+    expect(onChange).toHaveBeenCalledWith({
+      sets: { model: 'sonnet' },
+    })
   })
 
   it('does not dispatch for an agent-controlled group, and says so', async () => {
     const { onChange, trigger } = renderPopover({
-      groups: [group({ mutable: false, options: [{ id: 'opus', name: 'Opus' }, { id: 'sonnet', name: 'Sonnet' }], currentValue: 'opus' })],
+      groups: [
+        group({
+          mutable: false,
+          options: [
+            { id: 'opus', name: 'Opus' },
+            { id: 'sonnet', name: 'Sonnet' },
+          ],
+          currentValue: 'opus',
+        }),
+      ],
     })
     expect(trigger).toHaveTextContent('(locked)')
     const item = screen.getByTestId('model-sonnet')
@@ -115,7 +151,16 @@ describe('OptionGroupPopover', () => {
 
   it('shows the provider\'s own reason for a group it states one for', () => {
     renderPopover({
-      groups: [group({ mutable: false, options: [{ id: 'opus', name: 'Opus' }], currentValue: 'opus', readOnlyReason: 'Start a new session for another model.' })],
+      groups: [
+        group({
+          mutable: false,
+          options: [
+            { id: 'opus', name: 'Opus' },
+          ],
+          currentValue: 'opus',
+          readOnlyReason: 'Start a new session for another model.',
+        }),
+      ],
     })
     expect(reasonOf(screen.getByTestId('model-opus'))).toBe('Start a new session for another model.')
   })
@@ -124,7 +169,16 @@ describe('OptionGroupPopover', () => {
     // An empty string is what the wire holds for a provider that states no reason,
     // because proto3 sends no absent string. It must not blank the tooltip.
     renderPopover({
-      groups: [group({ mutable: false, options: [{ id: 'opus', name: 'Opus' }], currentValue: 'opus', readOnlyReason: '' })],
+      groups: [
+        group({
+          mutable: false,
+          options: [
+            { id: 'opus', name: 'Opus' },
+          ],
+          currentValue: 'opus',
+          readOnlyReason: '',
+        }),
+      ],
     })
     expect(reasonOf(screen.getByTestId('model-opus'))).toBe('This setting is controlled by the agent')
   })
@@ -133,7 +187,16 @@ describe('OptionGroupPopover', () => {
     // The composer accepts no input at all, which is the reason that applies to
     // every group, so it wins over the reason one group states.
     renderPopover({
-      groups: [group({ mutable: false, options: [{ id: 'opus', name: 'Opus' }], currentValue: 'opus', readOnlyReason: 'Start a new session for another model.' })],
+      groups: [
+        group({
+          mutable: false,
+          options: [
+            { id: 'opus', name: 'Opus' },
+          ],
+          currentValue: 'opus',
+          readOnlyReason: 'Start a new session for another model.',
+        }),
+      ],
       disabled: true,
     })
     expect(reasonOf(screen.getByTestId('model-opus'))).toBe('This subagent doesn\'t accept messages.')
@@ -141,13 +204,25 @@ describe('OptionGroupPopover', () => {
 
   it('ignores a stated reason for a group the reader can change', async () => {
     const { onChange } = renderPopover({
-      groups: [group({ mutable: true, options: [{ id: 'opus', name: 'Opus' }, { id: 'sonnet', name: 'Sonnet' }], currentValue: 'opus', readOnlyReason: 'Start a new session for another model.' })],
+      groups: [
+        group({
+          mutable: true,
+          options: [
+            { id: 'opus', name: 'Opus' },
+            { id: 'sonnet', name: 'Sonnet' },
+          ],
+          currentValue: 'opus',
+          readOnlyReason: 'Start a new session for another model.',
+        }),
+      ],
     })
     const item = screen.getByTestId('model-sonnet')
     expect(item).not.toBeDisabled()
     expect(item).not.toHaveAttribute('aria-describedby')
     await fireEvent.click(item)
-    expect(onChange).toHaveBeenCalledWith({ sets: { model: 'sonnet' } })
+    expect(onChange).toHaveBeenCalledWith({
+      sets: { model: 'sonnet' },
+    })
   })
 
   it('does not dispatch when the composer itself is disabled, and shows the CALLER\'s reason', async () => {
@@ -172,14 +247,22 @@ describe('OptionGroupPopover', () => {
 
   it('switches to a filterable listbox past the searchable threshold', () => {
     const many = Array.from({ length: 8 }, (_, i) => ({ id: `m${i}`, name: `Model ${i}` }))
-    renderPopover({ groups: [group({ options: many, currentValue: 'm0' })] })
+    renderPopover({
+      groups: [
+        group({ options: many, currentValue: 'm0' }),
+      ],
+    })
     expect(screen.getByTestId('model-filter')).toBeInTheDocument()
     expect(screen.queryByRole('menuitemradio', { hidden: true })).toBeNull()
   })
 
   it('keeps radio items at exactly the threshold', () => {
     const seven = Array.from({ length: 7 }, (_, i) => ({ id: `m${i}`, name: `Model ${i}` }))
-    renderPopover({ groups: [group({ options: seven, currentValue: 'm0' })] })
+    renderPopover({
+      groups: [
+        group({ options: seven, currentValue: 'm0' }),
+      ],
+    })
     expect(screen.queryByTestId('model-filter')).toBeNull()
     expect(screen.getAllByRole('menuitemradio', { hidden: true })).toHaveLength(7)
   })
@@ -203,8 +286,13 @@ describe('OptionGroupPopover', () => {
     // value comparator hands back the previous array. This test asserts the
     // OUTCOME, so it survives a change to either mechanism and fails once both
     // are gone -- which is the state the invariant actually cares about.
-    const options = [{ id: 'opus', name: 'Opus' }, { id: 'sonnet', name: 'Sonnet' }]
-    const [groups, setGroups] = createSignal([group({ options, currentValue: 'opus' })])
+    const options = [
+      { id: 'opus', name: 'Opus' },
+      { id: 'sonnet', name: 'Sonnet' },
+    ]
+    const [groups, setGroups] = createSignal([
+      group({ options, currentValue: 'opus' }),
+    ])
     render(() => (
       <OptionGroupPopover
         groupId="model"
@@ -218,7 +306,12 @@ describe('OptionGroupPopover', () => {
     fireEvent.click(screen.getByTestId('trigger'))
     const before = screen.getByTestId('model-sonnet')
     // Fresh objects, identical values -- exactly what a status push delivers.
-    setGroups([group({ options: options.map(o => ({ ...o })), currentValue: 'opus' })])
+    setGroups([
+      group({
+        options: options.map(o => ({ ...o })),
+        currentValue: 'opus',
+      }),
+    ])
     await Promise.resolve()
 
     expect(screen.getByTestId('model-sonnet')).toBe(before)
@@ -233,7 +326,13 @@ describe('OptionGroupPopover', () => {
     // took its place is what gets applied -- a click on "Opus (1M context)"
     // launched Fable 5, the row directly above it.
     const [groups, setGroups] = createSignal([
-      group({ options: [{ id: 'opus[1m]', name: 'Opus (1M context)' }, { id: 'sonnet', name: 'Sonnet' }], currentValue: 'sonnet' }),
+      group({
+        options: [
+          { id: 'opus[1m]', name: 'Opus (1M context)' },
+          { id: 'sonnet', name: 'Sonnet' },
+        ],
+        currentValue: 'sonnet',
+      }),
     ])
     const onChange = vi.fn()
     render(() => (
@@ -258,14 +357,18 @@ describe('OptionGroupPopover', () => {
       { id: 'opus[1m]', name: 'Opus (1M context)' },
       { id: 'sonnet', name: 'Sonnet' },
     ]
-    setGroups([group({ options: withFable, currentValue: 'sonnet' })])
+    setGroups([
+      group({ options: withFable, currentValue: 'sonnet' }),
+    ])
     await Promise.resolve()
 
     // Still the list the user opened, in the order they saw it.
     expect(rowIds()).toEqual(['model-opus[1m]', 'model-sonnet'])
     // And the row still dispatches the value it shows.
     await fireEvent.click(screen.getByTestId('model-opus[1m]'))
-    expect(onChange).toHaveBeenCalledWith({ sets: { model: 'opus[1m]' } })
+    expect(onChange).toHaveBeenCalledWith({
+      sets: { model: 'opus[1m]' },
+    })
 
     // Closing releases the freeze: the next open shows the new model.
     await fireEvent.click(screen.getByTestId('trigger'))
@@ -284,7 +387,13 @@ describe('OptionGroupPopover', () => {
    */
   it('does not apply a frozen option the live catalog withdrew', async () => {
     const [groups, setGroups] = createSignal([
-      group({ options: [{ id: 'legacy', name: 'Legacy' }, { id: 'sonnet', name: 'Sonnet' }], currentValue: 'sonnet' }),
+      group({
+        options: [
+          { id: 'legacy', name: 'Legacy' },
+          { id: 'sonnet', name: 'Sonnet' },
+        ],
+        currentValue: 'sonnet',
+      }),
     ])
     const onChange = vi.fn()
     render(() => (
@@ -301,7 +410,14 @@ describe('OptionGroupPopover', () => {
     expect(screen.getByTestId('model-legacy')).toBeInTheDocument()
 
     // The live catalog lands and does not carry `legacy`.
-    setGroups([group({ options: [{ id: 'sonnet', name: 'Sonnet' }], currentValue: 'sonnet' })])
+    setGroups([
+      group({
+        options: [
+          { id: 'sonnet', name: 'Sonnet' },
+        ],
+        currentValue: 'sonnet',
+      }),
+    ])
     await Promise.resolve()
 
     // The frozen row is still on screen -- that is what the freeze does.
@@ -314,14 +430,18 @@ describe('OptionGroupPopover', () => {
     await fireEvent.click(screen.getByTestId('trigger'))
     // ...while a row the catalog still offers applies as usual.
     await fireEvent.click(screen.getByTestId('model-sonnet'))
-    expect(onChange).toHaveBeenCalledWith({ sets: { model: 'sonnet' } })
+    expect(onChange).toHaveBeenCalledWith({
+      sets: { model: 'sonnet' },
+    })
   })
 
   it('fills an empty list that opened before its catalog arrived', async () => {
     // The freeze holds a list STILL; it must not hold a list EMPTY. A group whose
     // options did not land yet has nothing to keep in place, and freezing on
     // the empty list would leave the menu blank until the user closed it again.
-    const [groups, setGroups] = createSignal([group({ options: [] })])
+    const [groups, setGroups] = createSignal([
+      group({ options: [] }),
+    ])
     render(() => (
       <OptionGroupPopover
         groupId="model"
@@ -335,7 +455,14 @@ describe('OptionGroupPopover', () => {
     await fireEvent.click(screen.getByTestId('trigger'))
     expect(screen.queryByRole('menuitemradio', { hidden: true })).toBeNull()
 
-    setGroups([group({ options: [{ id: 'sonnet', name: 'Sonnet' }], currentValue: 'sonnet' })])
+    setGroups([
+      group({
+        options: [
+          { id: 'sonnet', name: 'Sonnet' },
+        ],
+        currentValue: 'sonnet',
+      }),
+    ])
     await Promise.resolve()
 
     expect(screen.getByTestId('model-sonnet')).toBeInTheDocument()
@@ -349,7 +476,9 @@ describe('OptionGroupPopover', () => {
     render(() => (
       <OptionGroupPopover
         groupId="model"
-        optionGroups={[group({ options, currentValue: 'model-0' })]}
+        optionGroups={[
+          group({ options, currentValue: 'model-0' }),
+        ]}
         optionValues={values()}
         trigger={(triggerProps, view) => (
           <button data-testid="trigger" {...triggerProps}>{view.currentLabel}</button>
@@ -374,7 +503,12 @@ describe('OptionGroupPopover', () => {
     // reach it -- freezing the label would leave the chip contradicting the
     // agent for as long as the menu stayed open.
     const [groups, setGroups] = createSignal([
-      group({ options: [{ id: 'sonnet', name: 'Sonnet' }], currentValue: 'sonnet' }),
+      group({
+        options: [
+          { id: 'sonnet', name: 'Sonnet' },
+        ],
+        currentValue: 'sonnet',
+      }),
     ])
     render(() => (
       <OptionGroupPopover
@@ -391,10 +525,15 @@ describe('OptionGroupPopover', () => {
     await fireEvent.click(screen.getByTestId('trigger'))
     expect(screen.getByTestId('trigger')).toHaveTextContent('Sonnet')
 
-    setGroups([group({
-      options: [{ id: 'sonnet', name: 'Sonnet' }, { id: 'opus[1m]', name: 'Opus (1M context)' }],
-      currentValue: 'opus[1m]',
-    })])
+    setGroups([
+      group({
+        options: [
+          { id: 'sonnet', name: 'Sonnet' },
+          { id: 'opus[1m]', name: 'Opus (1M context)' },
+        ],
+        currentValue: 'opus[1m]',
+      }),
+    ])
     await Promise.resolve()
 
     expect(screen.getByTestId('trigger')).toHaveTextContent('Opus (1M context)')

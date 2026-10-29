@@ -21,7 +21,9 @@ codewhaleTest.describe('Codewhale subagent registry', () => {
     // an earlier runtime loaded the tool's schema first and needed a second one.
     const shellCall = backgroundBashToolCall(AgentProvider.CODEWHALE, 'start-shell', 'echo codewhale-bg-done')
     const start = await modelScript.queue(
-      { toolCalls: [shellCall] },
+      {
+        toolCalls: [shellCall],
+      },
       { text: 'The job runs in the background.' },
     )
     // The runtime may hand the job's end to the model in a turn of its own.

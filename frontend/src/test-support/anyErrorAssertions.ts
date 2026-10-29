@@ -134,7 +134,9 @@ function anyErrorMatcher(node: TypeScript.Node): AnyErrorMatcher | undefined {
   if (!isCallExpression(node) || !isPropertyAccessExpression(node.expression))
     return undefined
   const { name, expression: receiver } = node.expression
-  const receiverName = isPropertyAccessExpression(receiver) ? receiver.name.text : ''
+  const receiverName = isPropertyAccessExpression(receiver)
+    ? receiver.name.text
+    : ''
   if (receiverName === 'not')
     return undefined
   const args = node.arguments
@@ -143,7 +145,9 @@ function anyErrorMatcher(node: TypeScript.Node): AnyErrorMatcher | undefined {
     : receiverName === 'rejects' && acceptsAnyRejection(name.text, args)
   if (!found)
     return undefined
-  const prefix = receiverName === 'rejects' ? 'rejects.' : ''
+  const prefix = receiverName === 'rejects'
+    ? 'rejects.'
+    : ''
   return { name, spelling: `${prefix}${name.text}(${args.map(arg => arg.getText()).join(', ')})` }
 }
 
@@ -155,7 +159,9 @@ function calleeRoot(callee: TypeScript.Expression): string {
   let node = callee
   while (isPropertyAccessExpression(node) || isCallExpression(node))
     node = node.expression
-  return isIdentifier(node) ? node.text : ''
+  return isIdentifier(node)
+    ? node.text
+    : ''
 }
 
 /** Return the title of a suite or test call: the text of a literal, or the source of any other expression. */
@@ -163,7 +169,9 @@ function titleOf(call: TypeScript.CallExpression): string {
   const title = call.arguments[0]
   if (title === undefined)
     return ''
-  return isStringLiteralLike(title) ? title.text : title.getText()
+  return isStringLiteralLike(title)
+    ? title.text
+    : title.getText()
 }
 
 /** Return the site of `node`, as `AnyErrorAssertion.site` defines it. */
@@ -174,7 +182,9 @@ function siteOf(node: TypeScript.Node): string {
     if (isCallExpression(parent) && child !== parent.expression && TEST_FUNCTIONS.has(calleeRoot(parent.expression)))
       titles.unshift(titleOf(parent))
   }
-  return titles.length > 0 ? titles.join(TITLE_SEPARATOR) : enclosingFunctionName(node)
+  return titles.length > 0
+    ? titles.join(TITLE_SEPARATOR)
+    : enclosingFunctionName(node)
 }
 
 /**
@@ -195,8 +205,14 @@ export function anyErrorAssertions(inputs: readonly AssertionSourceFile[]): AnyE
     const file = createSourceFile(input.path, input.source, ScriptTarget.Latest, /* setParentNodes */ true)
     const visit = (node: TypeScript.Node): void => {
       const matcher = anyErrorMatcher(node)
-      if (matcher)
-        findings.push({ path: input.path, line: lineOf(file, matcher.name), matcher: matcher.spelling, site: siteOf(node) })
+      if (matcher) {
+        findings.push({
+          path: input.path,
+          line: lineOf(file, matcher.name),
+          matcher: matcher.spelling,
+          site: siteOf(node),
+        })
+      }
       forEachChild(node, visit)
     }
     visit(file)

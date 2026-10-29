@@ -7,7 +7,11 @@ import { bypassToolRequests } from './scenarios'
 // session.tasks.cancel, and Copilot ends the subagent with a cancelled completion while the parent goes on.
 copilotTest('interrupts the native child task without stopping its parent', async ({ native }) => {
   await bypassToolRequests(native)
-  await exerciseChildInterrupt(native, { childTurn: copilotChildTaskMatcher(HELD_CHILD_TASK), rowTitle: HELD_CHILD_NAME, finalStatus: 'stopped' })
+  await exerciseChildInterrupt(native, {
+    childTurn: copilotChildTaskMatcher(HELD_CHILD_TASK),
+    rowTitle: HELD_CHILD_NAME,
+    finalStatus: 'stopped',
+  })
 })
 
 // Track the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/505.

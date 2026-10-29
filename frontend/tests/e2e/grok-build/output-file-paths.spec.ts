@@ -10,9 +10,16 @@ import { readGrokNativeOutput } from './outputFilePaths'
 import { GROK_AGENT, nativeContext } from './scenarios'
 
 grokTest('keeps the native filesystem path and exact inline preview after reload', async ({ authenticatedEmptyWorkspace, page, modelScript, leapmuxServer }, testInfo) => {
-  const opened = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, GROK_AGENT, { optionValues: { approvalMode: 'always-approve' } })
+  const opened = await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, GROK_AGENT, {
+    optionValues: { approvalMode: 'always-approve' },
+  })
   await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
-  const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+  const context = await nativeContext({
+    page,
+    modelScript,
+    leapmuxServer,
+    workspaceId: authenticatedEmptyWorkspace.workspaceId,
+  })
   expect((await currentNativeAgent(context)).id).toBe(opened.agentId)
   await captureNativeToolOutput(context, testInfo, {
     output: computedNativeToolOutput({ lineCount: 6000, padding: 48 }),

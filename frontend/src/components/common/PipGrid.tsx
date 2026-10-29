@@ -37,7 +37,10 @@ const EXTENT = PIP_GRID_COLUMNS * PIP + (PIP_GRID_COLUMNS - 1) * GAP
 /** Row-major indices, so `<For>` can map an index straight to a position. */
 const POSITIONS = Array.from(
   { length: PIP_GRID_PIPS },
-  (_, i) => [Math.floor(i / PIP_GRID_COLUMNS), i % PIP_GRID_COLUMNS] as const,
+  (_, i) => [
+    Math.floor(i / PIP_GRID_COLUMNS),
+    i % PIP_GRID_COLUMNS,
+  ] as const,
 )
 
 interface PipGridProps {

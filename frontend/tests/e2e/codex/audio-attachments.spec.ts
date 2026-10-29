@@ -22,9 +22,18 @@ codexTest('delivers real audio bytes with and without a prompt and retains the a
   const configPath = join(home, 'config.toml')
   const catalogPath = join(runDir, 'codex-audio-model-catalog.json')
   const config = `model_catalog_json = ${JSON.stringify(catalogPath)}\n${readFileSync(configPath, 'utf8')}`
-  await withNativeConfigurationFile({ path: catalogPath, content: JSON.stringify(codexAudioModelCatalog(MOCK_MODELS.openai)), runDir }, async () => {
+  await withNativeConfigurationFile({
+    path: catalogPath,
+    content: JSON.stringify(codexAudioModelCatalog(MOCK_MODELS.openai)),
+    runDir,
+  }, async () => {
     await withNativeConfigurationFile({ path: configPath, content: config, runDir }, async () => {
-      const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+      const context = await nativeContext({
+        page,
+        modelScript,
+        leapmuxServer,
+        workspaceId: authenticatedEmptyWorkspace.workspaceId,
+      })
       await openNativeAgent(context, { directoryPrefix: 'codex-audio-' })
       for (const attachmentOnly of [false, true]) {
         const name = attachmentOnly ? 'voice-only.wav' : 'voice-with-prompt.wav'

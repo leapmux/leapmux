@@ -202,7 +202,12 @@ export function subagentsFrom(host: {
   const row = host?.backgroundTask
   const open = host?.openSubagent
   return row !== undefined || open !== undefined
-    ? { row: row ?? (() => undefined), ...(open === undefined ? {} : { open }) }
+    ? {
+        row: row ?? (() => undefined),
+        ...(open === undefined
+          ? {}
+          : { open }),
+      }
     : undefined
 }
 

@@ -6,13 +6,35 @@ import { AgentResultBody } from './agentResult'
 import '../providers/testMocks'
 
 function source(body: string): AgentRun {
-  return { description: 'Read the module', agentId: 'owned-child', outcome: 'completed', metadata: [{ label: 'Agent ID', value: 'NATIVE_AGENT_OUTPUT' }], body }
+  return {
+    description: 'Read the module',
+    agentId: 'owned-child',
+    outcome: 'completed',
+    metadata: [
+      { label: 'Agent ID', value: 'NATIVE_AGENT_OUTPUT' },
+    ],
+    body,
+  }
 }
 
 describe('AgentResultBody', () => {
   it.each([false, true])('marks the report without marking properties or the body label when expanded is %s', (expanded) => {
-    const body = ['NATIVE_AGENT_OUTPUT', ...Array.from({ length: 8 }, (_, index) => `report line ${index}`), 'NATIVE_AGENT_LAST'].join('\n')
-    const { container } = render(() => <AgentResultBody source={{ ...source(body), bodyLabel: 'Report' }} context={{ getMessageUiState: () => expanded }} />)
+    const body = [
+      'NATIVE_AGENT_OUTPUT',
+      ...Array.from({ length: 8 }, (_, index) => `report line ${index}`),
+      'NATIVE_AGENT_LAST',
+    ].join('\n')
+    const { container } = render(() => (
+      <AgentResultBody
+        source={{
+          ...source(body),
+          bodyLabel: 'Report',
+        }}
+        context={{
+          getMessageUiState: () => expanded,
+        }}
+      />
+    ))
     const outputs = container.querySelectorAll('[data-tool-output-preview]')
     expect(outputs).toHaveLength(1)
     expect(outputs[0]?.textContent).toContain('NATIVE_AGENT_OUTPUT')
@@ -22,7 +44,9 @@ describe('AgentResultBody', () => {
     expect(outputs[0]?.classList.contains(toolResultCollapsed)).toBe(!expanded)
     expect(container.textContent).toContain('Report')
     // The property value repeats the report marker, so compare element positions, not text offsets.
-    const property = [...container.querySelectorAll('div')].find(element => element.textContent?.startsWith('Agent ID:') && element.children.length === 2)
+    const property = [
+      ...container.querySelectorAll('div'),
+    ].find(element => element.textContent?.startsWith('Agent ID:') && element.children.length === 2)
     if (!property || !outputs[0])
       throw new Error('The agent fixture requires its property row and its report.')
     expect(property.compareDocumentPosition(outputs[0]) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0)

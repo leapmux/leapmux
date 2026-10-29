@@ -24,7 +24,9 @@ export function arrayBufferToBase64(buf: ArrayBuffer | Uint8Array | string | nul
     const bytes = new TextEncoder().encode(buf)
     return uint8ArrayToBase64(bytes)
   }
-  const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf)
+  const bytes = buf instanceof Uint8Array
+    ? buf
+    : new Uint8Array(buf)
   return uint8ArrayToBase64(bytes)
 }
 

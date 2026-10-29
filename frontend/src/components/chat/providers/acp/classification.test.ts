@@ -7,38 +7,68 @@ import { classifyACPMessage } from './classification'
 describe('native ACP notifications', () => {
   const nativeNotifications = {
     isMember: (message: Record<string, unknown>) => message.notice === true,
-    entries: (message: Record<string, unknown>): NotificationEntry[] => message.notice === true ? [{ kind: 'text', text: String(message.text) }] : [],
+    entries: (message: Record<string, unknown>): NotificationEntry[] => message.notice === true
+      ? [
+          {
+            kind: 'text',
+            text: String(message.text),
+          },
+        ]
+      : [],
   }
-  const config = { nativeNotifications, agentTurnEnd: () => undefined }
+  const config = {
+    nativeNotifications,
+    agentTurnEnd: () => undefined,
+  }
   const classify = classifyACPMessage(config)
 
   it('reads a native notification thread through its provider reader', () => {
     const first = { notice: true, text: 'first' }
     const second = { notice: true, text: 'second' }
-    expect(classify(input(first, { old_seqs: [], messages: [first, second] }))).toEqual({
+    expect(classify(input(first, {
+      old_seqs: [],
+      messages: [first, second],
+    }))).toEqual({
       kind: 'notification',
-      entries: [{ kind: 'text', text: 'first' }, { kind: 'text', text: 'second' }],
+      entries: [
+        { kind: 'text', text: 'first' },
+        { kind: 'text', text: 'second' },
+      ],
     })
   })
 
   it('reads a native notice before the generic session-state rule', () => {
     expect(classify(input({ notice: true, text: 'done', sessionUpdate: 'session_info_update' }))).toEqual({
       kind: 'notification',
-      entries: [{ kind: 'text', text: 'done' }],
+      entries: [
+        { kind: 'text', text: 'done' },
+      ],
     })
   })
 
   it('keeps worker envelopes in a mixed native thread', () => {
     const first = { notice: true, text: 'first' }
-    expect(classify(input(first, { old_seqs: [], messages: [first, { type: 'api_retry_resolved' }] }))).toEqual({
+    expect(classify(input(first, {
+      old_seqs: [],
+      messages: [
+        first,
+        { type: 'api_retry_resolved' },
+      ],
+    }))).toEqual({
       kind: 'notification',
-      entries: [{ kind: 'text', text: 'first' }, { kind: 'retry', scope: 'api', succeeded: true }],
+      entries: [
+        { kind: 'text', text: 'first' },
+        { kind: 'retry', scope: 'api', succeeded: true },
+      ],
     })
   })
 
   it('leaves nonmembers and malformed entries outside the native reader', () => {
     const unknown = { future: true }
-    expect(classify(input(unknown, { old_seqs: [], messages: [null, 'bad', [], unknown] }))).toEqual({ kind: 'unknown' })
+    expect(classify(input(unknown, {
+      old_seqs: [],
+      messages: [null, 'bad', [], unknown],
+    }))).toEqual({ kind: 'unknown' })
     expect(classify(input(undefined, { old_seqs: [], messages: [] }))).toEqual({ kind: 'hidden' })
   })
 })
@@ -53,7 +83,10 @@ describe('stored system frames', () => {
   ])('leaves a stored system frame unknown: %j', (parent) => {
     const classify = classifyACPMessage()
     expect(classify(input(parent))).toEqual({ kind: 'unknown' })
-    expect(classify(input(parent, { old_seqs: [], messages: [parent] }))).toEqual({ kind: 'unknown' })
+    expect(classify(input(parent, {
+      old_seqs: [],
+      messages: [parent],
+    }))).toEqual({ kind: 'unknown' })
   })
 })
 
@@ -70,13 +103,30 @@ describe('session updates the worker consumes (ACP)', () => {
     expect(classifyACPMessage()(input({ sessionUpdate }))).toEqual({ kind: 'hidden' })
   })
   it.each([
-    ['usage_update', { used: 100, size: 200000 }],
-    ['available_commands_update', { availableCommands: [] }],
-    ['user_message_chunk', { content: { type: 'text', text: 'hi' } }],
-    ['config_option_update', { configOptions: [] }],
+    [
+      'usage_update',
+      { used: 100, size: 200000 },
+    ],
+    [
+      'available_commands_update',
+      { availableCommands: [] },
+    ],
+    [
+      'user_message_chunk',
+      {
+        content: { type: 'text', text: 'hi' },
+      },
+    ],
+    [
+      'config_option_update',
+      { configOptions: [] },
+    ],
     // Captured from a live `goose acp` session: the runtime's own session title and
     // its modified time, which LeapMux never shows because it gives its tabs their own names.
-    ['session_info_update', { title: 'A title', updatedAt: '2026-09-16T07:06:19+00:00' }],
+    [
+      'session_info_update',
+      { title: 'A title', updatedAt: '2026-09-16T07:06:19+00:00' },
+    ],
   ])('hides %s', (sessionUpdate, fields) => {
     const classify = classifyACPMessage()
     expect(classify(input({ sessionUpdate, ...fields }))).toEqual({ kind: 'hidden' })
@@ -91,7 +141,12 @@ describe('rows LeapMux itself wrote (ACP)', () => {
     const classify = classifyACPMessage()
     const notifications = [
       { type: 'interrupted' },
-      { type: 'settings_changed', changes: { model: { old: 'a', new: 'b' } } },
+      {
+        type: 'settings_changed',
+        changes: {
+          model: { old: 'a', new: 'b' },
+        },
+      },
       { type: 'context_cleared' },
       { type: 'agent_error', error: 'failed' },
       { type: 'plan_updated', plan_title: 'Plan' },
@@ -136,7 +191,11 @@ describe('the native ACP result envelope', () => {
 
   it('classifies a wrapped turn end as a result divider', () => {
     const classify = classifyACPMessage()
-    expect(classify(input(wrapped({ _meta: {}, stopReason: 'end_turn', usage: { totalTokens: 100 } }))))
+    expect(classify(input(wrapped({
+      _meta: {},
+      stopReason: 'end_turn',
+      usage: { totalTokens: 100 },
+    }))))
       .toEqual({ kind: 'result_divider' })
   })
 
@@ -157,9 +216,17 @@ describe('the plan_execution notification (ACP)', () => {
 
   it('classifies a one-member plan_execution thread as a notification', () => {
     const classify = classifyACPMessage()
-    const wrapper = { old_seqs: [], messages: [planExecution] }
+    const wrapper = {
+      old_seqs: [],
+      messages: [planExecution],
+    }
     expect(classify(input(planExecution, wrapper)))
-      .toStrictEqual({ kind: 'notification', entries: [{ kind: 'text', text: 'Executing plan' }] })
+      .toStrictEqual({
+        kind: 'notification',
+        entries: [
+          { kind: 'text', text: 'Executing plan' },
+        ],
+      })
   })
 
   // The thread test is what keeps the OTHER members of a thread. A per-message test
@@ -170,13 +237,18 @@ describe('the plan_execution notification (ACP)', () => {
   it('keeps every member of a thread whose only accepted type is plan_execution', () => {
     const classify = classifyACPMessage()
     const stale = { type: 'compacting' }
-    const wrapper = { old_seqs: [], messages: [stale, planExecution] }
+    const wrapper = {
+      old_seqs: [],
+      messages: [stale, planExecution],
+    }
     // The stale member contributes no entry: no worker writes the type, so a
     // stored row of an older build draws nothing (decision 22).
     expect(classify(input(stale, wrapper)))
       .toStrictEqual({
         kind: 'notification',
-        entries: [{ kind: 'text', text: 'Executing plan' }],
+        entries: [
+          { kind: 'text', text: 'Executing plan' },
+        ],
       })
   })
 
@@ -186,18 +258,29 @@ describe('the plan_execution notification (ACP)', () => {
   it('classifies an unwrapped plan_execution row as a notification', () => {
     const classify = classifyACPMessage()
     expect(classify(input(planExecution)))
-      .toStrictEqual({ kind: 'notification', entries: [{ kind: 'text', text: 'Executing plan' }] })
+      .toStrictEqual({
+        kind: 'notification',
+        entries: [
+          { kind: 'text', text: 'Executing plan' },
+        ],
+      })
   })
 })
 
 // The worker stores a provider's own end of an agent-started turn as the turn-end
 // row, so the classifier must draw it as the divider rather than as a raw frame.
 describe('agent turn ends (ACP)', () => {
-  const agentTurnEnd = (parent: Record<string, unknown>) => parent.method === 'vendor/turn_ended' ? 'end_turn' : undefined
+  const agentTurnEnd = (parent: Record<string, unknown>) => parent.method === 'vendor/turn_ended'
+    ? 'end_turn'
+    : undefined
 
   it('classifies the provider\'s own end frame as a divider', () => {
     const classify = classifyACPMessage({ agentTurnEnd })
-    expect(classify(input({ jsonrpc: '2.0', method: 'vendor/turn_ended', params: { reason: 'end_turn' } }))).toEqual({ kind: 'result_divider' })
+    expect(classify(input({
+      jsonrpc: '2.0',
+      method: 'vendor/turn_ended',
+      params: { reason: 'end_turn' },
+    }))).toEqual({ kind: 'result_divider' })
   })
 
   it('leaves another frame to the rest of the classifier', () => {
@@ -211,13 +294,19 @@ describe('agent turn ends (ACP)', () => {
   // end that states no reason. A truthiness test drops the second one, and the frame
   // then draws as a raw-frame card.
   it('classifies a turn end that states an empty stop reason as a divider', () => {
-    const classify = classifyACPMessage({ agentTurnEnd: parent => parent.method === 'vendor/turn_ended' ? '' : undefined })
+    const classify = classifyACPMessage({
+      agentTurnEnd: parent => parent.method === 'vendor/turn_ended'
+        ? ''
+        : undefined,
+    })
     expect(classify(input({ jsonrpc: '2.0', method: 'vendor/turn_ended', params: {} }))).toEqual({ kind: 'result_divider' })
   })
 
   // A provider can state the end on an update that the family hides otherwise.
   it('draws a turn end that a hidden update states', () => {
-    const onInfo = (parent: Record<string, unknown>) => parent.sessionUpdate === 'session_info_update' && parent.turnEnd === true ? 'end_turn' : undefined
+    const onInfo = (parent: Record<string, unknown>) => parent.sessionUpdate === 'session_info_update' && parent.turnEnd === true
+      ? 'end_turn'
+      : undefined
     const classify = classifyACPMessage({ agentTurnEnd: onInfo })
     expect(classify(input({ sessionUpdate: 'session_info_update', turnEnd: true }))).toEqual({ kind: 'result_divider' })
     expect(classify(input({ sessionUpdate: 'session_info_update', title: 'x' })), 'another update of that kind stays hidden').toEqual({ kind: 'hidden' })

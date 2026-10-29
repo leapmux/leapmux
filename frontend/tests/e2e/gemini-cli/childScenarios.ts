@@ -46,9 +46,26 @@ export async function openGeminiRunningChild(context: ManagedNativeScenarioConte
     gate,
     child: {
       matcher: childTurn,
-      finalStep: { toolCalls: [geminiCompleteTaskToolCall(`gemini-child-complete-${marker}`, finalReply)] },
+      finalStep: {
+        toolCalls: [
+          geminiCompleteTaskToolCall(`gemini-child-complete-${marker}`, finalReply),
+        ],
+      },
     },
-    rules: [{ name: 'the native child reads its actual file', when: childTurn, respond: { reasoning: thought, text: progress, toolCalls: [readToolCall(context.provider, `gemini-child-read-${marker}`, path)] }, once: true }],
+    rules: [
+      {
+        name: 'the native child reads its actual file',
+        when: childTurn,
+        respond: {
+          reasoning: thought,
+          text: progress,
+          toolCalls: [
+            readToolCall(context.provider, `gemini-child-read-${marker}`, path),
+          ],
+        },
+        once: true,
+      },
+    ],
     allowExistingRows: index > 0,
   })
   expect(nativeToolResult(await child.heldRequest(), `gemini-child-read-${marker}`)).toContain(fileMarker)
@@ -66,13 +83,26 @@ export async function openGeminiRunningChild(context: ManagedNativeScenarioConte
   const snapshot = await readNativeMessageSnapshot(context, child.childId)
   expect(snapshot.messages.length).toBeGreaterThan(0)
   expect(snapshot.messages.map(message => nativeMessageBody(message)).filter(isObject).every(frame => !('sessionUpdate' in frame))).toBe(true)
-  return { ...child, prompt, progress, thought, fileMarker, finalReply, nativeChildId: info.providerChildKey }
+  return {
+    ...child,
+    prompt,
+    progress,
+    thought,
+    fileMarker,
+    finalReply,
+    nativeChildId: info.providerChildKey,
+  }
 }
 
 /** Inspect the child tab while its model call remains held. */
 export async function expectGeminiLiveChild(context: ManagedNativeScenarioContext, child: GeminiRunningChild): Promise<void> {
   await openChildTabFromRow(context.page, child.row)
-  for (const text of [child.prompt, child.progress, child.thought, child.fileMarker])
+  for (const text of [
+    child.prompt,
+    child.progress,
+    child.thought,
+    child.fileMarker,
+  ])
     await expect(messageContents(context.page).filter({ hasText: text }).first()).toBeVisible()
   await expect(messageContents(context.page).filter({ hasText: child.finalReply })).toHaveCount(0)
   await expect(child.row).toHaveAttribute('data-status', 'running')
@@ -90,6 +120,12 @@ export async function finishGeminiChildWithReload(
   await expect(messageContents(context.page).filter({ hasText: child.finalReply }).first()).toBeVisible()
   await options.beforeReload?.()
   await context.page.reload()
-  for (const text of [child.prompt, child.progress, child.thought, child.fileMarker, child.finalReply])
+  for (const text of [
+    child.prompt,
+    child.progress,
+    child.thought,
+    child.fileMarker,
+    child.finalReply,
+  ])
     await expect(messageContents(context.page).filter({ hasText: text }).first()).toBeVisible()
 }

@@ -7,5 +7,9 @@ copilotTest('shows the native model failure and accepts a later valid prompt', a
 })
 
 copilotTest('retries a cut stream without retaining the failed attempt', async ({ native }) => {
-  await exerciseModelRetry(native, { errors: [{ status: 500, message: 'The stream broke.', midStream: true }] })
+  await exerciseModelRetry(native, {
+    errors: [
+      { status: 500, message: 'The stream broke.', midStream: true },
+    ],
+  })
 })

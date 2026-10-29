@@ -14,15 +14,27 @@ export async function exerciseNativeCondense(context: NativeScenarioContext): Pr
     `${oldMarker} is old work that the summary will replace.`,
     'Finish another task before compaction.',
   ].entries()) {
-    const step = await modelScript.queue({ toolCalls: [diracRespondToolCall(`dirac-before-smol-${index}`, 'complete', `Turn ${index} ended.`)] })
+    const step = await modelScript.queue({
+      toolCalls: [
+        diracRespondToolCall(`dirac-before-smol-${index}`, 'complete', `Turn ${index} ended.`),
+      ],
+    })
     await sendMessage(page, modelScript.prompt(prompt))
     await modelScript.waitForSteps(step + 1)
     await waitForAgentIdle(page)
   }
 
   const condense = await modelScript.queue(
-    { toolCalls: [diracCondenseToolCall('dirac-smol-summary', marker)] },
-    { toolCalls: [diracRespondToolCall('dirac-after-smol', 'complete', 'The condensed turn ended.')] },
+    {
+      toolCalls: [
+        diracCondenseToolCall('dirac-smol-summary', marker),
+      ],
+    },
+    {
+      toolCalls: [
+        diracRespondToolCall('dirac-after-smol', 'complete', 'The condensed turn ended.'),
+      ],
+    },
   )
   await sendMessage(page, modelScript.prompt('/smol'))
   await modelScript.waitForSteps(condense + 2)
@@ -30,7 +42,11 @@ export async function exerciseNativeCondense(context: NativeScenarioContext): Pr
   expect(JSON.stringify((await modelScript.requestAt(condense)).body)).toContain('explicit_instructions type=')
   await expect(chatScrollContainer(page).getByText('Conversation Condensed').first()).toBeVisible()
 
-  const next = await modelScript.queue({ toolCalls: [diracRespondToolCall('dirac-compacted-followup', 'complete', 'The next task ended.')] })
+  const next = await modelScript.queue({
+    toolCalls: [
+      diracRespondToolCall('dirac-compacted-followup', 'complete', 'The next task ended.'),
+    ],
+  })
   await sendMessage(page, modelScript.prompt('Continue after compaction.'))
   await modelScript.waitForSteps(next + 1)
   await waitForAgentIdle(page)

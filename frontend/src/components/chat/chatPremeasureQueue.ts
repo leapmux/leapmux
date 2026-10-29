@@ -157,7 +157,9 @@ export function createPremeasureQueue(deps: PremeasureQueueDeps) {
       phase: 'commit',
       id,
       seq: deps.visibleEntryById().get(id)?.message.seq?.toString() ?? null,
-      height: Number.isFinite(height) ? height : String(height),
+      height: Number.isFinite(height)
+        ? height
+        : String(height),
       heightKey: heightKey ?? null,
       currentHeightKey: deps.virtualItemById().get(id)?.heightKey ?? null,
       accepted,

@@ -13,7 +13,9 @@ export const CompactionIndicator: Component<{ compaction?: LiveCompaction | unde
     {compaction => (
       <div class={resultDivider} data-testid="compaction-indicator" role="status">
         <Icon icon={LoaderCircle} size="sm" class={spinner} />
-        {` ${COMPACTING_LABEL}${compaction().trigger ? ` (${compaction().trigger})` : ''}`}
+        {` ${COMPACTING_LABEL}${compaction().trigger
+          ? ` (${compaction().trigger})`
+          : ''}`}
       </div>
     )}
   </Show>

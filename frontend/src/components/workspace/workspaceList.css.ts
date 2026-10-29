@@ -33,18 +33,24 @@ export const sectionChevron = style({
   transition: 'transform 0.15s',
 })
 
-export const sectionChevronOpen = style([sectionChevron, {
-  transform: 'rotate(90deg)',
-}])
+export const sectionChevronOpen = style([
+  sectionChevron,
+  {
+    transform: 'rotate(90deg)',
+  },
+])
 
-export const sectionName = style([clippedText, {
-  flex: 1,
-  fontSize: 'var(--text-8)',
-  fontWeight: 'var(--font-bold)',
-  color: 'var(--muted-foreground)',
-  textTransform: 'uppercase',
-  letterSpacing: '0.5px',
-}])
+export const sectionName = style([
+  clippedText,
+  {
+    flex: 1,
+    fontSize: 'var(--text-8)',
+    fontWeight: 'var(--font-bold)',
+    color: 'var(--muted-foreground)',
+    textTransform: 'uppercase',
+    letterSpacing: '0.5px',
+  },
+])
 
 export const sectionActions = style({
   display: 'flex',
@@ -116,9 +122,12 @@ export const sectionItems = style({
 // 28px leaves -- it had `var(--space-1)` top and bottom and no reserve at all,
 // so its content decided its height and the list went ragged at every workspace.
 // Only the LEFT padding differs, because this row carries the chevron.
-export const item = style([node, {
-  paddingLeft: 'var(--space-1)',
-}])
+export const item = style([
+  node,
+  {
+    paddingLeft: 'var(--space-1)',
+  },
+])
 
 export const itemActive = style({
   'backgroundColor': 'var(--secondary)',
@@ -152,11 +161,14 @@ export const itemLabel = style({
   overflow: 'hidden',
 })
 
-export const itemTitle = style([clippedText, {
-  fontSize: 'var(--text-7)',
-  fontWeight: 'var(--font-normal)',
-  color: 'var(--foreground)',
-}])
+export const itemTitle = style([
+  clippedText,
+  {
+    fontSize: 'var(--text-7)',
+    fontWeight: 'var(--font-normal)',
+    color: 'var(--foreground)',
+  },
+])
 
 export const itemRenameInput = style({
   'flex': 1,
@@ -231,15 +243,18 @@ export const sectionHeaderDropTarget = style({
   backgroundColor: 'var(--secondary)',
 })
 
-export const dragOverlay = style([clippedText, {
-  padding: 'var(--space-1) var(--space-3)',
-  paddingLeft: 'var(--space-4)',
-  fontSize: 'var(--text-7)',
-  fontWeight: 'var(--font-normal)',
-  color: 'var(--foreground)',
-  backgroundColor: 'var(--card)',
-  border: '1px solid var(--border)',
-  borderRadius: 'var(--radius-small)',
-  boxShadow: 'var(--shadow-large)',
-  maxWidth: '200px',
-}])
+export const dragOverlay = style([
+  clippedText,
+  {
+    padding: 'var(--space-1) var(--space-3)',
+    paddingLeft: 'var(--space-4)',
+    fontSize: 'var(--text-7)',
+    fontWeight: 'var(--font-normal)',
+    color: 'var(--foreground)',
+    backgroundColor: 'var(--card)',
+    border: '1px solid var(--border)',
+    borderRadius: 'var(--radius-small)',
+    boxShadow: 'var(--shadow-large)',
+    maxWidth: '200px',
+  },
+])

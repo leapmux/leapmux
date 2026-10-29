@@ -12,7 +12,15 @@ it('gives an empty completed result visible content without inventing copyable o
 
 it('preserves failed text blocks with the same formatting as an error field', () => {
   const { container } = render(() => (
-    <GenericToolBody request={{ args: {} }} result={{ content: [{ type: 'text' as const, text: 'Access denied\n  Detail' }] }} status="failed" />
+    <GenericToolBody
+      request={{ args: {} }}
+      result={{
+        content: [
+          { type: 'text' as const, text: 'Access denied\n  Detail' },
+        ],
+      }}
+      status="failed"
+    />
   ))
   expect(container.querySelector('p')).toBeNull()
   expect(container.textContent).toBe('Access denied\n  Detail')
@@ -31,8 +39,16 @@ describe('mcpToolCallDisplayName', () => {
 
 describe('parseMcpContentItem', () => {
   it('preserves the text of an embedded MCP resource', () => {
-    expect(parseMcpContentItem({ type: 'resource', resource: { uri: 'probe://note', mimeType: 'text/plain', text: 'Resource contents' } }))
-      .toEqual({ type: 'resource', uri: 'probe://note', mimeType: 'text/plain', text: 'Resource contents' })
+    expect(parseMcpContentItem({
+      type: 'resource',
+      resource: { uri: 'probe://note', mimeType: 'text/plain', text: 'Resource contents' },
+    }))
+      .toEqual({
+        type: 'resource',
+        uri: 'probe://note',
+        mimeType: 'text/plain',
+        text: 'Resource contents',
+      })
   })
 
   it('parses text blocks', () => {
@@ -42,24 +58,39 @@ describe('parseMcpContentItem', () => {
 
   it('parses image blocks (mimeType + data)', () => {
     expect(parseMcpContentItem({ type: 'image', mimeType: 'image/png', data: 'base64...' }))
-      .toEqual({ type: 'image', source: { mimeType: 'image/png', data: 'base64...' } })
+      .toEqual({
+        type: 'image',
+        source: { mimeType: 'image/png', data: 'base64...' },
+      })
   })
 
   // urlOrData can hold a URL or base64 image data.
   // The raw MCP url field has separate image-reader coverage.
   it('parses image blocks (mimeType + urlOrData holding a URL)', () => {
     expect(parseMcpContentItem({ type: 'image', mimeType: 'image/png', urlOrData: 'https://example.com/x.png' }))
-      .toEqual({ type: 'image', source: { mimeType: 'image/png', url: 'https://example.com/x.png' } })
+      .toEqual({
+        type: 'image',
+        source: { mimeType: 'image/png', url: 'https://example.com/x.png' },
+      })
   })
 
   it('parses the Anthropic nested source shape, which Claude tool_results use', () => {
-    expect(parseMcpContentItem({ type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'AAAA' } }))
-      .toEqual({ type: 'image', source: { mimeType: 'image/png', data: 'AAAA' } })
+    expect(parseMcpContentItem({
+      type: 'image',
+      source: { type: 'base64', media_type: 'image/png', data: 'AAAA' },
+    }))
+      .toEqual({
+        type: 'image',
+        source: { mimeType: 'image/png', data: 'AAAA' },
+      })
   })
 
   it('keeps an image block that carries no payload, so the row says so', () => {
     expect(parseMcpContentItem({ type: 'image', mimeType: 'image/png' }))
-      .toEqual({ type: 'image', source: { mimeType: 'image/png' } })
+      .toEqual({
+        type: 'image',
+        source: { mimeType: 'image/png' },
+      })
   })
 
   it('parses resource blocks', () => {
@@ -69,7 +100,10 @@ describe('parseMcpContentItem', () => {
 
   it('classifies unknown shapes as `unknown`', () => {
     expect(parseMcpContentItem({ type: 'audio', data: 'x' }))
-      .toEqual({ type: 'unknown', raw: { type: 'audio', data: 'x' } })
+      .toEqual({
+        type: 'unknown',
+        raw: { type: 'audio', data: 'x' },
+      })
   })
 
   it('classifies primitives as `unknown`', () => {
@@ -78,11 +112,17 @@ describe('parseMcpContentItem', () => {
   })
 
   it('classifies text blocks without a string text field as `unknown`', () => {
-    expect(parseMcpContentItem({ type: 'text' })).toEqual({ type: 'unknown', raw: { type: 'text' } })
+    expect(parseMcpContentItem({ type: 'text' })).toEqual({
+      type: 'unknown',
+      raw: { type: 'text' },
+    })
   })
 
   it('classifies resource blocks without a uri as `unknown`', () => {
-    expect(parseMcpContentItem({ type: 'resource' })).toEqual({ type: 'unknown', raw: { type: 'resource' } })
+    expect(parseMcpContentItem({ type: 'resource' })).toEqual({
+      type: 'unknown',
+      raw: { type: 'resource' },
+    })
   })
 })
 
@@ -129,13 +169,30 @@ describe('GenericToolBody output ownership', () => {
   const metadataJson = '{"calls":[{"args":"native-output-marker"}],"count":0}'
 
   it('puts execution metadata before actual output and preserves original Copy order', () => {
-    const result = { content: [{ type: 'text' as const, text: 'native-output-marker' }], structuredJson: metadataJson, structuredJsonRole: 'metadata' as const }
-    const { container } = render(() => <GenericToolBody request={{ args: { code: 'native-output-marker' } }} result={result} status="completed" expanded={() => true} />)
+    const result = {
+      content: [
+        { type: 'text' as const, text: 'native-output-marker' },
+      ],
+      structuredJson: metadataJson,
+      structuredJsonRole: 'metadata' as const,
+    }
+    const { container } = render(() => (
+      <GenericToolBody
+        request={{
+          args: { code: 'native-output-marker' },
+        }}
+        result={result}
+        status="completed"
+        expanded={() => true}
+      />
+    ))
     const outputs = container.querySelectorAll('[data-tool-output-preview]')
     expect(outputs).toHaveLength(1)
     expect(outputs[0]?.textContent).toBe('native-output-marker')
     // The metadata text holds the output marker too, so compare element positions, not text offsets.
-    const metadataBlock = [...container.querySelectorAll('div')].find(element => element.textContent === metadataJson)
+    const metadataBlock = [
+      ...container.querySelectorAll('div'),
+    ].find(element => element.textContent === metadataJson)
     if (!metadataBlock || !outputs[0])
       throw new Error('The ownership fixture requires its metadata block and its output block.')
     expect(metadataBlock.compareDocumentPosition(outputs[0]) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0)
@@ -143,14 +200,23 @@ describe('GenericToolBody output ownership', () => {
   })
 
   it('keeps genuine structured output after returned content blocks', () => {
-    const result = { content: [{ type: 'text' as const, text: 'returned text' }], structuredJson: '{"count":0}' }
+    const result = {
+      content: [
+        { type: 'text' as const, text: 'returned text' },
+      ],
+      structuredJson: '{"count":0}',
+    }
     const { container } = render(() => <GenericToolBody request={{ args: {} }} result={result} status="completed" />)
-    expect([...container.querySelectorAll('[data-tool-output-preview]')].map(element => element.textContent)).toEqual(['returned text', '{"count":0}'])
+    expect([
+      ...container.querySelectorAll('[data-tool-output-preview]'),
+    ].map(element => element.textContent)).toEqual(['returned text', '{"count":0}'])
     expect(genericResultCopyable(result)).toBe('returned text\n\n{"count":0}')
   })
 
   it.each([undefined, 'metadata'] as const)('updates structured JSON with role %s when the result changes', (structuredJsonRole) => {
-    const role = structuredJsonRole !== undefined ? { structuredJsonRole } : {}
+    const role = structuredJsonRole !== undefined
+      ? { structuredJsonRole }
+      : {}
     const [result, setResult] = createSignal<GenericToolResult>({ content: [], structuredJson: '{"count":0}', ...role })
     const { container } = render(() => <GenericToolBody request={{ args: {} }} result={result()} status="completed" />)
     expect(container.textContent).toContain('{"count":0}')
@@ -161,15 +227,39 @@ describe('GenericToolBody output ownership', () => {
 
   it('cannot certify arguments or explicit structured metadata when output is absent', () => {
     const result = { content: [], structuredJson: metadataJson, structuredJsonRole: 'metadata' as const }
-    const { container } = render(() => <GenericToolBody request={{ args: { text: 'native-output-marker' } }} result={result} status="completed" expanded={() => true} />)
+    const { container } = render(() => (
+      <GenericToolBody
+        request={{
+          args: { text: 'native-output-marker' },
+        }}
+        result={result}
+        status="completed"
+        expanded={() => true}
+      />
+    ))
     expect(container.textContent).toContain('native-output-marker')
     expect(container.querySelector('[data-tool-output-preview]')).toBeNull()
     expect(genericResultCopyable(result)).toBe(metadataJson)
   })
 
-  it.each(['0', 'false', 'null', '""', '{"nullable":null,"count":0,"enabled":false}'])('owns a genuine structured-only result %s', (structuredJson) => {
+  it.each([
+    '0',
+    'false',
+    'null',
+    '""',
+    '{"nullable":null,"count":0,"enabled":false}',
+  ])('owns a genuine structured-only result %s', (structuredJson) => {
     const result = { content: [], structuredJson }
-    const { container } = render(() => <GenericToolBody request={{ args: { text: structuredJson } }} result={result} status="completed" expanded={() => true} />)
+    const { container } = render(() => (
+      <GenericToolBody
+        request={{
+          args: { text: structuredJson },
+        }}
+        result={result}
+        status="completed"
+        expanded={() => true}
+      />
+    ))
     const outputs = container.querySelectorAll('[data-tool-output-preview]')
     expect(outputs).toHaveLength(1)
     expect(outputs[0]?.textContent).toBe(structuredJson)
@@ -177,13 +267,34 @@ describe('GenericToolBody output ownership', () => {
   })
 
   it('owns actual resource text and error output without owning the resource URI or headings', () => {
-    const { container } = render(() => <GenericToolBody request={{ args: {} }} result={{ content: [{ type: 'resource', uri: 'probe://native-output-marker', text: 'returned resource' }], error: 'returned error' }} status="failed" />)
-    expect([...container.querySelectorAll('[data-tool-output-preview]')].map(element => element.textContent)).toEqual(['returned resource', 'returned error'])
+    const { container } = render(() => (
+      <GenericToolBody
+        request={{ args: {} }}
+        result={{
+          content: [
+            { type: 'resource', uri: 'probe://native-output-marker', text: 'returned resource' },
+          ],
+          error: 'returned error',
+        }}
+        status="failed"
+      />
+    ))
+    expect([
+      ...container.querySelectorAll('[data-tool-output-preview]'),
+    ].map(element => element.textContent)).toEqual(['returned resource', 'returned error'])
     expect(container.textContent).toContain('probe://native-output-marker')
   })
 
   it('does not invent output ownership for an empty completed result', () => {
-    const { container } = render(() => <GenericToolBody request={{ args: { text: 'argument-only-marker' } }} result={{ content: [] }} status="completed" />)
+    const { container } = render(() => (
+      <GenericToolBody
+        request={{
+          args: { text: 'argument-only-marker' },
+        }}
+        result={{ content: [] }}
+        status="completed"
+      />
+    ))
     expect(container.textContent).toContain('[no output]')
     expect(container.querySelector('[data-tool-output-preview]')).toBeNull()
   })

@@ -9,61 +9,214 @@ const CALL = 'goose-1'
 /** A finished Goose update, with its request and the `_meta` name that both sides carry. */
 function gooseUpdate(frame: Record<string, unknown>, request: Record<string, unknown>): ToolResultFixture {
   return {
-    payload: { sessionUpdate: 'tool_call_update', toolCallId: CALL, status: 'completed', ...frame },
+    payload: {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: CALL,
+      status: 'completed',
+      ...frame,
+    },
     options: {
       spanType: 'tool_call_update',
-      request: input({ sessionUpdate: 'tool_call', toolCallId: CALL, status: 'pending', kind: 'other', ...request }) as ParsedMessageContent,
+      request: input({
+        sessionUpdate: 'tool_call',
+        toolCallId: CALL,
+        status: 'pending',
+        kind: 'other',
+        ...request,
+      }) as ParsedMessageContent,
     },
   }
 }
 
 function text(value: string) {
-  return [{ type: 'content', content: { type: 'text', text: value } }]
+  return [
+    {
+      type: 'content',
+      content: { type: 'text', text: value },
+    },
+  ]
 }
 
 const FIXTURES: Readonly<Record<string, ToolResultFixture>> = {
   shell: gooseUpdate(
-    { rawInput: { command: 'printf hi', description: 'Say hi' }, rawOutput: { stdout: 'hi\n', exit_code: 0 }, _meta: { goose: { toolCall: { toolName: 'developer__shell', extensionName: 'developer' } } } },
-    { title: 'shell', rawInput: { command: 'printf hi', description: 'Say hi' }, _meta: { goose: { toolCall: { toolName: 'developer__shell', extensionName: 'developer' } } } },
+    {
+      rawInput: { command: 'printf hi', description: 'Say hi' },
+      rawOutput: { stdout: 'hi\n', exit_code: 0 },
+      _meta: {
+        goose: {
+          toolCall: { toolName: 'developer__shell', extensionName: 'developer' },
+        },
+      },
+    },
+    {
+      title: 'shell',
+      rawInput: { command: 'printf hi', description: 'Say hi' },
+      _meta: {
+        goose: {
+          toolCall: { toolName: 'developer__shell', extensionName: 'developer' },
+        },
+      },
+    },
   ),
   edit: gooseUpdate(
-    { content: [{ type: 'content', content: { type: 'text', text: 'Edited sample.py (1 lines -> 1 lines)' } }], _meta: { goose: { toolCall: { toolName: 'developer__edit', extensionName: 'developer' } } } },
-    { title: 'edit · sample.py', rawInput: { path: 'sample.py', before: 'answer = 41', after: 'answer = 42' }, _meta: { goose: { toolCall: { toolName: 'developer__edit', extensionName: 'developer' } } } },
+    {
+      content: [
+        {
+          type: 'content',
+          content: { type: 'text', text: 'Edited sample.py (1 lines -> 1 lines)' },
+        },
+      ],
+      _meta: {
+        goose: {
+          toolCall: { toolName: 'developer__edit', extensionName: 'developer' },
+        },
+      },
+    },
+    {
+      title: 'edit · sample.py',
+      rawInput: { path: 'sample.py', before: 'answer = 41', after: 'answer = 42' },
+      _meta: {
+        goose: {
+          toolCall: { toolName: 'developer__edit', extensionName: 'developer' },
+        },
+      },
+    },
   ),
   write: gooseUpdate(
-    { content: text('Wrote sample.py'), _meta: { goose: { toolCall: { toolName: 'developer__write', extensionName: 'developer' } } } },
-    { rawInput: { path: 'sample.py', content: 'written()' }, _meta: { goose: { toolCall: { toolName: 'developer__write', extensionName: 'developer' } } } },
+    {
+      content: text('Wrote sample.py'),
+      _meta: {
+        goose: {
+          toolCall: { toolName: 'developer__write', extensionName: 'developer' },
+        },
+      },
+    },
+    {
+      rawInput: { path: 'sample.py', content: 'written()' },
+      _meta: {
+        goose: {
+          toolCall: { toolName: 'developer__write', extensionName: 'developer' },
+        },
+      },
+    },
   ),
   read: gooseUpdate(
-    { content: text('answer = 42\n'), _meta: { goose: { toolCall: { toolName: 'developer__read', extensionName: 'developer' } } } },
-    { rawInput: { path: 'sample.py', line: 7 }, _meta: { goose: { toolCall: { toolName: 'developer__read', extensionName: 'developer' } } } },
+    {
+      content: text('answer = 42\n'),
+      _meta: {
+        goose: {
+          toolCall: { toolName: 'developer__read', extensionName: 'developer' },
+        },
+      },
+    },
+    {
+      rawInput: { path: 'sample.py', line: 7 },
+      _meta: {
+        goose: {
+          toolCall: { toolName: 'developer__read', extensionName: 'developer' },
+        },
+      },
+    },
   ),
   read_image: gooseUpdate(
     {
       content: [
-        { type: 'content', content: { type: 'text', text: 'Loaded image from /repo/dot.png (70 bytes, image/png, 1x1).' } },
-        { type: 'content', content: { type: 'image', data: 'aGk=', mimeType: 'image/png' } },
+        {
+          type: 'content',
+          content: { type: 'text', text: 'Loaded image from /repo/dot.png (70 bytes, image/png, 1x1).' },
+        },
+        {
+          type: 'content',
+          content: { type: 'image', data: 'aGk=', mimeType: 'image/png' },
+        },
       ],
       rawOutput: { source: '/repo/dot.png', width: 1, height: 1 },
-      _meta: { goose: { toolCall: { toolName: 'developer__read_image', extensionName: 'developer' } } },
+      _meta: {
+        goose: {
+          toolCall: { toolName: 'developer__read_image', extensionName: 'developer' },
+        },
+      },
     },
-    { rawInput: { source: '/repo/dot.png' }, _meta: { goose: { toolCall: { toolName: 'developer__read_image', extensionName: 'developer' } } } },
+    {
+      rawInput: { source: '/repo/dot.png' },
+      _meta: {
+        goose: {
+          toolCall: { toolName: 'developer__read_image', extensionName: 'developer' },
+        },
+      },
+    },
   ),
   tree: gooseUpdate(
-    { content: text('sample.py (10 lines)\ninner/ (2 files)'), _meta: { goose: { toolCall: { toolName: 'developer__tree', extensionName: 'developer' } } } },
-    { rawInput: { path: '.' }, _meta: { goose: { toolCall: { toolName: 'developer__tree', extensionName: 'developer' } } } },
+    {
+      content: text('sample.py (10 lines)\ninner/ (2 files)'),
+      _meta: {
+        goose: {
+          toolCall: { toolName: 'developer__tree', extensionName: 'developer' },
+        },
+      },
+    },
+    {
+      rawInput: { path: '.' },
+      _meta: {
+        goose: {
+          toolCall: { toolName: 'developer__tree', extensionName: 'developer' },
+        },
+      },
+    },
   ),
   delegate: gooseUpdate(
-    { content: text('**Findings**\n\nThe entry points exist.'), _meta: { goose: { toolCall: { toolName: 'delegate', extensionName: 'summon' } } } },
-    { rawInput: { instructions: 'Inspect the project', source: 'explore' }, _meta: { goose: { toolCall: { toolName: 'delegate', extensionName: 'summon' } } } },
+    {
+      content: text('**Findings**\n\nThe entry points exist.'),
+      _meta: {
+        goose: {
+          toolCall: { toolName: 'delegate', extensionName: 'summon' },
+        },
+      },
+    },
+    {
+      rawInput: { instructions: 'Inspect the project', source: 'explore' },
+      _meta: {
+        goose: {
+          toolCall: { toolName: 'delegate', extensionName: 'summon' },
+        },
+      },
+    },
   ),
   todo_write: gooseUpdate(
-    { content: text('Updated'), _meta: { goose: { toolCall: { toolName: 'todo__todo_write', extensionName: 'todo' } } } },
-    { rawInput: { content: '- [x] Completed task\n- [ ] Pending task' }, _meta: { goose: { toolCall: { toolName: 'todo__todo_write', extensionName: 'todo' } } } },
+    {
+      content: text('Updated'),
+      _meta: {
+        goose: {
+          toolCall: { toolName: 'todo__todo_write', extensionName: 'todo' },
+        },
+      },
+    },
+    {
+      rawInput: { content: '- [x] Completed task\n- [ ] Pending task' },
+      _meta: {
+        goose: {
+          toolCall: { toolName: 'todo__todo_write', extensionName: 'todo' },
+        },
+      },
+    },
   ),
   recall: gooseUpdate(
-    { content: text('The reader prefers tabs.'), _meta: { goose: { toolCall: { toolName: 'memory__recall', extensionName: 'memory' } } } },
-    { rawInput: { query: 'preferences' }, _meta: { goose: { toolCall: { toolName: 'memory__recall', extensionName: 'memory' } } } },
+    {
+      content: text('The reader prefers tabs.'),
+      _meta: {
+        goose: {
+          toolCall: { toolName: 'memory__recall', extensionName: 'memory' },
+        },
+      },
+    },
+    {
+      rawInput: { query: 'preferences' },
+      _meta: {
+        goose: {
+          toolCall: { toolName: 'memory__recall', extensionName: 'memory' },
+        },
+      },
+    },
   ),
 }
 
@@ -92,8 +245,16 @@ function failed(kind: ToolKind, name: string, status: ToolFailureFixture['status
   // Every failure pairs by name with a fixture above, so the reads are guarded for the type alone.
   const fixture = FIXTURES[name]
   return {
-    payload: { sessionUpdate: 'tool_call_update', toolCallId: CALL, status: 'failed', content: text(ERROR_TEXT), _meta: fixture?.payload._meta },
-    ...(fixture?.options !== undefined ? { options: fixture.options } : {}),
+    payload: {
+      sessionUpdate: 'tool_call_update',
+      toolCallId: CALL,
+      status: 'failed',
+      content: text(ERROR_TEXT),
+      _meta: fixture?.payload._meta,
+    },
+    ...(fixture?.options !== undefined
+      ? { options: fixture.options }
+      : {}),
     kind,
     name,
     status,

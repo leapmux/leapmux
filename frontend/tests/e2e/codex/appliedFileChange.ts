@@ -48,14 +48,16 @@ export function codexAppliedFileChange(messages: readonly AgentChatMessage[], se
 export function requireCodexPatchResult(request: MockModelRequestRecord, callId: string): void {
   const value: unknown = JSON.parse(nativeToolResult(request, callId))
   if (!Array.isArray(value))
-    throw new Error('The native Codex patch result must contain its code-mode content blocks.')
+    throw new TypeError('The native Codex patch result must contain its code-mode content blocks.')
   const blocks = value.filter(isObject).filter(block => block.type === 'input_text' && typeof block.text === 'string')
   if (!blocks.some(block => String(block.text).startsWith('Script completed\n')))
     throw new Error('The exact native Codex patch code cell did not finish successfully.')
   const returned = blocks.flatMap((block) => {
     try {
       const parsed: unknown = JSON.parse(String(block.text))
-      return isObject(parsed) ? [parsed] : []
+      return isObject(parsed)
+        ? [parsed]
+        : []
     }
     catch {
       return []

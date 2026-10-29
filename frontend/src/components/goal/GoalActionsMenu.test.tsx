@@ -18,7 +18,12 @@ const ALL: GoalAction[] = ['set', 'clear', 'pause', 'resume']
  * exactOptionalPropertyTypes excludes that present key from Partial<GoalSurface>.
  */
 function surface(over: Record<string, unknown> = {}): GoalSurface {
-  return Object.assign({ current: goal(), progress: {}, actions: ALL, onAction: vi.fn() }, over)
+  return Object.assign({
+    current: goal(),
+    progress: {},
+    actions: ALL,
+    onAction: vi.fn(),
+  }, over)
 }
 
 describe('GoalActionsMenu', () => {
@@ -27,7 +32,12 @@ describe('GoalActionsMenu', () => {
       <GoalActionsMenu goal={surface()} />
     ))
     expect(getAllByRole('menuitem', { hidden: true }).map(i => i.textContent))
-      .toEqual(['Pause', 'Resume', 'Replace goal…', 'Clear goal'])
+      .toEqual([
+        'Pause',
+        'Resume',
+        'Replace goal…',
+        'Clear goal',
+      ])
   })
 
   it('runs the action its menu item states', () => {
@@ -42,7 +52,10 @@ describe('GoalActionsMenu', () => {
   /** An unsupported Pause or Resume action stays absent from the menu. */
   it('omits an action the provider does not support at all', () => {
     const { queryByTestId, getByTestId } = render(() => (
-      <GoalActionsMenu goal={surface({ actions: ['set', 'clear'] })} />
+      <GoalActionsMenu goal={surface({
+        actions: ['set', 'clear'],
+      })}
+      />
     ))
     expect(queryByTestId('goal-action-pause')).toBeNull()
     expect(queryByTestId('goal-action-resume')).toBeNull()
@@ -55,7 +68,10 @@ describe('GoalActionsMenu', () => {
    */
   it('keeps a supported action the goal state refuses, disabled with its reason', () => {
     const { getByTestId } = render(() => (
-      <GoalActionsMenu goal={surface({ current: goal({ status: 'paused' }) })} />
+      <GoalActionsMenu goal={surface({
+        current: goal({ status: 'paused' }),
+      })}
+      />
     ))
     const pause = getByTestId('goal-action-pause') as HTMLButtonElement
     expect(pause.disabled).toBe(true)
@@ -69,7 +85,10 @@ describe('GoalActionsMenu', () => {
   // Each refused action states which goal status it requires.
   it('disables pause and resume for a dormant goal, and keeps clear', () => {
     const { getByTestId } = render(() => (
-      <GoalActionsMenu goal={surface({ current: goal({ status: 'dormant' }) })} />
+      <GoalActionsMenu goal={surface({
+        current: goal({ status: 'dormant' }),
+      })}
+      />
     ))
     expect((getByTestId('goal-action-pause') as HTMLButtonElement).disabled).toBe(true)
     expect((getByTestId('goal-action-resume') as HTMLButtonElement).disabled).toBe(true)
@@ -90,7 +109,10 @@ describe('GoalActionsMenu', () => {
   // Nothing to separate when Clear is the only verb the provider offers.
   it('draws no rule when the destructive verb stands alone', () => {
     const { container } = render(() => (
-      <GoalActionsMenu goal={surface({ actions: ['clear'] })} />
+      <GoalActionsMenu goal={surface({
+        actions: ['clear'],
+      })}
+      />
     ))
     expect(container.querySelectorAll('hr')).toHaveLength(0)
   })

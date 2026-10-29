@@ -24,8 +24,17 @@ export interface MessageContentRenderContext extends RowRenderContext, Omit<RowE
 
 /** A minimal parsed message for an isolated caller that supplies no resolved source. */
 function parsedMessageOf(parsed: unknown): ParsedMessageContent {
-  const parentObject = isObject(parsed) ? parsed : undefined
-  return { wrapper: null, topLevel: parentObject ?? null, parentObject, rawText: '', supplementalContent: undefined, messageMetadata: undefined }
+  const parentObject = isObject(parsed)
+    ? parsed
+    : undefined
+  return {
+    wrapper: null,
+    topLevel: parentObject ?? null,
+    parentObject,
+    rawText: '',
+    supplementalContent: undefined,
+    messageMetadata: undefined,
+  }
 }
 
 /** Extract and render an isolated payload, or render the caller's prepared extraction. */
@@ -46,7 +55,9 @@ export function renderMessageContent(
       ?? resolveMessageForRendering(
         category?.kind === 'control_response'
           ? parsedMessageOf(undefined)
-          : parsedMessageOf(typeof parsedOrRawJson === 'string' ? JSON.parse(parsedOrRawJson) : parsedOrRawJson),
+          : parsedMessageOf(typeof parsedOrRawJson === 'string'
+              ? JSON.parse(parsedOrRawJson)
+              : parsedOrRawJson),
         agentProvider ?? AgentProvider.UNSPECIFIED,
       )
 
@@ -60,7 +71,15 @@ export function renderMessageContent(
     logger.warn('Failed to render message content:', error)
   }
 
-  const fallback = <UnrecognizedMessage payload={parsedOrRawJson} renderFailed {...(context !== undefined ? { context } : {})} />
+  const fallback = (
+    <UnrecognizedMessage
+      payload={parsedOrRawJson}
+      renderFailed
+      {...(context !== undefined
+        ? { context }
+        : {})}
+    />
+  )
   const marker = completionMarker(messageCompletionFromProto(messageCompletion))
   return marker
     ? (

@@ -23,14 +23,21 @@ export const DIRAC_AGENT: ProviderAgent = { provider: AgentProvider.DIRAC, prefi
  */
 export async function nativeContext(fixtures: NativeContextFixtures): Promise<ManagedNativeScenarioContext> {
   return managedNativeContext(fixtures, DIRAC_AGENT, {
-    textStep: (text: string) => ({ toolCalls: [diracRespondToolCall(`dirac-complete-${randomUUID()}`, 'complete', text)] }),
+    textStep: (text: string) => ({
+      toolCalls: [
+        diracRespondToolCall(`dirac-complete-${randomUUID()}`, 'complete', text),
+      ],
+    }),
     waitForNativeCheckpoint: sessionId => waitForDiracCheckpoint(fixtures.leapmuxServer.agentEnv?.DIRAC_DIR ?? '', sessionId),
   })
 }
 
 /** Select the actual isolated executable and hold only its native runtime invocation. */
 export function nativeLaunch(context: ManagedNativeScenarioContext): NativeStartupLaunch {
-  return resolveNativeStartupLaunch(context.leapmuxServer.agentEnv, { binaryName: 'dirac', holdWhen: ['--acp'] })
+  return resolveNativeStartupLaunch(context.leapmuxServer.agentEnv, {
+    binaryName: 'dirac',
+    holdWhen: ['--acp'],
+  })
 }
 
 /** Open this provider's actual child task and hold its native final answer. */
@@ -38,17 +45,28 @@ export async function runningChild(context: ManagedNativeScenarioContext, option
   const taskMarker = uniqueMarker('NATIVECHILDTASK')
   const task = `${taskMarker} report one word.`
   const description = `${HELD_NATIVE_CHILD_DESCRIPTION} ${randomUUID()}`
-  const spawn = spawnSubagentToolCall(context.provider, 'native-held-child', { description, prompt: context.modelScript.prompt(task) })
+  const spawn = spawnSubagentToolCall(context.provider, 'native-held-child', {
+    description,
+    prompt: context.modelScript.prompt(task),
+  })
   const matcher = { body: task }
   const finalStep = nativeTextStep(context, 'NATIVECHILDCOMPLETE')
   return openRunningNativeChild(context, {
     gate: `native-child-${randomUUID()}`,
-    child: options.childTool ? { matcher, tool: options.childTool, finalStep } : { matcher, finalStep },
+    child: options.childTool
+      ? { matcher, tool: options.childTool, finalStep }
+      : { matcher, finalStep },
     spawn,
     allowExistingRows: options.allowExistingRows ?? false,
     rowText: description,
-    parentSteps: [{ toolCalls: [spawn] }],
-    rules: [diracChildResultRule(taskMarker, nativeTextStep(context, 'The native parent completed.'))],
+    parentSteps: [
+      {
+        toolCalls: [spawn],
+      },
+    ],
+    rules: [
+      diracChildResultRule(taskMarker, nativeTextStep(context, 'The native parent completed.')),
+    ],
   })
 }
 

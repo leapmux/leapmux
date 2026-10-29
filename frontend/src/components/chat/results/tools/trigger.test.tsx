@@ -29,13 +29,26 @@ describe('trigger renderer', () => {
   // `action: 'other'` matches no case of the title switch, which composes ''. A call
   // that also carried no title of its own then reached the header with no words at
   // all, and the row drew a bare icon. Every other kind ends in its own label.
-  it.each([[undefined], [{ text: '', format: 'plain' as const }]])('falls back to the label for an unworded action (result: %s)', (result) => {
-    const call = toolCallFixture('trigger', { request: { action: 'other' }, ...(result ? { result } : {}) })
+  it.each([
+    [undefined],
+    [
+      { text: '', format: 'plain' as const },
+    ],
+  ])('falls back to the label for an unworded action (result: %s)', (result) => {
+    const call = toolCallFixture('trigger', {
+      request: { action: 'other' },
+      ...(result
+        ? { result }
+        : {}),
+    })
     expect(triggerRenderer.title(parsedCall(call), undefined)).toBe('Trigger')
   })
 
   it('keeps the call\'s own title ahead of the label', () => {
-    const call = toolCallFixture('trigger', { request: { action: 'other' }, title: 'Nightly build' })
+    const call = toolCallFixture('trigger', {
+      request: { action: 'other' },
+      title: 'Nightly build',
+    })
     expect(triggerRenderer.title(parsedCall(call), undefined)).toBe('Nightly build')
   })
 
@@ -45,7 +58,10 @@ describe('trigger renderer', () => {
     const rowText = (call: ToolCall) => render(() => <ToolMessage row={toolRow(call)} />).container.textContent ?? ''
 
     it('draws the schedule while the call runs', () => {
-      const call = toolCallFixture('trigger', { status: 'in_progress', request: { action: 'create', name: 'nightly', schedule: '0 3 * * *' } })
+      const call = toolCallFixture('trigger', {
+        status: 'in_progress',
+        request: { action: 'create', name: 'nightly', schedule: '0 3 * * *' },
+      })
       expect(rowText(call)).toContain('0 3 * * *')
     })
 
@@ -62,7 +78,10 @@ describe('trigger renderer', () => {
 
     // A call that states no schedule draws no line at all, rather than an empty one.
     it('draws no line for a call that states no schedule', () => {
-      const call = toolCallFixture('trigger', { status: 'in_progress', request: { action: 'list' } })
+      const call = toolCallFixture('trigger', {
+        status: 'in_progress',
+        request: { action: 'list' },
+      })
       expect(triggerRenderer.request?.(parsedCall(call), rowView())).toBeNull()
     })
   })

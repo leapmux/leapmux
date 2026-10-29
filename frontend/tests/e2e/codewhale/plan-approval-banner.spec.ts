@@ -15,7 +15,9 @@ codewhaleTest('enforces the actual Plan policy and changes to Agent without a pl
   await expectNoPlanReview(native, {
     relatedProof: async () => {
       const planned = await runNativeToolTurn(native, {
-        toolCalls: [bashToolCall(AgentProvider.CODEWHALE, 'no-review-plan', 'printf "PLANREFUSAL%s\\n" "$((40 + 2))"')],
+        toolCalls: [
+          bashToolCall(AgentProvider.CODEWHALE, 'no-review-plan', 'printf "PLANREFUSAL%s\\n" "$((40 + 2))"'),
+        ],
         prompt: 'Check the native Plan policy before execution.',
         answer: 'The native Plan policy refused shell execution.',
       })
@@ -25,7 +27,9 @@ codewhaleTest('enforces the actual Plan policy and changes to Agent without a pl
       await waitForSettingsIdle(page)
       await expectSettingsChip(page, 'Agent')
       const executed = await runNativeToolTurn(native, {
-        toolCalls: [bashToolCall(AgentProvider.CODEWHALE, 'no-review-agent', 'printf "PLANEXECUTION%s\\n" "$((40 + 2))"')],
+        toolCalls: [
+          bashToolCall(AgentProvider.CODEWHALE, 'no-review-agent', 'printf "PLANEXECUTION%s\\n" "$((40 + 2))"'),
+        ],
         prompt: 'Execute the same operation after the native mode change.',
         answer: 'The actual Agent mode executed the shell command.',
       })

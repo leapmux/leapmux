@@ -12,9 +12,21 @@ import '../providers'
 
 describe('trySubmitAskUserQuestion', () => {
   it('keeps selected-only answers intact when an indirect caller supplies custom text', () => {
-    const state = createControlAnswerState({ selections: { 0: ['first'] } })
+    const state = createControlAnswerState({
+      selections: {
+        0: ['first'],
+      },
+    })
     const send = vi.fn()
-    const questions = [{ question: 'Choose', options: [{ value: 'first', label: 'First' }], allowCustomText: false }]
+    const questions = [
+      {
+        question: 'Choose',
+        options: [
+          { value: 'first', label: 'First' },
+        ],
+        allowCustomText: false,
+      },
+    ]
     expect(trySubmitAskUserQuestion(state, questions, 'Do not discard this.', send)).toBe(false)
     expect(send).not.toHaveBeenCalled()
     expect(state.selections()[0]).toEqual(['first'])
@@ -25,12 +37,27 @@ describe('trySubmitAskUserQuestion', () => {
     const state = createControlAnswerState({
       currentPage: 0,
     })
-    const editorContentRef = { set: vi.fn(), get: vi.fn() }
+    const editorContentRef = {
+      set: vi.fn(),
+      get: vi.fn(),
+    }
     const submitted = trySubmitAskUserQuestion(
       state,
       [
-        { header: 'Task', question: 'Pick a task', options: [{ label: 'Build' }] },
-        { header: 'Env', question: 'Pick an env', options: [{ label: 'Dev' }] },
+        {
+          header: 'Task',
+          question: 'Pick a task',
+          options: [
+            { label: 'Build' },
+          ],
+        },
+        {
+          header: 'Env',
+          question: 'Pick an env',
+          options: [
+            { label: 'Dev' },
+          ],
+        },
       ],
       'typed first answer',
       vi.fn(),
@@ -45,13 +72,21 @@ describe('trySubmitAskUserQuestion', () => {
 
   it('can preserve selected options when editor text is provider-specific notes', () => {
     const state = createControlAnswerState({
-      selections: { 0: ['Build'] },
+      selections: {
+        0: ['Build'],
+      },
     })
     const onSubmit = vi.fn()
     const submitted = trySubmitAskUserQuestion(
       state,
       [
-        { header: 'Task', question: 'Pick a task', options: [{ label: 'Build' }] },
+        {
+          header: 'Task',
+          question: 'Pick a task',
+          options: [
+            { label: 'Build' },
+          ],
+        },
       ],
       'note for selected option',
       onSubmit,
@@ -68,17 +103,40 @@ describe('trySubmitAskUserQuestion', () => {
 
 describe('questions that accept selected options only', () => {
   function actions(options: { count?: number, minimum?: number, maximum?: number } = {}) {
-    const state = createControlAnswerState({ customTexts: { 0: 'A stale custom answer' } })
+    const state = createControlAnswerState({
+      customTexts: { 0: 'A stale custom answer' },
+    })
     const send = vi.fn().mockResolvedValue(undefined)
-    const questions = [{
-      question: 'Choose',
-      allowCustomText: false,
-      multiSelect: true,
-      options: Array.from({ length: options.count ?? 2 }, (_, index) => ({ value: `id-${index}`, label: `Option ${index}` })),
-      ...(options.minimum === undefined ? {} : { minimumSelections: options.minimum }),
-      ...(options.maximum === undefined ? {} : { maximumSelections: options.maximum }),
-    }]
-    render(() => <AskUserQuestionActions request={{ requestId: 'select-only', agentId: 'a', payload: {} }} questions={questions} answerState={state} hasEditorContent={true} onTriggerSend={() => {}} onRespond={vi.fn()} onSubmitAnswers={send} onReject={vi.fn()} editorContentRef={() => ({ get: () => 'Unsaved custom text', set: vi.fn() })} />)
+    const questions = [
+      {
+        question: 'Choose',
+        allowCustomText: false,
+        multiSelect: true,
+        options: Array.from({ length: options.count ?? 2 }, (_, index) => ({ value: `id-${index}`, label: `Option ${index}` })),
+        ...(options.minimum === undefined
+          ? {}
+          : { minimumSelections: options.minimum }),
+        ...(options.maximum === undefined
+          ? {}
+          : { maximumSelections: options.maximum }),
+      },
+    ]
+    render(() => (
+      <AskUserQuestionActions
+        request={{ requestId: 'select-only', agentId: 'a', payload: {} }}
+        questions={questions}
+        answerState={state}
+        hasEditorContent={true}
+        onTriggerSend={() => {}}
+        onRespond={vi.fn()}
+        onSubmitAnswers={send}
+        onReject={vi.fn()}
+        editorContentRef={() => ({
+          get: () => 'Unsaved custom text',
+          set: vi.fn(),
+        })}
+      />
+    ))
     return { state, send }
   }
 
@@ -98,7 +156,11 @@ describe('questions that accept selected options only', () => {
     expect(state.selections()[0]).toEqual(['id-0', 'id-1'])
   })
 
-  it.each([{ count: 0 }, { minimum: 3 }, { maximum: 0 }])('refuses automatic answers without a valid option set: %j', (options) => {
+  it.each([
+    { count: 0 },
+    { minimum: 3 },
+    { maximum: 0 },
+  ])('refuses automatic answers without a valid option set: %j', (options) => {
     const { send } = actions(options)
     expect(screen.getByTestId('control-yolo-btn')).toBeDisabled()
     expect(screen.getByTestId('control-submit-btn')).toBeDisabled()
@@ -109,12 +171,22 @@ describe('questions that accept selected options only', () => {
 describe('buildAskAnswers', () => {
   it('keys answers by question text as expected by Claude Code', () => {
     const state = createControlAnswerState({
-      selections: { 0: ['Build'] },
+      selections: {
+        0: ['Build'],
+      },
       customTexts: { 0: 'typed answer' },
     })
     const result = buildAskAnswers(
       state,
-      [{ header: 'Task', question: 'Pick a task', options: [{ label: 'Build' }] }],
+      [
+        {
+          header: 'Task',
+          question: 'Pick a task',
+          options: [
+            { label: 'Build' },
+          ],
+        },
+      ],
       { questions: [] },
       'req-1',
     )
@@ -141,7 +213,16 @@ describe('controlQuestion', () => {
     payload: {
       request: {
         tool_name: 'AskUserQuestion',
-        input: { questions: [{ question: 'Which database?', options: [{ label: 'Postgres' }] }] },
+        input: {
+          questions: [
+            {
+              question: 'Which database?',
+              options: [
+                { label: 'Postgres' },
+              ],
+            },
+          ],
+        },
       },
     },
   })
@@ -157,7 +238,9 @@ describe('controlQuestion', () => {
     const plan: ControlRequest = {
       requestId: 'plan-1',
       agentId: 'a1',
-      payload: { request: { tool_name: 'ExitPlanMode', input: {} } },
+      payload: {
+        request: { tool_name: 'ExitPlanMode', input: {} },
+      },
     }
     expect(controlQuestion(plan, AgentProvider.CLAUDE_CODE)).toBeUndefined()
   })
@@ -179,24 +262,32 @@ describe('controlQuestion', () => {
 })
 
 describe('submitBlockedReason', () => {
-  const options = [{ label: 'Build' }]
+  const options = [
+    { label: 'Build' },
+  ]
   const answered = () => true
   const unanswered = () => false
 
   it('states nothing when every question is answered', () => {
-    expect(submitBlockedReason([{ question: 'Pick a task', options }], answered)).toBe('')
+    expect(submitBlockedReason([
+      { question: 'Pick a task', options },
+    ], answered)).toBe('')
   })
 
   // The census that measured this control read a disabled submit beside preset
   // options as "these options are the only answer", and reported the typed
   // answer as unreachable. Both routes are named here for that reason.
   it('names both routes when the waiting question offers options', () => {
-    expect(submitBlockedReason([{ question: 'Pick a task', options }], unanswered))
+    expect(submitBlockedReason([
+      { question: 'Pick a task', options },
+    ], unanswered))
       .toBe('Choose an option, or type a custom answer below.')
   })
 
   it('names only the typed route when the waiting question offers no option', () => {
-    expect(submitBlockedReason([{ question: 'Name it', options: [] }], unanswered))
+    expect(submitBlockedReason([
+      { question: 'Name it', options: [] },
+    ], unanswered))
       .toBe('Type a custom answer below.')
   })
 
@@ -221,15 +312,45 @@ describe('submitBlockedReason', () => {
   })
 
   it('states the explicit selection count for the unanswered question', () => {
-    const questions = [{ question: 'Choose the tools', options: [{ label: 'One' }, { label: 'Two' }, { label: 'Three' }], multiSelect: true, minimumSelections: 2, maximumSelections: 3 }]
+    const questions = [
+      {
+        question: 'Choose the tools',
+        options: [
+          { label: 'One' },
+          { label: 'Two' },
+          { label: 'Three' },
+        ],
+        multiSelect: true,
+        minimumSelections: 2,
+        maximumSelections: 3,
+      },
+    ]
     expect(submitBlockedReason(questions, unanswered)).toBe('Select 2 to 3 options, or type a custom answer below.')
   })
 
   it('states the one-sided count a native question that states one end', () => {
-    const options = [{ label: 'One' }, { label: 'Two' }, { label: 'Three' }]
-    expect(submitBlockedReason([{ question: 'Choose the tools', options, multiSelect: true, minimumSelections: 2 }], unanswered))
+    const options = [
+      { label: 'One' },
+      { label: 'Two' },
+      { label: 'Three' },
+    ]
+    expect(submitBlockedReason([
+      {
+        question: 'Choose the tools',
+        options,
+        multiSelect: true,
+        minimumSelections: 2,
+      },
+    ], unanswered))
       .toBe('Select at least 2 options, or type a custom answer below.')
-    expect(submitBlockedReason([{ question: 'Choose the tools', options, multiSelect: true, maximumSelections: 2 }], unanswered))
+    expect(submitBlockedReason([
+      {
+        question: 'Choose the tools',
+        options,
+        multiSelect: true,
+        maximumSelections: 2,
+      },
+    ], unanswered))
       .toBe('Select up to 2 options, or type a custom answer below.')
   })
 })
@@ -245,8 +366,22 @@ describe('AskUserQuestionActions', () => {
         tool_name: 'AskUserQuestion',
         input: {
           questions: [
-            { question: 'Pick a color', header: 'Color', options: [{ label: 'Red' }, { label: 'Blue' }] },
-            { question: 'Pick a size', header: 'Size', options: [{ label: 'Small' }, { label: 'Large' }] },
+            {
+              question: 'Pick a color',
+              header: 'Color',
+              options: [
+                { label: 'Red' },
+                { label: 'Blue' },
+              ],
+            },
+            {
+              question: 'Pick a size',
+              header: 'Size',
+              options: [
+                { label: 'Small' },
+                { label: 'Large' },
+              ],
+            },
           ],
         },
       },
@@ -256,7 +391,10 @@ describe('AskUserQuestionActions', () => {
   /** Render the Claude question actions with an editor that holds `editorText` on the current page. */
   function renderActions(state: ControlAnswerState, editorText: string): Mock {
     const respond = vi.fn().mockResolvedValue(undefined)
-    const editor = { get: () => editorText, set: vi.fn() }
+    const editor = {
+      get: () => editorText,
+      set: vi.fn(),
+    }
     render(() => (
       <ControlRequestActions
         request={colorAndSize()}
@@ -277,12 +415,20 @@ describe('AskUserQuestionActions', () => {
     // A realm check (`instanceof Uint8Array`) is unreliable here: the encoder
     // and the test environment can hold different Uint8Array constructors.
     if (!ArrayBuffer.isView(bytes))
-      throw new Error(`The question actions sent no response bytes: ${String(bytes)}`)
+      throw new TypeError(`The question actions sent no response bytes: ${String(bytes)}`)
     const envelope: unknown = JSON.parse(new TextDecoder().decode(bytes))
-    const outer = isObject(envelope) ? envelope.response : undefined
-    const inner = isObject(outer) ? outer.response : undefined
-    const input = isObject(inner) ? inner.updatedInput : undefined
-    return isObject(input) ? input.answers : undefined
+    const outer = isObject(envelope)
+      ? envelope.response
+      : undefined
+    const inner = isObject(outer)
+      ? outer.response
+      : undefined
+    const input = isObject(inner)
+      ? inner.updatedInput
+      : undefined
+    return isObject(input)
+      ? input.answers
+      : undefined
   }
 
   // An option click on the first page advances to the second, so YOLO runs
@@ -290,7 +436,12 @@ describe('AskUserQuestionActions', () => {
   // editor into the current page, and that save must not erase the answer that
   // YOLO filled in.
   it('fills the current unanswered page when the editor is empty', async () => {
-    const state = createControlAnswerState({ selections: { 0: ['Red'] }, currentPage: 1 })
+    const state = createControlAnswerState({
+      selections: {
+        0: ['Red'],
+      },
+      currentPage: 1,
+    })
     const respond = renderActions(state, '')
 
     fireEvent.click(screen.getByTestId('control-yolo-btn'))
@@ -312,14 +463,24 @@ describe('AskUserQuestionActions', () => {
   })
 
   it('stays disabled when unsaved editor text answers the only open page', () => {
-    const state = createControlAnswerState({ selections: { 0: ['Red'] }, currentPage: 1 })
+    const state = createControlAnswerState({
+      selections: {
+        0: ['Red'],
+      },
+      currentPage: 1,
+    })
     renderActions(state, 'Medium, please')
 
     expect(screen.getByTestId('control-yolo-btn')).toBeDisabled()
   })
 
   it('fills an unanswered page that is not current', async () => {
-    const state = createControlAnswerState({ selections: { 0: ['Red'] }, currentPage: 0 })
+    const state = createControlAnswerState({
+      selections: {
+        0: ['Red'],
+      },
+      currentPage: 0,
+    })
     const respond = renderActions(state, '')
 
     fireEvent.click(screen.getByTestId('control-yolo-btn'))
@@ -345,7 +506,14 @@ describe('AskUserQuestionActions', () => {
       <AskUserQuestionActions
         request={request}
         answerState={createControlAnswerState()}
-        questions={[{ question: 'Choose', options: [{ label: 'First' }] }]}
+        questions={[
+          {
+            question: 'Choose',
+            options: [
+              { label: 'First' },
+            ],
+          },
+        ]}
         onRespond={vi.fn()}
         hasEditorContent={false}
         onTriggerSend={vi.fn()}
@@ -360,7 +528,12 @@ describe('AskUserQuestionActions', () => {
   // a skip: a decision to answer none of it, sent with no reason. Codex keeps
   // no pending question state, and the empty reason sends nothing on.
   it('reads Skip for a non-blocking question and rejects with no reason', async () => {
-    const onReject = renderStopActions({ requestId: 'q1', agentId: 'a1', payload: {}, nonBlocking: true })
+    const onReject = renderStopActions({
+      requestId: 'q1',
+      agentId: 'a1',
+      payload: {},
+      nonBlocking: true,
+    })
 
     const skip = screen.getByTestId('control-skip-btn')
     expect(skip).toHaveTextContent('Skip')
@@ -387,10 +560,18 @@ describe('AskUserQuestionActions', () => {
 describe('trySubmitAskUserQuestion selection limits', () => {
   const question = (minimumSelections?: number, maximumSelections?: number) => ({
     question: 'Choose the tools',
-    options: [{ label: 'One' }, { label: 'Two' }, { label: 'Three' }],
+    options: [
+      { label: 'One' },
+      { label: 'Two' },
+      { label: 'Three' },
+    ],
     multiSelect: true,
-    ...(minimumSelections === undefined ? {} : { minimumSelections }),
-    ...(maximumSelections === undefined ? {} : { maximumSelections }),
+    ...(minimumSelections === undefined
+      ? {}
+      : { minimumSelections }),
+    ...(maximumSelections === undefined
+      ? {}
+      : { maximumSelections }),
   })
 
   it('refuses an empty question list through the production submit helper', () => {
@@ -401,68 +582,183 @@ describe('trySubmitAskUserQuestion selection limits', () => {
   })
 
   it.each([
-    { label: 'below the minimum', selected: ['One'], minimum: 2, maximum: 3, allowed: false },
-    { label: 'at the minimum', selected: ['One', 'Two'], minimum: 2, maximum: 3, allowed: true },
-    { label: 'at the maximum', selected: ['One', 'Two', 'Three'], minimum: 2, maximum: 3, allowed: true },
-    { label: 'above the maximum', selected: ['One', 'Two', 'Three'], minimum: 1, maximum: 2, allowed: false },
-    { label: 'explicit zero minimum', selected: ['One'], minimum: 0, maximum: 1, allowed: true },
-    { label: 'explicit zero maximum', selected: ['One'], minimum: 0, maximum: 0, allowed: false },
-    { label: 'absent limits', selected: ['One'], minimum: undefined, maximum: undefined, allowed: true },
+    {
+      label: 'below the minimum',
+      selected: ['One'],
+      minimum: 2,
+      maximum: 3,
+      allowed: false,
+    },
+    {
+      label: 'at the minimum',
+      selected: ['One', 'Two'],
+      minimum: 2,
+      maximum: 3,
+      allowed: true,
+    },
+    {
+      label: 'at the maximum',
+      selected: ['One', 'Two', 'Three'],
+      minimum: 2,
+      maximum: 3,
+      allowed: true,
+    },
+    {
+      label: 'above the maximum',
+      selected: ['One', 'Two', 'Three'],
+      minimum: 1,
+      maximum: 2,
+      allowed: false,
+    },
+    {
+      label: 'explicit zero minimum',
+      selected: ['One'],
+      minimum: 0,
+      maximum: 1,
+      allowed: true,
+    },
+    {
+      label: 'explicit zero maximum',
+      selected: ['One'],
+      minimum: 0,
+      maximum: 0,
+      allowed: false,
+    },
+    {
+      label: 'absent limits',
+      selected: ['One'],
+      minimum: undefined,
+      maximum: undefined,
+      allowed: true,
+    },
   ])('checks $label before the production submit helper sends an answer', ({ selected, minimum, maximum, allowed }) => {
-    const state = createControlAnswerState({ selections: { 0: selected } })
+    const state = createControlAnswerState({
+      selections: { 0: selected },
+    })
     const submit = vi.fn()
-    expect(trySubmitAskUserQuestion(state, [question(minimum, maximum)], '', submit, undefined, true)).toBe(allowed)
+    expect(trySubmitAskUserQuestion(state, [
+      question(minimum, maximum),
+    ], '', submit, undefined, true)).toBe(allowed)
     expect(submit).toHaveBeenCalledTimes(allowed ? 1 : 0)
     expect(state.selections()[0]).toEqual(selected)
   })
 
   it.each([
-    { label: 'typed answer', text: '  Native answer 界\n', allowEmpty: false, allowed: true },
-    { label: 'empty answer', text: '', allowEmpty: false, allowed: false },
-    { label: 'whitespace answer', text: ' \t\n', allowEmpty: false, allowed: false },
-    { label: 'explicit empty allowance', text: '', allowEmpty: true, allowed: true },
+    {
+      label: 'typed answer',
+      text: '  Native answer 界\n',
+      allowEmpty: false,
+      allowed: true,
+    },
+    {
+      label: 'empty answer',
+      text: '',
+      allowEmpty: false,
+      allowed: false,
+    },
+    {
+      label: 'whitespace answer',
+      text: ' \t\n',
+      allowEmpty: false,
+      allowed: false,
+    },
+    {
+      label: 'explicit empty allowance',
+      text: '',
+      allowEmpty: true,
+      allowed: true,
+    },
   ])('keeps $label separate from option counts', ({ text, allowEmpty, allowed }) => {
     const state = createControlAnswerState()
     const submit = vi.fn()
-    expect(trySubmitAskUserQuestion(state, [{ ...question(2, 3), allowEmpty }], text, submit)).toBe(allowed)
+    expect(trySubmitAskUserQuestion(state, [
+      {
+        ...question(2, 3),
+        allowEmpty,
+      },
+    ], text, submit)).toBe(allowed)
     expect(submit).toHaveBeenCalledTimes(allowed ? 1 : 0)
     expect(state.customTexts()[0]).toBe(text)
     expect(state.selections()[0] ?? []).toEqual([])
   })
 
   it('keeps a selected note from bypassing the option minimum', () => {
-    const state = createControlAnswerState({ selections: { 0: ['One'] } })
+    const state = createControlAnswerState({
+      selections: {
+        0: ['One'],
+      },
+    })
     const submit = vi.fn()
-    expect(trySubmitAskUserQuestion(state, [question(2, 3)], 'Native note', submit, undefined, true)).toBe(false)
+    expect(trySubmitAskUserQuestion(state, [
+      question(2, 3),
+    ], 'Native note', submit, undefined, true)).toBe(false)
     expect(submit).not.toHaveBeenCalled()
     expect(state.selections()[0]).toEqual(['One'])
     expect(state.customTexts()[0]).toBe('Native note')
   })
 
   it('keeps an empty-answer allowance from bypassing selection limits', () => {
-    const state = createControlAnswerState({ selections: { 0: ['One'] } })
+    const state = createControlAnswerState({
+      selections: {
+        0: ['One'],
+      },
+    })
     const submit = vi.fn()
-    expect(trySubmitAskUserQuestion(state, [{ ...question(2, 3), allowEmpty: true }], '', submit, undefined, true)).toBe(false)
+    expect(trySubmitAskUserQuestion(state, [
+      {
+        ...question(2, 3),
+        allowEmpty: true,
+      },
+    ], '', submit, undefined, true)).toBe(false)
     expect(submit).not.toHaveBeenCalled()
     expect(state.selections()[0]).toEqual(['One'])
   })
 
   it('moves to a page whose selection does not fit its own limits', () => {
-    const state = createControlAnswerState({ currentPage: 0, selections: { 0: ['One'], 1: ['One'] } })
+    const state = createControlAnswerState({
+      currentPage: 0,
+      selections: {
+        0: ['One'],
+        1: ['One'],
+      },
+    })
     const submit = vi.fn()
-    const editor = { get: vi.fn(), set: vi.fn() }
-    expect(trySubmitAskUserQuestion(state, [question(1, 1), question(2, 3)], '', submit, editor, true)).toBe(false)
+    const editor = {
+      get: vi.fn(),
+      set: vi.fn(),
+    }
+    expect(trySubmitAskUserQuestion(state, [
+      question(1, 1),
+      question(2, 3),
+    ], '', submit, editor, true)).toBe(false)
     expect(state.currentPage()).toBe(1)
     expect(editor.set).toHaveBeenCalledWith('')
-    expect(state.selections()).toEqual({ 0: ['One'], 1: ['One'] })
+    expect(state.selections()).toEqual({
+      0: ['One'],
+      1: ['One'],
+    })
     expect(submit).not.toHaveBeenCalled()
   })
 })
 
 describe('AskUserQuestionContent selection limits', () => {
   function renderLimitedQuestion(selected: string[] = [], hasEditorContent = false) {
-    const state = createControlAnswerState({ selections: { 0: selected } })
-    const questions = [{ question: 'Choose the tools', options: [{ label: 'One' }, { label: 'Two' }, { label: 'Three' }], multiSelect: true, minimumSelections: 2, maximumSelections: 2 }]
+    const state = createControlAnswerState({
+      selections: { 0: selected },
+    })
+    const questions = [
+      {
+        question: 'Choose the tools',
+        options: [
+          { label: 'One' },
+          { label: 'Two' },
+          { label: 'Three' },
+        ],
+        multiSelect: true,
+        minimumSelections: 2,
+        maximumSelections: 2,
+      },
+    ]
     const request: ControlRequest = { requestId: 'limited-question', agentId: 'agent', payload: {} }
     const submit = vi.fn().mockResolvedValue(undefined)
     render(() => (

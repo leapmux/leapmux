@@ -156,7 +156,10 @@ export class KeyPinStore {
 
     const commit = () => {
       const pins = localStorageGet<KeyPinMap>(KEY_KEY_PINS) ?? {}
-      pins[workerId] = { publicKeyHex, firstSeen: Date.now() }
+      pins[workerId] = {
+        publicKeyHex,
+        firstSeen: Date.now(),
+      }
       localStorageSet(KEY_KEY_PINS, pins)
     }
 

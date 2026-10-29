@@ -51,7 +51,11 @@ async function mintSelfSignedCert(): Promise<{ key: Buffer, cert: Buffer, dir: s
     if (result.status !== 0)
       throw new Error(`OpenSSL failed to create the test certificate: ${result.stderr || result.stdout}`)
     writeFileSync(join(dir, 'README'), 'LeapMux test TLS certificates. This directory contains no user secrets.\n')
-    return { key: readFileSync(keyPath), cert: readFileSync(certPath), dir }
+    return {
+      key: readFileSync(keyPath),
+      cert: readFileSync(certPath),
+      dir,
+    }
   }, async () => {
     rmSync(dir, { recursive: true, force: true })
   })
@@ -60,11 +64,23 @@ async function mintSelfSignedCert(): Promise<{ key: Buffer, cert: Buffer, dir: s
 function forwardHeaders(incoming: IncomingMessage['headers']): http.OutgoingHttpHeaders {
   const headers: http.OutgoingHttpHeaders = { ...incoming }
   const connection = incoming.connection
-  for (const entry of Array.isArray(connection) ? connection : [connection ?? '']) {
+  for (const entry of Array.isArray(connection)
+    ? connection
+    : [connection ?? '']) {
     for (const token of entry.split(','))
       delete headers[token.trim().toLowerCase()]
   }
-  for (const name of ['connection', 'keep-alive', 'proxy-connection', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade'])
+  for (const name of [
+    'connection',
+    'keep-alive',
+    'proxy-connection',
+    'proxy-authenticate',
+    'proxy-authorization',
+    'te',
+    'trailer',
+    'transfer-encoding',
+    'upgrade',
+  ])
     delete headers[name]
   return headers
 }
@@ -180,7 +196,10 @@ export async function startTlsProxy(hubUrl: string): Promise<TlsProxyHandle> {
         path: req.url,
         method: req.method,
         // The upstream Host identifies the Hub. Preserve the browser's Origin.
-        headers: { ...forwardHeaders(req.headers), host: target.host },
+        headers: {
+          ...forwardHeaders(req.headers),
+          host: target.host,
+        },
       })
       upstream.on('response', (response) => {
         res.writeHead(response.statusCode ?? 502, forwardHeaders(response.headers))
@@ -205,7 +224,12 @@ export async function startTlsProxy(hubUrl: string): Promise<TlsProxyHandle> {
         port: Number(target.port || 80),
         path: req.url,
         method: 'GET',
-        headers: { ...forwardHeaders(req.headers), host: target.host, connection: 'Upgrade', upgrade: 'websocket' },
+        headers: {
+          ...forwardHeaders(req.headers),
+          host: target.host,
+          connection: 'Upgrade',
+          upgrade: 'websocket',
+        },
       })
       upstream.on('upgrade', (response, peer, peerHead) => {
         trackSocket(peer)
@@ -213,7 +237,9 @@ export async function startTlsProxy(hubUrl: string): Promise<TlsProxyHandle> {
         for (const [name, value] of Object.entries(forwardHeaders(response.headers))) {
           if (value === undefined)
             continue
-          for (const item of Array.isArray(value) ? value : [value])
+          for (const item of Array.isArray(value)
+            ? value
+            : [value])
             lines.push(`${name}: ${item}`)
         }
         lines.push('', '')

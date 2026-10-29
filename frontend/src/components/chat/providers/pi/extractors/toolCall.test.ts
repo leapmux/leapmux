@@ -16,14 +16,29 @@ import { PI_POWERSHELL_TOOL, PI_SEARCH_TOOL } from '../protocol'
 import { PI_TOOL_READERS, PI_TOOL_REQUEST_OVERRIDES, piReclassify, piToolCall, piToolFacts, piToolRow, piToolSpanRowRole } from './toolCall'
 import '../plugin'
 
-const text = (value: string) => [{ type: 'text', text: value }]
+function text(value: string) {
+  return [
+    { type: 'text', text: value },
+  ]
+}
 
 function start(toolName: string, args: Record<string, unknown> = {}): Record<string, unknown> {
-  return { type: 'tool_execution_start', toolCallId: 'call', toolName, args }
+  return {
+    type: 'tool_execution_start',
+    toolCallId: 'call',
+    toolName,
+    args,
+  }
 }
 
 function end(toolName: string, result: Record<string, unknown>, isError = false): Record<string, unknown> {
-  return { type: 'tool_execution_end', toolCallId: 'call', toolName, result, isError }
+  return {
+    type: 'tool_execution_end',
+    toolCallId: 'call',
+    toolName,
+    result,
+    isError,
+  }
 }
 
 function resultRow(toolName: string, args: Record<string, unknown>, result: Record<string, unknown>, isError = false): PiToolRow {
@@ -43,7 +58,12 @@ function requestRow(toolName: string, args: Record<string, unknown> = {}): PiToo
  * that states no file tests the uncategorized card rather than the tool.
  */
 const MINIMAL_ARGS: Readonly<Record<string, Record<string, unknown>>> = {
-  [PI_TOOL.Edit]: { path: '/project/a.ts', edits: [{ oldText: 'before', newText: 'after' }] },
+  [PI_TOOL.Edit]: {
+    path: '/project/a.ts',
+    edits: [
+      { oldText: 'before', newText: 'after' },
+    ],
+  },
   [PI_TOOL.Write]: { path: '/project/new.ts', content: 'export const a = 1\n' },
 }
 
@@ -63,7 +83,9 @@ describe('piToolRow', () => {
   })
 
   it('reads a completion event as the end of its call', () => {
-    expect(resultRow(PI_TOOL.Read, {}, { content: text('body') }).finished).toBe(true)
+    expect(resultRow(PI_TOOL.Read, {}, {
+      content: text('body'),
+    }).finished).toBe(true)
   })
 
   // A turn that ended while the call ran stores the start frame again as the closing
@@ -78,7 +100,12 @@ describe('piToolRow', () => {
   it('reports a to-do failure that Pi did not flag', () => {
     const row = resultRow(PI_TOOL.Todo, { action: 'update', id: 99 }, {
       content: text('Error: #99 not found'),
-      details: { action: 'update', params: { action: 'update', id: 99 }, error: '#99 not found', tasks: [] },
+      details: {
+        action: 'update',
+        params: { action: 'update', id: 99 },
+        error: '#99 not found',
+        tasks: [],
+      },
     })
     expect(row.tool.isError).toBe(false)
     expect(row.isError).toBe(true)
@@ -113,7 +140,9 @@ describe('piToolCall kinds and labels', () => {
   it('states one kind on both frames of a to-do call it cannot read', () => {
     const args = { action: 'teleport' }
     const running = piToolCall(requestRow(PI_TOOL.Todo, args))
-    const ended = piToolCall(resultRow(PI_TOOL.Todo, args, { content: text('done') }))
+    const ended = piToolCall(resultRow(PI_TOOL.Todo, args, {
+      content: text('done'),
+    }))
     expect(running.kind).toBe('mcp')
     expect(ended.kind).toBe('mcp')
   })
@@ -146,9 +175,16 @@ describe('piToolCall kinds and labels', () => {
 
 describe('piToolCall edit arguments', () => {
   it('states a single substitution as the one change the title reads', () => {
-    const call = piToolCall(requestRow(PI_TOOL.Edit, { path: '/project/a.ts', edits: [{ oldText: 'before', newText: 'after' }] }))
+    const call = piToolCall(requestRow(PI_TOOL.Edit, {
+      path: '/project/a.ts',
+      edits: [
+        { oldText: 'before', newText: 'after' },
+      ],
+    }))
     expect(call.kind).toBe('edit')
-    const changes = call.kind === 'edit' ? call.request.changes : []
+    const changes = call.kind === 'edit'
+      ? call.request.changes
+      : []
     expect(changes).toHaveLength(1)
     expect(changes[0]).toMatchObject({ oldStr: 'before', newStr: 'after' })
   })
@@ -156,7 +192,10 @@ describe('piToolCall edit arguments', () => {
   it('states the size of a multi-substitution edit', () => {
     const call = piToolCall(requestRow(PI_TOOL.Edit, {
       path: '/project/a.ts',
-      edits: [{ oldText: 'a', newText: 'b' }, { oldText: 'c', newText: 'd' }],
+      edits: [
+        { oldText: 'a', newText: 'b' },
+        { oldText: 'c', newText: 'd' },
+      ],
     }))
     expect(call.kind === 'edit' && call.request.changes).toHaveLength(2)
   })
@@ -175,28 +214,47 @@ describe('piToolCall question arguments', () => {
   // Every one of Pi's four question tools states its question in the ARGUMENTS. An
   // empty request drew the bare wire name over an empty body, and the reader lost both
   // the question and every option it offered.
-  it.each([PI_TOOL.AskUserQuestion, PI_TOOL.PlanQuestion, PI_TOOL.GoalQuestion, PI_TOOL.GoalQuestionnaire])('reads the question a %s call asked', (toolName) => {
-    const call = piToolCall(requestRow(toolName, { questions: [question] }))
+  it.each([
+    PI_TOOL.AskUserQuestion,
+    PI_TOOL.PlanQuestion,
+    PI_TOOL.GoalQuestion,
+    PI_TOOL.GoalQuestionnaire,
+  ])('reads the question a %s call asked', (toolName) => {
+    const call = piToolCall(requestRow(toolName, {
+      questions: [question],
+    }))
     expect(call.kind).toBe('question')
-    expect(call.kind === 'question' && call.request.questions).toEqual([{
-      header: 'Layout',
-      question: 'Choose a layout',
-      options: [
-        { label: 'Compact', description: 'Small', preview: 'a worked example' },
-        { label: 'Wide', description: 'Large', preview: undefined },
-      ],
-    }])
+    expect(call.kind === 'question' && call.request.questions).toEqual([
+      {
+        header: 'Layout',
+        question: 'Choose a layout',
+        options: [
+          { label: 'Compact', description: 'Small', preview: 'a worked example' },
+          { label: 'Wide', description: 'Large', preview: undefined },
+        ],
+      },
+    ])
   })
 
   it('heads a single-question row with the question rather than the wire name', () => {
-    expect(piToolCall(requestRow(PI_TOOL.GoalQuestion, { questions: [question] })).title).toBe('Choose a layout')
+    expect(piToolCall(requestRow(PI_TOOL.GoalQuestion, {
+      questions: [question],
+    })).title).toBe('Choose a layout')
   })
 
   // Several questions cannot share one line, so the shared renderer states their
   // count -- and a title here would override it with the first question alone.
   it('states no title of its own for several questions', () => {
     const call = piToolCall(requestRow(PI_TOOL.AskUserQuestion, {
-      questions: [question, { question: 'Pick a colour', options: [{ label: 'Red' }] }],
+      questions: [
+        question,
+        {
+          question: 'Pick a colour',
+          options: [
+            { label: 'Red' },
+          ],
+        },
+      ],
     }))
     expect(call.kind === 'question' && call.request.questions).toHaveLength(2)
     expect(call.title).toBe(PI_TOOL.AskUserQuestion)
@@ -208,39 +266,85 @@ describe('piToolCall question arguments', () => {
   })
 
   it.each([
-    ['no question field', { options: [{ label: 'Red' }] }],
-    ['an options list that is not an array', { question: 'Pick', options: 'Red' }],
-    ['an option with no label', { question: 'Pick', options: [{ description: 'Small' }] }],
+    [
+      'no question field',
+      {
+        options: [
+          { label: 'Red' },
+        ],
+      },
+    ],
+    [
+      'an options list that is not an array',
+      { question: 'Pick', options: 'Red' },
+    ],
+    [
+      'an option with no label',
+      {
+        question: 'Pick',
+        options: [
+          { description: 'Small' },
+        ],
+      },
+    ],
   ])('drops %s', (_name, args) => {
     const call = piToolCall(requestRow(PI_TOOL.AskUserQuestion, args))
-    const questions = call.kind === 'question' ? call.request.questions : []
+    const questions = call.kind === 'question'
+      ? call.request.questions
+      : []
     expect(questions.flatMap(q => q.options)).toEqual([])
   })
 
   it('states the answer the reader chose under the question header', () => {
-    const call = piToolCall(resultRow(PI_TOOL.AskUserQuestion, { questions: [question] }, { content: text('Compact') }))
-    expect(call.result).toEqual({ answers: [{ header: 'Layout', answer: 'Compact' }] })
+    const call = piToolCall(resultRow(PI_TOOL.AskUserQuestion, {
+      questions: [question],
+    }, {
+      content: text('Compact'),
+    }))
+    expect(call.result).toEqual({
+      answers: [
+        { header: 'Layout', answer: 'Compact' },
+      ],
+    })
   })
 })
 
 describe('piToolCall result slots', () => {
   it('draws a command result through the shared command body', () => {
-    const call = piToolCall(resultRow(PI_TOOL.Bash, { command: 'ls' }, { content: text('a.ts') }))
-    expect(call.result).toMatchObject({ commands: [{ output: 'a.ts' }] })
+    const call = piToolCall(resultRow(PI_TOOL.Bash, { command: 'ls' }, {
+      content: text('a.ts'),
+    }))
+    expect(call.result).toMatchObject({
+      commands: [
+        { output: 'a.ts' },
+      ],
+    })
   })
 
   it('draws a directory listing through the shared directory body', () => {
-    const call = piToolCall(resultRow(PI_SEARCH_TOOL.List, { path: '/project' }, { content: text('a.ts\nsrc/') }))
-    expect(call.result).toMatchObject({ entries: [{ path: 'a.ts' }, { path: 'src/' }] })
+    const call = piToolCall(resultRow(PI_SEARCH_TOOL.List, { path: '/project' }, {
+      content: text('a.ts\nsrc/'),
+    }))
+    expect(call.result).toMatchObject({
+      entries: [
+        { path: 'a.ts' },
+        { path: 'src/' },
+      ],
+    })
   })
 
   it('draws a grep result through the shared search body', () => {
-    const call = piToolCall(resultRow(PI_SEARCH_TOOL.Grep, { pattern: 'answer' }, { content: text('a.ts:3: answer') }))
+    const call = piToolCall(resultRow(PI_SEARCH_TOOL.Grep, { pattern: 'answer' }, {
+      content: text('a.ts:3: answer'),
+    }))
     expect(call.result).toMatchObject({ content: 'a.ts:3: answer', numLines: 1 })
   })
 
   it('draws an unrecognized extension through the shared rich-content body', () => {
-    const call = piToolCall(resultRow('extension_lookup', { query: 'marker' }, { content: text('Extension report'), details: { count: 0 } }))
+    const call = piToolCall(resultRow('extension_lookup', { query: 'marker' }, {
+      content: text('Extension report'),
+      details: { count: 0 },
+    }))
     expect(call.kind).toBe('mcp')
     expect(call.request).toMatchObject({ tool: 'extension_lookup' })
   })
@@ -248,24 +352,55 @@ describe('piToolCall result slots', () => {
   it('draws the checklist, its empty state and the note about the named task', () => {
     const call = piToolCall(resultRow(PI_TOOL.Todo, { action: 'get', id: 1 }, {
       content: text('#1 Inspect sample'),
-      details: { action: 'get', params: { action: 'get', id: 1 }, tasks: [{ id: 1, subject: 'Inspect sample', status: 'pending', description: 'Read the entry points.' }] },
+      details: {
+        action: 'get',
+        params: { action: 'get', id: 1 },
+        tasks: [
+          {
+            id: 1,
+            subject: 'Inspect sample',
+            status: 'pending',
+            description: 'Read the entry points.',
+          },
+        ],
+      },
     }))
-    expect(call.result).toMatchObject({ items: [expect.objectContaining({ content: 'Inspect sample' })], note: 'Read the entry points.' })
-    expect(call.metadata).toEqual([{ label: 'Task ID', value: '1' }])
+    expect(call.result).toMatchObject({
+      items: [
+        expect.objectContaining({ content: 'Inspect sample' }),
+      ],
+      note: 'Read the entry points.',
+    })
+    expect(call.metadata).toEqual([
+      { label: 'Task ID', value: '1' },
+    ])
   })
 
   it('draws a cleared to-do list with its own empty state', () => {
     const call = piToolCall(resultRow(PI_TOOL.Todo, { action: 'clear' }, {
       content: text('Cleared'),
-      details: { action: 'clear', params: { action: 'clear' }, tasks: [] },
+      details: {
+        action: 'clear',
+        params: { action: 'clear' },
+        tasks: [],
+      },
     }))
     expect(call.result).toMatchObject({ items: [] })
   })
 
   // These tools draw DATA, so a failed call has no body of its own and the row states
   // the error text under the shared header instead.
-  it.each([PI_TOOL.Read, PI_TOOL.Edit, PI_TOOL.Write, PI_SEARCH_TOOL.Grep, PI_SEARCH_TOOL.Find, PI_SEARCH_TOOL.List])('states the error text of a failed %s', (toolName) => {
-    const call = piToolCall(resultRow(toolName, {}, { content: text('The call refused.') }, true))
+  it.each([
+    PI_TOOL.Read,
+    PI_TOOL.Edit,
+    PI_TOOL.Write,
+    PI_SEARCH_TOOL.Grep,
+    PI_SEARCH_TOOL.Find,
+    PI_SEARCH_TOOL.List,
+  ])('states the error text of a failed %s', (toolName) => {
+    const call = piToolCall(resultRow(toolName, {}, {
+      content: text('The call refused.'),
+    }, true))
     expect(call.result).toEqual({ failure: true, text: 'The call refused.' })
   })
 })
@@ -275,20 +410,29 @@ describe('piToolCall copy text', () => {
   // to copy `{"plan":"# ..."}` with every line break escaped.
   it('copies the plan of a completed plan row', () => {
     const plan = '# Welcome plan\n\nRead the sample.'
-    const presentation = piToolCall(resultRow(PI_TOOL.PlanComplete, { plan }, { content: text('Plan ready for review.'), details: { plan } }))
+    const presentation = piToolCall(resultRow(PI_TOOL.PlanComplete, { plan }, {
+      content: text('Plan ready for review.'),
+      details: { plan },
+    }))
     const meta = toolCallMeta(rowOf(presentation))
     expect(meta.copyableContent()).toBe(plan)
     expect(meta.collapsible).toBe(false)
   })
 
   it('copies the result text of a failed plan row, which is what that row draws', () => {
-    const presentation = piToolCall(resultRow(PI_TOOL.PlanComplete, {}, { content: text('The plan tool refused.'), details: { plan: '# Ignored' } }, true))
+    const presentation = piToolCall(resultRow(PI_TOOL.PlanComplete, {}, {
+      content: text('The plan tool refused.'),
+      details: { plan: '# Ignored' },
+    }, true))
     expect(toolCallMeta(rowOf(presentation)).copyableContent()).toBe('The plan tool refused.')
   })
 
   it('copies the raw diff an edit row draws when the diff cannot be parsed', () => {
     const diff = 'A provider diff in an unknown format'
-    const presentation = piToolCall(resultRow(PI_TOOL.Edit, { path: '/project/a.ts' }, { content: text('Edit completed'), details: { diff } }))
+    const presentation = piToolCall(resultRow(PI_TOOL.Edit, { path: '/project/a.ts' }, {
+      content: text('Edit completed'),
+      details: { diff },
+    }))
     const meta = toolCallMeta(rowOf(presentation))
     expect(meta.hasDiff).toBe(false)
     expect(meta.copyableContent()).toBe(diff)
@@ -297,7 +441,12 @@ describe('piToolCall copy text', () => {
   it('copies the error of a refused to-do operation', () => {
     const presentation = piToolCall(resultRow(PI_TOOL.Todo, { action: 'update', id: 99 }, {
       content: text('Error: #99 not found'),
-      details: { action: 'update', params: { action: 'update', id: 99 }, error: '#99 not found', tasks: [] },
+      details: {
+        action: 'update',
+        params: { action: 'update', id: 99 },
+        error: '#99 not found',
+        tasks: [],
+      },
     }))
     expect(toolCallMeta(rowOf(presentation)).copyableContent()).toBe('#99 not found')
   })
@@ -312,12 +461,18 @@ describe('piToolCall', () => {
   })
 
   it('reads a completion event as the end of its span', () => {
-    expect(piToolCall(resultRow(PI_TOOL.Bash, { command: 'ls' }, { content: text('a.ts') }))).toMatchObject({ status: 'completed' })
-    expect(piToolSpanRowRole(resultRow(PI_TOOL.Bash, { command: 'ls' }, { content: text('a.ts') }))).toBe('result')
+    expect(piToolCall(resultRow(PI_TOOL.Bash, { command: 'ls' }, {
+      content: text('a.ts'),
+    }))).toMatchObject({ status: 'completed' })
+    expect(piToolSpanRowRole(resultRow(PI_TOOL.Bash, { command: 'ls' }, {
+      content: text('a.ts'),
+    }))).toBe('result')
   })
 
   it('reports a failed call', () => {
-    expect(piToolCall(resultRow(PI_TOOL.Read, {}, { content: text('gone') }, true)).status).toBe('failed')
+    expect(piToolCall(resultRow(PI_TOOL.Read, {}, {
+      content: text('gone'),
+    }, true)).status).toBe('failed')
   })
 
   it('reports an interrupted call from the completion LeapMux recorded', () => {
@@ -335,7 +490,12 @@ describe('piToolCall', () => {
 describe('piToolCall execute description', () => {
   it('carries the description the agent sent, on the request row and the result row', () => {
     const args = { command: 'ls -la', description: 'List files in current directory' }
-    for (const row of [requestRow(PI_TOOL.Bash, args), resultRow(PI_TOOL.Bash, args, { content: text('ok') })]) {
+    for (const row of [
+      requestRow(PI_TOOL.Bash, args),
+      resultRow(PI_TOOL.Bash, args, {
+        content: text('ok'),
+      }),
+    ]) {
       const call = piToolCall(row)
       expect(call.kind).toBe('execute')
       expect(call.kind === 'execute' && call.request.description).toBe('List files in current directory')
@@ -373,30 +533,50 @@ describe('piToolCall execute outcome', () => {
     ['a stop the reader sent', 'partial output\n\nCommand aborted'],
     ['a timeout Pi reported', 'partial output\n\nCommand timed out after 30 seconds'],
   ])('words %s as cancelled rather than failed', (_name, output) => {
-    const call = piToolCall(resultRow(PI_TOOL.Bash, { command: 'sleep 99' }, { content: text(output) }, true))
+    const call = piToolCall(resultRow(PI_TOOL.Bash, { command: 'sleep 99' }, {
+      content: text(output),
+    }, true))
     expect(call.status).toBe('cancelled')
     // The process the reader stopped reported no code: `null` states "code: none",
     // which is not the same key being absent.
-    expect(call.result).toMatchObject({ commands: [{ output: 'partial output', exitCode: null }] })
+    expect(call.result).toMatchObject({
+      commands: [
+        { output: 'partial output', exitCode: null },
+      ],
+    })
   })
 
   it('leaves a non-zero exit as a failure, with its exit code', () => {
-    const call = piToolCall(resultRow(PI_TOOL.Bash, { command: 'false' }, { content: text('boom\n\nCommand exited with code 3') }, true))
+    const call = piToolCall(resultRow(PI_TOOL.Bash, { command: 'false' }, {
+      content: text('boom\n\nCommand exited with code 3'),
+    }, true))
     expect(call.status).toBe('failed')
-    expect(call.result).toMatchObject({ commands: [{ output: 'boom', exitCode: 3 }] })
+    expect(call.result).toMatchObject({
+      commands: [
+        { output: 'boom', exitCode: 3 },
+      ],
+    })
   })
 
   it('leaves a command that succeeded completed', () => {
-    const call = piToolCall(resultRow(PI_TOOL.Bash, { command: 'ls' }, { content: text('a.ts') }))
+    const call = piToolCall(resultRow(PI_TOOL.Bash, { command: 'ls' }, {
+      content: text('a.ts'),
+    }))
     expect(call.status).toBe('completed')
   })
 
   // The marker parser fires on the error path alone, so a process that PRINTS the
   // marker text on a successful run must not word the row as a stop.
   it('ignores marker-shaped output from a command that succeeded', () => {
-    const call = piToolCall(resultRow(PI_TOOL.Bash, { command: 'echo' }, { content: text('Command aborted') }))
+    const call = piToolCall(resultRow(PI_TOOL.Bash, { command: 'echo' }, {
+      content: text('Command aborted'),
+    }))
     expect(call.status).toBe('completed')
-    expect(call.result).toMatchObject({ commands: [{ output: 'Command aborted' }] })
+    expect(call.result).toMatchObject({
+      commands: [
+        { output: 'Command aborted' },
+      ],
+    })
   })
 })
 
@@ -411,7 +591,15 @@ describe('piToolCall execute outcome', () => {
  */
 describe('PI_TOOL_REQUEST_OVERRIDES', () => {
   it('deviates on exactly the seven kinds Pi reads from its own facts', () => {
-    expect(Object.keys(PI_TOOL_REQUEST_OVERRIDES).sort()).toEqual(['agent', 'edit', 'execute', 'mcp', 'question', 'todo', 'write'])
+    expect(Object.keys(PI_TOOL_REQUEST_OVERRIDES).sort()).toEqual([
+      'agent',
+      'edit',
+      'execute',
+      'mcp',
+      'question',
+      'todo',
+      'write',
+    ])
   })
 
   // `command` alone, because that is the one key Pi sends. The shared entry accepts
@@ -427,10 +615,28 @@ describe('PI_TOOL_REQUEST_OVERRIDES', () => {
   // carries no arguments at all. The shared entry reads a ROOT pair and not the list
   // Pi sends, so it states the file and neither side of the change.
   it('reads the edit substitutions from the paired opening event', () => {
-    const call = piToolCall(resultRow(PI_TOOL.Edit, { path: '/project/a.ts', edits: [{ oldText: 'before', newText: 'after' }] }, { content: text('Edit completed') }))
-    expect(call.kind === 'edit' && call.request.changes).toMatchObject([{ filePath: '/project/a.ts', oldStr: 'before', newStr: 'after' }])
-    expect(DEFAULT_TOOL_REQUESTS.edit({ path: '/project/a.ts', edits: [{ oldText: 'before', newText: 'after' }] }))
-      .toMatchObject({ changes: [{ filePath: '/project/a.ts', oldStr: '', newStr: '' }] })
+    const call = piToolCall(resultRow(PI_TOOL.Edit, {
+      path: '/project/a.ts',
+      edits: [
+        { oldText: 'before', newText: 'after' },
+      ],
+    }, {
+      content: text('Edit completed'),
+    }))
+    expect(call.kind === 'edit' && call.request.changes).toMatchObject([
+      { filePath: '/project/a.ts', oldStr: 'before', newStr: 'after' },
+    ])
+    expect(DEFAULT_TOOL_REQUESTS.edit({
+      path: '/project/a.ts',
+      edits: [
+        { oldText: 'before', newText: 'after' },
+      ],
+    }))
+      .toMatchObject({
+        changes: [
+          { filePath: '/project/a.ts', oldStr: '', newStr: '' },
+        ],
+      })
   })
 
   // Pi normalizes both spellings and states the LIST first, so a call that sends
@@ -438,7 +644,9 @@ describe('PI_TOOL_REQUEST_OVERRIDES', () => {
   it('reads the `edits` list ahead of the `oldText` and `newText` pair', () => {
     const call = piToolCall(requestRow(PI_TOOL.Edit, {
       path: '/project/a.ts',
-      edits: [{ oldText: 'in the list', newText: 'first' }],
+      edits: [
+        { oldText: 'in the list', newText: 'first' },
+      ],
       oldText: 'at the root',
       newText: 'second',
     }))
@@ -450,14 +658,23 @@ describe('PI_TOOL_REQUEST_OVERRIDES', () => {
   // that every provider spells for itself, so only Pi's own entry takes it.
   it('reads the write body from `path` and `content`', () => {
     const call = piToolCall(requestRow(PI_TOOL.Write, { path: '/project/new.ts', content: 'export const a = 1\n' }))
-    expect(call.kind === 'write' && call.request.changes).toMatchObject([{ filePath: '/project/new.ts', operation: 'add', newStr: 'export const a = 1\n' }])
+    expect(call.kind === 'write' && call.request.changes).toMatchObject([
+      { filePath: '/project/new.ts', operation: 'add', newStr: 'export const a = 1\n' },
+    ])
     expect(DEFAULT_TOOL_REQUESTS.write({ path: '/project/new.ts', content: 'export const a = 1\n' }))
-      .toMatchObject({ changes: [{ filePath: '/project/new.ts', operation: 'add', newStr: '' }] })
+      .toMatchObject({
+        changes: [
+          { filePath: '/project/new.ts', operation: 'add', newStr: '' },
+        ],
+      })
   })
 
   // The arguments answer first, and the result's own `details` answer after them.
   it('reads the launch description from the arguments ahead of the result details', () => {
-    const detailed = { content: text('done'), details: { description: 'From the result', displayName: 'Explorer' } }
+    const detailed = {
+      content: text('done'),
+      details: { description: 'From the result', displayName: 'Explorer' },
+    }
     const stated = piToolCall(resultRow(PI_TOOL.Agent, { description: 'From the arguments', prompt: 'Do it', subagent_type: 'explorer' }, detailed))
     expect(stated.kind === 'agent' && stated.request).toMatchObject({ description: 'From the arguments', agentType: 'explorer', prompt: 'Do it' })
     const recovered = piToolCall(resultRow(PI_TOOL.Agent, { prompt: 'Do it' }, detailed))
@@ -476,20 +693,34 @@ describe('PI_TOOL_REQUEST_OVERRIDES', () => {
 
   // Native result details state the original server and tool.
   it('reads the MCP server and tool from the result details', () => {
-    const call = piToolCall(resultRow('mcp__sample__lookup', { query: 'marker' }, { content: text('Found it'), details: { server: 'sample', tool: 'lookup' } }))
-    expect(call.kind === 'mcp' && call.request).toEqual({ server: 'sample', tool: 'lookup', args: { query: 'marker' } })
+    const call = piToolCall(resultRow('mcp__sample__lookup', { query: 'marker' }, {
+      content: text('Found it'),
+      details: { server: 'sample', tool: 'lookup' },
+    }))
+    expect(call.kind === 'mcp' && call.request).toEqual({
+      server: 'sample',
+      tool: 'lookup',
+      args: { query: 'marker' },
+    })
     expect(toolCallDisplayName(call)).toBe('sample / lookup')
   })
 
   it('uses the original MCP identity for a shortened native tool display name', () => {
-    const call = piToolCall(resultRow('mcp__sample_with_long_name__lookup_a1234567', {}, { content: text('Found it'), details: { server: 'sample.with.long.name', tool: 'lookup/a' } }))
+    const call = piToolCall(resultRow('mcp__sample_with_long_name__lookup_a1234567', {}, {
+      content: text('Found it'),
+      details: { server: 'sample.with.long.name', tool: 'lookup/a' },
+    }))
     expect(toolCallDisplayName(call)).toBe('sample.with.long.name / lookup/a')
   })
 
   // An extension that identifies no server states its own wire name as the tool.
   it('states the wire name as the tool of an extension with no MCP identity', () => {
     const call = piToolCall(requestRow('extension_lookup', { query: 'marker' }))
-    expect(call.kind === 'mcp' && call.request).toEqual({ server: '', tool: 'extension_lookup', args: { query: 'marker' } })
+    expect(call.kind === 'mcp' && call.request).toEqual({
+      server: '',
+      tool: 'extension_lookup',
+      args: { query: 'marker' },
+    })
   })
 
   // A tool that asks ONE question states the record at the root, and one that asks
@@ -497,25 +728,56 @@ describe('PI_TOOL_REQUEST_OVERRIDES', () => {
   it('reads the `questions` list ahead of the question record at the root', () => {
     const call = piToolCall(requestRow(PI_TOOL.AskUserQuestion, {
       question: 'At the root',
-      questions: [{ question: 'In the list', header: 'Layout', options: [{ label: 'Compact', description: 'Small', preview: 'a worked example' }] }],
+      questions: [
+        {
+          question: 'In the list',
+          header: 'Layout',
+          options: [
+            { label: 'Compact', description: 'Small', preview: 'a worked example' },
+          ],
+        },
+      ],
     }))
-    expect(call.kind === 'question' && call.request.questions).toEqual([{
-      header: 'Layout',
-      question: 'In the list',
-      options: [{ label: 'Compact', description: 'Small', preview: 'a worked example' }],
-    }])
-    expect(DEFAULT_TOOL_REQUESTS.question({ questions: [{ question: 'In the list' }] })).toEqual({ questions: [] })
+    expect(call.kind === 'question' && call.request.questions).toEqual([
+      {
+        header: 'Layout',
+        question: 'In the list',
+        options: [
+          { label: 'Compact', description: 'Small', preview: 'a worked example' },
+        ],
+      },
+    ])
+    expect(DEFAULT_TOOL_REQUESTS.question({
+      questions: [
+        { question: 'In the list' },
+      ],
+    })).toEqual({ questions: [] })
   })
 
   // The checklist rides in the RESULT's `details.tasks`. An `items` argument is not
   // a key this entry reads, and the shared entry states an empty list.
   it('reads the checklist from the result details rather than from an `items` argument', () => {
-    const call = piToolCall(resultRow(PI_TOOL.Todo, { action: 'list', items: [{ id: 9, subject: 'From the arguments' }] }, {
+    const call = piToolCall(resultRow(PI_TOOL.Todo, {
+      action: 'list',
+      items: [
+        { id: 9, subject: 'From the arguments' },
+      ],
+    }, {
       content: text('1 task'),
-      details: { action: 'list', params: { action: 'list' }, tasks: [{ id: 1, subject: 'From the result', status: 'pending' }] },
+      details: {
+        action: 'list',
+        params: { action: 'list' },
+        tasks: [
+          { id: 1, subject: 'From the result', status: 'pending' },
+        ],
+      },
     }))
     expect(call.kind === 'todo' && call.request.items.map(item => item.content)).toEqual(['From the result'])
-    expect(DEFAULT_TOOL_REQUESTS.todo({ items: [{ id: 9, subject: 'From the arguments' }] })).toEqual({ items: [] })
+    expect(DEFAULT_TOOL_REQUESTS.todo({
+      items: [
+        { id: 9, subject: 'From the arguments' },
+      ],
+    })).toEqual({ items: [] })
   })
 
   // The note is the task's own description where the call identifies one, and the
@@ -523,12 +785,29 @@ describe('PI_TOOL_REQUEST_OVERRIDES', () => {
   it('reads the to-do note from the named task ahead of the `description` argument', () => {
     const named = piToolCall(resultRow(PI_TOOL.Todo, { action: 'get', id: 1, description: 'From the arguments' }, {
       content: text('#1 Inspect sample'),
-      details: { action: 'get', params: { action: 'get', id: 1 }, tasks: [{ id: 1, subject: 'Inspect sample', status: 'pending', description: 'From the task' }] },
+      details: {
+        action: 'get',
+        params: { action: 'get', id: 1 },
+        tasks: [
+          {
+            id: 1,
+            subject: 'Inspect sample',
+            status: 'pending',
+            description: 'From the task',
+          },
+        ],
+      },
     }))
     expect(named.kind === 'todo' && named.request.note).toBe('From the task')
     const listed = piToolCall(resultRow(PI_TOOL.Todo, { action: 'list', description: 'From the arguments' }, {
       content: text('1 task'),
-      details: { action: 'list', params: { action: 'list' }, tasks: [{ id: 1, subject: 'Inspect sample', status: 'pending' }] },
+      details: {
+        action: 'list',
+        params: { action: 'list' },
+        tasks: [
+          { id: 1, subject: 'Inspect sample', status: 'pending' },
+        ],
+      },
     }))
     expect(listed.kind === 'todo' && listed.request.note).toBe('From the arguments')
   })
@@ -545,11 +824,31 @@ describe('PI_TOOL_REQUEST_OVERRIDES', () => {
  */
 describe('piToolCall shared requests', () => {
   it.each([
-    ['read', PI_TOOL.Read, { path: '/project/a.ts', offset: 5, limit: 20 }],
-    ['grep', PI_SEARCH_TOOL.Grep, { pattern: 'answer', path: '/project' }],
-    ['glob', PI_SEARCH_TOOL.Find, { pattern: '*.ts', path: '/project' }],
-    ['list', PI_SEARCH_TOOL.List, { path: '/project' }],
-    ['switch_mode', PI_TOOL.PlanComplete, { plan: '# Welcome plan' }],
+    [
+      'read',
+      PI_TOOL.Read,
+      { path: '/project/a.ts', offset: 5, limit: 20 },
+    ],
+    [
+      'grep',
+      PI_SEARCH_TOOL.Grep,
+      { pattern: 'answer', path: '/project' },
+    ],
+    [
+      'glob',
+      PI_SEARCH_TOOL.Find,
+      { pattern: '*.ts', path: '/project' },
+    ],
+    [
+      'list',
+      PI_SEARCH_TOOL.List,
+      { path: '/project' },
+    ],
+    [
+      'switch_mode',
+      PI_TOOL.PlanComplete,
+      { plan: '# Welcome plan' },
+    ],
   ] as const)('fills the %s request from the shared table', (kind, toolName, args) => {
     const call = piToolCall(requestRow(toolName, args))
     expect(call.kind).toBe(kind)
@@ -618,7 +917,15 @@ const SHARED_ARGUMENT_PROBE: Record<string, unknown> = {
 }
 
 /** The seven kinds Pi reads from its OWN facts, which `PI_TOOL_REQUEST_OVERRIDES` holds. */
-const PI_OWN_REQUEST_KINDS = ['agent', 'edit', 'execute', 'mcp', 'question', 'todo', 'write'] as const
+const PI_OWN_REQUEST_KINDS = [
+  'agent',
+  'edit',
+  'execute',
+  'mcp',
+  'question',
+  'todo',
+  'write',
+] as const
 
 /**
  * Every other kind, which takes the shared declared request.
@@ -668,7 +975,9 @@ const PI_SHARED_REQUEST_KINDS = [
  * or one stray key that shadows a kind -- compiles and simply draws a different card.
  */
 describe('PI_TOOL_READERS', () => {
-  const probeFacts = piToolFacts(resultRow('a_tool_no_table_holds', SHARED_ARGUMENT_PROBE, { content: text('done') }), undefined)
+  const probeFacts = piToolFacts(resultRow('a_tool_no_table_holds', SHARED_ARGUMENT_PROBE, {
+    content: text('done'),
+  }), undefined)
 
   it('states one reader for every tool kind', () => {
     expect(Object.keys(PI_TOOL_READERS).sort()).toStrictEqual([...TOOL_KINDS].sort())
@@ -683,7 +992,10 @@ describe('PI_TOOL_READERS', () => {
   })
 
   it('splits every tool kind between the two lists above', () => {
-    expect([...PI_OWN_REQUEST_KINDS, ...PI_SHARED_REQUEST_KINDS].sort()).toStrictEqual([...TOOL_KINDS].sort())
+    expect([
+      ...PI_OWN_REQUEST_KINDS,
+      ...PI_SHARED_REQUEST_KINDS,
+    ].sort()).toStrictEqual([...TOOL_KINDS].sort())
   })
 
   // The probe has to REACH the facts, or the case below compares two empty requests
@@ -727,7 +1039,13 @@ describe('piReclassify', () => {
   it('keeps a to-do call whose checklist it read', () => {
     const row = resultRow(PI_TOOL.Todo, { action: 'list' }, {
       content: text('1 task'),
-      details: { action: 'list', params: { action: 'list' }, tasks: [{ id: 1, subject: 'Inspect sample', status: 'pending' }] },
+      details: {
+        action: 'list',
+        params: { action: 'list' },
+        tasks: [
+          { id: 1, subject: 'Inspect sample', status: 'pending' },
+        ],
+      },
     })
     expect(piReclassify(factsOf(row))).toBe('todo')
   })
@@ -777,7 +1095,12 @@ describe('piToolCall on a retained row the turn failed', () => {
   })
 
   it('marks an end frame incomplete when Pi supplied no result body', () => {
-    const row = piToolRow({ type: 'tool_execution_end', toolCallId: 'call', toolName: PI_TOOL.Read, isError: false }, undefined, undefined)!
+    const row = piToolRow({
+      type: 'tool_execution_end',
+      toolCallId: 'call',
+      toolName: PI_TOOL.Read,
+      isError: false,
+    }, undefined, undefined)!
     const call = piToolCall(row)
     expect(call.status).toBe('incomplete')
     expect(call.result).toBeUndefined()
@@ -785,14 +1108,23 @@ describe('piToolCall on a retained row the turn failed', () => {
   })
 
   it('keeps the substitutions an edit asked for, and takes no error branch', () => {
-    const call = retained(PI_TOOL.Edit, { path: '/project/a.ts', edits: [{ oldText: 'before', newText: 'after' }] })
-    expect(call.kind === 'edit' && call.request.changes).toMatchObject([{ filePath: '/project/a.ts', oldStr: 'before', newStr: 'after' }])
+    const call = retained(PI_TOOL.Edit, {
+      path: '/project/a.ts',
+      edits: [
+        { oldText: 'before', newText: 'after' },
+      ],
+    })
+    expect(call.kind === 'edit' && call.request.changes).toMatchObject([
+      { filePath: '/project/a.ts', oldStr: 'before', newStr: 'after' },
+    ])
     expect(isToolFailureResult(call.result)).toBe(false)
   })
 
   it('keeps the file a write asked for, and takes no error branch', () => {
     const call = retained(PI_TOOL.Write, { path: '/project/new.ts', content: 'export const a = 1\n' })
-    expect(call.kind === 'write' && call.request.changes).toMatchObject([{ filePath: '/project/new.ts', operation: 'add' }])
+    expect(call.kind === 'write' && call.request.changes).toMatchObject([
+      { filePath: '/project/new.ts', operation: 'add' },
+    ])
     expect(isToolFailureResult(call.result)).toBe(false)
   })
 
@@ -801,14 +1133,27 @@ describe('piToolCall on a retained row the turn failed', () => {
   // `RequestedChangesBody` refuses a failed call's diff for every provider, so the
   // list draws nothing extra and only the row's title reads it.
   it('states the reason and keeps the substitutions when Pi itself flags the call', () => {
-    const call = piToolCall(resultRow(PI_TOOL.Edit, { path: '/project/a.ts', edits: [{ oldText: 'before', newText: 'after' }] }, { content: text('No match for the old text.') }, true))
-    expect(call.kind === 'edit' && call.request.changes).toMatchObject([{ filePath: '/project/a.ts', oldStr: 'before', newStr: 'after' }])
+    const call = piToolCall(resultRow(PI_TOOL.Edit, {
+      path: '/project/a.ts',
+      edits: [
+        { oldText: 'before', newText: 'after' },
+      ],
+    }, {
+      content: text('No match for the old text.'),
+    }, true))
+    expect(call.kind === 'edit' && call.request.changes).toMatchObject([
+      { filePath: '/project/a.ts', oldStr: 'before', newStr: 'after' },
+    ])
     expect(call.result).toStrictEqual({ failure: true, text: 'No match for the old text.' })
   })
 
   it('keeps the file a failed write asked for', () => {
-    const call = piToolCall(resultRow(PI_TOOL.Write, { path: '/project/new.ts', content: 'export const a = 1\n' }, { content: text('The directory is read-only.') }, true))
-    expect(call.kind === 'write' && call.request.changes).toMatchObject([{ filePath: '/project/new.ts', operation: 'add' }])
+    const call = piToolCall(resultRow(PI_TOOL.Write, { path: '/project/new.ts', content: 'export const a = 1\n' }, {
+      content: text('The directory is read-only.'),
+    }, true))
+    expect(call.kind === 'write' && call.request.changes).toMatchObject([
+      { filePath: '/project/new.ts', operation: 'add' },
+    ])
     expect(call.result).toStrictEqual({ failure: true, text: 'The directory is read-only.' })
   })
 })
@@ -842,20 +1187,40 @@ describe('piToolCall on a call that has not returned', () => {
   // Every kind, from the one table, so a later entry that fills a result early fails
   // here rather than on the row a reader watches.
   it('states no result on the opening frame of any kind', () => {
-    for (const toolName of [PI_TOOL.Bash, PI_TOOL.Read, PI_TOOL.Write, PI_TOOL.Edit, PI_TOOL.Agent, PI_SEARCH_TOOL.Grep, PI_SEARCH_TOOL.Find, PI_SEARCH_TOOL.List, 'an_extension_no_table_holds'])
+    for (const toolName of [
+      PI_TOOL.Bash,
+      PI_TOOL.Read,
+      PI_TOOL.Write,
+      PI_TOOL.Edit,
+      PI_TOOL.Agent,
+      PI_SEARCH_TOOL.Grep,
+      PI_SEARCH_TOOL.Find,
+      PI_SEARCH_TOOL.List,
+      'an_extension_no_table_holds',
+    ])
       expect(piToolCall(minimalRequestRow(toolName)).result, toolName).toBeUndefined()
   })
 })
 
 describe('registered Pi structured output ownership', () => {
   it('carries codemode execution metadata through the real registered extraction', () => {
-    const payload = end(PI_TOOL.Codemode, { content: text('returned code output'), details: { calls: [] } })
+    const payload = end(PI_TOOL.Codemode, {
+      content: text('returned code output'),
+      details: { calls: [] },
+    })
     const before = JSON.stringify(payload)
-    const row = providerRow(AgentProvider.PI, payload, { request: input(start(PI_TOOL.Codemode, { code: 'text("returned code output")' })) })
+    const row = providerRow(AgentProvider.PI, payload, {
+      request: input(start(PI_TOOL.Codemode, { code: 'text("returned code output")' })),
+    })
     if (row?.kind !== 'tool')
       throw new Error('The registered Pi codemode fixture produced no tool row.')
     expect(row.call.kind).toBe('mcp')
-    expect(row.call.result).toMatchObject({ content: [{ type: 'text', text: 'returned code output' }], structuredJsonRole: 'metadata' })
+    expect(row.call.result).toMatchObject({
+      content: [
+        { type: 'text', text: 'returned code output' },
+      ],
+      structuredJsonRole: 'metadata',
+    })
     // The shared FracturedJson formatter keeps a short value on one line and ends it with a newline.
     expect(toolCallMeta(row).copyableContent()).toBe('returned code output\n\n{"calls": []}\n')
     expect(JSON.stringify(payload)).toBe(before)
@@ -863,11 +1228,29 @@ describe('registered Pi structured output ownership', () => {
 
   it('keeps real MCP structured results and arbitrary extension details as output', () => {
     const cases = [
-      { toolName: 'mcp__sample__lookup', result: { content: [], details: { server: 'sample', tool: 'lookup' }, structuredContent: { content: [], structuredContent: { count: 0, enabled: false, nullable: null } } } },
-      { toolName: 'custom', result: { content: [], details: { count: 0, enabled: false, nullable: null } } },
+      {
+        toolName: 'mcp__sample__lookup',
+        result: {
+          content: [],
+          details: { server: 'sample', tool: 'lookup' },
+          structuredContent: {
+            content: [],
+            structuredContent: { count: 0, enabled: false, nullable: null },
+          },
+        },
+      },
+      {
+        toolName: 'custom',
+        result: {
+          content: [],
+          details: { count: 0, enabled: false, nullable: null },
+        },
+      },
     ]
     for (const sample of cases) {
-      const row = providerRow(AgentProvider.PI, end(sample.toolName, sample.result), { request: input(start(sample.toolName)) })
+      const row = providerRow(AgentProvider.PI, end(sample.toolName, sample.result), {
+        request: input(start(sample.toolName)),
+      })
       if (row?.kind !== 'tool' || row.call.kind !== 'mcp')
         throw new Error('The registered Pi structured fixture produced no MCP row.')
       expect(row.call.result).toMatchObject({ structuredJson: '{"count": 0, "enabled": false, "nullable": null}\n' })

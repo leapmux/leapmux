@@ -23,10 +23,16 @@ reasonixTest('states the warning of a stopped steer as a status row, not reply t
   const marker = uniqueMarker()
   const steering = `PENDINGSTEER${marker}`
   const gate = `reasonix-stop-steer-${marker}`
-  await modelScript.queue({ ...nativeTextStep(native, `HELDANSWER${marker}`), gate })
+  await modelScript.queue({
+    ...nativeTextStep(native, `HELDANSWER${marker}`),
+    gate,
+  })
   await sendMessage(page, modelScript.prompt('Hold the scripted answer for a stop.'))
   await modelScript.waitForGate(gate)
-  await steerQueuedInput(page, { message: modelScript.prompt(steering), match: steering })
+  await steerQueuedInput(page, {
+    message: modelScript.prompt(steering),
+    match: steering,
+  })
   await interruptButton(page).click()
   await waitForAgentIdle(page)
   modelScript.allowUnconsumed('the stop ended the turn before the model read the held answer or the steer')

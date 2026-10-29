@@ -25,7 +25,9 @@ export const CODEBUDDY_E2E_SKIP_REASON: string | null = missingBinaryReason('cod
  *
  * The control-request spec opens its own workspace in Default.
  */
-export const CODEBUDDY_BYPASS = { optionValues: { permissionMode: CODEBUDDY_MODE.BypassPermissions } }
+export const CODEBUDDY_BYPASS = {
+  optionValues: { permissionMode: CODEBUDDY_MODE.BypassPermissions },
+}
 
 export const codebuddyTest = createProviderTest({
   agent: CODEBUDDY_AGENT,

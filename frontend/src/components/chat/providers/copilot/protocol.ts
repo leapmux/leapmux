@@ -37,7 +37,9 @@ export function copilotEvent(parsed: unknown): CopilotEventEnvelope | null {
 /** The data of one event of the given type, or null for every other row. */
 export function copilotEventData(parsed: unknown, type: string): Record<string, unknown> | null {
   const event = copilotEvent(parsed)
-  return event && event.type === type ? event.data : null
+  return event && event.type === type
+    ? event.data
+    : null
 }
 
 /** The kind of a native system notification. */

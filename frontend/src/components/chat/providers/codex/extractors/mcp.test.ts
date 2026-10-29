@@ -95,7 +95,9 @@ describe('codexMcpFromItem', () => {
       expect(source).toMatchObject({
         server: 'openai',
         tool: 'browser',
-        content: [{ type: 'text', text: 'Hello dynamic' }],
+        content: [
+          { type: 'text', text: 'Hello dynamic' },
+        ],
       })
     })
 
@@ -105,10 +107,15 @@ describe('codexMcpFromItem', () => {
         namespace: '',
         tool: 'screenshot',
         status: 'completed',
-        contentItems: [{ type: 'inputImage', imageUrl: 'https://example.com/x.png' }],
+        contentItems: [
+          { type: 'inputImage', imageUrl: 'https://example.com/x.png' },
+        ],
       })
       expect(source?.content).toEqual([
-        { type: 'image', source: { url: 'https://example.com/x.png' } },
+        {
+          type: 'image',
+          source: { url: 'https://example.com/x.png' },
+        },
       ])
     })
 
@@ -131,7 +138,9 @@ describe('codexMcpFromItem', () => {
         namespace: '',
         tool: 'flaky',
         status: 'failed',
-        contentItems: [{ type: 'inputText', text: 'real error message' }],
+        contentItems: [
+          { type: 'inputText', text: 'real error message' },
+        ],
       })
       expect(source?.error).toBeUndefined()
     })

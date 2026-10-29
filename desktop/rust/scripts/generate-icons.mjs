@@ -64,7 +64,9 @@ writeFileSync(join(outDir, ICO_FILE), buildIco(renderPng(icoSvg, ICO_SIZE), ICO_
 // of any art that fits the box and says nothing about whether the right source
 // was passed. The `source` field is what pins that.
 for (const { name, size, source } of TRAY_ICON_FILES) {
-  writeFileSync(join(outDir, name), renderPng(source === 'template' ? monoSvg : icoSvg, size))
+  writeFileSync(join(outDir, name), renderPng(source === 'template'
+    ? monoSvg
+    : icoSvg, size))
 }
 
 const trayNames = TRAY_ICON_FILES.map(f => f.name).join(', ')

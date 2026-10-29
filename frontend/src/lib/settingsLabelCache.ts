@@ -52,7 +52,12 @@ export function collectSettingsLabelDependencies<T>(read: () => T): { value: T, 
   const collector = new Map<string, SettingsLabelDependency>()
   dependencyCollectors.push(collector)
   try {
-    return { value: read(), dependencies: [...collector.values()] }
+    return {
+      value: read(),
+      dependencies: [
+        ...collector.values(),
+      ],
+    }
   }
   finally {
     dependencyCollectors.pop()
@@ -136,7 +141,10 @@ export function updateSettingsLabelCache(provider: AgentProvider, optionGroups?:
     // group's label and its option sub-map, so the single setWithCap below refreshes -- and, on
     // overflow, evicts -- the two together; neither can half-evict while the other is still live.
     const existingEntry = groups.get(group.id)
-    const entry = existingEntry ?? { options: new Map<string, string>(), revision: nextRevision }
+    const entry = existingEntry ?? {
+      options: new Map<string, string>(),
+      revision: nextRevision,
+    }
     let groupChanged = existingEntry === undefined
     // Keep the previously-cached label when this push omits it (a label-less push still refreshes
     // the entry's LRU position via setWithCap below).

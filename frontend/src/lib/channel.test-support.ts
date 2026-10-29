@@ -111,8 +111,14 @@ export function createTestSession(): { initiator: Session, responder: Session } 
   key1[0] = 1 // Different keys for send/receive
   key2[0] = 2
   return {
-    initiator: { send: new TestCipherState(key1), receive: new TestCipherState(key2) } satisfies Session,
-    responder: { send: new TestCipherState(key2), receive: new TestCipherState(key1) } satisfies Session,
+    initiator: {
+      send: new TestCipherState(key1),
+      receive: new TestCipherState(key2),
+    } satisfies Session,
+    responder: {
+      send: new TestCipherState(key2),
+      receive: new TestCipherState(key1),
+    } satisfies Session,
   }
 }
 
@@ -122,7 +128,9 @@ export function encodeWireMessage(channelId: string, ciphertext: Uint8Array, opt
     protocolVersion: 1,
     channelId,
     ciphertext,
-    flags: opts?.close ? 2 : (opts?.flags ?? 0),
+    flags: opts?.close
+      ? 2
+      : (opts?.flags ?? 0),
     correlationId: BigInt(opts?.id ?? 0),
   })
   return frameBytes(toBinary(ChannelMessageSchema, msg)).buffer as ArrayBuffer
@@ -328,7 +336,9 @@ export function mockHandshake1(_remoteX25519Pub: Uint8Array, _remoteMlkemPub: Ui
 }
 
 export function mockHandshake2(_state: any, _message2: Uint8Array, _remoteSlhdsaPub: Uint8Array) {
-  const entries = [...sessions.entries()]
+  const entries = [
+    ...sessions.entries(),
+  ]
   const lastEntry = entries.at(-1)
   if (!lastEntry)
     throw new Error('No session registered')
@@ -390,9 +400,13 @@ export class ChannelManagerTestHarness {
     const inner = fromBinary(InnerMessageSchema, pair.responder.receive.decrypt(sentMsg.ciphertext))
     expect(inner.kind.case).toBe('request')
     const resp = create(InnerRpcResponseSchema, { isError: false })
-    const envelope = create(InnerMessageSchema, { kind: { case: 'response', value: resp } })
+    const envelope = create(InnerMessageSchema, {
+      kind: { case: 'response', value: resp },
+    })
     const ciphertext = pair.responder.send.encrypt(toBinary(InnerMessageSchema, envelope))
-    ws.simulateMessage(encodeWireMessage(sentMsg.channelId, ciphertext, { id: Number(sentMsg.correlationId) }))
+    ws.simulateMessage(encodeWireMessage(sentMsg.channelId, ciphertext, {
+      id: Number(sentMsg.correlationId),
+    }))
   }
 
   /** Answer an in-band RekeyRequest the way the worker does (Receive.rekeyWithSecret → Ack → Send.rekeyWithSecret). */
@@ -409,11 +423,16 @@ export class ChannelManagerTestHarness {
     const placeholderSecret = new Uint8Array(32)
     pair.responder.receive.rekeyWithSecret(placeholderSecret, null, true)
     const envelope = create(InnerMessageSchema, {
-      kind: { case: 'rekeyAck', value: create(RekeyAckSchema, { dhPub: responderEph.publicKey }) },
+      kind: {
+        case: 'rekeyAck',
+        value: create(RekeyAckSchema, { dhPub: responderEph.publicKey }),
+      },
     })
     const ciphertext = pair.responder.send.encrypt(toBinary(InnerMessageSchema, envelope))
     pair.responder.send.rekeyWithSecret(placeholderSecret, null, false)
-    ws.simulateMessage(encodeWireMessage(sentMsg.channelId, ciphertext, { id: Number(sentMsg.correlationId) }))
+    ws.simulateMessage(encodeWireMessage(sentMsg.channelId, ciphertext, {
+      id: Number(sentMsg.correlationId),
+    }))
   }
 
   /** Rate-limit Reject: decrypt Request, leave CipherStates unchanged, reply Reject. */
@@ -425,11 +444,17 @@ export class ChannelManagerTestHarness {
     const envelope = create(InnerMessageSchema, {
       kind: {
         case: 'rekeyReject',
-        value: create(RekeyRejectSchema, retryAfterMs > 0 ? { retryAfterMs: BigInt(retryAfterMs) } : {}),
+        value: create(RekeyRejectSchema, retryAfterMs > 0
+          ? {
+              retryAfterMs: BigInt(retryAfterMs),
+            }
+          : {}),
       },
     })
     const ciphertext = pair.responder.send.encrypt(toBinary(InnerMessageSchema, envelope))
-    ws.simulateMessage(encodeWireMessage(sentMsg.channelId, ciphertext, { id: Number(sentMsg.correlationId) }))
+    ws.simulateMessage(encodeWireMessage(sentMsg.channelId, ciphertext, {
+      id: Number(sentMsg.correlationId),
+    }))
   }
 
   async openTestChannel(workerId = 'w1'): Promise<string> {
@@ -578,7 +603,9 @@ function simulatePingResponseOnWs(
   response: { isError: boolean, errorMessage?: string, errorCode?: number },
 ): void {
   const resp = create(InnerRpcResponseSchema, response)
-  const envelope = create(InnerMessageSchema, { kind: { case: 'response', value: resp } })
+  const envelope = create(InnerMessageSchema, {
+    kind: { case: 'response', value: resp },
+  })
   const plaintext = toBinary(InnerMessageSchema, envelope)
   ws.dispatchEvent(new MessageEvent('message', {
     data: encodeWireMessage(channelId, plaintext, { id: FIRST_REQUEST_ID }),
@@ -650,7 +677,10 @@ export function makeIdentityCipherManager(
   opts?: { expectedUserId?: () => string | undefined, keyPins?: KeyPinStore },
 ): ChannelManager {
   return new ChannelManager(transport, {
-    classicHandshake1: (_rs: Uint8Array) => ({ message1: new Uint8Array(48), handshakeState: {} as any }),
+    classicHandshake1: (_rs: Uint8Array) => ({
+      message1: new Uint8Array(48),
+      handshakeState: {} as any,
+    }),
     classicHandshake2: (_hs: any, _payload: Uint8Array) => makeIdentitySession(),
     idleRekeyIntervalMs: 0,
     installWakeListener: false,

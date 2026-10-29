@@ -160,7 +160,9 @@ export const AccountEmail: Component = () => {
           onClick={() => void requestChange()}
           disabled={action.running() || elevationPrompting() || !newEmail().trim() || sameAsCurrent()}
         >
-          {action.running() ? 'Requesting...' : 'Change Email'}
+          {action.running()
+            ? 'Requesting...'
+            : 'Change Email'}
         </button>
       </div>
     </div>

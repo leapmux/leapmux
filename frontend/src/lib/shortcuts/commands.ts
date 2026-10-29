@@ -43,7 +43,9 @@ export function getCommand(id: string): Command | undefined {
 }
 
 export function getAllCommands(): Command[] {
-  return [...commands.values()]
+  return [
+    ...commands.values(),
+  ]
 }
 
 /** Clear all commands — mainly useful for tests. */

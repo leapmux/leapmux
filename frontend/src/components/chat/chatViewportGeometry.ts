@@ -18,7 +18,9 @@ export function measureSpaceToken(varName: string, fallback: number): number {
   document.body.appendChild(probe)
   const h = probe.getBoundingClientRect().height
   probe.remove()
-  return h > 0 ? h : fallback
+  return h > 0
+    ? h
+    : fallback
 }
 
 /**
@@ -46,8 +48,12 @@ export function createViewportSizeObserver(opts: {
   onWidth: (w: number) => void
   onHeight: (h: number) => void
 }): { observe: (el: HTMLElement) => void, disconnect: () => void } {
-  if (typeof ResizeObserver === 'undefined')
-    return { observe: () => {}, disconnect: () => {} }
+  if (typeof ResizeObserver === 'undefined') {
+    return {
+      observe: () => {},
+      disconnect: () => {},
+    }
+  }
   let lastWidth = -1
   let lastHeight = -1
   // A measure can fire its callback a microtask AFTER it was observed; if the consumer

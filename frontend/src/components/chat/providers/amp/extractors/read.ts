@@ -20,12 +20,22 @@ const NUMBERED_LINE = /^(\d+): ?(.*)$/
 /** The request one `Read` call states. The range is inclusive, and its lines count from 1. */
 export function ampReadRequest(args: Record<string, unknown>): ReadRequest {
   const path = pickString(args, 'path')
-  const range = Array.isArray(args.read_range) ? args.read_range : []
+  const range = Array.isArray(args.read_range)
+    ? args.read_range
+    : []
   const [first, last] = range
   if (typeof first !== 'number' || !Number.isInteger(first) || first < 1)
     return { path }
-  const limit = typeof last === 'number' && Number.isInteger(last) && last >= first ? last - first + 1 : undefined
-  return { path, offset: first, ...(limit !== undefined ? { limit } : {}) }
+  const limit = typeof last === 'number' && Number.isInteger(last) && last >= first
+    ? last - first + 1
+    : undefined
+  return {
+    path,
+    offset: first,
+    ...(limit !== undefined
+      ? { limit }
+      : {}),
+  }
 }
 
 /**
@@ -40,7 +50,10 @@ function numberedLines(content: string): NumberedFileLine[] | null {
     const match = NUMBERED_LINE.exec(line)
     if (!match?.[1])
       return null
-    lines.push({ num: Number(match[1]), text: match[2] ?? '' })
+    lines.push({
+      num: Number(match[1]),
+      text: match[2] ?? '',
+    })
   }
   return lines
 }
@@ -67,12 +80,37 @@ export function ampReadResult(text: string): AmpReadOutcome | null {
   // An image's content is its base64 data, which the row draws as the picture rather
   // than as text.
   if (record.isImage === true) {
-    const image = parseImageBlock({ type: 'image', data: content, mimeType: pickString(pickObject(record, 'imageInfo'), 'mimeType') })
-    return { result: { lines: null, fallbackContent: '' }, images: image ? [withFallbackFilePath(image, path || undefined)] : [] }
+    const image = parseImageBlock({
+      type: 'image',
+      data: content,
+      mimeType: pickString(pickObject(record, 'imageInfo'), 'mimeType'),
+    })
+    return {
+      result: { lines: null, fallbackContent: '' },
+      images: image
+        ? [
+            withFallbackFilePath(image, path || undefined),
+          ]
+        : [],
+    }
   }
-  if (record.isDirectory === true)
-    return { result: { lines: null, fallbackContent: content }, images: [] }
-  if (content === '')
-    return { result: { lines: [], fallbackContent: '' }, images: [] }
-  return { result: { lines: numberedLines(content), fallbackContent: content }, images: [] }
+  if (record.isDirectory === true) {
+    return {
+      result: { lines: null, fallbackContent: content },
+      images: [],
+    }
+  }
+  if (content === '') {
+    return {
+      result: { lines: [], fallbackContent: '' },
+      images: [],
+    }
+  }
+  return {
+    result: {
+      lines: numberedLines(content),
+      fallbackContent: content,
+    },
+    images: [],
+  }
 }

@@ -9,7 +9,12 @@ describe('acpReadFromToolCall', () => {
 
   it('returns null when neither filePath nor parseable cat-n is present', () => {
     expect(acpReadFromToolCall({
-      content: [{ type: 'content', content: { text: 'plain text' } }],
+      content: [
+        {
+          type: 'content',
+          content: { text: 'plain text' },
+        },
+      ],
     })).toBeNull()
   })
 
@@ -17,7 +22,10 @@ describe('acpReadFromToolCall', () => {
     const source = acpReadFromToolCall({
       rawInput: { filePath: '/tmp/a.ts' },
       content: [
-        { type: 'content', content: { text: '1\tfoo\n2\tbar\n' } },
+        {
+          type: 'content',
+          content: { text: '1\tfoo\n2\tbar\n' },
+        },
       ],
     })
     expect(source).toEqual({
@@ -36,7 +44,10 @@ describe('acpReadFromToolCall', () => {
     const source = acpReadFromToolCall({
       rawInput: { filePath: '/tmp/a.ts' },
       content: [
-        { type: 'content', content: { text: 'plain text body' } },
+        {
+          type: 'content',
+          content: { text: 'plain text body' },
+        },
       ],
     })
     expect(source).toEqual({
@@ -53,16 +64,25 @@ describe('acpReadFromToolCall', () => {
       rawInput: { filePath: '/x' },
       rawOutput: { output: '1\tabc\n' },
     })
-    expect(source?.lines).toEqual([{ num: 1, text: 'abc' }])
+    expect(source?.lines).toEqual([
+      { num: 1, text: 'abc' },
+    ])
   })
 
   it('uses parseable cat-n alone (no filePath) as a valid source', () => {
     const source = acpReadFromToolCall({
-      content: [{ type: 'content', content: { text: '1\thi\n' } }],
+      content: [
+        {
+          type: 'content',
+          content: { text: '1\thi\n' },
+        },
+      ],
     })
     expect(source).toEqual({
 
-      lines: [{ num: 1, text: 'hi' }],
+      lines: [
+        { num: 1, text: 'hi' },
+      ],
       fallbackContent: '1\thi\n',
       leading: [],
       trailing: [],

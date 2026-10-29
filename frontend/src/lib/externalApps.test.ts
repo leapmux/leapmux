@@ -44,7 +44,9 @@ describe('loadExternalApps', () => {
   })
 
   it('caches across calls (single IPC round-trip)', async () => {
-    listAppsMock.mockResolvedValueOnce([editorApp('vscode', 'VS Code')])
+    listAppsMock.mockResolvedValueOnce([
+      editorApp('vscode', 'VS Code'),
+    ])
     await loadExternalApps()
     await loadExternalApps()
     await loadExternalApps()
@@ -58,7 +60,9 @@ describe('loadExternalApps', () => {
     }))
     const a = loadExternalApps()
     const b = loadExternalApps()
-    resolveList([editorApp('zed', 'Zed')])
+    resolveList([
+      editorApp('zed', 'Zed'),
+    ])
     const [ra, rb] = await Promise.all([a, b])
     expect(ra).toEqual(rb)
     expect(listAppsMock).toHaveBeenCalledTimes(1)
@@ -67,14 +71,20 @@ describe('loadExternalApps', () => {
   it('lets a later caller retry after a failure', async () => {
     listAppsMock.mockRejectedValueOnce(new Error('boom'))
     await expect(loadExternalApps()).rejects.toThrow('boom')
-    listAppsMock.mockResolvedValueOnce([editorApp('vscode', 'VS Code')])
+    listAppsMock.mockResolvedValueOnce([
+      editorApp('vscode', 'VS Code'),
+    ])
     const got = await loadExternalApps()
-    expect(got).toEqual([editorApp('vscode', 'VS Code')])
+    expect(got).toEqual([
+      editorApp('vscode', 'VS Code'),
+    ])
   })
 
   it('bypasses cache and re-asks the bridge when refresh=true', async () => {
     listAppsMock
-      .mockResolvedValueOnce([editorApp('vscode', 'VS Code')])
+      .mockResolvedValueOnce([
+        editorApp('vscode', 'VS Code'),
+      ])
       .mockResolvedValueOnce([
         editorApp('vscode', 'VS Code'),
         editorApp('zed', 'Zed'),
@@ -113,8 +123,12 @@ describe('loadExternalApps', () => {
 
   it('refreshes object identity when displayName changes', async () => {
     listAppsMock
-      .mockResolvedValueOnce([editorApp('vscode', 'VS Code')])
-      .mockResolvedValueOnce([editorApp('vscode', 'Visual Studio Code')])
+      .mockResolvedValueOnce([
+        editorApp('vscode', 'VS Code'),
+      ])
+      .mockResolvedValueOnce([
+        editorApp('vscode', 'Visual Studio Code'),
+      ])
     const first = await loadExternalApps()
     const second = await loadExternalApps(true)
     // Different displayName → must be a new reference so Solid re-renders.

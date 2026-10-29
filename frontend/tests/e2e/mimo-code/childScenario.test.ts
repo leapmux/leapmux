@@ -8,7 +8,12 @@ const TASK = 'Reply with the single word PONG.'
 const childPrompt = mockScenarioPrompt('mimo-child-turn', TASK)
 
 function answers(matcher: ReturnType<typeof mimoChildTurn>, userText: string): boolean {
-  return matchesRequest(matcher, { protocol: 'openai-chat-completions', systemText: '', userText, body: {} })
+  return matchesRequest(matcher, {
+    protocol: 'openai-chat-completions',
+    systemText: '',
+    userText,
+    body: {},
+  })
 }
 
 describe('mimoChildTurn', () => {

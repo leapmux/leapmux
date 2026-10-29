@@ -18,7 +18,9 @@ describe('SpanLines', () => {
   it('renders a container with one column per line entry', () => {
     const { container } = render(() => (
       <SpanLines
-        lines={[{ span_id: 'span-A', color: 0, type: 'active' }]}
+        lines={[
+          { span_id: 'span-A', color: 0, type: 'active' },
+        ]}
       />
     ))
     // Should render a container div with one child (the column).
@@ -31,12 +33,20 @@ describe('SpanLines', () => {
   // `line.type` comes off the worker's `span_lines` payload. A bare index answered
   // `Object.prototype.toString` for a type spelled that way -- a truthy value, so the
   // `||` fallback never ran and the function's source text landed in `class`.
-  it.each(['toString', 'constructor', 'valueOf', 'hasOwnProperty'])(
+  it.each([
+    'toString',
+    'constructor',
+    'valueOf',
+    'hasOwnProperty',
+  ])(
     'falls back to the active style for the type %s, which names an Object.prototype member',
     (type) => {
       const columnClass = (lineType: string): string => {
         const { container } = render(() => (
-          <SpanLines lines={[{ span_id: 'span-A', color: 1, type: lineType as SpanLine['type'] }]} />
+          <SpanLines lines={[
+            { span_id: 'span-A', color: 1, type: lineType as SpanLine['type'] },
+          ]}
+          />
         ))
         const wrapper = container.firstElementChild!
         return wrapper.firstElementChild!.className
@@ -51,7 +61,11 @@ describe('SpanLines', () => {
   it('renders correct number of columns with null entries', () => {
     const { container } = render(() => (
       <SpanLines
-        lines={[{ span_id: 'span-A', color: 0, type: 'active' }, null, { span_id: 'span-B', color: 1, type: 'active' }]}
+        lines={[
+          { span_id: 'span-A', color: 0, type: 'active' },
+          null,
+          { span_id: 'span-B', color: 1, type: 'active' },
+        ]}
       />
     ))
     const wrapper = container.firstElementChild
@@ -86,7 +100,12 @@ describe('SpanLines', () => {
         category: { kind: 'assistant_text' },
         parsedSpanLines: [
           { span_id: 'span-A', color: 1, type: 'connector_end' },
-          { span_id: 'span-B', color: 2, type: 'active_passthrough', passthrough_color: 1 },
+          {
+            span_id: 'span-B',
+            color: 2,
+            type: 'active_passthrough',
+            passthrough_color: 1,
+          },
         ],
       },
       {
@@ -102,7 +121,9 @@ describe('SpanLines', () => {
       <SpanLineGapBridges
         entries={entries}
         precedingEntry={undefined}
-        topOf={id => (id === 'm2' ? 240 : 120)}
+        topOf={id => (id === 'm2'
+          ? 240
+          : 120)}
         hiddenOf={() => false}
         gapAboveOf={() => 8}
       />
@@ -123,12 +144,20 @@ describe('SpanLines', () => {
     const lineA = { span_id: 'span-A', color: 1, type: 'active' } as const
     const lineB = { span_id: 'span-B', color: 2, type: 'active' } as const
     const entries: SpanBridgeEntry[] = [
-      { message: { id: 'm6' }, category: { kind: 'assistant_text' }, parsedSpanLines: [lineA, lineB] },
+      {
+        message: { id: 'm6' },
+        category: { kind: 'assistant_text' },
+        parsedSpanLines: [lineA, lineB],
+      },
     ]
     const { container } = render(() => (
       <SpanLineGapBridges
         entries={entries}
-        precedingEntry={{ message: { id: 'm5' }, category: { kind: 'assistant_text' }, parsedSpanLines: [lineA, lineB] }}
+        precedingEntry={{
+          message: { id: 'm5' },
+          category: { kind: 'assistant_text' },
+          parsedSpanLines: [lineA, lineB],
+        }}
         topOf={() => 300}
         hiddenOf={() => false}
         gapAboveOf={() => 8}
@@ -144,12 +173,20 @@ describe('SpanLines', () => {
   it('hides a bridge while its row is hidden-until-measured', () => {
     const line = { span_id: 'span-A', color: 1, type: 'active' } as const
     const entries: SpanBridgeEntry[] = [
-      { message: { id: 'm3' }, category: { kind: 'assistant_text' }, parsedSpanLines: [line] },
+      {
+        message: { id: 'm3' },
+        category: { kind: 'assistant_text' },
+        parsedSpanLines: [line],
+      },
     ]
     const { container } = render(() => (
       <SpanLineGapBridges
         entries={entries}
-        precedingEntry={{ message: { id: 'm2' }, category: { kind: 'assistant_text' }, parsedSpanLines: [line] }}
+        precedingEntry={{
+          message: { id: 'm2' },
+          category: { kind: 'assistant_text' },
+          parsedSpanLines: [line],
+        }}
         topOf={() => 100}
         hiddenOf={() => true}
         gapAboveOf={() => 8}
@@ -165,7 +202,9 @@ describe('SpanLines', () => {
       {
         message: { id: 'm4' },
         category: { kind: 'connector_end' },
-        parsedSpanLines: [{ span_id: 'span-tool', color: 3, type: 'connector_end' }],
+        parsedSpanLines: [
+          { span_id: 'span-tool', color: 3, type: 'connector_end' },
+        ],
       },
     ]
     const { container } = render(() => (

@@ -23,7 +23,9 @@ export interface EnumControlProps {
 
 function fixedPillOptions(options: readonly EnumOption[]): PillOptions<string> | undefined {
   const pills = options.map(option => ({ key: option.value, label: option.label }))
-  return isPillOptions(pills) ? pills : undefined
+  return isPillOptions(pills)
+    ? pills
+    : undefined
 }
 
 /**

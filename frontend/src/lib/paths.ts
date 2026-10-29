@@ -41,7 +41,10 @@ function parseUncHead(p: string): { volume: string, rest: string } | null {
   while (i < n && !isSep(p[i])) i++
   if (i === shareStart)
     return null
-  return { volume: `\\\\${server}\\${p.slice(shareStart, i)}`, rest: p.slice(i) }
+  return {
+    volume: `\\\\${server}\\${p.slice(shareStart, i)}`,
+    rest: p.slice(i),
+  }
 }
 
 // The win32 volume of `p` (`C:` or `\\server\share`), WITHOUT a trailing
@@ -63,7 +66,9 @@ export function detectFlavor(p: string): PathFlavor {
 
 /** Map a worker's reported OS (e.g. "windows", "linux") to a flavor. */
 export function flavorFromOs(os?: string): PathFlavor {
-  return os?.toLowerCase() === 'windows' ? 'win32' : 'posix'
+  return os?.toLowerCase() === 'windows'
+    ? 'win32'
+    : 'posix'
 }
 
 function flavorOf(p: string, flavor?: PathFlavor): PathFlavor {
@@ -72,7 +77,9 @@ function flavorOf(p: string, flavor?: PathFlavor): PathFlavor {
 
 /** Native separator for the given flavor. */
 export function sep(flavor: PathFlavor): string {
-  return flavor === 'win32' ? '\\' : '/'
+  return flavor === 'win32'
+    ? '\\'
+    : '/'
 }
 
 // Index of the last separator in `p`. On posix only `/` counts; on win32
@@ -90,7 +97,9 @@ export function lastSepIndex(p: string, flavor: PathFlavor): number {
 // (`foo/` → root).
 export function trimLastSegment(p: string, separator: string): string {
   const i = p.lastIndexOf(separator)
-  return i <= 0 ? '' : p.substring(0, i)
+  return i <= 0
+    ? ''
+    : p.substring(0, i)
 }
 
 // POSIX: starts with /
@@ -120,10 +129,15 @@ export function filesystemRoot(p: string, flavor?: PathFlavor): string | undefin
   if (!p)
     return undefined
   const f = flavorOf(p, flavor)
-  if (f === 'posix')
-    return p.startsWith('/') ? '/' : undefined
+  if (f === 'posix') {
+    return p.startsWith('/')
+      ? '/'
+      : undefined
+  }
   const volume = extractVolume(p)
-  return volume ? `${volume}${sep(f)}` : undefined
+  return volume
+    ? `${volume}${sep(f)}`
+    : undefined
 }
 
 /**
@@ -188,7 +202,9 @@ export function split(p: string, flavor?: PathFlavor): string[] {
       }
     }
     const parts = rest.split(SEP_SPLIT_RE).filter(Boolean)
-    return volume ? [volume, ...parts] : parts
+    return volume
+      ? [volume, ...parts]
+      : parts
   }
   return p.split('/').filter(Boolean)
 }
@@ -211,7 +227,11 @@ export function fileUriToPath(uri: string): string | undefined {
     const host = decode(url.host)
     if (!path || path.includes('\0') || host.includes('\0'))
       return undefined
-    return host ? `//${host}${path}` : /^\/[a-z]:/i.test(path) ? path.slice(1) : path
+    return host
+      ? `//${host}${path}`
+      : /^\/[a-z]:/i.test(path)
+        ? path.slice(1)
+        : path
   }
   catch {
     return undefined
@@ -250,7 +270,9 @@ export function join(parts: string[], flavor?: PathFlavor): string {
   if (f === 'win32')
     joined = joined.replace(FWD_SLASH_G, '\\')
   // One separator, never two: the root supplies it, so the elements must not.
-  return rooted ? `${s}${joined}` : joined
+  return rooted
+    ? `${s}${joined}`
+    : joined
 }
 
 // Parent directory of `p`. For a root, returns the root itself.
@@ -260,13 +282,18 @@ export function parentDirectory(p: string, flavor?: PathFlavor): string {
   const f = flavorOf(p, flavor)
   if (f === 'posix') {
     const i = lastSepIndex(p, f)
-    return i <= 0 ? '/' : p.substring(0, i)
+    return i <= 0
+      ? '/'
+      : p.substring(0, i)
   }
   // Fall back to segment-aware logic for Win32 volume handling.
   const parts = split(p, f)
   const s = sep(f)
-  if (parts.length <= 1)
-    return parts.length === 1 ? `${parts[0]}${s}` : p
+  if (parts.length <= 1) {
+    return parts.length === 1
+      ? `${parts[0]}${s}`
+      : p
+  }
   const [volume, ...rest] = parts
   if (rest.length === 1)
     return `${volume}${s}`
@@ -303,13 +330,17 @@ export function basename(p: string, flavor?: PathFlavor): string {
   const f = flavorOf(p, flavor)
   const i = lastSepIndex(p, f)
   // Strip any leading volume to avoid returning 'C:' as a basename.
-  const tail = i < 0 ? p : p.substring(i + 1)
+  const tail = i < 0
+    ? p
+    : p.substring(i + 1)
   if (tail)
     return tail
   // No tail after the last separator: fall back to segment-aware split so
   // `basename('C:\\')` returns the volume, `basename('/')` returns ''.
   const parts = split(p, f)
-  return parts.length === 0 ? '' : (parts[parts.length - 1] ?? '')
+  return parts.length === 0
+    ? ''
+    : (parts[parts.length - 1] ?? '')
 }
 
 /**
@@ -327,7 +358,9 @@ export function basename(p: string, flavor?: PathFlavor): string {
  * that way whatever the host OS.
  */
 export function normalizeSeparators(p: string, flavor: PathFlavor): string {
-  return flavor === 'win32' ? p.replace(FWD_SLASH_G, '\\') : p
+  return flavor === 'win32'
+    ? p.replace(FWD_SLASH_G, '\\')
+    : p
 }
 
 // Convert any flavor's separators to posix `/`. Useful for comparing against
@@ -409,7 +442,9 @@ export function untildify(value: string, homeDir?: string, flavor?: PathFlavor):
   if (!(value.startsWith('~/') || value.startsWith('~\\')))
     return value
   const rest = value.slice(2).replace(LEADING_SEP_RE, '')
-  return rest ? join([homeDir, rest], flavor) : homeDir
+  return rest
+    ? join([homeDir, rest], flavor)
+    : homeDir
 }
 
 // Return the shortest reasonable rendering of `absPath` against a working

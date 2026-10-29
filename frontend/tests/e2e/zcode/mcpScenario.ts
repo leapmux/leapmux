@@ -19,7 +19,14 @@ import { answerControl, openWorkspace, waitForControlBanner } from '../helpers/u
 export function zcodeMcpConnectFrame(requestId: string, workingDir: string): string {
   if (!requestId || !workingDir)
     throw new Error('The native ZCode MCP request requires a request ID and working directory.')
-  return JSON.stringify({ id: requestId, method: 'mcp/list', params: { workspace: { workspacePath: workingDir, workspaceKey: workingDir }, mode: 'connect' } })
+  return JSON.stringify({
+    id: requestId,
+    method: 'mcp/list',
+    params: {
+      workspace: { workspacePath: workingDir, workspaceKey: workingDir },
+      mode: 'connect',
+    },
+  })
 }
 
 /**
@@ -32,7 +39,18 @@ export async function exerciseZCodeMcpForm(context: ManagedNativeScenarioContext
   const receiptLog = join(directory, 'mcp-receipt.json')
   const formServer = writeMcpFormServer(directory, 'form-server.mjs', { receiptLog })
   mkdirSync(join(directory, '.zcode'))
-  writeFileSync(join(directory, '.zcode', 'config.json'), JSON.stringify({ mcp: { servers: { [formServer.name]: { type: 'stdio', command: formServer.command, args: formServer.args, env: {} } } } }))
+  writeFileSync(join(directory, '.zcode', 'config.json'), JSON.stringify({
+    mcp: {
+      servers: {
+        [formServer.name]: {
+          type: 'stdio',
+          command: formServer.command,
+          args: formServer.args,
+          env: {},
+        },
+      },
+    },
+  }))
   const server = context.leapmuxServer
   await openAgentViaAPI(server, context.workspaceId, directory, agentOpenOptions(context.provider))
   await openWorkspace(context.page, context.workspaceId)
@@ -56,7 +74,12 @@ export async function exerciseZCodeMcpForm(context: ManagedNativeScenarioContext
     },
   })
   const replies = readMcpServerReceipt(receiptLog).elicitationReplies
-  expect(replies.map(reply => reply.kind === 'result' ? reply.result : reply), 'the server received the accepted typed answers once').toEqual([
-    { action: 'accept', content: { count: 0, enabled: false, color: 'b' } },
+  expect(replies.map(reply => reply.kind === 'result'
+    ? reply.result
+    : reply), 'the server received the accepted typed answers once').toEqual([
+    {
+      action: 'accept',
+      content: { count: 0, enabled: false, color: 'b' },
+    },
   ])
 }

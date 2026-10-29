@@ -23,12 +23,18 @@ const PROVIDER = AgentProvider.QWEN_CODE
 
 qwenTest.describe('Qwen Code control requests', () => {
   qwenTest('approves a plan and leaves plan mode', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, QWEN_AGENT, { optionValues: { [OPTION_ID_PERMISSION_MODE]: 'plan' } })
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, QWEN_AGENT, {
+      optionValues: { [OPTION_ID_PERMISSION_MODE]: 'plan' },
+    })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await expectSettingsChip(page, 'Plan')
 
     const start = await modelScript.queue(
-      { toolCalls: [exitPlanModeToolCall(PROVIDER, 'qwen-plan', '# Qwen probe plan\n\n1. Change no files.')] },
+      {
+        toolCalls: [
+          exitPlanModeToolCall(PROVIDER, 'qwen-plan', '# Qwen probe plan\n\n1. Change no files.'),
+        ],
+      },
       { text: 'Plan approved; starting.' },
     )
     await sendMessage(page, modelScript.prompt('Plan the probe, then ask for approval.'))
@@ -50,7 +56,9 @@ qwenTest.describe('Qwen Code control requests', () => {
   // The old turn waits for plan approval. Clear answers that request and cancels the old turn before the new session opens.
   // The approved plan runs in the new session. No old-session output reaches the reader after that replacement.
   qwenTest('approves a plan with a fresh context and runs it in the new session', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, QWEN_AGENT, { optionValues: { [OPTION_ID_PERMISSION_MODE]: 'plan' } })
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, QWEN_AGENT, {
+      optionValues: { [OPTION_ID_PERMISSION_MODE]: 'plan' },
+    })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await expectSettingsChip(page, 'Plan')
 
@@ -68,7 +76,9 @@ qwenTest.describe('Qwen Code control requests', () => {
       respond: { text: 'Running the approved plan in a fresh context.' },
     })
     const start = await modelScript.queue({
-      toolCalls: [exitPlanModeToolCall(PROVIDER, 'qwen-fresh-plan', modelScript.prompt('# Qwen fresh plan\n\n1. Change no files.'))],
+      toolCalls: [
+        exitPlanModeToolCall(PROVIDER, 'qwen-fresh-plan', modelScript.prompt('# Qwen fresh plan\n\n1. Change no files.')),
+      ],
     })
     await sendMessage(page, modelScript.prompt('Plan the probe, then ask for approval.'))
     await modelScript.waitForSteps(start + 1)
@@ -93,14 +103,18 @@ qwenTest.describe('Qwen Code control requests', () => {
   // its history for the next prompt and stays in plan mode (Session.ts,
   // stopAfterPermissionCancel). So this script queues the tool call alone.
   qwenTest('rejects a plan, ends the turn without a model request, and stays in plan mode', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
-    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, QWEN_AGENT, { optionValues: { [OPTION_ID_PERMISSION_MODE]: 'plan' } })
+    await openProviderAgent(leapmuxServer, authenticatedEmptyWorkspace.workspaceId, QWEN_AGENT, {
+      optionValues: { [OPTION_ID_PERMISSION_MODE]: 'plan' },
+    })
     await openWorkspace(page, authenticatedEmptyWorkspace.workspaceId)
     await expectSettingsChip(page, 'Plan')
     const agent = await currentNativeAgent({ page, leapmuxServer })
     const watch = await watchNativeControls(leapmuxServer, agent.id)
     await withCleanup(async () => {
       const start = await modelScript.queue({
-        toolCalls: [exitPlanModeToolCall(PROVIDER, 'qwen-rejected-plan', '# Qwen rejected plan\n\n1. Keep this plan unapproved.')],
+        toolCalls: [
+          exitPlanModeToolCall(PROVIDER, 'qwen-rejected-plan', '# Qwen rejected plan\n\n1. Keep this plan unapproved.'),
+        ],
       })
       await sendMessage(page, modelScript.prompt('Plan the probe, then ask for approval.'))
       await modelScript.waitForSteps(start + 1)
@@ -120,7 +134,9 @@ qwenTest.describe('Qwen Code control requests', () => {
       expect(decision.response).toEqual({
         jsonrpc: '2.0',
         id: observed.payload.id,
-        result: { outcome: { outcome: ACP_PERMISSION_OUTCOME.Selected, optionId: QWEN_PERMISSION_OPTION.Cancel } },
+        result: {
+          outcome: { outcome: ACP_PERMISSION_OUTCOME.Selected, optionId: QWEN_PERMISSION_OPTION.Cancel },
+        },
       })
       const toolCallId = pickString(pickObject(pickObject(observed.payload, 'params'), 'toolCall'), 'toolCallId')
       expect(toolCallId).not.toBe('')
@@ -129,7 +145,12 @@ qwenTest.describe('Qwen Code control requests', () => {
         spanId: toolCallId,
         accepts: frame => acpClosedToolCall(frame, toolCallId, ['failed']),
       })
-      expect(refusal.frame.content).toEqual([{ type: 'content', content: { type: 'text', text: `Tool "${QWEN_TOOL.ExitPlanMode}" was canceled by the user.` } }])
+      expect(refusal.frame.content).toEqual([
+        {
+          type: 'content',
+          content: { type: 'text', text: `Tool "${QWEN_TOOL.ExitPlanMode}" was canceled by the user.` },
+        },
+      ])
 
       await page.reload()
       await expect(savedControlAnswer(page)).toHaveText('Reject')

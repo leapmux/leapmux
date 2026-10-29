@@ -40,7 +40,12 @@ async function openAgentWithFile(page: Page, server: Server, workspace: Workspac
 mimoTest.describe('MiMo Code permission requests', () => {
   mimoTest('an approved deletion runs, and the saved answer states the option', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
     const file = await openAgentWithFile(page, leapmuxServer, authenticatedEmptyWorkspace, 'mimo-permission-allow-')
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
     await exerciseNativePermissionDecision(context, {
       toolCall: bashToolCall(context.provider, 'delete-call', 'rm -f doomed.txt'),
       decision: 'allow',
@@ -66,7 +71,11 @@ mimoTest.describe('MiMo Code permission requests', () => {
   // A plain rejection stops MiMo's loop, so MiMo does not ask the model again.
   mimoTest('a rejected deletion does not run, and the call reads as declined', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
     const file = await openAgentWithFile(page, leapmuxServer, authenticatedEmptyWorkspace, 'mimo-permission-reject-')
-    const start = await modelScript.queue({ toolCalls: [bashToolCall(AgentProvider.MIMO_CODE, 'delete-call', 'rm -f doomed.txt')] })
+    const start = await modelScript.queue({
+      toolCalls: [
+        bashToolCall(AgentProvider.MIMO_CODE, 'delete-call', 'rm -f doomed.txt'),
+      ],
+    })
     await sendMessage(page, modelScript.prompt('Delete doomed.txt.'))
     await modelScript.waitForSteps(start + 1)
 
@@ -86,7 +95,12 @@ mimoTest.describe('MiMo Code permission requests', () => {
   // its loop continues.
   mimoTest('a rejection with feedback reaches the model as the reason', async ({ page, authenticatedEmptyWorkspace, leapmuxServer, modelScript }) => {
     const file = await openAgentWithFile(page, leapmuxServer, authenticatedEmptyWorkspace, 'mimo-permission-feedback-')
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: authenticatedEmptyWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: authenticatedEmptyWorkspace.workspaceId,
+    })
     const reason = 'Keep the file for the audit'
     await exerciseNativePermissionDecision(context, {
       toolCall: bashToolCall(context.provider, 'delete-call', 'rm -f doomed.txt'),
@@ -121,7 +135,12 @@ mimoTest.describe('MiMo Code permission requests', () => {
     expect(execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: workingDir, env: gitEnv, encoding: 'utf8' }).trim()).toBe(workingDir)
     const outsideProbe = (() => {
       try {
-        return execFileSync('git', ['rev-parse', '--show-toplevel'], { cwd: outside, env: gitEnv, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+        return execFileSync('git', ['rev-parse', '--show-toplevel'], {
+          cwd: outside,
+          env: gitEnv,
+          encoding: 'utf8',
+          stdio: ['ignore', 'pipe', 'pipe'],
+        }).trim()
       }
       catch {
         return null
@@ -134,8 +153,16 @@ mimoTest.describe('MiMo Code permission requests', () => {
       writeFileSync(join(outside, 'first.txt'), 'FIRST_OUTSIDE_FILE\n')
       writeFileSync(join(outside, 'second.txt'), 'SECOND_OUTSIDE_FILE\n')
       const start = await modelScript.queue(
-        { toolCalls: [readToolCall(AgentProvider.MIMO_CODE, 'outside-first', join(outside, 'first.txt'))] },
-        { toolCalls: [readToolCall(AgentProvider.MIMO_CODE, 'outside-second', join(outside, 'second.txt'))] },
+        {
+          toolCalls: [
+            readToolCall(AgentProvider.MIMO_CODE, 'outside-first', join(outside, 'first.txt')),
+          ],
+        },
+        {
+          toolCalls: [
+            readToolCall(AgentProvider.MIMO_CODE, 'outside-second', join(outside, 'second.txt')),
+          ],
+        },
         { text: 'READ_BOTH_OUTSIDE_FILES' },
       )
       await sendMessage(page, modelScript.prompt('Read the two files outside the project.'))

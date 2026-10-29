@@ -22,10 +22,18 @@ export function prepareFastAgentModes(runDirectory: string, sharedHome: string):
   const cards = join(home, 'agent-cards')
   mkdirSync(cards, { recursive: true })
   copyFileSync(join(sharedHome, 'fast-agent.yaml'), join(home, 'fast-agent.yaml'))
-  for (const [name, marker] of [['reader', 'NATIVE_FAST_AGENT_READER'], ['writer', 'NATIVE_FAST_AGENT_WRITER']]) {
-    writeFileSync(join(cards, `${name}.md`), `---\nname: ${name}\ndescription: ${name} mode for a private E2E test.\nmodel: ${FAST_AGENT_MOCK_MODEL}\n${name === 'reader' ? 'default: true\n' : ''}---\n\nUse ${marker} as your private native instruction marker.\n`, { mode: 0o600 })
+  for (const [name, marker] of [
+    ['reader', 'NATIVE_FAST_AGENT_READER'],
+    ['writer', 'NATIVE_FAST_AGENT_WRITER'],
+  ]) {
+    writeFileSync(join(cards, `${name}.md`), `---\nname: ${name}\ndescription: ${name} mode for a private E2E test.\nmodel: ${FAST_AGENT_MOCK_MODEL}\n${name === 'reader'
+      ? 'default: true\n'
+      : ''}---\n\nUse ${marker} as your private native instruction marker.\n`, { mode: 0o600 })
   }
-  return { env: { FAST_AGENT_HOME: home }, setup: undefined }
+  return {
+    env: { FAST_AGENT_HOME: home },
+    setup: undefined,
+  }
 }
 
 /** Load two private native agent cards without changing the suite's Fast Agent home. */
@@ -40,7 +48,10 @@ export const fastAgentModesTest = fastAgentTest.extend<{ fastAgentModesWorkspace
       providerAgent: FAST_AGENT_AGENT,
       prepare: runDirectory => prepareFastAgentModes(runDirectory, sharedHome),
       openAgent: async (server, workspaceId, workingDir) =>
-        (await openProviderAgent(server, workspaceId, FAST_AGENT_AGENT, { workingDir, optionValues: { permissionMode: 'reader' } })).agentId,
+        (await openProviderAgent(server, workspaceId, FAST_AGENT_AGENT, {
+          workingDir,
+          optionValues: { permissionMode: 'reader' },
+        })).agentId,
     }, async ({ workspaceId, server, workingDir }) => {
       await use({ workspaceId, server, workingDir })
     })

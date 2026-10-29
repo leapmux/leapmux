@@ -14,7 +14,12 @@ import { nativeContext } from './scenarios'
  */
 clineTest.describe('Cline settings', () => {
   clineTest('Shift+Tab toggles Plan mode from the composer', async ({ askingClineWorkspace, page, modelScript, leapmuxServer }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingClineWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: askingClineWorkspace.workspaceId,
+    })
     await waitForSettingsHydrated(page)
     await expectSettingsChip(page, 'Act')
 

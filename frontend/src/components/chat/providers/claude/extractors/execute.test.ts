@@ -125,7 +125,12 @@ describe('claudeBashFromToolResult exit-code marker', () => {
   })
 
   it('ignores a first line that only resembles the marker', () => {
-    for (const text of ['Exit code\nx', 'Exit code abc\nx', 'Exit codes 1\nx', 'exit code 1\nx']) {
+    for (const text of [
+      'Exit code\nx',
+      'Exit code abc\nx',
+      'Exit codes 1\nx',
+      'exit code 1\nx',
+    ]) {
       const source = claudeBashFromToolResult({ resultContent: text })
       expect(source.exitCode).toBeUndefined()
       expect(source.output).toBe(text)

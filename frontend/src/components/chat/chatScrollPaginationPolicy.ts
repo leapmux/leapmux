@@ -33,7 +33,9 @@ export interface ChatPaginationPolicyDeps {
 export function createChatPaginationPolicy(deps: ChatPaginationPolicyDeps) {
   const bufferTargetPx = (): number => {
     const element = deps.getEl()
-    return element ? deps.bufferScreens * element.clientHeight : 0
+    return element
+      ? deps.bufferScreens * element.clientHeight
+      : 0
   }
 
   const canLoadOlderMessages = (): boolean =>

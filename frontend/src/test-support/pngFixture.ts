@@ -6,7 +6,12 @@
  * use this rather than checking in a binary fixture.
  */
 export function pngBase64(width: number, height: number): string {
-  const u32 = (v: number) => [(v >>> 24) & 0xFF, (v >>> 16) & 0xFF, (v >>> 8) & 0xFF, v & 0xFF]
+  const u32 = (v: number) => [
+    (v >>> 24) & 0xFF,
+    (v >>> 16) & 0xFF,
+    (v >>> 8) & 0xFF,
+    v & 0xFF,
+  ]
   const bytes = [
     0x89,
     0x50,

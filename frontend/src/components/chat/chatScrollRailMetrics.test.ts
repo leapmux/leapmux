@@ -18,7 +18,9 @@ function inRoot(body: (dispose: () => void) => Promise<void>): Promise<void> {
       }
       catch (e) {
         dispose()
-        reject(e instanceof Error ? e : new Error(String(e)))
+        reject(e instanceof Error
+          ? e
+          : new Error(String(e)))
       }
     })
   })
@@ -32,7 +34,11 @@ describe('createRailMetrics', () => {
       div.setClientHeight(400)
       div.setScrollTop(0)
       const [scrollEl] = createSignal<HTMLDivElement | undefined>(div.el)
-      const metrics = createRailMetrics({ scrollEl, totalHeight: () => 1000, geometryVersion: () => 0 })
+      const metrics = createRailMetrics({
+        scrollEl,
+        totalHeight: () => 1000,
+        geometryVersion: () => 0,
+      })
       await tick()
       expect(metrics()).toEqual({ scrollTop: 0, dist: 600, clientHeight: 400 }) // 1000 - 0 - 400
 
@@ -49,7 +55,11 @@ describe('createRailMetrics', () => {
       div.setClientHeight(400)
       const [scrollEl] = createSignal<HTMLDivElement | undefined>(div.el)
       const [geo, setGeo] = createSignal(0)
-      const metrics = createRailMetrics({ scrollEl, totalHeight: () => 1000, geometryVersion: geo })
+      const metrics = createRailMetrics({
+        scrollEl,
+        totalHeight: () => 1000,
+        geometryVersion: geo,
+      })
       await tick()
 
       // A prepend/measurement shifts the view without dispatching a scroll event.
@@ -68,7 +78,11 @@ describe('createRailMetrics', () => {
       div.setClientHeight(400)
       const [scrollEl] = createSignal<HTMLDivElement | undefined>(div.el)
       const [geo, setGeo] = createSignal(0)
-      const metrics = createRailMetrics({ scrollEl, totalHeight: () => 1000, geometryVersion: geo })
+      const metrics = createRailMetrics({
+        scrollEl,
+        totalHeight: () => 1000,
+        geometryVersion: geo,
+      })
       await tick()
 
       const rafSpy = vi.spyOn(globalThis, 'requestAnimationFrame')
@@ -87,7 +101,11 @@ describe('createRailMetrics', () => {
   it('stays at the default and does not crash when the scroll element is absent (pre-mount)', () =>
     inRoot(async () => {
       // props.scrollEl is undefined until the chat container mounts; sampling must no-op.
-      const metrics = createRailMetrics({ scrollEl: () => undefined, totalHeight: () => 1000, geometryVersion: () => 0 })
+      const metrics = createRailMetrics({
+        scrollEl: () => undefined,
+        totalHeight: () => 1000,
+        geometryVersion: () => 0,
+      })
       await tick()
       expect(metrics()).toEqual({ scrollTop: 0, dist: 0, clientHeight: 0 })
     }))
@@ -100,7 +118,11 @@ describe('createRailMetrics', () => {
       div.setScrollTop(80)
       const [scrollEl] = createSignal<HTMLDivElement | undefined>(div.el)
       const [geo, setGeo] = createSignal(0)
-      const metrics = createRailMetrics({ scrollEl, totalHeight: () => 1000, geometryVersion: geo })
+      const metrics = createRailMetrics({
+        scrollEl,
+        totalHeight: () => 1000,
+        geometryVersion: geo,
+      })
       let notifications = 0
       createEffect(on(metrics, () => {
         notifications += 1

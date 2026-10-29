@@ -7,7 +7,15 @@ import { readNativeToolOutputFile } from './nativeToolOutputFile'
 
 function fixture(text = 'Complete\nnative77\n') {
   const bytes = Buffer.from(text)
-  const stat: NativeToolOutputFileStat = { dev: 1, ino: 2, size: bytes.length, mtimeMs: 3, ctimeMs: 4, isFile: () => true, isSymbolicLink: () => false }
+  const stat: NativeToolOutputFileStat = {
+    dev: 1,
+    ino: 2,
+    size: bytes.length,
+    mtimeMs: 3,
+    ctimeMs: 4,
+    isFile: () => true,
+    isSymbolicLink: () => false,
+  }
   const io: NativeToolOutputFileIO = {
     realpath: vi.fn(() => '/private/native'),
     lstat: vi.fn(() => stat),
@@ -23,7 +31,9 @@ describe('readNativeToolOutputFile', () => {
   it('reads exact stable bytes from descriptor zero without following the file link', () => {
     const f = fixture()
     expect(readNativeToolOutputFile('/private/native/result.txt', f.bytes.length, f.io)).toBe('Complete\nnative77\n')
-    expect(f.io.open).toHaveBeenCalledWith(process.platform === 'win32' ? '\\private\\native\\result.txt' : '/private/native/result.txt', constants.O_RDONLY | constants.O_NOFOLLOW)
+    expect(f.io.open).toHaveBeenCalledWith(process.platform === 'win32'
+      ? '\\private\\native\\result.txt'
+      : '/private/native/result.txt', constants.O_RDONLY | constants.O_NOFOLLOW)
     expect(f.io.read).toHaveBeenCalledWith(0)
     expect(f.io.close).toHaveBeenCalledWith(0)
   })
@@ -45,7 +55,13 @@ describe('readNativeToolOutputFile', () => {
     expect(f.io.realpath).not.toHaveBeenCalled()
   })
 
-  it.each([-1, 0.5, Number.NaN, Number.POSITIVE_INFINITY, 16 * 1024 * 1024 + 1])('rejects an invalid limit %j before I/O', (limit) => {
+  it.each([
+    -1,
+    0.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    16 * 1024 * 1024 + 1,
+  ])('rejects an invalid limit %j before I/O', (limit) => {
     const f = fixture()
     expect(() => readNativeToolOutputFile('/private/native/result.txt', limit, f.io)).toThrow('read limit')
     expect(f.io.realpath).not.toHaveBeenCalled()
@@ -55,11 +71,18 @@ describe('readNativeToolOutputFile', () => {
     { size: -1 },
     { size: 101 },
     { size: Number.NaN },
-    { isFile: () => false },
-    { isSymbolicLink: () => true },
+    {
+      isFile: () => false,
+    },
+    {
+      isSymbolicLink: () => true,
+    },
   ])('rejects an unsafe native file before open %j', (change) => {
     const f = fixture()
-    f.io.lstat = () => ({ ...f.stat, ...change })
+    f.io.lstat = () => ({
+      ...f.stat,
+      ...change,
+    })
     expect(() => readNativeToolOutputFile('/private/native/result.txt', 100, f.io)).toThrow('regular file')
     expect(f.io.open).not.toHaveBeenCalled()
   })
@@ -87,10 +110,20 @@ describe('readNativeToolOutputFile', () => {
     expect(f.io.close).toHaveBeenCalledWith(0)
   })
 
-  it.each([{ ino: 3 }, { mtimeMs: 99 }, { ctimeMs: 99 }, { size: 0 }])('rejects mutation during the read %j', (change) => {
+  it.each([
+    { ino: 3 },
+    { mtimeMs: 99 },
+    { ctimeMs: 99 },
+    { size: 0 },
+  ])('rejects mutation during the read %j', (change) => {
     const f = fixture()
     let reads = 0
-    f.io.stat = () => ++reads === 1 ? f.stat : { ...f.stat, ...change }
+    f.io.stat = () => ++reads === 1
+      ? f.stat
+      : {
+          ...f.stat,
+          ...change,
+        }
     expect(() => readNativeToolOutputFile('/private/native/result.txt', 100, f.io)).toThrow('changed during the read')
     expect(f.io.close).toHaveBeenCalledWith(0)
   })
@@ -98,7 +131,9 @@ describe('readNativeToolOutputFile', () => {
   it('rejects a changed parent directory after the read', () => {
     const f = fixture()
     let reads = 0
-    f.io.realpath = () => ++reads === 1 ? '/private/native' : '/private/other'
+    f.io.realpath = () => ++reads === 1
+      ? '/private/native'
+      : '/private/other'
     expect(() => readNativeToolOutputFile('/private/native/result.txt', 100, f.io)).toThrow('directory changed')
     expect(f.io.close).toHaveBeenCalledWith(0)
   })
@@ -146,7 +181,10 @@ describe('readNativeToolOutputFile', () => {
 })
 vi.mock('node:path', async (importOriginal) => {
   const actual = await importOriginal<typeof import('node:path')>()
-  return { ...actual, ...actual.posix }
+  return {
+    ...actual,
+    ...actual.posix,
+  }
 })
 
 afterEach(() => {
@@ -162,7 +200,15 @@ async function windowsReader() {
 
 function windowsFile(): NativeToolOutputFileIO {
   const bytes = Buffer.from('complete native output')
-  const stat = { dev: 1, ino: 2, size: bytes.length, mtimeMs: 3, ctimeMs: 4, isFile: () => true, isSymbolicLink: () => false }
+  const stat = {
+    dev: 1,
+    ino: 2,
+    size: bytes.length,
+    mtimeMs: 3,
+    ctimeMs: 4,
+    isFile: () => true,
+    isSymbolicLink: () => false,
+  }
   return {
     realpath: () => 'C:\\private\\native',
     lstat: () => stat,

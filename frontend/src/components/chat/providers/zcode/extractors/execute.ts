@@ -63,7 +63,9 @@ export function extractZCodeBash(row: ZCodeRow): ZCodeBashCommand | null {
   return {
     command,
     description: pickString(input, 'description'),
-    output: update.isError ? zcodeErrorText(update) : (update.result?.content ?? ''),
+    output: update.isError
+      ? zcodeErrorText(update)
+      : (update.result?.content ?? ''),
     exitCode: pickNumber(commandPerf, 'exitCode'),
     hasCommandTelemetry: commandPerf !== null && Object.keys(commandPerf).length > 0,
     timedOut: commandPerf?.timedOut === true,
@@ -93,7 +95,9 @@ export function zcodeBashToCommandResult(bash: ZCodeBashCommand): CommandResult 
   const exitCode = bash.exitCode ?? (markerUsable ? marked.exitCode : undefined)
   return {
     output: markerUsable ? marked.output : bash.output,
-    ...(exitCode !== undefined ? { exitCode } : {}),
+    ...(exitCode !== undefined
+      ? { exitCode }
+      : {}),
     durationMs: bash.durationMs,
   }
 }

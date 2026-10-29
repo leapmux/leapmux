@@ -16,9 +16,20 @@ export function copilotModelCapabilities(id: string, options: Pick<CopilotSurfac
     supports: {
       vision: true,
       ...(id === options.defaultModelId
-        ? { reasoning_effort: ['none', 'low', 'medium', 'high', 'xhigh', 'max'] }
+        ? {
+            reasoning_effort: [
+              'none',
+              'low',
+              'medium',
+              'high',
+              'xhigh',
+              'max',
+            ],
+          }
         : id === options.reasoningModelId
-          ? { reasoning_effort: ['low', 'high'] }
+          ? {
+              reasoning_effort: ['low', 'high'],
+            }
           : {}),
     },
     limits: { max_context_window_tokens: 128_000 },
@@ -29,9 +40,13 @@ export function copilotModelCapabilities(id: string, options: Pick<CopilotSurfac
 export function copilotCatalogMetadata(id: string, options: Pick<CopilotSurfaceOptions, 'defaultModelId' | 'reasoningModelId' | 'messagesModelId'>): Record<string, unknown> {
   return {
     ...(id === options.reasoningModelId
-      ? { supported_endpoints: ['/responses'] }
+      ? {
+          supported_endpoints: ['/responses'],
+        }
       : id === options.messagesModelId
-        ? { supported_endpoints: ['/v1/messages'] }
+        ? {
+            supported_endpoints: ['/v1/messages'],
+          }
         : {}),
     capabilities: copilotModelCapabilities(id, options),
   }
@@ -39,7 +54,9 @@ export function copilotCatalogMetadata(id: string, options: Pick<CopilotSurfaceO
 
 /** This existing fixture model supplies the extra native Copilot reasoning field. */
 export function copilotReasoningFields(model: string, reasoning: string, defaultModelId: string): Record<string, string> {
-  return model === defaultModelId ? { reasoning } : {}
+  return model === defaultModelId
+    ? { reasoning }
+    : {}
 }
 
 /** The Copilot quota resources that a native quota snapshot header can state. */
@@ -53,8 +70,15 @@ export function copilotRateLimitHeaders(rateLimits: MockModelRateLimits): Record
   if (!Number.isFinite(utilization) || utilization < 0 || utilization > 1)
     throw new Error('The native Copilot quota utilization must be between zero and one.')
   const remaining = Math.round(100 * (1 - utilization))
-  const snapshot = new URLSearchParams({ ent: '100', rem: String(remaining), ov: '0', ovPerm: 'false' })
-  const resetDate = rateLimits.resetsAt === undefined ? '' : `&rst=${new Date(rateLimits.resetsAt * 1000).toISOString()}`
+  const snapshot = new URLSearchParams({
+    ent: '100',
+    rem: String(remaining),
+    ov: '0',
+    ovPerm: 'false',
+  })
+  const resetDate = rateLimits.resetsAt === undefined
+    ? ''
+    : `&rst=${new Date(rateLimits.resetsAt * 1000).toISOString()}`
   return { [`x-quota-snapshot-${rateLimits.type}`]: `${snapshot}${resetDate}` }
 }
 
@@ -74,13 +98,23 @@ export function handleCopilotHttp(request: IncomingMessage, response: ServerResp
     return true
   }
   if (request.method === 'GET' && url.pathname === '/user') {
-    writeMockJSON(response, 200, { id: 1, login: 'leapmux-e2e', name: 'LeapMux E2E', type: 'User', site_admin: false })
+    writeMockJSON(response, 200, {
+      id: 1,
+      login: 'leapmux-e2e',
+      name: 'LeapMux E2E',
+      type: 'User',
+      site_admin: false,
+    })
     return true
   }
   if (request.method === 'POST' && url.pathname === '/auto') {
     writeMockJSON(response, 200, {
       session_token: options.sessionToken,
-      selected_model: { id: options.defaultModelId, name: options.defaultModelId, capabilities: copilotModelCapabilities(options.defaultModelId, options) },
+      selected_model: {
+        id: options.defaultModelId,
+        name: options.defaultModelId,
+        capabilities: copilotModelCapabilities(options.defaultModelId, options),
+      },
     })
     return true
   }

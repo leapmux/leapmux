@@ -19,12 +19,18 @@ describe('createKimiCodeSurface', () => {
   })
 
   async function serviceServer(scenarioId: string) {
-    const server = await createMockModelServer({ models: ['kimi-service-test'] })
+    const server = await createMockModelServer({
+      models: ['kimi-service-test'],
+    })
     servers.push(server)
     await registerMockModelScenario(server.url, scenarioId, { steps: [] })
     const control = new URL(`${KIMI_USAGE_CONTROL_PREFIX}${scenarioId}`, server.url)
     const usage = new URL(`${KIMI_CODE_SERVICE_PATH}/usages`, server.url)
-    const configure = () => fetch(control, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(kimiPlanUsage(windows)) })
+    const configure = () => fetch(control, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(kimiPlanUsage(windows)),
+    })
     return { server, control, usage, configure }
   }
 
@@ -33,13 +39,19 @@ describe('createKimiCodeSurface', () => {
     expect((await fetch(usage, { headers: authorization })).status, 'no answer is configured yet').toBe(404)
     expect((await configure()).status).toBe(200)
     expect((await fetch(usage)).status).toBe(401)
-    expect((await fetch(usage, { headers: { authorization: 'Bearer another-token' } })).status).toBe(401)
+    expect((await fetch(usage, {
+      headers: { authorization: 'Bearer another-token' },
+    })).status).toBe(401)
     expect((await fetch(usage, { method: 'POST', headers: authorization })).status).toBe(405)
     const answered = await fetch(usage, { headers: authorization })
     expect(answered.status).toBe(200)
     expect(await answered.json()).toEqual({ usages: windows })
     const state = await (await fetch(control)).json()
-    expect(state.receipts.map((receipt: { status: number, authorized: boolean }) => [receipt.status, receipt.authorized])).toEqual([[401, false], [401, false], [200, true]])
+    expect(state.receipts.map((receipt: { status: number, authorized: boolean }) => [receipt.status, receipt.authorized])).toEqual([
+      [401, false],
+      [401, false],
+      [200, true],
+    ])
     expect(JSON.stringify(state)).not.toContain(MOCK_IDENTITY_TOKEN)
   })
 
@@ -63,7 +75,9 @@ describe('createKimiCodeSurface', () => {
   })
 
   it('refuses a credential when the surface has none', async () => {
-    const surface = createKimiCodeSurface({ hasScenario: () => true }, { accessToken: '' })
+    const surface = createKimiCodeSurface({
+      hasScenario: () => true,
+    }, { accessToken: '' })
     const request = new IncomingMessage(new Socket())
     request.method = 'GET'
     request.headers.authorization = 'Bearer '
@@ -75,8 +89,16 @@ describe('createKimiCodeSurface', () => {
   })
 
   it('leaves every other path to the other surfaces', async () => {
-    const surface = createKimiCodeSurface({ hasScenario: () => false }, { accessToken: MOCK_IDENTITY_TOKEN })
-    for (const path of ['/coding/v1/usages', '/kimi/coding/v1', '/kimi/other', '/v1/chat/completions', '/api/trpc/codingPlans.getUsage']) {
+    const surface = createKimiCodeSurface({
+      hasScenario: () => false,
+    }, { accessToken: MOCK_IDENTITY_TOKEN })
+    for (const path of [
+      '/coding/v1/usages',
+      '/kimi/coding/v1',
+      '/kimi/other',
+      '/v1/chat/completions',
+      '/api/trpc/codingPlans.getUsage',
+    ]) {
       const request = new IncomingMessage(new Socket())
       request.method = 'GET'
       const response = new ServerResponse(request)

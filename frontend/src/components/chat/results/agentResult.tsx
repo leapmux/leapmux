@@ -16,9 +16,17 @@ import { useCollapsedFlag } from './useCollapsedLines'
 
 /** Limit the description so the outcome remains visible in the status header. */
 function agentResultTitle(source: AgentRun, context?: ToolResultRenderContext): string {
-  const description = clipFirstLine(source.description || (source.registryKey ? context?.subagents?.row(source.registryKey)?.title ?? '' : ''), 80)
-  const identity = description ? `"${description}"` : source.agentId
-  return ['Agent', identity, agentRunStatusLabel(source)].filter(Boolean).join(' ')
+  const description = clipFirstLine(source.description || (source.registryKey
+    ? context?.subagents?.row(source.registryKey)?.title ?? ''
+    : ''), 80)
+  const identity = description
+    ? `"${description}"`
+    : source.agentId
+  return [
+    'Agent',
+    identity,
+    agentRunStatusLabel(source),
+  ].filter(Boolean).join(' ')
 }
 
 /**
@@ -40,14 +48,25 @@ export function agentRunStatesOutcome(run: AgentRun): boolean {
 
 /** Render an agent's status, identifying fields, and formatted report or launch prompt. */
 export function AgentResultBody(props: { source: AgentRun, context?: ToolResultRenderContext }): JSX.Element {
-  const collapsed = useCollapsedFlag({ text: () => props.source.body, expanded: () => getToolResultExpanded(props.context) })
+  const collapsed = useCollapsedFlag({
+    text: () => props.source.body,
+    expanded: () => getToolResultExpanded(props.context),
+  })
   const icon = () => AGENT_OUTCOME_ICON[props.source.outcome] ?? Bot
   return (
     <ToolStatusHeader icon={icon()} title={agentResultTitle(props.source, props.context)}>
       <ToolMetadata items={props.source.metadata} />
       <Show when={props.source.body}>
         <Show when={props.source.bodyLabel}><div class={toolResultPrompt}>{props.source.bodyLabel}</div></Show>
-        <CollapsibleContent outputPreview kind="markdown-tool-result" text={props.source.body} isCollapsed={collapsed()} {...(props.context !== undefined ? { context: props.context } : {})} />
+        <CollapsibleContent
+          outputPreview
+          kind="markdown-tool-result"
+          text={props.source.body}
+          isCollapsed={collapsed()}
+          {...(props.context !== undefined
+            ? { context: props.context }
+            : {})}
+        />
       </Show>
     </ToolStatusHeader>
   )

@@ -12,7 +12,11 @@ codebuddyTest('shows the native model error and runs a later valid turn', async 
     const snapshot = await readNativeMessageSnapshot(native, agent.id)
     await testInfo.attach('native-error-transcript', {
       contentType: 'application/json',
-      body: JSON.stringify(snapshot.messages.map(message => ({ seq: String(message.seq), source: message.source, body: nativeMessageBody(message) }))),
+      body: JSON.stringify(snapshot.messages.map(message => ({
+        seq: String(message.seq),
+        source: message.source,
+        body: nativeMessageBody(message),
+      }))),
     })
   })
 })

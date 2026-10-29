@@ -107,7 +107,9 @@ export function leapmuxNotificationEntry(
 ): NotificationEntry[] | null {
   switch (m.type) {
     case NOTIFICATION_TYPE.ApiRetryResolved:
-      return [retryEntry('api', { succeeded: true })]
+      return [
+        retryEntry('api', { succeeded: true }),
+      ]
     case NOTIFICATION_TYPE.CompactionEnded: {
       const error = pickString(m, NOTIFICATION_FIELD.Error)?.trim()
       // An absent outcome follows its error: an error with no outcome is a
@@ -115,40 +117,71 @@ export function leapmuxNotificationEntry(
       // form when the agent frames no end of its own.
       const outcome = m[NOTIFICATION_FIELD.Outcome] === undefined
         ? (error ? 'failed' : 'completed')
-        : m[NOTIFICATION_FIELD.Outcome] === COMPACTION_END_OUTCOME.Aborted ? 'aborted' : 'failed'
-      return [{
-        kind: 'compaction',
-        phase: 'end',
-        outcome,
-        ...(error ? { error } : {}),
-      }]
+        : m[NOTIFICATION_FIELD.Outcome] === COMPACTION_END_OUTCOME.Aborted
+          ? 'aborted'
+          : 'failed'
+      return [
+        {
+          kind: 'compaction',
+          phase: 'end',
+          outcome,
+          ...(error
+            ? { error }
+            : {}),
+        },
+      ]
     }
     case NOTIFICATION_TYPE.ApiRetry: {
       const facts: { attempt?: number, error?: string } = {}
       assignDefined(facts, 'attempt', pickNumber(m, NOTIFICATION_FIELD.Count, undefined))
       assignDefined(facts, 'error', pickString(m, NOTIFICATION_FIELD.Error, undefined))
-      return [retryEntry('api', facts)]
+      return [
+        retryEntry('api', facts),
+      ]
     }
     case NOTIFICATION_TYPE.SettingsChanged: {
       const changes = parseSettingsChanges(m[NOTIFICATION_FIELD.Changes], agentProvider)
-      return changes.length > 0 ? [{ kind: 'settings-changed', changes }] : []
+      return changes.length > 0
+        ? [
+            { kind: 'settings-changed', changes },
+          ]
+        : []
     }
     case NOTIFICATION_TYPE.ContextCleared:
-      return [{ kind: 'context-cleared' }]
+      return [
+        { kind: 'context-cleared' },
+      ]
     case NOTIFICATION_TYPE.PlanExecution:
-      return [{ kind: 'text', text: 'Executing plan' }]
+      return [
+        { kind: 'text', text: 'Executing plan' },
+      ]
     case NOTIFICATION_TYPE.AgentError:
-      return [{ kind: 'text', text: pickString(m, NOTIFICATION_FIELD.Error, UNKNOWN_ERROR_LABEL) }]
+      return [
+        {
+          kind: 'text',
+          text: pickString(m, NOTIFICATION_FIELD.Error, UNKNOWN_ERROR_LABEL),
+        },
+      ]
     case NOTIFICATION_TYPE.Interrupted:
-      return [{ kind: 'text', text: INTERRUPTED_LABEL }]
+      return [
+        { kind: 'text', text: INTERRUPTED_LABEL },
+      ]
     case NOTIFICATION_TYPE.StopIgnored:
-      return [{ kind: 'text', text: INTERRUPT_IGNORED_LABEL }]
+      return [
+        { kind: 'text', text: INTERRUPT_IGNORED_LABEL },
+      ]
     case NOTIFICATION_TYPE.InputRequeued:
-      return [{ kind: 'text', text: INPUT_REQUEUED_LABEL }]
+      return [
+        { kind: 'text', text: INPUT_REQUEUED_LABEL },
+      ]
     // The worker normalizes the provider's live status text.
     case NOTIFICATION_TYPE.AgentStatus: {
       const text = pickString(m, NOTIFICATION_FIELD.Text).trim()
-      return text ? [{ kind: 'status', text }] : []
+      return text
+        ? [
+            { kind: 'status', text },
+          ]
+        : []
     }
     case NOTIFICATION_TYPE.SubagentReport: {
       const text = pickString(m, NOTIFICATION_FIELD.Text).trim()
@@ -156,25 +189,60 @@ export function leapmuxNotificationEntry(
         return []
       const label = pickString(m, NOTIFICATION_FIELD.Label).trim()
       const status = pickString(m, NOTIFICATION_FIELD.Status).trim()
-      return [{ kind: 'subagent-report', text, ...(label ? { label } : {}), ...(status ? { status } : {}) }]
+      return [
+        {
+          kind: 'subagent-report',
+          text,
+          ...(label
+            ? { label }
+            : {}),
+          ...(status
+            ? { status }
+            : {}),
+        },
+      ]
     }
     case NOTIFICATION_TYPE.PlanUpdated: {
       const label = planUpdatedLabel(m)
-      return label !== null ? [{ kind: 'text', text: label }] : []
+      return label !== null
+        ? [
+            { kind: 'text', text: label },
+          ]
+        : []
     }
     case NOTIFICATION_TYPE.GoalUpdated: {
       const label = goalUpdatedLabel(m)
-      return label !== null ? [{ kind: 'text', text: label }] : []
+      return label !== null
+        ? [
+            { kind: 'text', text: label },
+          ]
+        : []
     }
     case NOTIFICATION_TYPE.GoalCleared: {
       const objective = pickString(m, NOTIFICATION_FIELD.Objective)
-      return [{ kind: 'text', text: objective ? `Goal cleared: ${objective}` : 'Goal cleared' }]
+      return [
+        {
+          kind: 'text',
+          text: objective
+            ? `Goal cleared: ${objective}`
+            : 'Goal cleared',
+        },
+      ]
     }
     case NOTIFICATION_TYPE.AutoReviewApproved:
-      return [{ kind: 'text', text: AUTO_REVIEW_APPROVED_NOTICE }]
+      return [
+        { kind: 'text', text: AUTO_REVIEW_APPROVED_NOTICE },
+      ]
     case NOTIFICATION_TYPE.PendingRequestsApproved: {
       const count = m[NOTIFICATION_FIELD.Count]
-      return [{ kind: 'text', text: pendingRequestsApprovedLabel(typeof count === 'number' ? count : 0) }]
+      return [
+        {
+          kind: 'text',
+          text: pendingRequestsApprovedLabel(typeof count === 'number'
+            ? count
+            : 0),
+        },
+      ]
     }
     // The worker states the model that the retry used. The cached label of the
     // provider gives its display name, and the raw ID keeps the row readable
@@ -182,8 +250,12 @@ export function leapmuxNotificationEntry(
     // complete sentence.
     case NOTIFICATION_TYPE.TurnRetried: {
       const model = pickString(m, NOTIFICATION_FIELD.Model).trim()
-      const target = model ? displayValue(agentProvider, 'model', model) : 'a faster model'
-      return [{ kind: 'text', text: `Stopped this attempt and retried on ${target}` }]
+      const target = model
+        ? displayValue(agentProvider, 'model', model)
+        : 'a faster model'
+      return [
+        { kind: 'text', text: `Stopped this attempt and retried on ${target}` },
+      ]
     }
     // The provider reader handles this message type.
     default:
@@ -200,7 +272,9 @@ export function leapmuxNotificationEntry(
 export function pendingRequestsApprovedLabel(count: number): string {
   if (!Number.isInteger(count) || count < 1)
     return 'Bypass permissions approved the pending requests.'
-  return `Bypass permissions approved ${count} pending ${count === 1 ? 'request' : 'requests'}.`
+  return `Bypass permissions approved ${count} pending ${count === 1
+    ? 'request'
+    : 'requests'}.`
 }
 
 /**
@@ -212,7 +286,9 @@ export function autoReviewTitle(entry: AutoReviewEntry): string {
   if (entry.outcome === 'denied' && (entry.risk === 'high' || entry.risk === 'critical'))
     label = `${label} (${entry.risk} risk)`
   const action = entry.action.trim()
-  return action ? `${label}: ${action}` : label
+  return action
+    ? `${label}: ${action}`
+    : label
 }
 
 function displayLabel(provider: AgentProvider | undefined, key: string): string {
@@ -254,12 +330,16 @@ export function parseSettingsChanges(changes: unknown, provider: AgentProvider |
       continue
     // The new-only form requires an absent old value.
     // An empty old display label still belongs to a real transition.
-    const old = oldValue === '' ? undefined : pickString(val, NOTIFICATION_FIELD.OldLabel, undefined) ?? displayValue(provider, key, oldValue)
+    const old = oldValue === ''
+      ? undefined
+      : pickString(val, NOTIFICATION_FIELD.OldLabel, undefined) ?? displayValue(provider, key, oldValue)
     result.push({
       // Nullish coalescing preserves an explicit empty display label.
       // A truthy fallback would replace that label with a cached value.
       label: pickString(val, NOTIFICATION_FIELD.Label, undefined) ?? displayLabel(provider, key),
-      ...(old !== undefined ? { old } : {}),
+      ...(old !== undefined
+        ? { old }
+        : {}),
       new: pickString(val, NOTIFICATION_FIELD.NewLabel, undefined) ?? displayValue(provider, key, newValue),
     })
   }
@@ -327,7 +407,9 @@ function goalUpdatedLabel(source: Record<string, unknown>): string | null {
   // Keep matching native detail when the status token is unrecognized.
   // The neutral fallback does not display that native word.
   const detail = pickString(source, NOTIFICATION_FIELD.StatusDetail)
-  const suffix = detail && (recognizedStatus === undefined || detail !== status) ? ` (${detail})` : ''
+  const suffix = detail && (recognizedStatus === undefined || detail !== status)
+    ? ` (${detail})`
+    : ''
   return `${verb}: ${objective}${suffix}`
 }
 
@@ -360,7 +442,9 @@ function formatCompactionDetail(detail: CompactionDetails | undefined): string {
     return ''
   const tokens = formatTokenTransition(tokenCount(detail.pre), tokenCount(detail.post))
   const parts = [detail.trigger, tokens].filter(Boolean)
-  return parts.length > 0 ? ` (${parts.join(', ')})` : ''
+  return parts.length > 0
+    ? ` (${parts.join(', ')})`
+    : ''
 }
 
 /** "Context compacted" plus the formatted token detail. */
@@ -385,17 +469,25 @@ function formatSettingChange(change: SettingChange): string {
  */
 function formatRetry(raw: Extract<NotificationEntry, { kind: 'retry' }>): string {
   const entry = retryEntry(raw.scope, raw)
-  const what = entry.scope === 'summarization' ? 'Summary retry' : 'API retry'
+  const what = entry.scope === 'summarization'
+    ? 'Summary retry'
+    : 'API retry'
   const count = entry.attempt !== undefined
-    ? ` ${entry.attempt}${entry.maxAttempts !== undefined ? `/${entry.maxAttempts}` : ''}`
+    ? ` ${entry.attempt}${entry.maxAttempts !== undefined
+      ? `/${entry.maxAttempts}`
+      : ''}`
     : ''
   const detail = entry.error?.trim()
-  const suffix = detail ? ` (${detail})` : ''
+  const suffix = detail
+    ? ` (${detail})`
+    : ''
   if (entry.succeeded)
     return `${what}${count} succeeded`
   if (entry.willRetry === false)
     return `${what}${count} gave up${suffix}`
-  const wait = entry.delayMs !== undefined && entry.delayMs > 0 ? ` in ${formatShortWait(entry.delayMs)}` : ''
+  const wait = entry.delayMs !== undefined && entry.delayMs > 0
+    ? ` in ${formatShortWait(entry.delayMs)}`
+    : ''
   return `${what}${count}${wait}${suffix}`
 }
 
@@ -410,10 +502,18 @@ function formatHook(entry: Extract<NotificationEntry, { kind: 'hook' }>): string
     'timed-out': 'timed out',
     'continued': 'made the agent continue',
   } as const
-  const subject = event ? `Hook ${event}` : 'A hook'
-  const label = name ? ` (${name})` : ''
-  const exit = Number.isInteger(entry.exitCode) ? ` (exit ${entry.exitCode})` : ''
-  return `${subject}${label} ${verbs[entry.outcome]}${exit}${detail ? `: ${detail}` : ''}`
+  const subject = event
+    ? `Hook ${event}`
+    : 'A hook'
+  const label = name
+    ? ` (${name})`
+    : ''
+  const exit = Number.isInteger(entry.exitCode)
+    ? ` (exit ${entry.exitCode})`
+    : ''
+  return `${subject}${label} ${verbs[entry.outcome]}${exit}${detail
+    ? `: ${detail}`
+    : ''}`
 }
 
 /**
@@ -423,58 +523,120 @@ function formatHook(entry: Extract<NotificationEntry, { kind: 'hook' }>): string
 function blocksForEntry(entry: Exclude<NotificationEntry, { kind: 'group' }>): NotificationBlock[] {
   switch (entry.kind) {
     case 'text':
-      return [{ kind: 'text', text: entry.text }]
+      return [
+        { kind: 'text', text: entry.text },
+      ]
     case 'subagent-report':
-      return [{
-        kind: 'subagent-report',
-        text: entry.text,
-        ...(entry.label ? { label: entry.label } : {}),
-        ...(entry.status ? { status: entry.status } : {}),
-      }]
+      return [
+        {
+          kind: 'subagent-report',
+          text: entry.text,
+          ...(entry.label
+            ? { label: entry.label }
+            : {}),
+          ...(entry.status
+            ? { status: entry.status }
+            : {}),
+        },
+      ]
     case 'divider':
-      return [{
-        kind: 'divider',
-        text: entry.text,
-        ...(entry.loading !== undefined ? { loading: entry.loading } : {}),
-      }]
+      return [
+        {
+          kind: 'divider',
+          text: entry.text,
+          ...(entry.loading !== undefined
+            ? { loading: entry.loading }
+            : {}),
+        },
+      ]
     case 'rate-limit':
-      return entry.tiers.map(tier => ({ kind: 'text' as const, text: formatRateLimitMessage(tier) }))
+      return entry.tiers.map(tier => ({
+        kind: 'text' as const,
+        text: formatRateLimitMessage(tier),
+      }))
     case 'settings-changed': {
       const text = entry.changes.map(formatSettingChange).join(', ')
-      return text ? [{ kind: 'text', text }] : []
+      return text
+        ? [
+            { kind: 'text', text },
+          ]
+        : []
     }
     case 'retry':
-      return [{ kind: 'text', text: formatRetry(entry) }]
+      return [
+        {
+          kind: 'text',
+          text: formatRetry(entry),
+        },
+      ]
     case 'hook':
-      return [{ kind: 'text', text: formatHook(entry) }]
+      return [
+        {
+          kind: 'text',
+          text: formatHook(entry),
+        },
+      ]
     case 'compaction': {
-      if (entry.phase === 'start')
-        return [{ kind: 'divider', text: COMPACTING_LABEL, loading: true }]
+      if (entry.phase === 'start') {
+        return [
+          { kind: 'divider', text: COMPACTING_LABEL, loading: true },
+        ]
+      }
       // Only a completed compaction draws a divider. Other outcomes state their result as text.
       const error = entry.error?.trim()
       const outcome = entry.outcome ?? (error ? 'failed' : 'completed')
-      if (outcome === 'aborted')
-        return [{ kind: 'text', text: `Context compaction aborted${error ? ` (${error})` : ''}` }]
-      if (outcome === 'failed')
-        return [{ kind: 'text', text: `Compaction failed${error ? ` (${error})` : ''}` }]
-      if (outcome === 'skipped')
-        return [{ kind: 'text', text: 'Context compaction skipped' }]
-      return [{ kind: 'divider', text: entry.micro ? MICROCOMPACT_LABEL : compactedLabel(entry.detail) }]
+      if (outcome === 'aborted') {
+        return [
+          { kind: 'text', text: `Context compaction aborted${error
+            ? ` (${error})`
+            : ''}` },
+        ]
+      }
+      if (outcome === 'failed') {
+        return [
+          { kind: 'text', text: `Compaction failed${error
+            ? ` (${error})`
+            : ''}` },
+        ]
+      }
+      if (outcome === 'skipped') {
+        return [
+          { kind: 'text', text: 'Context compaction skipped' },
+        ]
+      }
+      return [
+        {
+          kind: 'divider',
+          text: entry.micro
+            ? MICROCOMPACT_LABEL
+            : compactedLabel(entry.detail),
+        },
+      ]
     }
     case 'context-cleared':
-      return [{ kind: 'text', text: CONTEXT_CLEARED_LABEL }]
+      return [
+        { kind: 'text', text: CONTEXT_CLEARED_LABEL },
+      ]
     case 'status':
-      return entry.text ? [{ kind: 'text', text: entry.text }] : []
+      return entry.text
+        ? [
+            { kind: 'text', text: entry.text },
+          ]
+        : []
     case 'auto-review':
-      return [{
-        kind: 'auto-review',
-        reviewId: entry.reviewId,
-        outcome: entry.outcome,
-        title: autoReviewTitle(entry),
-        ...(entry.rationale ? { rationale: entry.rationale } : {}),
-        approvable: entry.approvable,
-        approved: entry.approved === true,
-      }]
+      return [
+        {
+          kind: 'auto-review',
+          reviewId: entry.reviewId,
+          outcome: entry.outcome,
+          title: autoReviewTitle(entry),
+          ...(entry.rationale
+            ? { rationale: entry.rationale }
+            : {}),
+          approvable: entry.approvable,
+          approved: entry.approved === true,
+        },
+      ]
   }
 }
 
@@ -510,7 +672,10 @@ export function flattenNotificationEntries(entries: readonly NotificationEntry[]
         existing.entries.push(entry.entry)
       }
       else {
-        groups.set(entry.groupKey, { prefix: entry.prefix, entries: [entry.entry] })
+        groups.set(entry.groupKey, {
+          prefix: entry.prefix,
+          entries: [entry.entry],
+        })
         groupOrder.push(entry.groupKey)
       }
       continue
@@ -543,7 +708,12 @@ export function compactionContextTokens(parsed: ParsedMessageContent, agentProvi
     if (!isObject(msg))
       continue
     // Pass each wrapper entry to the provider hook as a one-message parse.
-    const post = tokenCount(boundary({ ...parsed, wrapper: null, topLevel: msg, parentObject: msg })?.post)
+    const post = tokenCount(boundary({
+      ...parsed,
+      wrapper: null,
+      topLevel: msg,
+      parentObject: msg,
+    })?.post)
     if (post !== undefined)
       return post
   }

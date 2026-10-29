@@ -377,7 +377,9 @@ export const MAX_SCENARIO_REQUEST_RECORDS = 500
 export function describeScenarioStatus(status: MockModelScenarioStatus): string {
   const unexpected = status.unexpectedRequests.length
   return `${status.nextStep} of ${status.stepCount} queued answers consumed, `
-    + `${unexpected} request${unexpected === 1 ? '' : 's'} the script did not answer`
+    + `${unexpected} request${unexpected === 1
+      ? ''
+      : 's'} the script did not answer`
 }
 
 /**
@@ -447,22 +449,30 @@ export function parseScenarioSpec(body: unknown): MockModelScenarioSpec {
     throw new Error('A model scenario must be an object')
   const stepsValue = body.steps ?? []
   if (!Array.isArray(stepsValue))
-    throw new Error('A model scenario steps field must be an array')
+    throw new TypeError('A model scenario steps field must be an array')
   const rulesValue = body.rules ?? []
   if (!Array.isArray(rulesValue))
-    throw new Error('A model scenario rules field must be an array')
+    throw new TypeError('A model scenario rules field must be an array')
   if (stepsValue.length === 0 && rulesValue.length === 0 && body.fallback === undefined)
     throw new Error('A model scenario needs at least one step, one rule, or a fallback')
   const steps = stepsValue.map((value, index) => parseStep(value, `step ${index}`))
   const rules = rulesValue.map((value, index) => parseRule(value, index))
-  const fallback = body.fallback === undefined ? undefined : parseStep(body.fallback, 'fallback')
+  const fallback = body.fallback === undefined
+    ? undefined
+    : parseStep(body.fallback, 'fallback')
   const names = new Set<string>()
   for (const rule of rules) {
     if (names.has(rule.name))
       throw new Error(`Model rule ${rule.name} is declared twice`)
     names.add(rule.name)
   }
-  return { steps, rules, ...(fallback ? { fallback } : {}) }
+  return {
+    steps,
+    rules,
+    ...(fallback
+      ? { fallback }
+      : {}),
+  }
 }
 
 function parseRule(value: unknown, index: number): MockModelRule {
@@ -478,8 +488,12 @@ function parseRule(value: unknown, index: number): MockModelRule {
     name: value.name,
     when: parseMatcher(value.when, value.name),
     respond: parseStep(value.respond, `rule ${value.name}`),
-    ...(value.priority === undefined ? {} : { priority: value.priority }),
-    ...(value.once === true ? { once: true } : {}),
+    ...(value.priority === undefined
+      ? {}
+      : { priority: value.priority }),
+    ...(value.once === true
+      ? { once: true }
+      : {}),
   }
 }
 
@@ -504,22 +518,40 @@ function parseMatcher(value: unknown, ruleName: string): MockModelMatcher {
     const message = value.lastMessage
     if (!isObject(message) || Object.keys(message).length === 0 || Object.keys(message).some(key => !['role', 'type', 'text'].includes(key)))
       throw new Error(`Model rule ${ruleName} lastMessage must contain recognized message criteria only`)
-    const role = (['system', 'developer', 'user', 'assistant', 'tool'] as const).find(candidate => candidate === message.role)
+    const role = ([
+      'system',
+      'developer',
+      'user',
+      'assistant',
+      'tool',
+    ] as const).find(candidate => candidate === message.role)
     if (message.role !== undefined && role === undefined)
       throw new Error(`Model rule ${ruleName} lastMessage role is invalid`)
     if (role === undefined && message.type === undefined && message.text === undefined)
       throw new Error(`Model rule ${ruleName} lastMessage needs a message criterion`)
     matcher.lastMessage = {
-      ...(role === undefined ? {} : { role }),
-      ...(message.type === undefined ? {} : { type: parseModelPattern(message.type, `Model rule ${ruleName} lastMessage type`) }),
-      ...(message.text === undefined ? {} : { text: parseModelPattern(message.text, `Model rule ${ruleName} lastMessage text`) }),
+      ...(role === undefined
+        ? {}
+        : { role }),
+      ...(message.type === undefined
+        ? {}
+        : {
+            type: parseModelPattern(message.type, `Model rule ${ruleName} lastMessage type`),
+          }),
+      ...(message.text === undefined
+        ? {}
+        : {
+            text: parseModelPattern(message.text, `Model rule ${ruleName} lastMessage text`),
+          }),
     }
   }
   return matcher
 }
 
 function parseModelPattern(value: unknown, label: string): MockModelPattern {
-  const declared: unknown[] = Array.isArray(value) ? value : [value]
+  const declared: unknown[] = Array.isArray(value)
+    ? value
+    : [value]
   if (declared.length === 0)
     throw new Error(`${label} must state at least one pattern`)
   const patterns = declared.map((pattern) => {
@@ -533,7 +565,9 @@ function parseModelPattern(value: unknown, label: string): MockModelPattern {
     }
     return pattern
   })
-  return Array.isArray(value) ? patterns : patterns[0]!
+  return Array.isArray(value)
+    ? patterns
+    : patterns[0]!
 }
 
 function parseStep(value: unknown, label: string): MockModelStep {
@@ -549,7 +583,9 @@ function parseStep(value: unknown, label: string): MockModelStep {
   const toolCalls = Array.isArray(toolCallsValue)
     ? toolCallsValue.map((tool, toolIndex) => parseToolCall(tool, label, toolIndex))
     : undefined
-  const error = value.error === undefined ? undefined : parseModelError(value.error, label)
+  const error = value.error === undefined
+    ? undefined
+    : parseModelError(value.error, label)
   const stopReason = value.stopReason
   if (stopReason !== undefined && stopReason !== 'refusal' && stopReason !== 'max_tokens')
     throw new Error(`Model ${label} stopReason must be refusal or max_tokens`)
@@ -579,18 +615,42 @@ function parseStep(value: unknown, label: string): MockModelStep {
   if (responseMetadata && error)
     throw new Error(`Model ${label} cannot combine responseMetadata with an error`)
   const step: MockModelStep = {
-    ...(typeof value.reasoning === 'string' ? { reasoning: value.reasoning } : {}),
-    ...(typeof value.text === 'string' ? { text: value.text } : {}),
-    ...(toolCalls ? { toolCalls } : {}),
-    ...(error ? { error } : {}),
-    ...(stopReason === undefined ? {} : { stopReason }),
-    ...(delayMs === undefined ? {} : { delayMs }),
-    ...(gate === undefined ? {} : { gate }),
-    ...(stream === undefined ? {} : { stream }),
-    ...(usage === undefined ? {} : { usage }),
-    ...(rateLimits === undefined ? {} : { rateLimits }),
-    ...(responseMetadata === undefined ? {} : { responseMetadata }),
-    ...(captures === undefined ? {} : { captures }),
+    ...(typeof value.reasoning === 'string'
+      ? { reasoning: value.reasoning }
+      : {}),
+    ...(typeof value.text === 'string'
+      ? { text: value.text }
+      : {}),
+    ...(toolCalls
+      ? { toolCalls }
+      : {}),
+    ...(error
+      ? { error }
+      : {}),
+    ...(stopReason === undefined
+      ? {}
+      : { stopReason }),
+    ...(delayMs === undefined
+      ? {}
+      : { delayMs }),
+    ...(gate === undefined
+      ? {}
+      : { gate }),
+    ...(stream === undefined
+      ? {}
+      : { stream }),
+    ...(usage === undefined
+      ? {}
+      : { usage }),
+    ...(rateLimits === undefined
+      ? {}
+      : { rateLimits }),
+    ...(responseMetadata === undefined
+      ? {}
+      : { responseMetadata }),
+    ...(captures === undefined
+      ? {}
+      : { captures }),
   }
   if (!captures)
     validateStreamGatePositions(step, label)
@@ -614,8 +674,11 @@ function parseStep(value: unknown, label: string): MockModelStep {
 export function stopReasonToken(protocol: MockModelProtocol, reason: 'refusal' | 'max_tokens'): string {
   if (protocol === 'anthropic-messages')
     return reason
-  if (protocol === 'openai-chat-completions')
-    return reason === 'refusal' ? 'content_filter' : 'length'
+  if (protocol === 'openai-chat-completions') {
+    return reason === 'refusal'
+      ? 'content_filter'
+      : 'length'
+  }
   if (protocol === 'openai-responses' && reason === 'max_tokens')
     return 'max_output_tokens'
   throw new Error(`The mock cannot state stop reason ${reason} on ${protocol}`)
@@ -700,9 +763,21 @@ export function resolveStepCaptures(step: MockModelStep, body: unknown): Resolve
   const fill = (text: string): string => text.replace(CAPTURE_PLACEHOLDER, (whole, name: string) => values.get(name) ?? whole)
   const resolved: MockModelStep = {
     ...step,
-    ...(step.text === undefined ? {} : { text: fill(step.text) }),
-    ...(step.reasoning === undefined ? {} : { reasoning: fill(step.reasoning) }),
-    ...(step.toolCalls === undefined ? {} : { toolCalls: step.toolCalls.map(call => fillToolCall(call, fill)) }),
+    ...(step.text === undefined
+      ? {}
+      : {
+          text: fill(step.text),
+        }),
+    ...(step.reasoning === undefined
+      ? {}
+      : {
+          reasoning: fill(step.reasoning),
+        }),
+    ...(step.toolCalls === undefined
+      ? {}
+      : {
+          toolCalls: step.toolCalls.map(call => fillToolCall(call, fill)),
+        }),
   }
   // The resolved step states literal values. Keeping the captures would let a
   // second resolution match the filled text against the patterns again.
@@ -727,8 +802,12 @@ function fillValue(value: unknown, fill: (text: string) => string): unknown {
     return fill(value)
   if (Array.isArray(value))
     return value.map(item => fillValue(item, fill))
-  if (isObject(value))
-    return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, fillValue(item, fill)]))
+  if (isObject(value)) {
+    return Object.fromEntries(Object.entries(value).map(([key, item]) => [
+      key,
+      fillValue(item, fill),
+    ]))
+  }
   return value
 }
 
@@ -742,10 +821,14 @@ function parseTextStream(value: unknown, label: string): MockModelTextStream | u
   const delayMs = parseDelay(value.delayMs, `${label} stream`)
   if (delayMs === undefined)
     throw new Error(`Model ${label} stream needs delayMs`)
-  if (value.gates === undefined)
-    return { chunkChars: Number(value.chunkChars), delayMs }
+  if (value.gates === undefined) {
+    return {
+      chunkChars: Number(value.chunkChars),
+      delayMs,
+    }
+  }
   if (!Array.isArray(value.gates))
-    throw new Error(`Model ${label} stream gates must be an array`)
+    throw new TypeError(`Model ${label} stream gates must be an array`)
   const names = new Set<string>()
   let previous = 0
   const gates = value.gates.map((gate: unknown) => {
@@ -758,14 +841,23 @@ function parseTextStream(value: unknown, label: string): MockModelTextStream | u
     previous = Number(gate.afterChunk)
     return { afterChunk: previous, name: gate.name }
   })
-  return { chunkChars: Number(value.chunkChars), delayMs, gates }
+  return {
+    chunkChars: Number(value.chunkChars),
+    delayMs,
+    gates,
+  }
 }
 
 function validateStreamGatePositions(step: MockModelStep, label: string): void {
   const last = step.stream?.gates?.at(-1)
   if (!last)
     return
-  const count = textChunks(step).length + textChunks({ ...(step.reasoning === undefined ? {} : { text: step.reasoning }), stream: step.stream! }).length
+  const count = textChunks(step).length + textChunks({
+    ...(step.reasoning === undefined
+      ? {}
+      : { text: step.reasoning }),
+    stream: step.stream!,
+  }).length
   if (last.afterChunk > count)
     throw new Error(`Model ${label} stream gate ${last.name} exceeds the emitted chunk count ${count}`)
 }
@@ -833,7 +925,7 @@ function parseResponseMetadata(value: unknown, label: string): Record<string, un
   if (value === undefined)
     return undefined
   if (!Array.isArray(value))
-    throw new Error(`Model ${label} responseMetadata must be an array`)
+    throw new TypeError(`Model ${label} responseMetadata must be an array`)
   if (value.length === 0)
     throw new Error(`Model ${label} responseMetadata must hold at least one entry`)
   return value.map((entry, entryIndex) => {
@@ -860,12 +952,26 @@ function parseToolCall(value: unknown, label: string, toolIndex: number): MockMo
   return {
     id: value.id,
     name: value.name,
-    ...(hasArguments ? { arguments: value.arguments as Record<string, unknown> } : {}),
-    ...(hasInput ? { input: value.input as string } : {}),
-    ...(typeof value.namespace === 'string' ? { namespace: value.namespace } : {}),
-    ...(completionGate === undefined ? {} : { completionGate }),
-    ...(typeof value.taskProgress === 'string' ? { taskProgress: value.taskProgress } : {}),
-    ...(isObject(value.nativeExecution) && typeof value.nativeExecution.modelId === 'string' ? { nativeExecution: { modelId: value.nativeExecution.modelId } } : {}),
+    ...(hasArguments
+      ? { arguments: value.arguments as Record<string, unknown> }
+      : {}),
+    ...(hasInput
+      ? { input: value.input as string }
+      : {}),
+    ...(typeof value.namespace === 'string'
+      ? { namespace: value.namespace }
+      : {}),
+    ...(completionGate === undefined
+      ? {}
+      : { completionGate }),
+    ...(typeof value.taskProgress === 'string'
+      ? { taskProgress: value.taskProgress }
+      : {}),
+    ...(isObject(value.nativeExecution) && typeof value.nativeExecution.modelId === 'string'
+      ? {
+          nativeExecution: { modelId: value.nativeExecution.modelId },
+        }
+      : {}),
   }
 }
 
@@ -879,8 +985,12 @@ function parseModelError(value: unknown, label: string): MockModelError {
   return {
     status: Number(value.status),
     message: value.message,
-    ...(typeof value.code === 'string' ? { code: value.code } : {}),
-    ...(value.midStream === true || value.midStream === 'truncate' ? { midStream: value.midStream } : {}),
+    ...(typeof value.code === 'string'
+      ? { code: value.code }
+      : {}),
+    ...(value.midStream === true || value.midStream === 'truncate'
+      ? { midStream: value.midStream }
+      : {}),
   }
 }
 
@@ -914,7 +1024,11 @@ export function scenarioIDFromTexts(userTexts: readonly string[], systemPrompt =
 /** Read the markers of one text in their order. */
 function scenarioMarkers(text: string): string[] {
   const pattern = new RegExp(`${SCENARIO_MARKER}([\\w-]{1,128})`, 'g')
-  return [...text.matchAll(pattern)].flatMap(match => match[1] ? [match[1]] : [])
+  return [
+    ...text.matchAll(pattern),
+  ].flatMap(match => match[1]
+    ? [match[1]]
+    : [])
 }
 
 /**
@@ -972,14 +1086,18 @@ export function matchesRequest(
     if (request.protocol === 'aws-event-stream')
       return false
     const rows = requestRows(request.protocol, request.body)
-    const message: unknown = Array.isArray(rows) ? rows.at(-1) : undefined
+    const message: unknown = Array.isArray(rows)
+      ? rows.at(-1)
+      : undefined
     if (!isObject(message) || (matcher.lastMessage.role !== undefined && matcher.lastMessage.role !== message.role))
       return false
     if (matcher.lastMessage.type !== undefined && (typeof message.type !== 'string' || !matchesPattern(matcher.lastMessage.type, message.type)))
       return false
     const isResponseToolOutput = request.protocol === 'openai-responses'
       && (message.type === 'function_call_output' || message.type === 'custom_tool_call_output')
-    const content = isResponseToolOutput ? message.output : rowContent(request.protocol, message)
+    const content = isResponseToolOutput
+      ? message.output
+      : rowContent(request.protocol, message)
     if (!matchesPattern(matcher.lastMessage.text, rowText(request.protocol, content)))
       return false
   }
@@ -989,7 +1107,9 @@ export function matchesRequest(
 function matchesPattern(pattern: MockModelPattern | undefined, subject: string): boolean {
   if (pattern === undefined)
     return true
-  const patterns = Array.isArray(pattern) ? pattern : [pattern]
+  const patterns = Array.isArray(pattern)
+    ? pattern
+    : [pattern]
   return patterns.every(source => new RegExp(source, 'i').test(subject))
 }
 
@@ -998,7 +1118,9 @@ function matchesPattern(pattern: MockModelPattern | undefined, subject: string):
  * string that {@link contentText} finds.
  */
 function rowText(protocol: GenericModelProtocol, content: unknown): string {
-  return protocol === 'google-generative-language' ? googlePartsText(content) : contentText(content)
+  return protocol === 'google-generative-language'
+    ? googlePartsText(content)
+    : contentText(content)
 }
 
 /**
@@ -1012,7 +1134,9 @@ export function systemText(protocol: MockModelProtocol, body: unknown): string {
   const rows = requestRows(protocol, body)
   const contents = [
     ...requestSystemFields(protocol, body),
-    ...(Array.isArray(rows) ? rows.filter(isObject).filter(row => isSystemRow(protocol, row)).map(row => rowContent(protocol, row)) : []),
+    ...(Array.isArray(rows)
+      ? rows.filter(isObject).filter(row => isSystemRow(protocol, row)).map(row => rowContent(protocol, row))
+      : []),
   ]
   return contents.map(content => rowText(protocol, content)).filter(Boolean).join('\n')
 }
@@ -1033,7 +1157,9 @@ export function lastUserText(protocol: MockModelProtocol, body: unknown): string
   if (!Array.isArray(rows))
     return ''
   const last: unknown = rows.findLast(row => isObject(row) && row.role === 'user')
-  return isObject(last) ? contentText(rowContent(protocol, last)) : ''
+  return isObject(last)
+    ? contentText(rowContent(protocol, last))
+    : ''
 }
 
 /** Flatten any nested content shape into its text. */

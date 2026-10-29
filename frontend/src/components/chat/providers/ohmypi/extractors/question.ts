@@ -27,21 +27,40 @@ export function ohMyPiQuestionPrompts(records: unknown): Array<QuestionPrompt & 
           const label = pickString(option, OH_MY_PI_ASK_OPTION.Label)
           if (!label)
             return []
-          const description = [pickString(option, OH_MY_PI_ASK_OPTION.Description), index === recommended ? RECOMMENDED : '']
+          const description = [
+            pickString(option, OH_MY_PI_ASK_OPTION.Description),
+            index === recommended
+              ? RECOMMENDED
+              : '',
+          ]
             .filter(Boolean)
             .join(' · ')
           const preview = pickString(option, OH_MY_PI_ASK_OPTION.Preview)
-          return [{ label, ...(description ? { description } : {}), ...(preview.trim() ? { preview } : {}) }]
+          return [
+            {
+              label,
+              ...(description
+                ? { description }
+                : {}),
+              ...(preview.trim()
+                ? { preview }
+                : {}),
+            },
+          ]
         })
       : []
     const header = pickString(record, OH_MY_PI_ASK_QUESTION.Header)
-    return [{
-      id: pickString(record, OH_MY_PI_ASK_QUESTION.ID),
-      question,
-      ...(header ? { header } : {}),
-      options,
-      multiSelect: record[OH_MY_PI_ASK_QUESTION.Multi] === true,
-    }]
+    return [
+      {
+        id: pickString(record, OH_MY_PI_ASK_QUESTION.ID),
+        question,
+        ...(header
+          ? { header }
+          : {}),
+        options,
+        multiSelect: record[OH_MY_PI_ASK_QUESTION.Multi] === true,
+      },
+    ]
   })
 }
 
@@ -52,8 +71,13 @@ export function ohMyPiQuestionPrompts(records: unknown): Array<QuestionPrompt & 
 function singleAnswerText(record: Record<string, unknown>): string | null {
   const selected = stringArray(record.selectedOptions)
   const custom = pickString(record, 'customInput')
-  const parts = [selected.join(', '), custom].filter(part => part.trim() !== '')
-  return parts.length > 0 ? parts.join('; ') : null
+  const parts = [
+    selected.join(', '),
+    custom,
+  ].filter(part => part.trim() !== '')
+  return parts.length > 0
+    ? parts.join('; ')
+    : null
 }
 
 /**
@@ -66,10 +90,15 @@ function singleAnswerText(record: Record<string, unknown>): string | null {
  * options AND the typed text, and the answer states them once.
  */
 function answerTextOfSeveral(record: Record<string, unknown>): string | null {
-  if (typeof record.customInput === 'string')
-    return record.customInput.trim() ? record.customInput : null
+  if (typeof record.customInput === 'string') {
+    return record.customInput.trim()
+      ? record.customInput
+      : null
+  }
   const selected = stringArray(record.selectedOptions).join(', ')
-  return selected.trim() ? selected : null
+  return selected.trim()
+    ? selected
+    : null
 }
 
 /**
@@ -84,7 +113,19 @@ export function ohMyPiQuestionAnswers(details: Record<string, unknown>): Questio
   const header = (record: Record<string, unknown>) => pickString(record, 'question') || pickString(record, 'id') || 'Answer'
   if (Array.isArray(details.results)) {
     const records = details.results.filter(isObject)
-    return records.length > 0 ? records.map(record => ({ header: header(record), answer: answerTextOfSeveral(record) })) : null
+    return records.length > 0
+      ? records.map(record => ({
+          header: header(record),
+          answer: answerTextOfSeveral(record),
+        }))
+      : null
   }
-  return pickString(details, 'question') ? [{ header: header(details), answer: singleAnswerText(details) }] : null
+  return pickString(details, 'question')
+    ? [
+        {
+          header: header(details),
+          answer: singleAnswerText(details),
+        },
+      ]
+    : null
 }

@@ -3,7 +3,9 @@ import { clineSearchRequest, clineSearchResult } from './search'
 
 describe('clineSearchRequest', () => {
   it('joins the patterns of one call', () => {
-    expect(clineSearchRequest({ queries: ['alpha', 'beta'] })).toEqual({ pattern: 'alpha | beta', paths: [] })
+    expect(clineSearchRequest({
+      queries: ['alpha', 'beta'],
+    })).toEqual({ pattern: 'alpha | beta', paths: [] })
     expect(clineSearchRequest({ query: 'alpha' })).toEqual({ pattern: 'alpha', paths: [] })
   })
 })
@@ -26,30 +28,51 @@ describe('clineSearchResult', () => {
   })
 
   it('states a search that matched nothing as empty', () => {
-    const result = clineSearchResult([{ query: 'zeta', result: 'No results found for pattern: zeta\nSearched 12 files.', success: true }])
+    const result = clineSearchResult([
+      { query: 'zeta', result: 'No results found for pattern: zeta\nSearched 12 files.', success: true },
+    ])
     expect(result.empty).toBe(true)
     expect(result.fallbackContent).toContain('No results found')
   })
 
   it('states a failed search as text, and not as empty', () => {
-    const result = clineSearchResult([{ query: '(', result: '', error: 'Invalid pattern', success: false }])
+    const result = clineSearchResult([
+      {
+        query: '(',
+        result: '',
+        error: 'Invalid pattern',
+        success: false,
+      },
+    ])
     expect(result.empty).toBe(false)
     expect(result.content).toBe('Invalid pattern')
   })
 
   // No record means no search ran, which is not a search that matched nothing.
   it('states a result with no record as not empty', () => {
-    for (const output of [[], undefined, 'plain text'])
-      expect(clineSearchResult(output), JSON.stringify(output)).toMatchObject({ filenames: [], numLines: 0, empty: false, content: '' })
+    for (const output of [[], undefined, 'plain text']) {
+      expect(clineSearchResult(output), JSON.stringify(output)).toMatchObject({
+        filenames: [],
+        numLines: 0,
+        empty: false,
+        content: '',
+      })
+    }
   })
 
   // The line and the column are the LAST two numbers, so a drive letter stays in the path.
   it('reads a match whose path holds a drive letter', () => {
-    const result = clineSearchResult([{ query: 'alpha', result: 'Found 1 result for pattern: alpha\nC:\\w\\a.ts:3:7', success: true }])
-    expect(result.lines).toEqual([{ filePath: 'C:\\w\\a.ts', lineNumber: 3, text: '' }])
+    const result = clineSearchResult([
+      { query: 'alpha', result: 'Found 1 result for pattern: alpha\nC:\\w\\a.ts:3:7', success: true },
+    ])
+    expect(result.lines).toEqual([
+      { filePath: 'C:\\w\\a.ts', lineNumber: 3, text: '' },
+    ])
   })
 
   it('reads the records of a stored result, which Cline keeps as JSON text', () => {
-    expect(clineSearchResult(JSON.stringify([{ query: 'alpha', result: '/w/a.ts:3:7', success: true }])).filenames).toEqual(['/w/a.ts'])
+    expect(clineSearchResult(JSON.stringify([
+      { query: 'alpha', result: '/w/a.ts:3:7', success: true },
+    ])).filenames).toEqual(['/w/a.ts'])
   })
 })

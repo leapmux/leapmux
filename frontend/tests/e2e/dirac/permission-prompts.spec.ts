@@ -8,7 +8,12 @@ import { nativeContext } from './scenarios'
 diracTest.describe('Dirac control requests', () => {
   diracTest('runs a command after the reader approves it', async ({ askingDiracWorkspace, page, modelScript, leapmuxServer }) => {
     // The context answers through Dirac's own respond tool, as the model of a Dirac turn does.
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingDiracWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: askingDiracWorkspace.workspaceId,
+    })
     await exerciseNativePermissionDecision(context, {
       toolCall: bashToolCall(context.provider, 'dirac-allow', 'echo "dirac-allow-$(printf 42)"'),
       decision: 'allow',
@@ -28,7 +33,12 @@ diracTest.describe('Dirac control requests', () => {
   })
 
   diracTest('keeps the command from running after the reader rejects it', async ({ askingDiracWorkspace, page, modelScript, leapmuxServer }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingDiracWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: askingDiracWorkspace.workspaceId,
+    })
     await exerciseNativePermissionDecision(context, {
       toolCall: bashToolCall(context.provider, 'dirac-deny', 'echo "dirac-deny-$(printf 42)"'),
       decision: 'deny',
@@ -46,7 +56,12 @@ diracTest.describe('Dirac control requests', () => {
 
   // The ACP reply selects an option, and an option carries no text. The reason follows as the reader's next message.
   diracTest('sends the reader\'s typed refusal reason as the next message', async ({ askingDiracWorkspace, page, modelScript, leapmuxServer }) => {
-    const context = await nativeContext({ page, modelScript, leapmuxServer, workspaceId: askingDiracWorkspace.workspaceId })
+    const context = await nativeContext({
+      page,
+      modelScript,
+      leapmuxServer,
+      workspaceId: askingDiracWorkspace.workspaceId,
+    })
     await exerciseNativePermissionReason(context, {
       toolCall: bashToolCall(context.provider, 'dirac-reason', 'echo "dirac-reason-$(printf 42)"'),
       route: 'next-message',

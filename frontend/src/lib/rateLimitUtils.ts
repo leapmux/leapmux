@@ -24,7 +24,9 @@ const RATE_LIMIT_STATUS_LABELS: Record<string, string> = {
 export function rateLimitStatusLabel(status: string | undefined): string | undefined {
   if (!status)
     return undefined
-  return Object.hasOwn(RATE_LIMIT_STATUS_LABELS, status) ? RATE_LIMIT_STATUS_LABELS[status] : 'Exceeded'
+  return Object.hasOwn(RATE_LIMIT_STATUS_LABELS, status)
+    ? RATE_LIMIT_STATUS_LABELS[status]
+    : 'Exceeded'
 }
 
 /**
@@ -38,13 +40,17 @@ export function rateLimitStatusLabel(status: string | undefined): string | undef
  */
 export function rateLimitTypeLabel(rateLimitType: string | undefined): string | undefined {
   const key = rateLimitType ?? ''
-  return Object.hasOwn(RATE_LIMIT_TYPE_LABELS, key) ? RATE_LIMIT_TYPE_LABELS[key] : undefined
+  return Object.hasOwn(RATE_LIMIT_TYPE_LABELS, key)
+    ? RATE_LIMIT_TYPE_LABELS[key]
+    : undefined
 }
 
 /** The popover heading for a rate-limit type, or undefined for one this build does not know. */
 export function rateLimitPopoverLabel(rateLimitType: string | undefined): string | undefined {
   const key = rateLimitType ?? ''
-  return Object.hasOwn(RATE_LIMIT_POPOVER_LABELS, key) ? RATE_LIMIT_POPOVER_LABELS[key] : undefined
+  return Object.hasOwn(RATE_LIMIT_POPOVER_LABELS, key)
+    ? RATE_LIMIT_POPOVER_LABELS[key]
+    : undefined
 }
 
 /** Format seconds remaining as d:hh:mm or h:mm. Returns null if remaining time <= 0. */
@@ -76,13 +82,30 @@ export function parseCalendarResetDate(value: unknown): string | undefined {
   const month = Number(match[2])
   const day = Number(match[3])
   const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0)
-  const days = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][month - 1] ?? 0
-  return year > 0 && day > 0 && day <= days ? value : undefined
+  const days = [
+    31,
+    leapYear ? 29 : 28,
+    31,
+    30,
+    31,
+    30,
+    31,
+    31,
+    30,
+    31,
+    30,
+    31,
+  ][month - 1] ?? 0
+  return year > 0 && day > 0 && day <= days
+    ? value
+    : undefined
 }
 
 /** An instant takes priority. A normal calendar reset does not describe overage. */
 export function getResetsOn(info: RateLimitInfo): string | undefined {
-  return info.isUsingOverage || getResetsAt(info) !== undefined ? undefined : parseCalendarResetDate(info.resetsOn)
+  return info.isUsingOverage || getResetsAt(info) !== undefined
+    ? undefined
+    : parseCalendarResetDate(info.resetsOn)
 }
 
 /** Describe the native reset without converting a calendar date into a timestamp. */
@@ -91,7 +114,9 @@ export function rateLimitResetTooltip(info: RateLimitInfo): string | undefined {
   if (resetsAt !== undefined)
     return formatResetTimestamp(resetsAt)
   const resetsOn = getResetsOn(info)
-  return resetsOn === undefined ? undefined : `Resets on ${resetsOn}`
+  return resetsOn === undefined
+    ? undefined
+    : `Resets on ${resetsOn}`
 }
 
 /**
@@ -108,10 +133,16 @@ export function pickUrgentRateLimit(rateLimits: Record<string, RateLimitInfo>): 
     const status = info.status
     if (status === RATE_LIMIT_STATUS.Allowed || !status)
       continue
-    const severity = (status === RATE_LIMIT_STATUS.AllowedWarning) ? 1 : 2
+    const severity = (status === RATE_LIMIT_STATUS.AllowedWarning)
+      ? 1
+      : 2
     const resetsAt = getResetsAt(info)
-    const remaining = resetsAt !== undefined ? resetsAt - Math.floor(Date.now() / 1000) : Infinity
-    const countdown = resetsAt !== undefined ? formatCountdown(resetsAt) : null
+    const remaining = resetsAt !== undefined
+      ? resetsAt - Math.floor(Date.now() / 1000)
+      : Infinity
+    const countdown = resetsAt !== undefined
+      ? formatCountdown(resetsAt)
+      : null
     if (severity > bestSeverity || (severity === bestSeverity && remaining < bestRemaining)) {
       best = info
       bestCountdown = countdown
@@ -119,7 +150,9 @@ export function pickUrgentRateLimit(rateLimits: Record<string, RateLimitInfo>): 
       bestRemaining = remaining
     }
   }
-  return best ? { info: best, countdown: bestCountdown } : null
+  return best
+    ? { info: best, countdown: bestCountdown }
+    : null
 }
 
 /** Build a human-readable rate limit notification message. Defensive: all fields may be absent. */
@@ -130,7 +163,9 @@ export function formatRateLimitMessage(info: RateLimitInfo): string {
   const knownLabel = rateLimitTypeLabel(rateLimitType)
   const prefix = info.label?.trim() || (knownLabel
     ? `${knownLabel} rate limit`
-    : rateLimitType ? `Rate limit (${rateLimitType})` : 'Rate limit')
+    : rateLimitType
+      ? `Rate limit (${rateLimitType})`
+      : 'Rate limit')
 
   const parts: string[] = []
   if (status && status !== RATE_LIMIT_STATUS.Allowed && status !== RATE_LIMIT_STATUS.AllowedWarning)
@@ -148,7 +183,9 @@ export function formatRateLimitMessage(info: RateLimitInfo): string {
   if (resetsOn !== undefined)
     parts.push(`resets on ${resetsOn}`)
 
-  return parts.length > 0 ? `${prefix}: ${parts.join(' \u2014 ')}` : `${prefix} update`
+  return parts.length > 0
+    ? `${prefix}: ${parts.join(' \u2014 ')}`
+    : `${prefix} update`
 }
 
 /** Format a reset timestamp as a human-readable local date string. */
@@ -191,5 +228,7 @@ export function formatRateLimitSummary(info: RateLimitInfo): string {
     if (countdown)
       parts.push(`resets in ${countdown}`)
   }
-  return parts.length > 0 ? parts.join(', ') : 'Unknown'
+  return parts.length > 0
+    ? parts.join(', ')
+    : 'Unknown'
 }

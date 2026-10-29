@@ -113,8 +113,12 @@ export function isFileManager(app: ExternalApp | undefined): boolean {
 export function launchFailureMessage(displayName: string, err: unknown): string {
   const reason = typeof err === 'string'
     ? err.trim()
-    : err instanceof Error ? err.message.trim() : ''
-  return reason ? `Could not open ${displayName}: ${reason}` : `Could not open ${displayName}`
+    : err instanceof Error
+      ? err.message.trim()
+      : ''
+  return reason
+    ? `Could not open ${displayName}: ${reason}`
+    : `Could not open ${displayName}`
 }
 
 /**

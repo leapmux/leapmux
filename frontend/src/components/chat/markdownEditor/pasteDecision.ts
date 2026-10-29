@@ -12,7 +12,9 @@ export function decidePasteHandling(dt: DataTransfer, isTauri: boolean): PasteAc
   if (directFiles.length > 0)
     return { kind: 'forward', files: directFiles }
 
-  const itemFiles = [...(dt.items ?? [])]
+  const itemFiles = [
+    ...(dt.items ?? []),
+  ]
     .filter(it => it.kind === 'file')
     .map(it => it.getAsFile())
     .filter((f): f is File => f !== null)

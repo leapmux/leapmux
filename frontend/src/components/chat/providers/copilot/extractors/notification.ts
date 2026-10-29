@@ -11,7 +11,9 @@ import { COPILOT_SYSTEM_NOTIFICATION_KIND, copilotEvent, copilotEventData } from
 function copilotSystemNotification(data: Record<string, unknown>): string | null {
   const kind = pickObject(data, 'kind')
   const name = pickString(kind, 'displayName').trim()
-  const agent = `Background agent${name ? ` ${name}` : ''}`
+  const agent = `Background agent${name
+    ? ` ${name}`
+    : ''}`
   const description = pickString(kind, 'description').trim()
   switch (pickString(kind, 'type')) {
     case COPILOT_SYSTEM_NOTIFICATION_KIND.AgentCompleted: {
@@ -24,10 +26,16 @@ function copilotSystemNotification(data: Record<string, unknown>): string | null
       return `${agent} is idle`
     case COPILOT_SYSTEM_NOTIFICATION_KIND.ShellCompleted: {
       const code = pickNumber(kind, 'exitCode', undefined)
-      return `Shell${description ? ` ${description}` : ''} exited${code !== undefined && Number.isSafeInteger(code) ? ` (code ${code})` : ''}`
+      return `Shell${description
+        ? ` ${description}`
+        : ''} exited${code !== undefined && Number.isSafeInteger(code)
+        ? ` (code ${code})`
+        : ''}`
     }
     case COPILOT_SYSTEM_NOTIFICATION_KIND.ShellDetachedCompleted:
-      return `Detached shell${description ? ` ${description}` : ''} exited`
+      return `Detached shell${description
+        ? ` ${description}`
+        : ''} exited`
     case COPILOT_SYSTEM_NOTIFICATION_KIND.InstructionDiscovered: {
       const path = pickString(kind, 'sourcePath').trim()
       if (path)
@@ -37,8 +45,11 @@ function copilotSystemNotification(data: Record<string, unknown>): string | null
     case COPILOT_SYSTEM_NOTIFICATION_KIND.FactoryCompleted: {
       const factory = pickString(kind, 'factoryName').trim()
       const status = pickString(kind, 'status').trim()
-      if (status)
-        return `Factory${factory ? ` ${factory}` : ''} ${status}`
+      if (status) {
+        return `Factory${factory
+          ? ` ${factory}`
+          : ''} ${status}`
+      }
       break
     }
   }
@@ -59,7 +70,10 @@ function copilotSubagentLine(data: Record<string, unknown>, failed: boolean): st
   const error = pickString(data, 'error')
   if (failed && error)
     parts.push(error)
-  for (const [label, key] of [['tool calls', 'totalToolCalls'], ['tokens', 'totalTokens']] as const) {
+  for (const [label, key] of [
+    ['tool calls', 'totalToolCalls'],
+    ['tokens', 'totalTokens'],
+  ] as const) {
     const value = pickNumber(data, key, undefined)
     if (value !== undefined && Number.isSafeInteger(value) && value >= 0)
       parts.push(`${formatNumber(value)} ${label}`)
@@ -67,7 +81,9 @@ function copilotSubagentLine(data: Record<string, unknown>, failed: boolean): st
   const duration = pickNumber(data, 'durationMs', undefined)
   if (duration !== undefined && Number.isSafeInteger(duration) && duration >= 0)
     parts.push(formatDuration(duration))
-  return parts.length > 0 ? `${head} — ${parts.join(', ')}` : head
+  return parts.length > 0
+    ? `${head} — ${parts.join(', ')}`
+    : head
 }
 
 /**
@@ -79,7 +95,9 @@ function copilotSubagentLine(data: Record<string, unknown>, failed: boolean): st
  * null rather than an absent field.
  */
 function copilotDeniedByRules(result: Record<string, unknown>): string {
-  const rules = Array.isArray(result.rules) ? result.rules : []
+  const rules = Array.isArray(result.rules)
+    ? result.rules
+    : []
   return rules
     .flatMap((rule) => {
       if (!isObject(rule))
@@ -88,7 +106,11 @@ function copilotDeniedByRules(result: Record<string, unknown>): string {
       if (!kind)
         return []
       const argument = pickString(rule, 'argument')
-      return [argument ? `${kind}: ${argument}` : kind]
+      return [
+        argument
+          ? `${kind}: ${argument}`
+          : kind,
+      ]
     })
     .join(', ')
 }
@@ -123,7 +145,9 @@ function copilotPermissionOutcomeLine(data: Record<string, unknown>): string | n
   switch (pickString(result, 'kind')) {
     case COPILOT_PERMISSION_OUTCOME.DeniedByRules: {
       const rules = copilotDeniedByRules(result)
-      return rules ? `Denied by the permission rules: ${rules}` : 'Denied by the permission rules'
+      return rules
+        ? `Denied by the permission rules: ${rules}`
+        : 'Denied by the permission rules'
     }
     case COPILOT_PERMISSION_OUTCOME.DeniedNoApprovalRuleAndCouldNotRequestFromUser:
       return 'Denied: no approval rule matched, and the runtime could not ask'
@@ -134,7 +158,9 @@ function copilotPermissionOutcomeLine(data: Record<string, unknown>): string | n
     // Human decisions have a control-response row. An automatic decision can use the same outcome without that row.
     // State the automatic source when the runtime supplies it.
     default:
-      return decidedBy ? `${copilotOutcomeVerb(pickString(result, 'kind'))} by ${decidedBy}` : null
+      return decidedBy
+        ? `${copilotOutcomeVerb(pickString(result, 'kind'))} by ${decidedBy}`
+        : null
   }
 }
 
@@ -162,19 +188,27 @@ function copilotControlLine(type: string, data: Record<string, unknown>): string
     case COPILOT_EVENT.PermissionRequested: {
       const request = pickObject(data, 'permissionRequest')
       const kind = pickString(request, 'kind') || pickString(request, 'type')
-      return kind ? `Asked to approve ${kind}` : 'Asked to approve a tool call'
+      return kind
+        ? `Asked to approve ${kind}`
+        : 'Asked to approve a tool call'
     }
     case COPILOT_EVENT.UserInputRequested: {
       const question = pickString(data, 'question')
-      return question ? `Asked: ${question}` : 'Asked a question'
+      return question
+        ? `Asked: ${question}`
+        : 'Asked a question'
     }
     case COPILOT_EVENT.ExitPlanModeRequested: {
       const summary = pickString(data, 'summary')
-      return summary ? `Proposed a plan: ${summary}` : 'Proposed a plan'
+      return summary
+        ? `Proposed a plan: ${summary}`
+        : 'Proposed a plan'
     }
     case COPILOT_EVENT.ElicitationRequested: {
       const message = pickString(data, 'message')
-      return message ? `Asked for input: ${message}` : 'Asked for input'
+      return message
+        ? `Asked for input: ${message}`
+        : 'Asked for input'
     }
     // The Worker answers these native asks through its control surfaces:
     // - Tool permission and user input.
@@ -182,19 +216,27 @@ function copilotControlLine(type: string, data: Record<string, unknown>): string
     // - Sampling and an Auto model switch.
     case COPILOT_EVENT.SamplingRequested: {
       const server = pickString(data, 'serverName')
-      return server ? `The MCP server ${server} asked the model to answer` : 'An MCP server asked the model to answer'
+      return server
+        ? `The MCP server ${server} asked the model to answer`
+        : 'An MCP server asked the model to answer'
     }
     case COPILOT_EVENT.ExternalToolRequested: {
       const tool = pickString(data, 'name') || pickString(data, 'toolName')
-      return tool ? `Asked the client to run ${tool}` : 'Asked the client to run a tool'
+      return tool
+        ? `Asked the client to run ${tool}`
+        : 'Asked the client to run a tool'
     }
     case COPILOT_EVENT.ToolUserRequested: {
       const tool = pickString(data, 'toolName') || pickString(data, 'name')
-      return tool ? `Asked to run the ${tool} tool` : 'Asked to run a tool'
+      return tool
+        ? `Asked to run the ${tool} tool`
+        : 'Asked to run a tool'
     }
     case COPILOT_EVENT.AutoModeSwitchRequested: {
       const code = pickString(data, 'errorCode')
-      return code ? `Asked to switch the model after ${code}` : 'Asked to switch the model'
+      return code
+        ? `Asked to switch the model after ${code}`
+        : 'Asked to switch the model'
     }
     default:
       return null
@@ -204,7 +246,9 @@ function copilotControlLine(type: string, data: Record<string, unknown>): string
 /** One MCP-server line: the server's own name when the event carries it. */
 function copilotServerLine(data: Record<string, unknown>, verb: string, fallback: string): string {
   const server = pickString(data, 'serverName') || pickString(data, 'name')
-  return server ? `The MCP server ${server} ${verb}` : fallback
+  return server
+    ? `The MCP server ${server} ${verb}`
+    : fallback
 }
 
 /**
@@ -223,7 +267,9 @@ function copilotScheduleLine(data: Record<string, unknown>, head: string): strin
   if (at === undefined || !Number.isFinite(at))
     return head
   const stamp = new Date(at)
-  return Number.isNaN(stamp.getTime()) ? head : `${head} for ${stamp.toLocaleString()}`
+  return Number.isNaN(stamp.getTime())
+    ? head
+    : `${head} for ${stamp.toLocaleString()}`
 }
 
 /**
@@ -248,11 +294,15 @@ export function describeCopilotNotification(parsed: unknown): string | null {
       return 'Ran under an earlier approval of yours in this session'
     case COPILOT_EVENT.SessionError: {
       const message = pickString(data, 'message') || pickString(data, 'errorType')
-      return message ? `Error: ${message}` : null
+      return message
+        ? `Error: ${message}`
+        : null
     }
     case COPILOT_EVENT.SessionWarning: {
       const message = pickString(data, 'message')
-      return message ? `Warning: ${message}` : null
+      return message
+        ? `Warning: ${message}`
+        : null
     }
     case COPILOT_EVENT.SessionInfo:
       return pickString(data, 'message') || null
@@ -271,7 +321,9 @@ export function describeCopilotNotification(parsed: unknown): string | null {
     case COPILOT_EVENT.SkillInvoked:
     case COPILOT_EVENT.SkillInvokedRef: {
       const skill = pickString(data, 'skill') || pickString(data, 'name')
-      return skill ? `Loaded the skill ${skill}` : null
+      return skill
+        ? `Loaded the skill ${skill}`
+        : null
     }
     case COPILOT_EVENT.SubagentCompleted:
       return copilotSubagentLine(data, false)
@@ -292,12 +344,18 @@ export function describeCopilotNotification(parsed: unknown): string | null {
     case COPILOT_EVENT.SessionAutoTierRecommendation: {
       const tier = pickString(data, 'autoTier')
       const reason = pickString(data, 'reason')
-      const head = tier ? `Auto switched to ${tier}` : 'Auto switched the model'
-      return reason ? `${head}: ${reason}` : head
+      const head = tier
+        ? `Auto switched to ${tier}`
+        : 'Auto switched the model'
+      return reason
+        ? `${head}: ${reason}`
+        : head
     }
     case COPILOT_EVENT.SessionAutoTierSwitchFailed: {
       const message = pickString(data, 'message') || pickString(data, 'reason')
-      return message ? `Auto could not switch the model: ${message}` : 'Auto could not switch the model'
+      return message
+        ? `Auto could not switch the model: ${message}`
+        : 'Auto could not switch the model'
     }
     // A prompt the reader scheduled with /every or /after. It runs later and owns no
     // other surface, so the transcript is where it is recorded.
@@ -312,9 +370,14 @@ export function describeCopilotNotification(parsed: unknown): string | null {
     case COPILOT_EVENT.SessionCustomNotification: {
       const name = pickString(data, 'name')
       const source = pickString(data, 'source')
-      if (!name)
-        return source ? `${source} sent a notification` : null
-      return source ? `${source}: ${name}` : name
+      if (!name) {
+        return source
+          ? `${source} sent a notification`
+          : null
+      }
+      return source
+        ? `${source}: ${name}`
+        : name
     }
     default:
       return copilotControlLine(event.type, data)
@@ -351,9 +414,15 @@ function copilotCompactionDetail(data: Record<string, unknown>): CompactionDetai
   const pre = toTokenCount(pickNumber(data, 'preCompactionTokens', undefined))
   const post = toTokenCount(copilotPostCompactionTokens(data))
   return {
-    ...(trigger !== undefined ? { trigger } : {}),
-    ...(pre !== undefined ? { pre } : {}),
-    ...(post !== undefined ? { post } : {}),
+    ...(trigger !== undefined
+      ? { trigger }
+      : {}),
+    ...(pre !== undefined
+      ? { pre }
+      : {}),
+    ...(post !== undefined
+      ? { post }
+      : {}),
   }
 }
 
@@ -370,7 +439,9 @@ function copilotCompactionError(data: Record<string, unknown>): string {
   // The runtime sends `statusCode` for a failed compaction alone, and only where the
   // failure carried an HTTP status.
   const status = pickNumber(data, 'statusCode', undefined)
-  return status !== undefined ? `HTTP ${status}` : 'unknown reason'
+  return status !== undefined
+    ? `HTTP ${status}`
+    : 'unknown reason'
 }
 
 /**
@@ -381,7 +452,9 @@ function copilotCompactionError(data: Record<string, unknown>): string {
  */
 export function copilotCompactionBoundary(parsed: ParsedMessageContent): CompactionDetails | null {
   const data = copilotEventData(getInnerMessage(parsed), COPILOT_EVENT.SessionCompactionComplete)
-  return data && data.success === true ? copilotCompactionDetail(data) : null
+  return data && data.success === true
+    ? copilotCompactionDetail(data)
+    : null
 }
 
 /**
@@ -396,13 +469,33 @@ export function copilotNotificationEntry(msg: Record<string, unknown>): Notifica
   const event = copilotEvent(msg)
   if (event?.type === COPILOT_EVENT.SessionCompactionComplete) {
     return event.data.success === true
-      ? [{ kind: 'compaction', phase: 'end', detail: copilotCompactionDetail(event.data) }]
-      : [{ kind: 'compaction', phase: 'end', outcome: 'failed', error: copilotCompactionError(event.data) }]
+      ? [
+          {
+            kind: 'compaction',
+            phase: 'end',
+            detail: copilotCompactionDetail(event.data),
+          },
+        ]
+      : [
+          {
+            kind: 'compaction',
+            phase: 'end',
+            outcome: 'failed',
+            error: copilotCompactionError(event.data),
+          },
+        ]
   }
-  if (event?.type === COPILOT_EVENT.SessionContextCleared)
-    return [{ kind: 'context-cleared' }]
+  if (event?.type === COPILOT_EVENT.SessionContextCleared) {
+    return [
+      { kind: 'context-cleared' },
+    ]
+  }
   const text = describeCopilotNotification(msg)
-  return text === null ? [] : [{ kind: 'text', text }]
+  return text === null
+    ? []
+    : [
+        { kind: 'text', text },
+      ]
 }
 
 /** Identify an old stored start without changing its ordinary category. */

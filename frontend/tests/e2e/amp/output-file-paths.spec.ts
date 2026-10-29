@@ -45,7 +45,16 @@ ampTest('records the native large shell output limit and retains its exact tail 
       const exact = ampToolResult(capture.request, nativeId)
       expect(exact.exitCode).toBe(0)
       const retained = ampNativeOutputLimit(exact.text, output.text)
-      await testInfo.attach('amp-native-output-limit', { body: JSON.stringify({ nativeId, sessionId: capture.agent.agentSessionId, sourceFile, previewText: retained.output, retained }, null, 2), contentType: 'application/json' })
+      await testInfo.attach('amp-native-output-limit', {
+        body: JSON.stringify({
+          nativeId,
+          sessionId: capture.agent.agentSessionId,
+          sourceFile,
+          previewText: retained.output,
+          retained,
+        }, null, 2),
+        contentType: 'application/json',
+      })
       if ('prefixLinesOmitted' in retained)
         expect(retained.prefixLinesOmitted).toBeGreaterThan(0)
       else

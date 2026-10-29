@@ -5,42 +5,76 @@ import { coalesceQueuedBatches, REGISTER_POLICIES, registerKey, supersededParked
 function setFwOpacity(opId: string, windowId: string, opacity: number): CrdtOp {
   return {
     opId,
-    body: { case: 'setFloatingWindowRegister', value: { windowId, field: { case: 'opacity', value: opacity } } },
+    body: {
+      case: 'setFloatingWindowRegister',
+      value: {
+        windowId,
+        field: { case: 'opacity', value: opacity },
+      },
+    },
   } as unknown as CrdtOp
 }
 
 function setFwX(opId: string, windowId: string, x: number): CrdtOp {
   return {
     opId,
-    body: { case: 'setFloatingWindowRegister', value: { windowId, field: { case: 'x', value: x } } },
+    body: {
+      case: 'setFloatingWindowRegister',
+      value: {
+        windowId,
+        field: { case: 'x', value: x },
+      },
+    },
   } as unknown as CrdtOp
 }
 
 function setFwRootNode(opId: string, windowId: string, rootNodeId: string): CrdtOp {
   return {
     opId,
-    body: { case: 'setFloatingWindowRegister', value: { windowId, field: { case: 'rootNodeId', value: rootNodeId } } },
+    body: {
+      case: 'setFloatingWindowRegister',
+      value: {
+        windowId,
+        field: { case: 'rootNodeId', value: rootNodeId },
+      },
+    },
   } as unknown as CrdtOp
 }
 
 function setFwWorkspace(opId: string, windowId: string, workspaceId: string): CrdtOp {
   return {
     opId,
-    body: { case: 'setFloatingWindowRegister', value: { windowId, field: { case: 'workspaceId', value: workspaceId } } },
+    body: {
+      case: 'setFloatingWindowRegister',
+      value: {
+        windowId,
+        field: { case: 'workspaceId', value: workspaceId },
+      },
+    },
   } as unknown as CrdtOp
 }
 
 function setTabTile(opId: string, tabId: string, tileId: string): CrdtOp {
   return {
     opId,
-    body: { case: 'setTabRegister', value: { tabId, tabType: 1, field: { case: 'tileId', value: tileId } } },
+    body: {
+      case: 'setTabRegister',
+      value: {
+        tabId,
+        tabType: 1,
+        field: { case: 'tileId', value: tileId },
+      },
+    },
   } as unknown as CrdtOp
 }
 
 function tombstoneFw(opId: string, windowId: string): CrdtOp {
   return {
     opId,
-    body: { case: 'tombstoneFloatingWindow', value: { windowId } },
+    body: {
+      case: 'tombstoneFloatingWindow',
+      value: { windowId },
+    },
   } as unknown as CrdtOp
 }
 
@@ -80,9 +114,15 @@ describe('registerKey', () => {
 describe('coalesceQueuedBatches', () => {
   it('keeps only the last write to a register', () => {
     const result = coalesceQueuedBatches([
-      batch('b1', [setFwOpacity('o1', 'w1', 0.9)]),
-      batch('b2', [setFwOpacity('o2', 'w1', 0.8)]),
-      batch('b3', [setFwOpacity('o3', 'w1', 0.7)]),
+      batch('b1', [
+        setFwOpacity('o1', 'w1', 0.9),
+      ]),
+      batch('b2', [
+        setFwOpacity('o2', 'w1', 0.8),
+      ]),
+      batch('b3', [
+        setFwOpacity('o3', 'w1', 0.7),
+      ]),
     ])
     expect(opIds(result.batches)).toEqual(['o3'])
     expect(result.droppedBatchIds).toEqual(['b1', 'b2'])
@@ -91,7 +131,10 @@ describe('coalesceQueuedBatches', () => {
 
   it('keeps writes to different registers of the same entity', () => {
     const result = coalesceQueuedBatches([
-      batch('b1', [setFwX('o1', 'w1', 1), setFwOpacity('o2', 'w1', 0.5)]),
+      batch('b1', [
+        setFwX('o1', 'w1', 1),
+        setFwOpacity('o2', 'w1', 0.5),
+      ]),
     ])
     expect(opIds(result.batches)).toEqual(['o1', 'o2'])
     expect(result.droppedOps).toBe(0)
@@ -99,8 +142,12 @@ describe('coalesceQueuedBatches', () => {
 
   it('keeps writes to the same register of different entities', () => {
     const result = coalesceQueuedBatches([
-      batch('b1', [setFwOpacity('o1', 'w1', 0.5)]),
-      batch('b2', [setFwOpacity('o2', 'w2', 0.5)]),
+      batch('b1', [
+        setFwOpacity('o1', 'w1', 0.5),
+      ]),
+      batch('b2', [
+        setFwOpacity('o2', 'w2', 0.5),
+      ]),
     ])
     expect(opIds(result.batches)).toEqual(['o1', 'o2'])
     expect(result.droppedBatchIds).toEqual([])
@@ -113,8 +160,13 @@ describe('coalesceQueuedBatches', () => {
     // unreachable without the client re-deriving the server's completeness
     // rules.
     const result = coalesceQueuedBatches([
-      batch('b1', [setFwX('o1', 'w1', 1), setFwOpacity('o2', 'w1', 0.5)]),
-      batch('b2', [setFwOpacity('o3', 'w1', 0.9)]),
+      batch('b1', [
+        setFwX('o1', 'w1', 1),
+        setFwOpacity('o2', 'w1', 0.5),
+      ]),
+      batch('b2', [
+        setFwOpacity('o3', 'w1', 0.9),
+      ]),
     ])
     // o2 IS superseded by o3, but o1 is not, so b1 goes out whole.
     expect(opIds(result.batches)).toEqual(['o1', 'o2', 'o3'])
@@ -137,7 +189,10 @@ describe('coalesceQueuedBatches', () => {
     const result = coalesceQueuedBatches([
       creation,
       // A later gesture rewrites every geometry register the creation set.
-      batch('drag', [setFwX('d1', 'w1', 0.5), setFwOpacity('d2', 'w1', 0.4)]),
+      batch('drag', [
+        setFwX('d1', 'w1', 0.5),
+        setFwOpacity('d2', 'w1', 0.4),
+      ]),
     ])
     expect(result.droppedBatchIds).toEqual([])
     expect(result.batches).toHaveLength(2)
@@ -147,8 +202,12 @@ describe('coalesceQueuedBatches', () => {
     // root_node_id is write-once, so a later write does not supersede an
     // earlier one and the earlier op is not redundant.
     const result = coalesceQueuedBatches([
-      batch('b1', [setFwRootNode('o1', 'w1', 'n1')]),
-      batch('b2', [setFwRootNode('o2', 'w1', 'n2')]),
+      batch('b1', [
+        setFwRootNode('o1', 'w1', 'n1'),
+      ]),
+      batch('b2', [
+        setFwRootNode('o2', 'w1', 'n2'),
+      ]),
     ])
     expect(result.droppedBatchIds).toEqual([])
   })
@@ -164,14 +223,18 @@ describe('coalesceQueuedBatches', () => {
     // Identity matters: the retry paths re-queue these objects, and a needless
     // copy would break the batchId-keyed retry bookkeeping's assumptions about
     // what it is holding.
-    const b1 = batch('b1', [setFwX('o1', 'w1', 1)])
+    const b1 = batch('b1', [
+      setFwX('o1', 'w1', 1),
+    ])
     const result = coalesceQueuedBatches([b1])
     expect(result.batches[0]).toBe(b1)
   })
 
   // A 60-frame drag scrub is the case this exists for.
   it('collapses a gesture-shaped burst to one op per register', () => {
-    const queued = Array.from({ length: 60 }, (_, i) => batch(`b${i}`, [setFwX(`o${i}`, 'w1', i)]))
+    const queued = Array.from({ length: 60 }, (_, i) => batch(`b${i}`, [
+      setFwX(`o${i}`, 'w1', i),
+    ]))
     const result = coalesceQueuedBatches(queued)
     expect(opIds(result.batches)).toEqual(['o59'])
     expect(result.droppedBatchIds).toHaveLength(59)
@@ -184,39 +247,85 @@ describe('supersededParkedBatchIds', () => {
     // the hub never saw it and dedup will not apply. Its retry would commit
     // with a FRESH canonical HLC -- newer than the write below -- and the stale
     // value would win LWW on the hub and every peer.
-    const parked = [batch('parked', [setFwX('p1', 'w1', 0.1)])]
-    const outgoing = [batch('now', [setFwX('o1', 'w1', 0.9)])]
+    const parked = [
+      batch('parked', [
+        setFwX('p1', 'w1', 0.1),
+      ]),
+    ]
+    const outgoing = [
+      batch('now', [
+        setFwX('o1', 'w1', 0.9),
+      ]),
+    ]
     expect(supersededParkedBatchIds(parked, outgoing)).toEqual(['parked'])
   })
 
   it('leaves a parked batch alone when the newer write touches another register', () => {
-    const parked = [batch('parked', [setFwX('p1', 'w1', 0.1)])]
-    const outgoing = [batch('now', [setFwOpacity('o1', 'w1', 0.5)])]
+    const parked = [
+      batch('parked', [
+        setFwX('p1', 'w1', 0.1),
+      ]),
+    ]
+    const outgoing = [
+      batch('now', [
+        setFwOpacity('o1', 'w1', 0.5),
+      ]),
+    ]
     expect(supersededParkedBatchIds(parked, outgoing)).toEqual([])
   })
 
   it('leaves a parked batch alone when the newer write targets another window', () => {
-    const parked = [batch('parked', [setFwX('p1', 'w1', 0.1)])]
-    const outgoing = [batch('now', [setFwX('o1', 'w2', 0.9)])]
+    const parked = [
+      batch('parked', [
+        setFwX('p1', 'w1', 0.1),
+      ]),
+    ]
+    const outgoing = [
+      batch('now', [
+        setFwX('o1', 'w2', 0.9),
+      ]),
+    ]
     expect(supersededParkedBatchIds(parked, outgoing)).toEqual([])
   })
 
   it('requires EVERY op to be superseded, not just some', () => {
     // A partially-superseded parked batch still carries a write nothing else
     // will make, so cancelling it would lose that edit outright.
-    const parked = [batch('parked', [setFwX('p1', 'w1', 0.1), setFwOpacity('p2', 'w1', 0.3)])]
-    const outgoing = [batch('now', [setFwX('o1', 'w1', 0.9)])]
+    const parked = [
+      batch('parked', [
+        setFwX('p1', 'w1', 0.1),
+        setFwOpacity('p2', 'w1', 0.3),
+      ]),
+    ]
+    const outgoing = [
+      batch('now', [
+        setFwX('o1', 'w1', 0.9),
+      ]),
+    ]
     expect(supersededParkedBatchIds(parked, outgoing)).toEqual([])
   })
 
   it('never cancels a parked creation batch', () => {
-    const parked = [batch('create', [setFwRootNode('c1', 'w1', 'n1'), setFwX('c2', 'w1', 0.1)])]
-    const outgoing = [batch('now', [setFwX('o1', 'w1', 0.9)])]
+    const parked = [
+      batch('create', [
+        setFwRootNode('c1', 'w1', 'n1'),
+        setFwX('c2', 'w1', 0.1),
+      ]),
+    ]
+    const outgoing = [
+      batch('now', [
+        setFwX('o1', 'w1', 0.9),
+      ]),
+    ]
     expect(supersededParkedBatchIds(parked, outgoing)).toEqual([])
   })
 
   it('is a no-op when nothing is going out', () => {
-    const parked = [batch('parked', [setFwX('p1', 'w1', 0.1)])]
+    const parked = [
+      batch('parked', [
+        setFwX('p1', 'w1', 0.1),
+      ]),
+    ]
     expect(supersededParkedBatchIds(parked, [])).toEqual([])
   })
 
@@ -228,22 +337,46 @@ describe('supersededParkedBatchIds', () => {
   // from being silently undone. Keyed on the LWW-mutable table, not the
   // coalescable one.
   it('cancels a parked tile move superseded by a newer move of the same tab', () => {
-    const parked = [batch('parked', [setTabTile('p1', 't1', 'tile-old')])]
-    const outgoing = [batch('now', [setTabTile('o1', 't1', 'tile-new')])]
+    const parked = [
+      batch('parked', [
+        setTabTile('p1', 't1', 'tile-old'),
+      ]),
+    ]
+    const outgoing = [
+      batch('now', [
+        setTabTile('o1', 't1', 'tile-new'),
+      ]),
+    ]
     expect(supersededParkedBatchIds(parked, outgoing)).toEqual(['parked'])
   })
 
   it('cancels a parked window workspace move superseded by a newer one', () => {
-    const parked = [batch('parked', [setFwWorkspace('p1', 'w1', 'ws-old')])]
-    const outgoing = [batch('now', [setFwWorkspace('o1', 'w1', 'ws-new')])]
+    const parked = [
+      batch('parked', [
+        setFwWorkspace('p1', 'w1', 'ws-old'),
+      ]),
+    ]
+    const outgoing = [
+      batch('now', [
+        setFwWorkspace('o1', 'w1', 'ws-new'),
+      ]),
+    ]
     expect(supersededParkedBatchIds(parked, outgoing)).toEqual(['parked'])
   })
 
   it('still refuses to cancel a set-once register', () => {
     // rootNodeId is set-once on the hub, so a later write does NOT supersede the
     // parked one -- the parked write is the only one that will ever land.
-    const parked = [batch('parked', [setFwRootNode('p1', 'w1', 'n1')])]
-    const outgoing = [batch('now', [setFwRootNode('o1', 'w1', 'n2')])]
+    const parked = [
+      batch('parked', [
+        setFwRootNode('p1', 'w1', 'n1'),
+      ]),
+    ]
+    const outgoing = [
+      batch('now', [
+        setFwRootNode('o1', 'w1', 'n2'),
+      ]),
+    ]
     expect(supersededParkedBatchIds(parked, outgoing)).toEqual([])
   })
 
@@ -251,8 +384,12 @@ describe('supersededParkedBatchIds', () => {
     // Same two ops, but through the flush-time coalescer: dropping an
     // intermediate move on the wire is still a lost move, so both batches ship.
     const result = coalesceQueuedBatches([
-      batch('b1', [setTabTile('a', 't1', 'tile-old')]),
-      batch('b2', [setTabTile('b', 't1', 'tile-new')]),
+      batch('b1', [
+        setTabTile('a', 't1', 'tile-old'),
+      ]),
+      batch('b2', [
+        setTabTile('b', 't1', 'tile-new'),
+      ]),
     ])
     expect(result.droppedBatchIds).toEqual([])
     expect(result.batches).toHaveLength(2)
@@ -280,7 +417,9 @@ describe('register policies', () => {
 
   it('makes everything coalescable also LWW-mutable', () => {
     const offenders = every.filter(([field, policy]) =>
-      isCoalescableForTest(policy) && !isLwwMutableForTest(policy) ? field : null,
+      isCoalescableForTest(policy) && !isLwwMutableForTest(policy)
+        ? field
+        : null,
     )
     expect(offenders).toEqual([])
   })

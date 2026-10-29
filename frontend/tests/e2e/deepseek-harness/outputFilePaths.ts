@@ -52,5 +52,13 @@ export function readDeepseekHarnessNativeOutput(snapshot: NativeMessageSnapshot,
         paths.push(path)
     }
   }
-  return { ...record, paths: [...new Set(paths)], previewText, blocks, status: message.isError ? 'failed' : 'completed' }
+  return {
+    ...record,
+    paths: [
+      ...new Set(paths),
+    ],
+    previewText,
+    blocks,
+    status: message.isError ? 'failed' : 'completed',
+  }
 }

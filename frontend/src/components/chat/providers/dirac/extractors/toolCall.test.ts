@@ -43,16 +43,36 @@ describe('diracToolCallAdapter', () => {
       name: 'execute_command',
       kind: 'execute',
       title: 'Executed: Node script',
-      rawInput: { tool: 'execute_command', command: 'node native-script.js', language: 'node', displayName: 'Node script' },
-      rawOutput: { output: outputFileExcerpt, userRejected: false, exitCode: 0, signal: null },
+      rawInput: {
+        tool: 'execute_command',
+        command: 'node native-script.js',
+        language: 'node',
+        displayName: 'Node script',
+      },
+      rawOutput: {
+        output: outputFileExcerpt,
+        userRejected: false,
+        exitCode: 0,
+        signal: null,
+      },
     }
     const supplementalContent = {
       sessionUpdate: 'tool_call_update',
       toolCallId: outputFileCallID,
       status: 'completed',
-      outputFile: { sessionId: outputFileSessionID, toolCallId: outputFileCallID, path: outputFilePath, text: outputFileComplete },
+      outputFile: {
+        sessionId: outputFileSessionID,
+        toolCallId: outputFileCallID,
+        path: outputFilePath,
+        text: outputFileComplete,
+      },
     }
-    const options = { spanId: outputFileCallID, spanType: 'execute_command', agentSessionId: outputFileSessionID, supplementalContent }
+    const options = {
+      spanId: outputFileCallID,
+      spanType: 'execute_command',
+      agentSessionId: outputFileSessionID,
+      supplementalContent,
+    }
     const before = JSON.stringify({ native, supplementalContent })
     const call = providerToolCall(AgentProvider.DIRAC, native, options)
     expect(call?.kind).toBe('execute')
@@ -82,10 +102,19 @@ describe('diracToolCallAdapter', () => {
         kind: 'edit',
         rawInput: {
           tool: 'edit_file',
-          files: [{
-            path: '/w/note.txt',
-            edits: [{ edit_type: 'replace', anchor: 'Maintenance§dirac-before', end_anchor: 'Maintenance§dirac-before', text: 'dirac-after' }],
-          }],
+          files: [
+            {
+              path: '/w/note.txt',
+              edits: [
+                {
+                  edit_type: 'replace',
+                  anchor: 'Maintenance§dirac-before',
+                  end_anchor: 'Maintenance§dirac-before',
+                  text: 'dirac-after',
+                },
+              ],
+            },
+          ],
         },
       },
       diracToolCallAdapter,
@@ -108,7 +137,14 @@ describe('diracToolCallAdapter', () => {
         status: 'in_progress',
         title: 'Edit note.txt',
         kind: 'edit',
-        content: [{ type: 'diff', path: '/w/note.txt', oldText: 'dirac-before\n', newText: 'dirac-after\n' }],
+        content: [
+          {
+            type: 'diff',
+            path: '/w/note.txt',
+            oldText: 'dirac-before\n',
+            newText: 'dirac-after\n',
+          },
+        ],
       },
       diracToolCallAdapter,
       undefined,
@@ -166,7 +202,9 @@ describe('registered native Dirac command exit', () => {
   })
 
   it.each([0, 7, -7, Number.MAX_SAFE_INTEGER])('preserves the native signed exit code %s without changing output or Copy', (exitCode) => {
-    const native = nativeExitFrame({ exitCode, signal: null }, exitCode === 0 ? 'completed' : 'failed')
+    const native = nativeExitFrame({ exitCode, signal: null }, exitCode === 0
+      ? 'completed'
+      : 'failed')
     const before = structuredClone(native)
     const call = providerToolCall(AgentProvider.DIRAC, native, nativeExitOptions)
     expect(call?.kind).toBe('execute')
@@ -189,8 +227,24 @@ describe('registered native Dirac command exit', () => {
     expect(typedResult(call)?.commands[0]?.exitCode).toBeNull()
   })
 
-  it.each([undefined, '', '7', false, 1.5, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1, {}, []])('claims no numeric code for an absent or malformed native field: %j', (exitCode) => {
-    const native = nativeExitFrame({ ...(exitCode === undefined ? {} : { exitCode }), signal: null })
+  it.each([
+    undefined,
+    '',
+    '7',
+    false,
+    1.5,
+    Number.NaN,
+    Number.POSITIVE_INFINITY,
+    Number.MAX_SAFE_INTEGER + 1,
+    {},
+    [],
+  ])('claims no numeric code for an absent or malformed native field: %j', (exitCode) => {
+    const native = nativeExitFrame({
+      ...(exitCode === undefined
+        ? {}
+        : { exitCode }),
+      signal: null,
+    })
     const before = structuredClone(native)
     const call = providerToolCall(AgentProvider.DIRAC, native, nativeExitOptions)
     if (!call || call.kind !== 'execute')
@@ -212,8 +266,22 @@ describe('registered native Dirac command exit', () => {
     expect(call.status).toBe('failed')
   })
 
-  it.each([undefined, null, '', ' ', false, 7, [], {}])('claims no signal for an absent or malformed native field: %j', (signal) => {
-    const native = nativeExitFrame({ exitCode: null, ...(signal === undefined ? {} : { signal }) })
+  it.each([
+    undefined,
+    null,
+    '',
+    ' ',
+    false,
+    7,
+    [],
+    {},
+  ])('claims no signal for an absent or malformed native field: %j', (signal) => {
+    const native = nativeExitFrame({
+      exitCode: null,
+      ...(signal === undefined
+        ? {}
+        : { signal }),
+    })
     const call = providerToolCall(AgentProvider.DIRAC, native, nativeExitOptions)
     if (!call || call.kind !== 'execute')
       throw new Error('The malformed native signal fixture requires a command call.')
@@ -234,12 +302,35 @@ describe('registered native Dirac command exit', () => {
 
 describe('registered Dirac child title fallback', () => {
   it.each([
-    { rawInput: { tool: 'use_subagents', prompt: 'Native child prompt.' }, title: 'Native child title', expected: 'Native child title' },
-    { rawInput: { tool: 'use_subagents', task_title: '', prompt: 'Native child prompt.' }, title: 'Native child title', expected: 'Native child title' },
-    { rawInput: { tool: 'use_subagents', task_title: 'Native task title', prompt: 'Native child prompt.' }, title: 'Outer title', expected: 'Native task title' },
-    { rawInput: { tool: 'use_subagents', prompt: 'Native child prompt.' }, title: '', expected: 'use_subagents' },
+    {
+      rawInput: { tool: 'use_subagents', prompt: 'Native child prompt.' },
+      title: 'Native child title',
+      expected: 'Native child title',
+    },
+    {
+      rawInput: { tool: 'use_subagents', task_title: '', prompt: 'Native child prompt.' },
+      title: 'Native child title',
+      expected: 'Native child title',
+    },
+    {
+      rawInput: { tool: 'use_subagents', task_title: 'Native task title', prompt: 'Native child prompt.' },
+      title: 'Outer title',
+      expected: 'Native task title',
+    },
+    {
+      rawInput: { tool: 'use_subagents', prompt: 'Native child prompt.' },
+      title: '',
+      expected: 'use_subagents',
+    },
   ])('preserves the native description fallback: %j', ({ rawInput, title, expected }) => {
-    const native = { sessionUpdate: 'tool_call', toolCallId: 'native-child', kind: 'other', status: 'pending', title, rawInput }
+    const native = {
+      sessionUpdate: 'tool_call',
+      toolCallId: 'native-child',
+      kind: 'other',
+      status: 'pending',
+      title,
+      rawInput,
+    }
     const before = structuredClone(native)
     const call = providerToolCall(AgentProvider.DIRAC, native, { spanId: 'native-child', spanType: 'use_subagents', role: 'request' })
     expect(call?.kind).toBe('agent')

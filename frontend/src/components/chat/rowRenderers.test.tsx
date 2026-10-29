@@ -11,7 +11,10 @@ function drawnText(row: ChatRow, completion: MessageCompletion | null): string {
   return container.textContent ?? ''
 }
 
-const INTERRUPTED_DIVIDER: ChatRow = { kind: 'divider', divider: { label: 'Turn interrupted (1.2s)' } }
+const INTERRUPTED_DIVIDER: ChatRow = {
+  kind: 'divider',
+  divider: { label: 'Turn interrupted (1.2s)' },
+}
 
 describe('renderExtractedRow', () => {
   it('draws the finality marker without an error or interruption claim', () => {

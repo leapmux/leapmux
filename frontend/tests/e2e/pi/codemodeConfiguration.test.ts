@@ -24,9 +24,15 @@ describe('activateNativeCodemode', () => {
     const activate = runInNewContext(`(${source.replace('export default ', '')})`)
     const callbacks = new Map<string, () => void>()
     const setActiveTools = vi.fn()
-    activate({ on: (event: string, callback: () => void) => callbacks.set(event, callback), getActiveTools: () => ['read', 'mcp__probe__inspect'], setActiveTools })
+    activate({
+      on: (event: string, callback: () => void) => callbacks.set(event, callback),
+      getActiveTools: () => ['read', 'mcp__probe__inspect'],
+      setActiveTools,
+    })
     expect(setActiveTools).not.toHaveBeenCalled()
-    expect([...callbacks.keys()]).toEqual(['session_start'])
+    expect([
+      ...callbacks.keys(),
+    ]).toEqual(['session_start'])
     callbacks.get('session_start')?.()
     expect(setActiveTools).toHaveBeenCalledExactlyOnceWith(['read', 'mcp__probe__inspect', 'codemode'])
     expect(source).not.toContain('registerTool')

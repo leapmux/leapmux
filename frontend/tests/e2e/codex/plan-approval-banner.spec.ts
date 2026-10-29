@@ -43,7 +43,9 @@ codexTest.describe('Codex Plan Mode Prompt', () => {
     // plan is simply what the script answers. The marker rides in the plan
     // because an approved plan restarts the agent on a session seeded from it.
     await modelScript.fallback({ text: 'Working through the approved plan.' })
-    const planned = await modelScript.queue({ text: proposedPlan(modelScript.prompt(`# Dummy plan\n\n${PLAN_BODY}`)) })
+    const planned = await modelScript.queue({
+      text: proposedPlan(modelScript.prompt(`# Dummy plan\n\n${PLAN_BODY}`)),
+    })
     await sendMessage(page, modelScript.prompt(INITIAL_PLAN_PROMPT))
     await modelScript.waitForSteps(planned + 1)
     await waitForAgentIdle(page)
@@ -74,7 +76,9 @@ codexTest.describe('Codex Plan Mode Prompt', () => {
     await expect(controlButton(page, 'allow')).toHaveCount(0)
     await expect(control('plan-clear-context-checkbox')).toHaveCount(0)
     await expect(control('control-permissions-pill-group')).toHaveCount(0)
-    const revised = await modelScript.queue({ text: proposedPlan(modelScript.prompt('# Dummy plan revised\n\nAdd tests before implementation.')) })
+    const revised = await modelScript.queue({
+      text: proposedPlan(modelScript.prompt('# Dummy plan revised\n\nAdd tests before implementation.')),
+    })
     await answerControl(page, 'deny')
     await modelScript.waitForSteps(revised + 1)
 

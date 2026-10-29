@@ -19,14 +19,38 @@ const future = (secs: number): number => Math.floor(Date.now() / 1000) + secs
 describe('rateLimitSummaryParts', () => {
   it.each<[RateLimitInfo, string[]]>([
     [{}, []],
-    [{ status: 'allowed', utilization: 0 }, ['Allowed', '0% used']],
-    [{ status: 'allowed_warning', utilization: 0.805 }, ['Warning', '81% used']],
-    [{ status: 'rejected', utilization: 1 }, ['Exceeded']],
-    [{ status: 'allowed', isUsingOverage: true, resetsOn: '2026-11-25' }, ['Allowed', 'overage']],
-    [{ status: '', resetsOn: '2026-11-25' }, ['resets on 2026-11-25']],
-    [{ status: '', resetsOn: '2026-02-29' }, []],
-    [{ resetsAt: 0, resetsOn: '2026-11-25' }, []],
-    [{ resetsAt: 4_000_000_000 }, []],
+    [
+      { status: 'allowed', utilization: 0 },
+      ['Allowed', '0% used'],
+    ],
+    [
+      { status: 'allowed_warning', utilization: 0.805 },
+      ['Warning', '81% used'],
+    ],
+    [
+      { status: 'rejected', utilization: 1 },
+      ['Exceeded'],
+    ],
+    [
+      { status: 'allowed', isUsingOverage: true, resetsOn: '2026-11-25' },
+      ['Allowed', 'overage'],
+    ],
+    [
+      { status: '', resetsOn: '2026-11-25' },
+      ['resets on 2026-11-25'],
+    ],
+    [
+      { status: '', resetsOn: '2026-02-29' },
+      [],
+    ],
+    [
+      { resetsAt: 0, resetsOn: '2026-11-25' },
+      [],
+    ],
+    [
+      { resetsAt: 4_000_000_000 },
+      [],
+    ],
   ])('builds static parts for %j', (info, expected) => {
     expect(rateLimitSummaryParts(info)).toEqual(expected)
   })
@@ -34,7 +58,12 @@ describe('rateLimitSummaryParts', () => {
 
 describe('calendar quota resets', () => {
   it('shows the native label and calendar date without a countdown', () => {
-    const info = { label: 'Native Probe Plan — Credits', status: 'allowed', utilization: 0.255, resetsOn: '2026-11-25' }
+    const info = {
+      label: 'Native Probe Plan — Credits',
+      status: 'allowed',
+      utilization: 0.255,
+      resetsOn: '2026-11-25',
+    }
     expect(formatRateLimitSummary(info)).toBe('Allowed, 26% used, resets on 2026-11-25')
     expect(formatRateLimitMessage(info)).toBe('Native Probe Plan — Credits: 26% used — resets on 2026-11-25')
   })
@@ -44,13 +73,28 @@ describe('calendar quota resets', () => {
     expect(formatRateLimitSummary(info)).toBe(`resets on ${resetsOn}`)
   })
 
-  it.each(['', '1900-02-29', '2026-02-29', '2026-04-31', '2026-00-01', '2026-01-00', '2026-13-01', ' 2026-11-25', '2026-11-25T00:00:00Z', '0000-01-01'])('omits the invalid calendar date %s', (resetsOn) => {
+  it.each([
+    '',
+    '1900-02-29',
+    '2026-02-29',
+    '2026-04-31',
+    '2026-00-01',
+    '2026-01-00',
+    '2026-13-01',
+    ' 2026-11-25',
+    '2026-11-25T00:00:00Z',
+    '0000-01-01',
+  ])('omits the invalid calendar date %s', (resetsOn) => {
     const info = { resetsOn, status: '' }
     expect(formatRateLimitSummary(info)).toBe('Unknown')
   })
 
   it('prefers a reset instant and keeps the normal reset separate from overage', () => {
-    const info = { status: 'allowed', resetsOn: '2026-11-25', resetsAt: future(3600) }
+    const info = {
+      status: 'allowed',
+      resetsOn: '2026-11-25',
+      resetsAt: future(3600),
+    }
     expect(formatRateLimitSummary(info)).toContain('resets in')
     expect(formatRateLimitSummary(info)).not.toContain('resets on')
     expect(formatRateLimitSummary({ ...info, resetsAt: 0 })).not.toContain('resets on')
@@ -98,7 +142,12 @@ describe('rateLimitPopoverLabel', () => {
     expect(rateLimitPopoverLabel(rateLimitType)).toBe(label)
   })
 
-  it.each([undefined, '', '3_month', 'constructor'])('returns undefined for the type %s, which is not standard', (rateLimitType) => {
+  it.each([
+    undefined,
+    '',
+    '3_month',
+    'constructor',
+  ])('returns undefined for the type %s, which is not standard', (rateLimitType) => {
     expect(rateLimitPopoverLabel(rateLimitType)).toBeUndefined()
   })
 })
@@ -184,7 +233,11 @@ describe('pickUrgentRateLimit', () => {
 
   it('orders an epoch-zero reset before a future reset of equal severity', () => {
     const picked = pickUrgentRateLimit({
-      future: { status: 'allowed_warning', resetsAt: future(3600), rateLimitType: 'seven_day' },
+      future: {
+        status: 'allowed_warning',
+        resetsAt: future(3600),
+        rateLimitType: 'seven_day',
+      },
       epoch: { status: 'allowed_warning', resetsAt: 0, rateLimitType: 'five_hour' },
     })
     expect(picked?.info.rateLimitType).toBe('five_hour')
@@ -193,7 +246,11 @@ describe('pickUrgentRateLimit', () => {
 
   it('returns null when every tier is allowed', () => {
     expect(pickUrgentRateLimit({
-      five_hour: { status: 'allowed', utilization: 0.2, resetsAt: future(3600) },
+      five_hour: {
+        status: 'allowed',
+        utilization: 0.2,
+        resetsAt: future(3600),
+      },
     })).toBeNull()
   })
 
@@ -210,8 +267,16 @@ describe('pickUrgentRateLimit', () => {
 
   it('prefers an exceeded tier over a warning tier', () => {
     const picked = pickUrgentRateLimit({
-      seven_day: { status: 'allowed_warning', rateLimitType: 'seven_day', resetsAt: future(3600) },
-      five_hour: { status: 'exceeded', rateLimitType: 'five_hour', resetsAt: future(7200) },
+      seven_day: {
+        status: 'allowed_warning',
+        rateLimitType: 'seven_day',
+        resetsAt: future(3600),
+      },
+      five_hour: {
+        status: 'exceeded',
+        rateLimitType: 'five_hour',
+        resetsAt: future(7200),
+      },
     })
     expect(picked?.info.rateLimitType).toBe('five_hour')
   })
@@ -229,8 +294,16 @@ describe('pickUrgentRateLimit', () => {
 
   it('among equal severity, prefers the sooner reset', () => {
     const picked = pickUrgentRateLimit({
-      a: { status: 'allowed_warning', rateLimitType: 'a', resetsAt: future(7200) },
-      b: { status: 'allowed_warning', rateLimitType: 'b', resetsAt: future(600) },
+      a: {
+        status: 'allowed_warning',
+        rateLimitType: 'a',
+        resetsAt: future(7200),
+      },
+      b: {
+        status: 'allowed_warning',
+        rateLimitType: 'b',
+        resetsAt: future(600),
+      },
     })
     expect(picked?.info.rateLimitType).toBe('b')
   })
@@ -249,7 +322,13 @@ describe('pickUrgentRateLimit', () => {
   it('uses overageResetsAt for its countdown when isUsingOverage is true', () => {
     const nowSec = Math.floor(Date.now() / 1000)
     const rateLimits: Record<string, RateLimitInfo> = {
-      five_hour: { status: 'exceeded', resetsAt: nowSec - 100, overageResetsAt: nowSec + 3600, isUsingOverage: true, rateLimitType: 'five_hour' },
+      five_hour: {
+        status: 'exceeded',
+        resetsAt: nowSec - 100,
+        overageResetsAt: nowSec + 3600,
+        isUsingOverage: true,
+        rateLimitType: 'five_hour',
+      },
     }
     const result = pickUrgentRateLimit(rateLimits)
     expect(result).not.toBeNull()
@@ -258,7 +337,11 @@ describe('pickUrgentRateLimit', () => {
 
   it('treats a Claude "rejected" status as a blocked (highest-severity) tier', () => {
     const picked = pickUrgentRateLimit({
-      seven_day: { status: 'rejected', rateLimitType: 'seven_day', resetsAt: future(3600) },
+      seven_day: {
+        status: 'rejected',
+        rateLimitType: 'seven_day',
+        resetsAt: future(3600),
+      },
     })
     expect(picked?.info.rateLimitType).toBe('seven_day')
   })
@@ -304,7 +387,12 @@ describe('formatRateLimitMessage', () => {
   // Two producers feed `rateLimitType` unconstrained wire text. A bare index answered
   // `Object.prototype.toString` -- a truthy value, so the generic prefix never ran and
   // the label rendered as that function's source text.
-  it.each(['toString', 'constructor', 'valueOf', 'hasOwnProperty'])(
+  it.each([
+    'toString',
+    'constructor',
+    'valueOf',
+    'hasOwnProperty',
+  ])(
     'uses the generic prefix for the type %s, which names an Object.prototype member',
     (rateLimitType) => {
       const msg = formatRateLimitMessage({ rateLimitType, utilization: 0.5 })
@@ -389,7 +477,12 @@ describe('formatRateLimitSummary', () => {
 
   it('renders exceeded with overage', () => {
     const nowSec = Math.floor(Date.now() / 1000)
-    const info: RateLimitInfo = { status: 'exceeded', utilization: 1.0, isUsingOverage: true, overageResetsAt: nowSec + 2 * 3600 + 15 * 60 }
+    const info: RateLimitInfo = {
+      status: 'exceeded',
+      utilization: 1.0,
+      isUsingOverage: true,
+      overageResetsAt: nowSec + 2 * 3600 + 15 * 60,
+    }
     expect(formatRateLimitSummary(info)).toBe('Exceeded, overage, resets in 2:15')
   })
 

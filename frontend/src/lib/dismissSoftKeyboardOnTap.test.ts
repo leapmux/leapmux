@@ -28,8 +28,12 @@ function tap(target: EventTarget, opts: { x?: number, y?: number, pointerId?: nu
     x: opts.x ?? 40,
     y: opts.y ?? 40,
     pointerType: 'touch',
-    ...(opts.pointerId !== undefined ? { pointerId: opts.pointerId } : {}),
-    ...(opts.isPrimary !== undefined ? { isPrimary: opts.isPrimary } : {}),
+    ...(opts.pointerId !== undefined
+      ? { pointerId: opts.pointerId }
+      : {}),
+    ...(opts.isPrimary !== undefined
+      ? { isPrimary: opts.isPrimary }
+      : {}),
   }
   target.dispatchEvent(pointerEvent('pointerdown', down))
   target.dispatchEvent(pointerEvent('pointerup', down))
@@ -127,7 +131,9 @@ describe('attachDismissSoftKeyboardOnTap', () => {
   })
 
   it('ignores a press that lasted as long as a long press', () => {
-    vi.useFakeTimers({ toFake: ['performance', 'Date'] })
+    vi.useFakeTimers({
+      toFake: ['performance', 'Date'],
+    })
     const editor = focusedEditor()
     const surface = attach(document.createElement('div'))
     stop = attachDismissSoftKeyboardOnTap()
@@ -154,8 +160,18 @@ describe('attachDismissSoftKeyboardOnTap', () => {
     const surface = attach(document.createElement('div'))
     stop = attachDismissSoftKeyboardOnTap()
 
-    surface.dispatchEvent(pointerEvent('pointerdown', { x: 40, y: 40, pointerId: 1, pointerType: 'touch' }))
-    surface.dispatchEvent(pointerEvent('pointerup', { x: 40, y: 40, pointerId: 2, pointerType: 'touch' }))
+    surface.dispatchEvent(pointerEvent('pointerdown', {
+      x: 40,
+      y: 40,
+      pointerId: 1,
+      pointerType: 'touch',
+    }))
+    surface.dispatchEvent(pointerEvent('pointerup', {
+      x: 40,
+      y: 40,
+      pointerId: 2,
+      pointerType: 'touch',
+    }))
 
     expect(document.activeElement).toBe(editor)
   })

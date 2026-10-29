@@ -17,7 +17,9 @@ const PI_MISSING_REASON = 'Pi E2E requires pi CLI on PATH (https://github.com/ba
 const PI = lookupBinary('pi', PI_MISSING_REASON)
 export const PI_E2E_SKIP_REASON: string | null = PI.path === null
   ? PI.skipReason
-  : (versionOutput(PI.path) === null ? PI_MISSING_REASON : null)
+  : (versionOutput(PI.path) === null
+      ? PI_MISSING_REASON
+      : null)
 
 export const piTest = createProviderTest({
   agent: PI_AGENT,

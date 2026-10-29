@@ -272,8 +272,19 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           metadata.patch(terminalId, { contentReady: true })
       }
       lastOffset = applyTerminalData(instance, frame.isSnapshot
-        ? { kind: 'snapshot', data: frame.data, endOffset: Number(frame.endOffset), onParsed }
-        : { kind: 'delta', data: frame.data, endOffset: Number(frame.endOffset), currentOffset: lastOffset, onParsed })
+        ? {
+            kind: 'snapshot',
+            data: frame.data,
+            endOffset: Number(frame.endOffset),
+            onParsed,
+          }
+        : {
+            kind: 'delta',
+            data: frame.data,
+            endOffset: Number(frame.endOffset),
+            currentOffset: lastOffset,
+            onParsed,
+          })
       if (frame.isSnapshot)
         metadata.patch(terminalId, { needsResync: false })
     }
@@ -348,7 +359,9 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         detachedTerminals: params.quakeStore.liveEntries().map(entry => ({
           terminalId: entry.terminalId,
           workerId: entry.workerId,
-          mode: isQuakeEntryOnScreen(entry) ? WatchMode.FULL : WatchMode.NOTIFY,
+          mode: isQuakeEntryOnScreen(entry)
+            ? WatchMode.FULL
+            : WatchMode.NOTIFY,
         })),
       },
     ),
@@ -367,7 +380,9 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         return undefined
       if (tab.rootAgentId) {
         const root = view.getAgentTab(tab.rootAgentId)
-        return root && root.workerId !== workerId ? undefined : tab.rootAgentId
+        return root && root.workerId !== workerId
+          ? undefined
+          : tab.rootAgentId
       }
       if (!tab.parentAgentId)
         return current
@@ -418,7 +433,9 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
     const agentId = agentEvent.agentId
     const inner = agentEvent.event
     const replayId = agentEvent.replayId
-    const requested = agentEvent.replay ? activeReplayFor(agentEvent, streamWorkerId) : undefined
+    const requested = agentEvent.replay
+      ? activeReplayFor(agentEvent, streamWorkerId)
+      : undefined
     if (agentEvent.replay && !requested && inner.case !== 'agentMessage')
       return
     const resumeTail = requested?.cursorSeq
@@ -453,10 +470,19 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
         handleAgentMessage(
           agentId,
           inner.value,
-          { agentSessionStore, chatStore, view, metadata, selection, getActiveWorkspaceId: params.getActiveWorkspaceId },
+          {
+            agentSessionStore,
+            chatStore,
+            view,
+            metadata,
+            selection,
+            getActiveWorkspaceId: params.getActiveWorkspaceId,
+          },
           catchUpPhase,
           replayId,
-          agentEvent.replay && !requested ? 'retain-transcript' : 'apply-current-state',
+          agentEvent.replay && !requested
+            ? 'retain-transcript'
+            : 'apply-current-state',
         )
         break
       case 'statusChange':
@@ -464,7 +490,16 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           agentId,
           inner.value,
           catchUpPhase,
-          { agentSessionStore, chatStore, view, metadata, selection, getActiveWorkspaceId: params.getActiveWorkspaceId, controlStore, repoGitStore },
+          {
+            agentSessionStore,
+            chatStore,
+            view,
+            metadata,
+            selection,
+            getActiveWorkspaceId: params.getActiveWorkspaceId,
+            controlStore,
+            repoGitStore,
+          },
           settingsLoading,
           online => setWorkerOnline(view.getAgentTab(agentId)?.workerId || streamWorkerId || '', online),
           streamWorkerId,
@@ -478,7 +513,15 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           agentId,
           inner.value,
           catchUpPhase,
-          { agentSessionStore, chatStore, view, metadata, selection, getActiveWorkspaceId: params.getActiveWorkspaceId, controlStore },
+          {
+            agentSessionStore,
+            chatStore,
+            view,
+            metadata,
+            selection,
+            getActiveWorkspaceId: params.getActiveWorkspaceId,
+            controlStore,
+          },
         )
         break
       case 'controlCancel': {
@@ -547,7 +590,9 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
           view,
           getActiveWorkspaceId: params.getActiveWorkspaceId,
           agentActivityStore,
-          ...(params.onAgentSettled !== undefined ? { onAgentSettled: params.onAgentSettled } : {}),
+          ...(params.onAgentSettled !== undefined
+            ? { onAgentSettled: params.onAgentSettled }
+            : {}),
         })
         break
       }
@@ -620,11 +665,27 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
             metadata.patch(terminalId, { contentReady: true })
         }
         const newOffset = applyTerminalData(instance, isSnapshot
-          ? { kind: 'snapshot', data, endOffset: Number(endOffset), onParsed }
-          : { kind: 'delta', data, endOffset: Number(endOffset), currentOffset: metadata.get(terminalId)?.lastOffset ?? 0, onParsed })
+          ? {
+              kind: 'snapshot',
+              data,
+              endOffset: Number(endOffset),
+              onParsed,
+            }
+          : {
+              kind: 'delta',
+              data,
+              endOffset: Number(endOffset),
+              currentOffset: metadata.get(terminalId)?.lastOffset ?? 0,
+              onParsed,
+            })
         // An applied snapshot restores the buffer from the worker's ring.
         // Clear the flag that requests another full snapshot.
-        metadata.patch(terminalId, { lastOffset: newOffset, ...(isSnapshot ? { needsResync: false } : {}) })
+        metadata.patch(terminalId, {
+          lastOffset: newOffset,
+          ...(isSnapshot
+            ? { needsResync: false }
+            : {}),
+        })
         break
       }
       case 'closed':
@@ -753,7 +814,10 @@ export function useWorkspaceConnection(params: WorkspaceConnectionParams) {
       // Without their separate list, they would retain READY throughout the outage.
       // Build both lists once before the loop because neither depends on the worker.
       // A Hub restart can add several offline workers at once.
-      const searchable = [...params.view.all(), ...params.view.detachedTerminalTabs()]
+      const searchable = [
+        ...params.view.all(),
+        ...params.view.detachedTerminalTabs(),
+      ]
       for (const workerId of offline) {
         const { terminals: affectedTerminals, agents } = collectWorkerOfflineTargets(searchable, workerId)
         batch(() => {

@@ -37,14 +37,31 @@ export function zcodeMcpContent(row: ZCodeRow): McpContentItem[] | null {
     if (mimeType.startsWith('image/')) {
       const url = pickString(native.outputFiles, uri, undefined)
       // 'MCP image' is ZCode's own label for the attachment, not a description of the picture.
-      const imageDescription = description !== undefined && description !== 'MCP image' ? description : undefined
+      const imageDescription = description !== undefined && description !== 'MCP image'
+        ? description
+        : undefined
       content.push({
         type: 'image',
-        source: { mimeType, ...(url !== undefined ? { url } : {}), ...(imageDescription !== undefined ? { description: imageDescription } : {}) },
+        source: {
+          mimeType,
+          ...(url !== undefined
+            ? { url }
+            : {}),
+          ...(imageDescription !== undefined
+            ? { description: imageDescription }
+            : {}),
+        },
       })
     }
     else {
-      content.push({ type: 'resource', uri, mimeType, ...(description !== undefined ? { text: description } : {}) })
+      content.push({
+        type: 'resource',
+        uri,
+        mimeType,
+        ...(description !== undefined
+          ? { text: description }
+          : {}),
+      })
     }
   }
   return content
@@ -55,7 +72,11 @@ export function zcodeDisplayImages(display: Record<string, unknown> | null | und
   if (!display)
     return []
   const nodeImages = display.kind === ZCODE_DISPLAY.NodeImages
-  const media = nodeImages ? display.images : display.kind === ZCODE_DISPLAY.ComputerUse ? display.media : null
+  const media = nodeImages
+    ? display.images
+    : display.kind === ZCODE_DISPLAY.ComputerUse
+      ? display.media
+      : null
   if (!Array.isArray(media))
     return []
   return media.flatMap((entry): ImageResultSource[] => {
@@ -67,6 +88,8 @@ export function zcodeDisplayImages(display: Record<string, unknown> | null | und
       data: pickString(entry, nodeImages ? 'base64' : 'data', undefined),
       url: pickString(entry, ZCODE_STORED_ATTACHMENT.OutputFileURI, undefined),
     })
-    return source ? [source] : []
+    return source
+      ? [source]
+      : []
   })
 }

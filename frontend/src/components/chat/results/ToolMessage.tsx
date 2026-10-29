@@ -41,7 +41,9 @@ export function ToolMessage(props: { row: ToolCallRow, context?: ToolResultRende
   const parts = createMemo((): ToolCallDispatch<ToolKind> => dispatchParts(call()))
   const plain = createMemo(() => {
     const result = call().result
-    return isToolFailureResult(result) || isUnparsedToolResult(result) ? result : undefined
+    return isToolFailureResult(result) || isUnparsedToolResult(result)
+      ? result
+      : undefined
   })
   // One key per mounted row, read once: AGENT_PROMPT for an agent request row, TOOL_RESULT_EXPANDED otherwise.
   const expandKey = untrack((): MessageUiKey => (!drawsResult() && parts().renderer.requestExpandUiKey) || MESSAGE_UI_KEY.TOOL_RESULT_EXPANDED)
@@ -114,21 +116,29 @@ export function ToolMessage(props: { row: ToolCallRow, context?: ToolResultRende
   // The Worker broadcasts this output on the ephemeral channel.
   // It removes that output when the persisted result arrives.
   // The completed row then uses its own text without changing the layout.
-  const liveTail = () => !isFinishedToolCallStatus(call().status) && call().result === undefined ? props.progress?.liveTail() : undefined
+  const liveTail = () => !isFinishedToolCallStatus(call().status) && call().result === undefined
+    ? props.progress?.liveTail()
+    : undefined
   const truncated = () => call().truncated || liveTail()?.outputTruncated === true
   const statusOutcome = () => toolCallStatusOutcome(call().status)
   // Use the call's title for image tabs when it supplies one.
   // Otherwise, use the display name when the renderer puts that name first.
   // An absent title lets the bubble use its span-type fallback.
-  const imageTitle = () => call().title ?? (parts().renderer.nameLeads ? toolCallDisplayName(call()) : undefined)
+  const imageTitle = () => call().title ?? (parts().renderer.nameLeads
+    ? toolCallDisplayName(call())
+    : undefined)
   // Both image lists use these optional settings.
   // Omit an absent setting instead of passing an explicit undefined value.
   const imageOptions = () => {
     const title = imageTitle()
     const actions = props.context?.images
     return {
-      ...(title !== undefined ? { title } : {}),
-      ...(actions !== undefined ? { actions } : {}),
+      ...(title !== undefined
+        ? { title }
+        : {}),
+      ...(actions !== undefined
+        ? { actions }
+        : {}),
     }
   }
   // Offer Copy only when this row contains copyable text.
@@ -138,8 +148,12 @@ export function ToolMessage(props: { row: ToolCallRow, context?: ToolResultRende
     return {
       contentCopied: copied(),
       copyContentLabel: meta().copyLabel ?? 'Copy',
-      ...(meta().hasCopyable ? { onCopyContent: copy } : {}),
-      ...(reply !== undefined ? { onReply: reply } : {}),
+      ...(meta().hasCopyable
+        ? { onCopyContent: copy }
+        : {}),
+      ...(reply !== undefined
+        ? { onReply: reply }
+        : {}),
     }
   }
   // Read the dispatched call without creating another copy.
@@ -154,19 +168,29 @@ export function ToolMessage(props: { row: ToolCallRow, context?: ToolResultRende
   // hasContent treats that omission the same as an explicit null.
   const summaryProps = () => {
     const drawn = parts().renderer.summary?.(parts().parsed, view())
-    return drawn === null ? {} : { summary: drawn }
+    return drawn === null
+      ? {}
+      : { summary: drawn }
   }
   return (
     <ToolMessageLayout
-      role={props.row.role === 'result' ? 'result' : 'request'}
+      role={props.row.role === 'result'
+        ? 'result'
+        : 'request'}
       hasRequest={props.row.role === 'result' && rowHasRequestRow(props.row)}
       icon={toolHintIcon(call().icon) ?? parts().renderer.icon}
       toolName={toolCallDisplayName(call())}
       title={parts().renderer.title(parts().parsed, props.context)}
       {...summaryProps()}
-      {...(props.context !== undefined ? { context: props.context } : {})}
+      {...(props.context !== undefined
+        ? { context: props.context }
+        : {})}
       expanded={expanded()}
-      {...(expandable() ? { onToggleExpand: () => setExpanded(value => !value) } : {})}
+      {...(expandable()
+        ? {
+            onToggleExpand: () => setExpanded(value => !value),
+          }
+        : {})}
       expandLabel={meta().expandLabel ?? 'Expand output'}
       headerActions={headerActions()}
       // The message host can draw these actions in the outer toolbar.
@@ -195,11 +219,31 @@ export function ToolMessage(props: { row: ToolCallRow, context?: ToolResultRende
         {/* Extra content follows the result body, including its image indices.
             An offset of zero gives two images the same index.
             An image tab can then show the wrong image. */}
-        <Show when={call().extraContent?.length}><McpContentList items={call().extraContent!} indexOffset={resultImages(call()).length} title={toolCallDisplayName(call())} {...(props.context?.images !== undefined ? { actions: props.context?.images } : {})} holdDisplay={() => props.context?.syntaxHighlightingPaused?.() === true || props.context?.textSelectionActive?.() === true} context={bodyContext()} /></Show>
+        <Show when={call().extraContent?.length}>
+          <McpContentList
+            items={call().extraContent!}
+            indexOffset={resultImages(call()).length}
+            title={toolCallDisplayName(call())}
+            {...(props.context?.images !== undefined
+              ? { actions: props.context?.images }
+              : {})}
+            holdDisplay={() => props.context?.syntaxHighlightingPaused?.() === true || props.context?.textSelectionActive?.() === true}
+            context={bodyContext()}
+          />
+        </Show>
         <Show when={call().images.length > 0}>
           <ImageResultList sources={call().images} indexOffset={extraImages(call()).length + resultImages(call()).length} {...imageOptions()} holdDisplay={() => props.context?.syntaxHighlightingPaused?.() === true || props.context?.textSelectionActive?.() === true} />
         </Show>
-        <ToolOutcomeHeader when={statusOutcome() !== null && !bodyStatesOutcome()} icon={call().status === 'incomplete' ? TriangleAlert : CircleAlert} title={typedTitle()} {...(props.context !== undefined ? { context: props.context } : {})} />
+        <ToolOutcomeHeader
+          when={statusOutcome() !== null && !bodyStatesOutcome()}
+          icon={call().status === 'incomplete'
+            ? TriangleAlert
+            : CircleAlert}
+          title={typedTitle()}
+          {...(props.context !== undefined
+            ? { context: props.context }
+            : {})}
+        />
       </Show>
     </ToolMessageLayout>
   )

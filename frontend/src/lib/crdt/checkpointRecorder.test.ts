@@ -94,7 +94,9 @@ const WM = { physical: 10n, logical: 0n, clientId: 'hub' }
 function fakeMgr(overrides: { watermark?: { physical: bigint, logical: bigint, clientId: string } | undefined } = {}) {
   const state = {
     confirmedState: create(UserCrdtStateSchema, { userId: USER, currentEpoch: 1n }),
-    resumeWatermark: 'watermark' in overrides ? overrides.watermark : WM,
+    resumeWatermark: 'watermark' in overrides
+      ? overrides.watermark
+      : WM,
     currentEpoch: 1n,
   }
   return {
@@ -108,7 +110,12 @@ function confirmed(mgr: PendingOpsManager): UserCrdtState {
 }
 
 function frame(batchId: string) {
-  return create(WatchUserEventSchema, { event: { case: 'batch', value: { batchId, ops: [] } } })
+  return create(WatchUserEventSchema, {
+    event: {
+      case: 'batch',
+      value: { batchId, ops: [] },
+    },
+  })
 }
 
 /** A frame whose single op touches `node:<id>`, so it dirties exactly one chunk. */
@@ -116,7 +123,17 @@ function nodeFrame(batchId: string, nodeId: string): WatchUserEvent {
   return create(WatchUserEventSchema, {
     event: {
       case: 'batch',
-      value: { batchId, ops: [{ body: { case: 'setNodeRegister', value: { nodeId } } }] },
+      value: {
+        batchId,
+        ops: [
+          {
+            body: {
+              case: 'setNodeRegister',
+              value: { nodeId },
+            },
+          },
+        ],
+      },
     },
   } as never)
 }
@@ -125,7 +142,10 @@ function nodeFrame(batchId: string, nodeId: string): WatchUserEvent {
 function putNode(mgr: PendingOpsManager, nodeId: string, position: string): void {
   confirmed(mgr).nodes[nodeId] = create(NodeRecordSchema, {
     nodeId,
-    position: { value: position, hlc: { physical: 1n, logical: 0n, clientId: 'c' } },
+    position: {
+      value: position,
+      hlc: { physical: 1n, logical: 0n, clientId: 'c' },
+    },
   })
 }
 
@@ -162,7 +182,10 @@ async function persistedChunks(): Promise<Map<string, string>> {
   const read = await readCheckpoint(USER, CLIENT)
   if (read.status !== 'ok')
     throw new Error(`expected a readable checkpoint, got ${read.status}`)
-  return new Map(read.chunks.map(c => [`${c.kind}:${c.entityId}`, c.bytes.join(',')]))
+  return new Map(read.chunks.map(c => [
+    `${c.kind}:${c.entityId}`,
+    c.bytes.join(','),
+  ]))
 }
 
 describe('createCheckpointRecorder', () => {
@@ -170,7 +193,11 @@ describe('createCheckpointRecorder', () => {
     // The append is microtask-coalesced so a drag (~120 frames/sec, half of them
     // self-traffic) costs one IDB transaction per burst rather than one per
     // frame.
-    const recorder = createCheckpointRecorder({ userId: USER, clientId: CLIENT, mgr: fakeMgr() })
+    const recorder = createCheckpointRecorder({
+      userId: USER,
+      clientId: CLIENT,
+      mgr: fakeMgr(),
+    })
     await writeBase()
 
     recorder.record(frame('a'))
@@ -188,7 +215,9 @@ describe('createCheckpointRecorder', () => {
 
   it('rewrites the checkpoint and truncates once the threshold is crossed', async () => {
     await writeBase()
-    await appendOpLogSegment(USER, CLIENT, [toBinary(WatchUserEventSchema, frame('stale'))], 0)
+    await appendOpLogSegment(USER, CLIENT, [
+      toBinary(WatchUserEventSchema, frame('stale')),
+    ], 0)
 
     const recorder = createCheckpointRecorder({
       userId: USER,
@@ -221,7 +250,10 @@ describe('createCheckpointRecorder', () => {
       clientId: CLIENT,
       mgr: fakeMgr(),
       threshold: 10,
-      hydratedFrom: { frames: Array.from({ length: 9 }, (_, i) => frame(`replayed-${i}`)), nextOrdinal: 0 },
+      hydratedFrom: {
+        frames: Array.from({ length: 9 }, (_, i) => frame(`replayed-${i}`)),
+        nextOrdinal: 0,
+      },
     })
     expect(recorder.opLogCount).toBe(9)
 
@@ -237,7 +269,12 @@ describe('createCheckpointRecorder', () => {
     // stays above the threshold, so without a backoff EVERY subsequent flush
     // re-attempts a serialization that is already known to fail.
     const mgr = fakeMgr({ watermark: undefined })
-    const recorder = createCheckpointRecorder({ userId: USER, clientId: CLIENT, mgr, threshold: 1 })
+    const recorder = createCheckpointRecorder({
+      userId: USER,
+      clientId: CLIENT,
+      mgr,
+      threshold: 1,
+    })
 
     recorder.record(frame('a'))
     await settle(recorder)
@@ -254,8 +291,17 @@ describe('createCheckpointRecorder', () => {
     // record() runs inside the manager's confirmed-mutation pipeline; a throw
     // would propagate back into the consume* entry points and interrupt their
     // post-record work.
-    const recorder = createCheckpointRecorder({ userId: USER, clientId: CLIENT, mgr: fakeMgr() })
-    const bad = { event: { case: 'batch', value: { batchId: 1 as never, ops: [] } } } as never
+    const recorder = createCheckpointRecorder({
+      userId: USER,
+      clientId: CLIENT,
+      mgr: fakeMgr(),
+    })
+    const bad = {
+      event: {
+        case: 'batch',
+        value: { batchId: 1 as never, ops: [] },
+      },
+    } as never
     expect(() => recorder.record(bad)).not.toThrow()
     await recorder.dispose()
   })
@@ -275,7 +321,11 @@ describe('createCheckpointRecorder', () => {
 
   it('stops recording after dispose', async () => {
     await writeBase()
-    const recorder = createCheckpointRecorder({ userId: USER, clientId: CLIENT, mgr: fakeMgr() })
+    const recorder = createCheckpointRecorder({
+      userId: USER,
+      clientId: CLIENT,
+      mgr: fakeMgr(),
+    })
     await recorder.dispose()
 
     recorder.record(frame('after-dispose'))
@@ -294,7 +344,11 @@ describe('createCheckpointRecorder', () => {
     // account's frames on a shared device, in rows nothing ever reads or
     // truncates because their checkpoint is gone.
     await writeBase()
-    const recorder = createCheckpointRecorder({ userId: USER, clientId: CLIENT, mgr: fakeMgr() })
+    const recorder = createCheckpointRecorder({
+      userId: USER,
+      clientId: CLIENT,
+      mgr: fakeMgr(),
+    })
     recorder.record(frame('a'))
     // Let the microtask flush fire (arming the IDB write) but do NOT settle it.
     await Promise.resolve()
@@ -369,7 +423,12 @@ describe('createCheckpointRecorder incremental rewrites', () => {
 
   it('tracks exactly the entities its frames name', async () => {
     const mgr = fakeMgr()
-    const recorder = createCheckpointRecorder({ userId: USER, clientId: CLIENT, mgr, hydratedFrom: { frames: [], nextOrdinal: 0 } })
+    const recorder = createCheckpointRecorder({
+      userId: USER,
+      clientId: CLIENT,
+      mgr,
+      hydratedFrom: { frames: [], nextOrdinal: 0 },
+    })
 
     recorder.record(nodeFrame('b1', 'n1'))
     recorder.record(nodeFrame('b2', 'n2'))
@@ -495,14 +554,21 @@ describe('createCheckpointRecorder incremental rewrites', () => {
     const mgr = fakeMgr()
     putNode(mgr, 'a', 'v1')
     putNode(mgr, 'b', 'v1')
-    const recorder = createCheckpointRecorder({ userId: USER, clientId: CLIENT, mgr, threshold: 1 })
+    const recorder = createCheckpointRecorder({
+      userId: USER,
+      clientId: CLIENT,
+      mgr,
+      threshold: 1,
+    })
     expect(recorder.needsFullRewrite).toBe(true)
 
     recorder.record(nodeFrame('b1', 'a'))
     await settle(recorder)
 
     expect(lastDelta().full).toBe(true)
-    expect([...(await persistedChunks()).keys()].sort()).toEqual(['node:a', 'node:b'])
+    expect([
+      ...(await persistedChunks()).keys(),
+    ].sort()).toEqual(['node:a', 'node:b'])
     expect(recorder.needsFullRewrite).toBe(false)
     await recorder.dispose()
   })
@@ -514,7 +580,13 @@ describe('createCheckpointRecorder incremental rewrites', () => {
       userId: USER,
       clientId: CLIENT,
       mgr: fakeMgr(),
-      hydratedFrom: { frames: [nodeFrame('r1', 'replayed-a'), nodeFrame('r2', 'replayed-b')], nextOrdinal: 0 },
+      hydratedFrom: {
+        frames: [
+          nodeFrame('r1', 'replayed-a'),
+          nodeFrame('r2', 'replayed-b'),
+        ],
+        nextOrdinal: 0,
+      },
     })
     expect([...recorder.dirtyKeys].sort()).toEqual(['node:replayed-a', 'node:replayed-b'])
     expect(recorder.needsFullRewrite).toBe(false)
@@ -667,7 +739,9 @@ describe('createCheckpointRecorder incremental rewrites', () => {
         return
       const batchIds = read.opLogFrames
         .map(b => fromBinary(WatchUserEventSchema, b))
-        .map(f => (f.event.case === 'batch' ? f.event.value.batchId : ''))
+        .map(f => (f.event.case === 'batch'
+          ? f.event.value.batchId
+          : ''))
       expect(batchIds).toEqual(['post-bootstrap'])
       await recorder.dispose()
     })
@@ -788,7 +862,12 @@ describe('createCheckpointRecorder incremental rewrites', () => {
       recorder.onCheckpointReset()
       await settle(recorder)
 
-      base.settle({ frames: [nodeFrame('r1', 'stale')], nextOrdinal: 9 })
+      base.settle({
+        frames: [
+          nodeFrame('r1', 'stale'),
+        ],
+        nextOrdinal: 9,
+      })
       await settle(recorder)
 
       expect(recorder.dirtyKeys.has('node:stale')).toBe(false)
@@ -806,7 +885,12 @@ describe('createCheckpointRecorder incremental rewrites', () => {
         hydratedFrom: base.promise,
       })
       await recorder.dispose()
-      base.settle({ frames: [nodeFrame('r1', 'late')], nextOrdinal: 3 })
+      base.settle({
+        frames: [
+          nodeFrame('r1', 'late'),
+        ],
+        nextOrdinal: 3,
+      })
       await settle(recorder)
 
       expect(recorder.dirtyKeys.has('node:late')).toBe(false)
@@ -820,9 +904,19 @@ describe('createCheckpointRecorder incremental rewrites', () => {
     // return null. record() promises never to throw, and a frame it cannot
     // describe must not leave the dirty set silently short.
     const mgr = fakeMgr({ watermark: undefined })
-    const recorder = createCheckpointRecorder({ userId: USER, clientId: CLIENT, mgr, hydratedFrom: { frames: [], nextOrdinal: 0 } })
+    const recorder = createCheckpointRecorder({
+      userId: USER,
+      clientId: CLIENT,
+      mgr,
+      hydratedFrom: { frames: [], nextOrdinal: 0 },
+    })
 
-    expect(() => recorder.record({ event: { case: 'batch', value: { batchId: 'b' } } } as never)).not.toThrow()
+    expect(() => recorder.record({
+      event: {
+        case: 'batch',
+        value: { batchId: 'b' },
+      },
+    } as never)).not.toThrow()
 
     expect(recorder.needsFullRewrite).toBe(true)
     await recorder.dispose()
@@ -832,10 +926,17 @@ describe('createCheckpointRecorder incremental rewrites', () => {
     // Under-reporting the dirty set is the one unrecoverable direction: a chunk
     // stale on disk but absent from the set is never rewritten again.
     const mgr = fakeMgr()
-    const recorder = createCheckpointRecorder({ userId: USER, clientId: CLIENT, mgr, hydratedFrom: { frames: [], nextOrdinal: 0 } })
+    const recorder = createCheckpointRecorder({
+      userId: USER,
+      clientId: CLIENT,
+      mgr,
+      hydratedFrom: { frames: [], nextOrdinal: 0 },
+    })
     expect(recorder.needsFullRewrite).toBe(false)
 
-    recorder.record(create(WatchUserEventSchema, { event: { case: 'presence', value: {} } } as never))
+    recorder.record(create(WatchUserEventSchema, {
+      event: { case: 'presence', value: {} },
+    } as never))
 
     expect(recorder.needsFullRewrite).toBe(true)
     await recorder.dispose()
@@ -849,7 +950,12 @@ describe('createCheckpointRecorder incremental rewrites', () => {
     putNode(mgr, 'from-old-lineage', 'v1')
     await writeBase(confirmed(mgr))
 
-    const recorder = createCheckpointRecorder({ userId: USER, clientId: CLIENT, mgr, hydratedFrom: { frames: [], nextOrdinal: 0 } })
+    const recorder = createCheckpointRecorder({
+      userId: USER,
+      clientId: CLIENT,
+      mgr,
+      hydratedFrom: { frames: [], nextOrdinal: 0 },
+    })
     // The bootstrap replaces the state, then fires the reset observer.
     ;(mgr.state as { confirmedState: UserCrdtState }).confirmedState
       = create(UserCrdtStateSchema, { userId: USER, currentEpoch: 1n })
@@ -858,7 +964,9 @@ describe('createCheckpointRecorder incremental rewrites', () => {
     await settle(recorder)
 
     expect(lastDelta().full).toBe(true)
-    expect([...(await persistedChunks()).keys()]).toEqual(['node:from-new-lineage'])
+    expect([
+      ...(await persistedChunks()).keys(),
+    ]).toEqual(['node:from-new-lineage'])
     await recorder.dispose()
   })
 })
@@ -944,7 +1052,12 @@ describe('createCheckpointRecorder rebase gating', () => {
     const baseline = afterFirst.opLogFrames.length
 
     // A frame that cannot be serialized: the oneof value is not a valid message.
-    recorder.record({ event: { case: 'batch', value: { batchId: 1 } } } as never)
+    recorder.record({
+      event: {
+        case: 'batch',
+        value: { batchId: 1 },
+      },
+    } as never)
     await settle(recorder)
 
     recorder.record(frame('after-1'))
@@ -967,7 +1080,10 @@ describe('createCheckpointRecorder rebase gating', () => {
       userId: USER,
       clientId: CLIENT,
       mgr,
-      hydratedFrom: { frames: Array.from({ length: 9 }, (_, i) => frame(`f${i}`)), nextOrdinal: 0 },
+      hydratedFrom: {
+        frames: Array.from({ length: 9 }, (_, i) => frame(`f${i}`)),
+        nextOrdinal: 0,
+      },
     })
 
     recorder.onCheckpointReset()
