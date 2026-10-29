@@ -88,7 +88,7 @@ func elevationRequiredErrorSaying(message string) error {
 	// only that, so the wrap has to be attached separately or the sentinel
 	// dissolves into prose.
 	cause := fmt.Errorf("%w: %s", errElevationRequired, message)
-	return connect.NewError(connect.CodeFailedPrecondition, cause.Error()).WithCause(cause)
+	return wrappedConnectError(connect.CodeFailedPrecondition, cause)
 }
 
 // ElevationRequiredHeader marks a refusal whose remedy is "prove a factor
@@ -135,11 +135,11 @@ type elevationSlideKey struct{}
 //
 // A HOLDER IN THE CONTEXT rather than a return value, because the two halves
 // sit at opposite ends of one request. slideElevation is a free function that
-// seven handlers reach through three helpers, and the HANDLER is what owns the
-// connect.Response; threading a deadline back through each of them would make
-// "report the new window" a rule every new restricted verb has to remember,
-// which is the failure the writeUnderElevation and commitUnderElevation
-// helpers exist to prevent. Here the interceptor installs the holder, the
+// multiple handlers reach through shared helpers. The interceptor reports response
+// metadata through the call's CallInfo. Threading a deadline back through
+// each handler would make "report the new window" a rule every new restricted
+// verb has to remember, which is the failure the writeUnderElevation and
+// commitUnderElevation helpers exist to prevent. Here the interceptor installs the holder, the
 // slide fills it, and the interceptor writes the header. A verb that slides
 // reports by construction, a verb that does not slide reports nothing, and no
 // call site states either.
@@ -238,8 +238,8 @@ func NewElevationResponseInterceptor() connect.ServerInterceptor {
 			}
 			info := serverCallInfo(ctx)
 			ctx, slide := withElevationSlide(ctx)
-			meta := &elevationMetadata{info: info, slide: slide}
-			err := next(ctx, spec, &elevationMetadataStream{ServerStream: stream, meta: meta})
+			meta := &elevationMetadataStream{ServerStream: stream, info: info, slide: slide}
+			err := next(ctx, spec, meta)
 			if errors.Is(err, errElevationRequired) {
 				// A machine-readable marker, so a client can distinguish THIS
 				// FailedPrecondition from every other one (an account with no
@@ -254,18 +254,19 @@ func NewElevationResponseInterceptor() connect.ServerInterceptor {
 	}
 }
 
-// elevationMetadata writes the slide deadline onto the response at most once.
+// elevationMetadataStream writes the slide deadline onto the response at most once.
 //
-// The mutex on elevationSlide already guards the recorded value; this one
-// guards the write, so a Send and the interceptor's own wrap-up cannot
+// The mutex on elevationSlide guards the recorded value. deadlineOnce
+// guards the write, so Send and the interceptor's completion path cannot
 // double-write when a handler both sends and then fails.
-type elevationMetadata struct {
+type elevationMetadataStream struct {
+	connect.ServerStream
 	info         *connect.CallInfo
 	slide        *elevationSlide
 	deadlineOnce sync.Once
 }
 
-func (m *elevationMetadata) writeDeadline() {
+func (m *elevationMetadataStream) writeDeadline() {
 	m.deadlineOnce.Do(func() {
 		until, slid := m.slide.deadline()
 		if !slid {
@@ -278,16 +279,11 @@ func (m *elevationMetadata) writeDeadline() {
 	})
 }
 
-// elevationMetadataStream writes the elevation deadline before the handler's
-// message goes out. Send is the handler's last act on a call that succeeds,
+// Send writes the elevation deadline before the handler's message goes out.
+// Send is the handler's last act on a call that succeeds,
 // so the sliding helper has already recorded the new deadline by then.
-type elevationMetadataStream struct {
-	connect.ServerStream
-	meta *elevationMetadata
-}
-
 func (s *elevationMetadataStream) Send(msg any) error {
-	s.meta.writeDeadline()
+	s.writeDeadline()
 	return s.ServerStream.Send(msg)
 }
 
@@ -988,9 +984,9 @@ func (s *UserService) grantElevation(ctx context.Context, userInfo *auth.UserInf
 	until, err := grantSessionElevation(ctx, s.store, s.lifecycle, sessionID, userInfo.ID, s.now())
 	switch {
 	case errors.Is(err, errElevationSessionEnded):
-		return time.Time{}, connect.NewError(connect.CodeUnauthenticated, err.Error()).WithCause(err)
+		return time.Time{}, wrappedConnectError(connect.CodeUnauthenticated, err)
 	case err != nil:
-		return time.Time{}, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return time.Time{}, wrappedConnectError(connect.CodeInternal, err)
 	}
 	return until, nil
 }
@@ -1068,7 +1064,7 @@ func (s *UserService) BeginPasskeyElevation(ctx context.Context, req *leapmuxv1.
 	}
 	user, err := s.store.Users().GetByID(ctx, userInfo.ID.String())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	wa, err := s.webauthnService(ctx)
 	if err != nil {
@@ -1104,7 +1100,7 @@ func (s *UserService) FinishPasskeyElevation(ctx context.Context, req *leapmuxv1
 	}
 	user, err := s.store.Users().GetByID(ctx, userInfo.ID.String())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	wa, err := s.webauthnService(ctx)
 	if err != nil {
@@ -1143,9 +1139,9 @@ func mapElevationAssertionError(ctx context.Context, userID string, err error) e
 	case webAuthnErrorCredential:
 		return credentialRejectedError(ctx, fmt.Errorf("%w: %s", auth.ErrInvalidElevationAssertion, err.Error()))
 	case webAuthnErrorUnavailable:
-		return connect.NewError(connect.CodeFailedPrecondition, err.Error()).WithCause(err)
+		return wrappedConnectError(connect.CodeFailedPrecondition, err)
 	default:
-		return connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return wrappedConnectError(connect.CodeInternal, err)
 	}
 }
 

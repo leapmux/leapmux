@@ -111,9 +111,9 @@ func (s *UserService) ListMyAPITokens(ctx context.Context, req *leapmuxv1.ListMy
 	})
 	if err != nil {
 		if errors.Is(err, store.ErrInvalidCursor) {
-			return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
+			return nil, wrappedConnectError(connect.CodeInvalidArgument, err)
 		}
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	currentTokenID := callerAPITokenID(userInfo)
 	tokens := make([]*leapmuxv1.MyAPIToken, 0, len(page.Rows))
@@ -188,7 +188,7 @@ func (s *UserService) DisconnectApp(ctx context.Context, req *leapmuxv1.Disconne
 		return nil
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	// ONE batched eviction, exactly as RevokeApp runs its cascade's effects.
 	ids := make([]string, 0, len(refs))
@@ -216,7 +216,7 @@ func (s *UserService) RevokeMyAPIToken(ctx context.Context, req *leapmuxv1.Revok
 		UserID: userInfo.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	if n == 0 {
 		return nil, connect.Errorf(connect.CodeNotFound, "no such credential")

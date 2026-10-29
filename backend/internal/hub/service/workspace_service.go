@@ -81,7 +81,7 @@ func loadWorkspaceOr404(ctx context.Context, st store.Store, workspaceID string)
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, connect.Errorf(connect.CodeNotFound, "workspace not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	return ws, nil
 }
@@ -418,7 +418,7 @@ func (s *WorkspaceService) SetWorkspaceArchiveState(
 		if errors.As(err, &connectErr) {
 			return nil, connectErr
 		}
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 
 	if s.reconcileNudger != nil {

@@ -277,7 +277,7 @@ func (s *AppService) UpdateApp(
 	}
 	if msg.GetReplaceRedirectUris() {
 		if err := ValidateRedirectURIs(msg.GetRedirectUris()); err != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
+			return nil, wrappedConnectError(connect.CodeInvalidArgument, err)
 		}
 		next.RedirectURIs = JoinRedirectURIs(msg.GetRedirectUris())
 	}
@@ -310,14 +310,14 @@ func (s *AppService) UpdateApp(
 		// holds.
 		stored, err := scopes.Close().Storable()
 		if err != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
+			return nil, wrappedConnectError(connect.CodeInvalidArgument, err)
 		}
 		next.Scopes = stored
 	}
 	if msg.GetReplaceGrantTypes() {
 		grants, err := normalizeGrantTypes(msg.GetGrantTypes())
 		if err != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
+			return nil, wrappedConnectError(connect.CodeInvalidArgument, err)
 		}
 		next.GrantTypes = strings.Join(grants, " ")
 	}
@@ -756,7 +756,7 @@ func (s *AppService) buildAppParams(
 		// The Connect surface answers one code with the core's own text: the
 		// distinction between invalid_redirect_uri and
 		// invalid_client_metadata is RFC 7591 vocabulary.
-		return store.CreateOAuthClientParams{}, "", connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
+		return store.CreateOAuthClientParams{}, "", wrappedConnectError(connect.CodeInvalidArgument, err)
 	}
 	return params, secret, nil
 }
@@ -854,7 +854,7 @@ func firstAdminScope(set authscope.ScopeSet) (leapmuxv1.Scope, bool) {
 // registering the readable half hides that.
 func scopesFromProto(wire []leapmuxv1.Scope) (authscope.ScopeSet, error) {
 	if len(wire) == 0 {
-		return authscope.ScopeSet{}, connect.NewError(connect.CodeInvalidArgument, errAppNeedsScope.Error()).WithCause(errAppNeedsScope)
+		return authscope.ScopeSet{}, wrappedConnectError(connect.CodeInvalidArgument, errAppNeedsScope)
 	}
 	set, ok := authscope.ScopesFromWire(wire)
 	if !ok {

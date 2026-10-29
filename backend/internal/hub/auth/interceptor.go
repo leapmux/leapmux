@@ -1278,14 +1278,18 @@ func (k bearerCacheKeyParts) bearerRef() BearerRef {
 // per-credential revocation / invalidation checks are kind-specific and stay
 // with each caller; sharing this prefix keeps the bearer and session hot paths
 // from disagreeing on what "within the cache window" means.
-func cacheEntryFresh(cs cachedSession) bool {
-	return time.Since(cs.cachedAt) < sessionCacheTTL && cs.user.CredentialCurrent(time.Now())
+func cacheEntryFresh(cs cachedSession, credentialNow time.Time) bool {
+	return time.Since(cs.cachedAt) < sessionCacheTTL && cs.user.CredentialCurrent(credentialNow)
 }
 
 // bearerCacheFresh returns true when cs is within TTL and no matching
 // revocation or user-cache invalidation followed its validation.
 func (a *authInterceptor) bearerCacheFresh(key bearerCacheKeyParts, cs cachedSession) bool {
-	if !cacheEntryFresh(cs) {
+	credentialClock := time.Now
+	if a.tokenValidator != nil {
+		credentialClock = a.tokenValidator.now
+	}
+	if !cacheEntryFresh(cs, credentialClock()) {
 		return false
 	}
 	// Lock-free: the revocation/invalidation marks live in concurrency-safe
@@ -1340,7 +1344,7 @@ func (a *authInterceptor) validateTokenCached(ctx context.Context, token string)
 }
 
 func (a *authInterceptor) sessionCacheFresh(sessionID string, cached cachedSession) bool {
-	if !cacheEntryFresh(cached) {
+	if !cacheEntryFresh(cached, time.Now()) {
 		return false
 	}
 	// Lock-free for the same reason as bearerCacheFresh: monotonic marks in

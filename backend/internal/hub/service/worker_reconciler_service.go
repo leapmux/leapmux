@@ -34,7 +34,7 @@ func (s *WorkerReconcilerService) ListOwnedTabsForWorker(
 	info := serverCallInfo(ctx)
 	w, err := auth.AuthenticateWorkerBearer(ctx, s.store, info.RequestHeader().Get("Authorization"))
 	if err != nil {
-		return nil, connect.NewError(connect.CodeUnauthenticated, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeUnauthenticated, err)
 	}
 	// The bearer resolves the worker AND its registrant, so the owner axis is
 	// in hand here. It is bound in the query, because workspace_tab_owned is

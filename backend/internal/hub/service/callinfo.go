@@ -11,7 +11,7 @@ import (
 // connect.Server.Call attaches one before it invokes interceptors and
 // generated handlers, so a live RPC always has it. CallInfoForServerContext
 // reports false when the call did not come through Server.Call, which
-// connect v2 anticipates and names: a raw ServerFunc invocation, and a test
+// connect v2 documents: a raw ServerFunc invocation, and a test
 // calling a handler method on a plain context.
 //
 // Those calls have no transport, so there is nowhere for response metadata to

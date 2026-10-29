@@ -37,7 +37,7 @@ func (s *SectionService) ListSections(
 
 	sections, err := s.store.WorkspaceSections().ListByUserID(ctx, user.ID)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 
 	// ListSections is a pure READ. CreateUser seeds the default sections in the
@@ -50,7 +50,7 @@ func (s *SectionService) ListSections(
 
 	items, err := s.store.WorkspaceSectionItems().ListByUser(ctx, user.ID)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 
 	protoSections := make([]*leapmuxv1.Section, len(sections))
@@ -96,7 +96,7 @@ func (s *SectionService) CreateSection(
 
 	sections, err := s.store.WorkspaceSections().ListByUserID(ctx, user.ID)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	position := nextSectionPosition(sections, sidebar)
 
@@ -109,7 +109,7 @@ func (s *SectionService) CreateSection(
 		SectionType: leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_CUSTOM,
 		Sidebar:     sidebar,
 	}); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 
 	// The whole row, because the SERVER computed the position. A client that
@@ -157,7 +157,7 @@ func (s *SectionService) RenameSection(
 		UserID: user.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	if rows == 0 {
 		return nil, connect.Errorf(connect.CodeNotFound, "section not found")
@@ -276,9 +276,9 @@ func (s *SectionService) DeleteSection(
 			return nil, connect.Errorf(connect.CodeNotFound, "section not found")
 		}
 		if errors.Is(err, store.ErrSectionNotEmpty) {
-			return nil, connect.NewError(connect.CodeFailedPrecondition, store.ErrSectionNotEmpty.Error()).WithCause(store.ErrSectionNotEmpty)
+			return nil, wrappedConnectError(connect.CodeFailedPrecondition, store.ErrSectionNotEmpty)
 		}
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 
 	return &leapmuxv1.DeleteSectionResponse{}, nil
@@ -410,7 +410,7 @@ func requireOwnedSection(ctx context.Context, st store.Store, userID userid.User
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, connect.Errorf(connect.CodeNotFound, "section not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	if !userID.Matches(section.UserID) {
 		return nil, connect.Errorf(connect.CodeNotFound, "section not found")
@@ -475,7 +475,7 @@ func (s *SectionService) MoveSection(
 		ID:       req.GetSectionId(),
 		UserID:   user.ID,
 	}); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 
 	return &leapmuxv1.MoveSectionResponse{}, nil
@@ -528,7 +528,7 @@ func (s *SectionService) MoveWorkspace(
 		if errors.As(err, &connectErr) {
 			return nil, connectErr
 		}
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 
 	return &leapmuxv1.MoveWorkspaceResponse{}, nil

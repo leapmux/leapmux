@@ -289,6 +289,9 @@ func (h *localIPCHandle) Cancel() {
 	if h.cancelled.Swap(true) {
 		return
 	}
+	// Stop the local stream before the remote cancellation can end it. Its
+	// receive loop must recognize this shutdown even while cleanup waits.
+	h.cancel()
 	// Detach from parentCtx so a cancelled parent still retires the worker stream.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(h.parentCtx), 5*time.Second)
 	defer cancel()
@@ -297,7 +300,6 @@ func (h *localIPCHandle) Cancel() {
 	}); err != nil {
 		slog.Debug("localIPCHandle.Cancel failed", "error", err)
 	}
-	h.cancel()
 }
 
 func (h *localIPCHandle) Done() <-chan struct{} { return h.done }
@@ -332,7 +334,7 @@ func (t *LocalIPCTransport) OpenWatchEvents(parentCtx context.Context, req *leap
 		for {
 			msg, err := stream.Receive()
 			if err != nil {
-				if errors.Is(err, io.EOF) {
+				if errors.Is(err, io.EOF) || ctx.Err() != nil {
 					break
 				}
 				transportLogger(t.logger).Error("streamevents: subscription ended with a transport error",

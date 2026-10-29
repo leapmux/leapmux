@@ -259,10 +259,10 @@ func (s *AuthService) SetInitialSoloPassword(ctx context.Context, req *leapmuxv1
 		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("get the solo account: %w", err))
 	}
 	if user.HasUsablePassword() {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, errInitialSoloPasswordAlreadySet.Error()).WithCause(errInitialSoloPasswordAlreadySet)
+		return nil, wrappedConnectError(connect.CodeFailedPrecondition, errInitialSoloPasswordAlreadySet)
 	}
 	if err := validate.ValidatePassword(req.GetPassword()); err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInvalidArgument, err)
 	}
 	hashed, err := password.Hash(req.GetPassword())
 	if err != nil {
@@ -339,10 +339,10 @@ func (s *AuthService) SetInitialSoloPassword(ctx context.Context, req *leapmuxv1
 		return nil
 	})
 	if errors.Is(err, errInitialSoloPasswordAlreadySet) {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, errInitialSoloPasswordAlreadySet.Error()).WithCause(errInitialSoloPasswordAlreadySet)
+		return nil, wrappedConnectError(connect.CodeFailedPrecondition, errInitialSoloPasswordAlreadySet)
 	}
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 
 	s.lifecycle.UserInfoInvalidated(uid.String())
@@ -384,7 +384,7 @@ func (s *AuthService) GetCurrentUser(ctx context.Context, req *leapmuxv1.GetCurr
 
 	user, err := s.store.Users().GetByID(ctx, userInfo.ID.String())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 
 	// ONE count, for the number this REPORTS and for the step-up option rule
@@ -431,7 +431,7 @@ func (s *AuthService) GetCurrentUser(ctx context.Context, req *leapmuxv1.GetCurr
 	linkedProviders, err := s.linkedProvidersFor(ctx, userInfo.ID)
 	if err != nil {
 		if elevatesOnlyThroughAProvider {
-			return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+			return nil, wrappedConnectError(connect.CodeInternal, err)
 		}
 		slog.WarnContext(ctx, "could not list the account's linked OAuth providers",
 			"user_id", user.ID, "err", err)
@@ -522,7 +522,7 @@ func (s *AuthService) SignUp(ctx context.Context, req *leapmuxv1.SignUpRequest) 
 
 	username, err := validate.SanitizeSlug("username", req.GetUsername())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInvalidArgument, err)
 	}
 	// This check rejects `solo` in every mode, and `admin` only outside setup
 	// mode.
@@ -536,7 +536,7 @@ func (s *AuthService) SignUp(ctx context.Context, req *leapmuxv1.SignUpRequest) 
 	}
 	pw := req.GetPassword()
 	if err := validate.ValidatePassword(pw); err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInvalidArgument, err)
 	}
 
 	if err := CheckUsernameAvailable(ctx, s.store, username); err != nil {
@@ -604,7 +604,7 @@ func (s *AuthService) SignUp(ctx context.Context, req *leapmuxv1.SignUpRequest) 
 		IsAdmin:               false,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 
 	return s.signUpResponse(ctx, user)
@@ -643,7 +643,7 @@ func (s *AuthService) signUpSetupMode(ctx context.Context, username, displayName
 		IsAdmin:               true,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 
 	s.hasAnyUser.Store(true)
@@ -762,9 +762,9 @@ func (s *AuthService) GetAltchaChallenge(ctx context.Context, req *leapmuxv1.Get
 	challengeJSON, err := s.captcha.AltchaChallengeJSON(ctx)
 	if err != nil {
 		if errors.Is(err, captcha.ErrProviderNotAltcha) {
-			return nil, connect.NewError(connect.CodeFailedPrecondition, err.Error()).WithCause(err)
+			return nil, wrappedConnectError(connect.CodeFailedPrecondition, err)
 		}
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	return &leapmuxv1.GetAltchaChallengeResponse{
 		ChallengeJson: challengeJSON,
@@ -774,7 +774,7 @@ func (s *AuthService) GetAltchaChallenge(ctx context.Context, req *leapmuxv1.Get
 func (s *AuthService) GetOAuthProviders(ctx context.Context, req *leapmuxv1.GetOAuthProvidersRequest) (*leapmuxv1.GetOAuthProvidersResponse, error) {
 	providers, err := s.store.OAuthProviders().ListEnabled(ctx)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 
 	// Sourced from cfg directly, not s.renderer.HubURL — the renderer is
@@ -813,7 +813,7 @@ func loadPendingOAuthSignup(ctx context.Context, st store.Store, token string, n
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, connect.Errorf(connect.CodeNotFound, "invalid or expired signup token")
 		}
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	if auth.IsExpired(now, pending.ExpiresAt) {
 		_ = st.PendingOAuthSignups().Delete(ctx, token)
@@ -885,7 +885,7 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *leapmuxv1.Co
 
 	username, err := validate.SanitizeSlug("username", req.GetUsername())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInvalidArgument, err)
 	}
 	// OAuth completion is never setup mode: only an administrator can
 	// configure a provider, so an account already exists whenever a pending
@@ -904,7 +904,7 @@ func (s *AuthService) CompleteOAuthSignup(ctx context.Context, req *leapmuxv1.Co
 		return nil, connect.Errorf(connect.CodeAlreadyExists, "this identity is already linked to an account")
 	}
 	if !errors.Is(err, store.ErrNotFound) {
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 
 	// Use the email from the pending signup (provider-reported, already validated
@@ -1145,7 +1145,7 @@ func mapSignupCommitError(err error) error {
 	if errors.Is(err, store.ErrConflict) {
 		return connect.Errorf(connect.CodeAlreadyExists, "username or email already taken")
 	}
-	return connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+	return wrappedConnectError(connect.CodeInternal, err)
 }
 
 // validateSignupUsername enforces the username rules (reserved names plus
@@ -1176,7 +1176,7 @@ func (s *AuthService) validateSignupEmail(ctx context.Context, email string) err
 		return nil
 	}
 	if err := validate.ValidateEmail(email); err != nil {
-		return connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
+		return wrappedConnectError(connect.CodeInvalidArgument, err)
 	}
 	if err := CheckEmailAvailable(ctx, s.store, email, ""); err != nil {
 		return AvailabilityConnectError(err)

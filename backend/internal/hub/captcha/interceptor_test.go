@@ -4,7 +4,9 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
@@ -14,6 +16,8 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
+	"github.com/leapmux/leapmux/internal/hub/ratelimit"
+	"github.com/leapmux/leapmux/internal/hub/settings"
 	"github.com/leapmux/leapmux/internal/metrics"
 )
 
@@ -84,6 +88,67 @@ func TestInterceptorPassesProcedureAction(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assert.True(t, *called)
+}
+
+func TestInterceptorVerificationPrecedesRateLimitAdmission(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	started, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	finishVerification := func() { releaseOnce.Do(func() { close(release) }) }
+	verification := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.NoError(t, r.ParseForm())
+		w.Header().Set("Content-Type", "application/json")
+		if r.FormValue("response") == "slow" {
+			close(started)
+			select {
+			case <-release:
+			case <-r.Context().Done():
+				return
+			}
+			_, _ = w.Write([]byte(`{"success":false}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"success":true,"action":"login"}`))
+	}))
+	t.Cleanup(verification.Close)
+	t.Cleanup(finishVerification)
+	e := newTestManager(t, false, WithTurnstileEndpoint(verification.URL))
+	activateExternal(t, e, ProviderTurnstile, `{"site_key":"site-key"}`, "secret-key")
+	rateSettings := settings.NewManager(e.st, nil, ratelimit.SettingsDescriptors())
+	require.NoError(t, rateSettings.Load(ctx))
+	key, ok := ratelimit.LimitKey(ratelimit.OpLoginAnonymous)
+	require.True(t, ok)
+	require.NoError(t, key.Set(ctx, rateSettings, ratelimit.LimitValue{Enabled: true, MaxAttempts: 1, WindowSeconds: 900}))
+	limiter := ratelimit.NewInterceptor(ratelimit.NewManager(rateSettings))
+	client, called := newLoginClient(t, func(next connect.ServerFunc) connect.ServerFunc {
+		return NewInterceptor(e.m)(limiter(next))
+	})
+	done := make(chan error, 1)
+	go func() {
+		_, err := client.Login(ctx, &leapmuxv1.LoginRequest{CaptchaPayload: "slow"})
+		done <- err
+	}()
+	select {
+	case <-started:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	_, err := client.Login(ctx, &leapmuxv1.LoginRequest{CaptchaPayload: "valid"})
+	assert.NoError(t, err, "pending verification must not occupy the login allowance")
+	assert.True(t, *called)
+	select {
+	case err := <-done:
+		t.Fatalf("the first verification ended before its release: %v", err)
+	default:
+	}
+	finishVerification()
+	select {
+	case err := <-done:
+		assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
 }
 
 func TestInterceptorAllowsVerifiedSubmission(t *testing.T) {

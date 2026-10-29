@@ -42,7 +42,7 @@ func NewWorkerReachAuthorizer(st store.Store) *WorkerReachAuthorizer {
 func (a *WorkerReachAuthorizer) AuthorizeWorkerReach(ctx context.Context, user *auth.UserInfo, workerID string) error {
 	worker, ok, err := auth.WorkerCanUse(ctx, a.store, workerID, user.ID)
 	if err != nil {
-		return connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return wrappedConnectError(connect.CodeInternal, err)
 	}
 	if worker == nil || !ok || !auth.WorkerUsableNow(worker) {
 		return connect.Errorf(connect.CodeNotFound, "worker not found")
@@ -74,10 +74,10 @@ func (a *WorkerReachAuthorizer) verifyDelegationWorkerScope(ctx context.Context,
 		// Permanent: the token either cannot be scoped or is out of scope. Both are
 		// definitive answers, not faults -- a retryable code would invite a client to
 		// hammer a decision that will never change.
-		return connect.NewError(connect.CodePermissionDenied, err.Error()).WithCause(err)
+		return wrappedConnectError(connect.CodePermissionDenied, err)
 	default:
 		// A store fault must not become a permanent deny-or-allow: surface it as
 		// retryable, matching the ownership arm above.
-		return connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return wrappedConnectError(connect.CodeInternal, err)
 	}
 }

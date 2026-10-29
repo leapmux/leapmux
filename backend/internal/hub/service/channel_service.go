@@ -49,7 +49,7 @@ const workerUnreachableMetaKey = "leapmux-worker-unreachable"
 // on an error, and the transport writes this header when it writes the error
 // status.
 func errWorkerUnreachable(ctx context.Context, err error) error {
-	cErr := connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
+	cErr := wrappedConnectError(connect.CodeUnavailable, err)
 	if info, ok := connect.CallInfoForServerContext(ctx); ok {
 		info.ResponseHeader().Set(workerUnreachableMetaKey, "1")
 	}
@@ -120,7 +120,7 @@ func (s *ChannelService) GetWorkerHandshakeParams(
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, connect.Errorf(connect.CodeNotFound, "worker not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 
 	if len(keys.PublicKey) == 0 {

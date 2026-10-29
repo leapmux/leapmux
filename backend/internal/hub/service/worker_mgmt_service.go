@@ -271,7 +271,7 @@ func (s *WorkerManagementService) getOwnedKey(ctx context.Context, id string, us
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, connect.NewError(connect.CodeNotFound, "registration key not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	return row, nil
 }
@@ -300,9 +300,9 @@ func (s *WorkerManagementService) ListWorkers(
 		// any query runs, and it must surface as 400 InvalidArgument rather
 		// than the 500 Internal that genuine store failures map to.
 		if errors.Is(err, store.ErrInvalidCursor) {
-			return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
+			return nil, wrappedConnectError(connect.CodeInvalidArgument, err)
 		}
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 
 	protoWorkers := make([]*leapmuxv1.Worker, len(page.Rows))
@@ -336,7 +336,7 @@ func (s *WorkerManagementService) GetWorker(
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, connect.Errorf(connect.CodeNotFound, "worker not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 
 	return &leapmuxv1.GetWorkerResponse{
@@ -366,7 +366,7 @@ func (s *WorkerManagementService) DeregisterWorker(
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, connect.Errorf(connect.CodeNotFound, "worker not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	if worker.AutoRegistered {
 		return nil, connect.Errorf(connect.CodeFailedPrecondition, "the bundled local worker cannot be deregistered")
@@ -377,14 +377,14 @@ func (s *WorkerManagementService) DeregisterWorker(
 		RegisteredBy: user.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	if rows == 0 {
 		return nil, connect.Errorf(connect.CodeNotFound, "worker not found")
 	}
 
 	if err := s.deregisterEffects.Apply(ctx, req.GetWorkerId(), user.ID.String()); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 
 	return &leapmuxv1.DeregisterWorkerResponse{}, nil

@@ -33,8 +33,7 @@ import (
 // stream. A replayed unary call is idempotent from the CLI's point of view
 // (the hub did not act on a request it refused); a stream already begins
 // delivering, and replaying it would duplicate what the caller consumed.
-// WrapUnary owns that rule -- see its own comment for the loop that holds
-// it.
+// unaryReplayStream.Receive owns that rule; its comment explains the loop.
 
 const (
 	// refreshSkew is how long before the recorded expiry the CLI renews.
@@ -178,7 +177,7 @@ func bearerErrorCode(err error) connect.Code {
 // The two paths that hand a bearer to a transport of their own -- the
 // user-event subscription and the E2EE channel open -- go through this one
 // call rather than remembering to renew and then read. ApplyAuth stays a
-// pure header stamp, because WrapUnary stamps the header once per attempt
+// pure header stamp, because openAttempt stamps the header once per attempt
 // and runs the freshness check itself, in one place, before each of them.
 func (c *Client) freshBearer(ctx context.Context) (string, error) {
 	if err := c.EnsureFreshBearer(ctx); err != nil {

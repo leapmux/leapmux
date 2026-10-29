@@ -76,9 +76,9 @@ func (s *CRDTService) SubmitOps(
 	workerScope, err := s.scopeCache.Resolve(ctx, user)
 	if err != nil {
 		if errors.Is(err, auth.ErrDelegationMinterUnknown) {
-			return nil, connect.NewError(connect.CodePermissionDenied, err.Error()).WithCause(err)
+			return nil, wrappedConnectError(connect.CodePermissionDenied, err)
 		}
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	// This Get is where the session's tenant is spent: the manager it returns IS
 	// the tenant, so the SubmitInput below names none. PrincipalID and
@@ -96,7 +96,7 @@ func (s *CRDTService) SubmitOps(
 		WorkerScope:  submitWorkerBound(user, workerScope),
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	return &leapmuxv1.SubmitOpsResponse{Results: results}, nil
 }
@@ -134,7 +134,7 @@ func (s *CRDTService) GetMaterialized(
 		if connect.CodeOf(err) == connect.CodePermissionDenied {
 			return nil, err
 		}
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	mgr, err := s.registry.Get(ctx, userID)
 	if err != nil {
@@ -167,7 +167,7 @@ func (s *CRDTService) UpdatePresence(
 	}
 	clientID := presenceClientID(user)
 	if err := mgr.HeartbeatPresence(ctx, req.GetWorkspaceId(), clientID); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	return &leapmuxv1.UpdatePresenceResponse{}, nil
 }

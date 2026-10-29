@@ -113,24 +113,24 @@ func NewInterceptor(m *Manager) connect.ServerInterceptor {
 			if !ok {
 				return next(ctx, spec, stream)
 			}
-			return next(ctx, spec, &gatedStream{ServerStream: stream, ctx: ctx, proc: proc, manager: m})
+			return next(ctx, spec, &captchaVerificationStream{ServerStream: stream, ctx: ctx, proc: proc, manager: m})
 		}
 	}
 }
 
-// gatedStream applies the captcha and honeypot gate to each request
+// captchaVerificationStream applies the captcha and honeypot gate to each request
 // message it hands the handler, denying by failing the Receive that
 // produced it. Failing Receive rather than the whole call keeps the
 // denial on the same path the generated handler already reports a
 // malformed request on.
-type gatedStream struct {
+type captchaVerificationStream struct {
 	connect.ServerStream
 	ctx     context.Context
 	proc    protectedProcedure
 	manager *Manager
 }
 
-func (s *gatedStream) Receive(msg any) error {
+func (s *captchaVerificationStream) Receive(msg any) error {
 	if err := s.ServerStream.Receive(msg); err != nil {
 		return err
 	}

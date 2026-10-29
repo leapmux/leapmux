@@ -93,10 +93,9 @@ func callTyped[Req, Resp any](ctx context.Context, client *connect.Client, spec 
 	if !ok {
 		return fmt.Errorf("hubrpc: response type mismatch for %T", out)
 	}
-	// CallUnary unmarshals into res, and unmarshal merges: reset first so
-	// a reused out cannot absorb fields from an earlier call. Resetting
-	// out rather than typedOut is the same object behind an interface
-	// Go can prove a proto.Message.
+	// Clear the previous result before the call starts. A failure before
+	// decoding must not leave data from an earlier call in out. Resetting
+	// out also resets typedOut: both point at the same message.
 	proto.Reset(out)
 	return client.CallUnary(ctx, spec, typedIn, typedOut)
 }

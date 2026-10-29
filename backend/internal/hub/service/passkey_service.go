@@ -183,7 +183,7 @@ func (s *UserService) stepUpMutationAuth(ctx context.Context, p stepUpParams, us
 	// assertFirstCredentialWithoutPasswordAllowed the durable-identity one.
 	nothingToElevateWith, err := accountElevatesOnlyThroughAProvider(ctx, s.store, user)
 	if err != nil {
-		return stepUpAdmission{}, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return stepUpAdmission{}, wrappedConnectError(connect.CodeInternal, err)
 	}
 	if nothingToElevateWith {
 		return stepUpAdmission{firstCredential: true}, admitFirstCredential(ctx, s.store, p.userInfo, user, now, p.firstCredentialWindow())
@@ -221,7 +221,7 @@ func assertFirstCredentialWithoutPasswordAllowed(ctx context.Context, tx store.S
 	}
 	links, err := tx.OAuthUserLinks().ListByUser(ctx, uid)
 	if err != nil {
-		return connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return wrappedConnectError(connect.CodeInternal, err)
 	}
 	if len(links) > 0 {
 		return nil
@@ -563,7 +563,7 @@ func recheckStepUpUnderLock(
 	// with no step-up at all.
 	nothingToElevateWith, err := accountElevatesOnlyThroughAProvider(ctx, tx, locked)
 	if err != nil {
-		return connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return wrappedConnectError(connect.CodeInternal, err)
 	}
 	if !nothingToElevateWith {
 		return stepUpStateMovedError()
@@ -735,8 +735,8 @@ func recheckActingAPITokenUnderLock(
 func refuseIfSessionWasRevoked(ctx context.Context, tx store.Store, sessionID string) error {
 	revoked, err := tx.RevocationEvents().SessionWasRevoked(ctx, sessionID)
 	if err != nil {
-		return connect.NewError(connect.CodeInternal,
-			fmt.Errorf("check whether the acting session was revoked: %w", err).Error())
+		return wrappedConnectError(connect.CodeInternal,
+			fmt.Errorf("check whether the acting session was revoked: %w", err))
 	}
 	if revoked {
 		return stepUpStateMovedError()
@@ -800,7 +800,7 @@ func (s *UserService) BeginPasskeyRegistration(ctx context.Context, req *leapmux
 	}
 	user, err := s.store.Users().GetByID(ctx, userInfo.ID.String())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	// Peek only: the ceremony writes nothing yet, so this refuses an
 	// un-elevated caller BEFORE the browser prompt rather than after it.
@@ -835,7 +835,7 @@ func (s *UserService) FinishPasskeyRegistration(ctx context.Context, req *leapmu
 	}
 	friendlyName, err := validatePasskeyFriendlyName(req.GetFriendlyName())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInvalidArgument, err)
 	}
 
 	var passkey *store.PasskeyCredential
@@ -883,7 +883,7 @@ func (s *UserService) ListPasskeys(ctx context.Context, _ *leapmuxv1.ListPasskey
 	}
 	rows, err := s.store.PasskeyCredentials().ListByUser(ctx, userInfo.ID.String())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	// Surface an unconfigured hub instead of hiding it behind an empty
 	// list: the client cannot distinguish "no passkeys" from "passkeys cannot
@@ -909,7 +909,7 @@ func (s *UserService) RenamePasskey(ctx context.Context, req *leapmuxv1.RenamePa
 	}
 	friendlyName, err := validatePasskeyFriendlyName(req.GetFriendlyName())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInvalidArgument, err)
 	}
 
 	var row *store.PasskeyCredential
@@ -955,7 +955,7 @@ func (s *UserService) DeletePasskey(ctx context.Context, req *leapmuxv1.DeletePa
 		}
 		count, err := s.store.PasskeyCredentials().CountByUser(ctx, peek.ID)
 		if err != nil {
-			return connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+			return wrappedConnectError(connect.CodeInternal, err)
 		}
 		if count > 1 {
 			return nil
@@ -1052,7 +1052,7 @@ func (s *UserService) DeactivatePasskeyAuth(ctx context.Context, req *leapmuxv1.
 // Argon2 must not hold the SQLite writer lock.
 func hashReplacementPassword(newPassword string) (string, error) {
 	if err := validate.ValidatePassword(newPassword); err != nil {
-		return "", connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
+		return "", wrappedConnectError(connect.CodeInvalidArgument, err)
 	}
 	hashed, err := password.Hash(newPassword)
 	if err != nil {
@@ -1270,7 +1270,7 @@ func mapPasskeyConnectError(ctx context.Context, err error) error {
 		return connectErr
 	}
 	if errors.Is(err, store.ErrNotFound) {
-		return connect.NewError(connect.CodeNotFound, err.Error()).WithCause(err)
+		return wrappedConnectError(connect.CodeNotFound, err)
 	}
 	switch classifyWebAuthnError(err) {
 	case webAuthnErrorClone:
@@ -1293,9 +1293,9 @@ func mapPasskeyConnectError(ctx context.Context, err error) error {
 		// return above.
 		return credentialRejectedError(ctx, err)
 	case webAuthnErrorUnavailable:
-		return connect.NewError(connect.CodeFailedPrecondition, err.Error()).WithCause(err)
+		return wrappedConnectError(connect.CodeFailedPrecondition, err)
 	case webAuthnErrorInfrastructure:
-		return connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return wrappedConnectError(connect.CodeInternal, err)
 	}
-	return connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+	return wrappedConnectError(connect.CodeInternal, err)
 }

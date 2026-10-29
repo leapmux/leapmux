@@ -324,24 +324,22 @@ func (c *Client) bearerNeedsRenewal() bool {
 	return c.accessExpiresAt.IsZero() || time.Until(c.accessExpiresAt) <= refreshSkew
 }
 
+// newConnectClient applies the shared authentication and response-size policy.
+// The caller chooses the HTTP client because subscriptions need no overall timeout.
+func (c *Client) newConnectClient(httpClient *http.Client) *connect.Client {
+	return connect.NewClient(connecthttp.NewTransport(httpClient, c.connectURL,
+		connecthttp.WithReadMaxBytes(0)), c.AuthInterceptor())
+}
+
 // WorkspaceService returns a ConnectRPC client for the hub-side
 // WorkspaceService. An interceptor injects the auth headers.
 func (c *Client) WorkspaceService() leapmuxv1connect.WorkspaceServiceClient {
-	return leapmuxv1connect.NewWorkspaceServiceClient(connect.NewClient(connecthttp.NewTransport(
-		c.HTTPClient,
-		c.connectURL,
-		connecthttp.WithReadMaxBytes(0),
-	), c.AuthInterceptor(),
-	))
+	return leapmuxv1connect.NewWorkspaceServiceClient(c.newConnectClient(c.HTTPClient))
 }
 
 // WorkerManagementService returns a ConnectRPC client for ListWorkers.
 func (c *Client) WorkerManagementService() leapmuxv1connect.WorkerManagementServiceClient {
-	return leapmuxv1connect.NewWorkerManagementServiceClient(connect.NewClient(connecthttp.NewTransport(
-		c.HTTPClient, c.connectURL,
-		connecthttp.WithReadMaxBytes(0),
-	), c.AuthInterceptor(),
-	))
+	return leapmuxv1connect.NewWorkerManagementServiceClient(c.newConnectClient(c.HTTPClient))
 }
 
 // UserCRDT returns a ConnectRPC client for the unary SubmitOps and
@@ -349,22 +347,14 @@ func (c *Client) WorkerManagementService() leapmuxv1connect.WorkerManagementServ
 // `WatchUser` streaming RPC) lives on `/ws/userevents` — see
 // `OpenUserEvents`. An interceptor injects the auth headers.
 func (c *Client) UserCRDT() leapmuxv1connect.UserCRDTClient {
-	return leapmuxv1connect.NewUserCRDTClient(connect.NewClient(connecthttp.NewTransport(
-		c.HTTPClient, c.connectURL,
-		connecthttp.WithReadMaxBytes(0),
-	), c.AuthInterceptor(),
-	))
+	return leapmuxv1connect.NewUserCRDTClient(c.newConnectClient(c.HTTPClient))
 }
 
 // ChannelService returns a ConnectRPC client for OpenChannel /
 // GetWorkerHandshakeParams when the CLI runs an E2EE inner RPC
 // directly (rare; most callers use OpenE2EEChannel below).
 func (c *Client) ChannelService() leapmuxv1connect.ChannelServiceClient {
-	return leapmuxv1connect.NewChannelServiceClient(connect.NewClient(connecthttp.NewTransport(
-		c.HTTPClient, c.connectURL,
-		connecthttp.WithReadMaxBytes(0),
-	), c.AuthInterceptor(),
-	))
+	return leapmuxv1connect.NewChannelServiceClient(c.newConnectClient(c.HTTPClient))
 }
 
 // ControlIPCService returns a ConnectRPC client for the worker-local
@@ -399,11 +389,7 @@ func (c *Client) controlIPCService(httpClient *http.Client) (leapmuxv1connect.Co
 	if httpClient == nil {
 		return nil, errors.New("ControlIPCService: this client carries no HTTP client for that lane")
 	}
-	return leapmuxv1connect.NewControlIPCServiceClient(connect.NewClient(connecthttp.NewTransport(
-		httpClient, c.connectURL,
-		connecthttp.WithReadMaxBytes(0),
-	), c.AuthInterceptor(),
-	)), nil
+	return leapmuxv1connect.NewControlIPCServiceClient(c.newConnectClient(httpClient)), nil
 }
 
 // UserEventsStream is a read-only WebSocket subscription to the hub's
@@ -533,11 +519,7 @@ func (c *Client) OpenE2EEChannel(operationCtx, lifetimeCtx context.Context, work
 // drives). Not an Admin* client: every procedure on it acts on the account
 // the bearer belongs to.
 func (c *Client) UserService() leapmuxv1connect.UserServiceClient {
-	return leapmuxv1connect.NewUserServiceClient(connect.NewClient(connecthttp.NewTransport(
-		c.HTTPClient, c.connectURL,
-		connecthttp.WithReadMaxBytes(0),
-	), c.AuthInterceptor(),
-	))
+	return leapmuxv1connect.NewUserServiceClient(c.newConnectClient(c.HTTPClient))
 }
 
 // AuthService returns a ConnectRPC client for the session surface
@@ -547,11 +529,7 @@ func (c *Client) UserService() leapmuxv1connect.UserServiceClient {
 // stale access token rotates on the way through, and a revoked one ends in
 // invalid_grant with the credential file already deleted.
 func (c *Client) AuthService() leapmuxv1connect.AuthServiceClient {
-	return leapmuxv1connect.NewAuthServiceClient(connect.NewClient(connecthttp.NewTransport(
-		c.HTTPClient, c.connectURL,
-		connecthttp.WithReadMaxBytes(0),
-	), c.AuthInterceptor(),
-	))
+	return leapmuxv1connect.NewAuthServiceClient(c.newConnectClient(c.HTTPClient))
 }
 
 // AdminSettingsService returns a ConnectRPC client for the hub's
@@ -561,21 +539,13 @@ func (c *Client) AuthService() leapmuxv1connect.AuthServiceClient {
 // (any worker-spawned agent can call whatever it lists), so no admin
 // procedure is registered there.
 func (c *Client) AdminSettingsService() leapmuxv1connect.AdminSettingsServiceClient {
-	return leapmuxv1connect.NewAdminSettingsServiceClient(connect.NewClient(connecthttp.NewTransport(
-		c.HTTPClient, c.connectURL,
-		connecthttp.WithReadMaxBytes(0),
-	), c.AuthInterceptor(),
-	))
+	return leapmuxv1connect.NewAdminSettingsServiceClient(c.newConnectClient(c.HTTPClient))
 }
 
 // AdminUserService returns a ConnectRPC client for AdminUserService
 // (users, sessions, api-tokens, delegation-tokens).
 func (c *Client) AdminUserService() leapmuxv1connect.AdminUserServiceClient {
-	return leapmuxv1connect.NewAdminUserServiceClient(connect.NewClient(connecthttp.NewTransport(
-		c.HTTPClient, c.connectURL,
-		connecthttp.WithReadMaxBytes(0),
-	), c.AuthInterceptor(),
-	))
+	return leapmuxv1connect.NewAdminUserServiceClient(c.newConnectClient(c.HTTPClient))
 }
 
 // AppService is the app REGISTRATION surface.
@@ -586,30 +556,18 @@ func (c *Client) AdminUserService() leapmuxv1connect.AdminUserServiceClient {
 // verbs need an administrator -- a hub-wide registration and a vouch -- and
 // each says so in its own handler.
 func (c *Client) AppService() leapmuxv1connect.AppServiceClient {
-	return leapmuxv1connect.NewAppServiceClient(connect.NewClient(connecthttp.NewTransport(
-		c.HTTPClient, c.connectURL,
-		connecthttp.WithReadMaxBytes(0),
-	), c.AuthInterceptor(),
-	))
+	return leapmuxv1connect.NewAppServiceClient(c.newConnectClient(c.HTTPClient))
 }
 
 // AdminWorkerService returns a ConnectRPC client for AdminWorkerService
 // (cross-user worker administration and registration keys).
 func (c *Client) AdminWorkerService() leapmuxv1connect.AdminWorkerServiceClient {
-	return leapmuxv1connect.NewAdminWorkerServiceClient(connect.NewClient(connecthttp.NewTransport(
-		c.HTTPClient, c.connectURL,
-		connecthttp.WithReadMaxBytes(0),
-	), c.AuthInterceptor(),
-	))
+	return leapmuxv1connect.NewAdminWorkerServiceClient(c.newConnectClient(c.HTTPClient))
 }
 
 // AdminIdPService returns a ConnectRPC client for AdminIdPService.
 func (c *Client) AdminIdPService() leapmuxv1connect.AdminIdPServiceClient {
-	return leapmuxv1connect.NewAdminIdPServiceClient(connect.NewClient(connecthttp.NewTransport(
-		c.HTTPClient, c.connectURL,
-		connecthttp.WithReadMaxBytes(0),
-	), c.AuthInterceptor(),
-	))
+	return leapmuxv1connect.NewAdminIdPServiceClient(c.newConnectClient(c.HTTPClient))
 }
 
 // AuthInterceptor adds the Authorization (or X-LeapMux-Token) header
@@ -682,52 +640,38 @@ func (a *authInterceptor) intercept(next connect.ClientFunc) connect.ClientFunc 
 		if !ok {
 			ctx, info = connect.NewClientContext(ctx)
 		}
-		if spec.StreamType != connect.StreamTypeUnary {
-			return a.openStream(ctx, info, spec, next)
-		}
-		open := a.unaryOpener(ctx, info, spec, next)
-		stream, err := open()
+		stream, err := a.openAttempt(ctx, info, spec, next)
 		if err != nil {
 			return nil, err
+		}
+		if spec.StreamType != connect.StreamTypeUnary {
+			return stream, nil
+		}
+		open := func() (connect.ClientStream, error) {
+			return a.openAttempt(ctx, info, spec, next)
 		}
 		return &unaryReplayStream{ctx: ctx, info: info, open: open, stream: stream, repairs: a.repairs()}, nil
 	}
 }
 
-// unaryOpener builds the one attempt-opening function the first call and
-// every replay share, so a replay cannot stamp a header the first call
-// had and forget.
-func (a *authInterceptor) unaryOpener(ctx context.Context, info *connect.CallInfo, spec connect.Spec, next connect.ClientFunc) func() (connect.ClientStream, error) {
-	return func() (connect.ClientStream, error) {
-		// The freshness check runs before EVERY attempt, not only the
-		// first. A repair can block on a person for minutes (the browser
-		// step-up lives for ten), and the access token it started with
-		// lapses inside that window; a replay stamped with the token from
-		// before the prompt would fail as unauthenticated, and report that
-		// to a user who just finished verifying.
-		if err := a.client.EnsureFreshBearer(ctx); err != nil {
-			return nil, connect.NewError(bearerErrorCode(err), err.Error()).WithCause(err)
-		}
-		// A failed attempt left its own response metadata behind. The
-		// transport overwrites only the keys the next response carries, so
-		// clear first or a replayed success keeps the refusal's headers.
-		clearHeader(info.ResponseHeader())
-		clearHeader(info.ResponseTrailer())
-		a.client.applyAuthTo(info.RequestHeader().Set)
-		return next(ctx, spec)
+// openAttempt renews the credential, clears earlier response metadata, and
+// applies authentication before opening any RPC. Unary retries use the same
+// path. Non-unary streams are opened once and are never retried.
+func (a *authInterceptor) openAttempt(ctx context.Context, info *connect.CallInfo, spec connect.Spec, next connect.ClientFunc) (connect.ClientStream, error) {
+	// The freshness check runs before EVERY attempt, not only the
+	// first. A repair can block on a person for minutes (the browser
+	// step-up lives for ten), and the access token it started with
+	// lapses inside that window; a replay stamped with the token from
+	// before the prompt would fail as unauthenticated, and report that
+	// to a user who just finished verifying.
+	if err := a.client.EnsureFreshBearer(ctx); err != nil {
+		return nil, connect.NewError(bearerErrorCode(err), err.Error()).WithCause(err)
 	}
-}
-
-// openStream opens a non-unary stream. It renews before the stream opens
-// and never retries: a stream already begins delivering before an error
-// can surface, so a replay would hand the caller the opening messages
-// twice.
-//
-// The renewal error is discarded here alone, and it has to be: there is
-// nothing to report it on before the stream exists. The refusal surfaces
-// on the first Send or Receive instead.
-func (a *authInterceptor) openStream(ctx context.Context, info *connect.CallInfo, spec connect.Spec, next connect.ClientFunc) (connect.ClientStream, error) {
-	_ = a.client.EnsureFreshBearer(ctx)
+	// A failed attempt left its own response metadata behind. The
+	// transport overwrites only the keys the next response carries, so
+	// clear first or a replayed success keeps the refusal's headers.
+	clearHeader(info.ResponseHeader())
+	clearHeader(info.ResponseTrailer())
 	a.client.applyAuthTo(info.RequestHeader().Set)
 	return next(ctx, spec)
 }
@@ -785,7 +729,10 @@ func (s *unaryReplayStream) Receive(res any) error {
 		}
 		repair := s.repairs[i].repair
 		s.repairs = slices.Delete(s.repairs, i, i+1)
-		if repair(s.ctx) != nil {
+		if repairErr := repair(s.ctx); repairErr != nil {
+			if errors.Is(repairErr, ErrCredentialsNotSaved) {
+				return connect.NewError(bearerErrorCode(repairErr), repairErr.Error()).WithCause(repairErr)
+			}
 			// The hub's own refusal is what the user must read when a
 			// repair cannot run or the person declines it. Reporting the
 			// repair's failure instead would name the remedy as the
@@ -795,13 +742,12 @@ func (s *unaryReplayStream) Receive(res any) error {
 		_ = s.stream.Close()
 		next, openErr := s.open()
 		if openErr != nil {
-			return err
+			return openErr
 		}
 		s.stream = next
 		if msg, ok := res.(proto.Message); ok {
-			// A truncated body can leave a partial message behind, and
-			// unmarshal merges: start the replay from an empty one or the
-			// retry absorbs the failure's leftovers.
+			// Discard the failed attempt's partial response before sending
+			// the retry. The retry can fail before its decoder runs.
 			proto.Reset(msg)
 		}
 		if sendErr := s.stream.Send(s.sent); sendErr != nil {

@@ -51,7 +51,7 @@ const CredentialRejectedHeader = contracts.CredentialRejectedHeader
 // metadata on an error, and the transport writes this header when it writes
 // the error status.
 func credentialRejectedError(ctx context.Context, err error) *connect.Error {
-	out := connect.NewError(connect.CodeUnauthenticated, err.Error()).WithCause(err)
+	out := wrappedConnectError(connect.CodeUnauthenticated, err)
 	if info, ok := connect.CallInfoForServerContext(ctx); ok {
 		info.ResponseHeader().Set(CredentialRejectedHeader, "1")
 	}

@@ -22,11 +22,11 @@ import (
 func (s *AuthService) BeginPasskeyLogin(ctx context.Context, req *leapmuxv1.BeginPasskeyLoginRequest) (*leapmuxv1.BeginPasskeyLoginResponse, error) {
 	wa, err := s.webauthnService(ctx)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeFailedPrecondition, err)
 	}
 	username, err := validate.SanitizeSlug("username", req.GetUsername())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInvalidArgument, err)
 	}
 	user, err := s.store.Users().GetByUsername(ctx, username)
 	if err != nil {
@@ -34,7 +34,7 @@ func (s *AuthService) BeginPasskeyLogin(ctx context.Context, req *leapmuxv1.Begi
 			// Same code/message as "no passkeys" so callers cannot enumerate.
 			return nil, connect.Errorf(connect.CodeFailedPrecondition, "passkey login is not available for this account")
 		}
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	sessionID, optionsJSON, err := wa.BeginLogin(ctx, user.ID, originFromRequest(ctx))
 	if err != nil {
@@ -47,7 +47,7 @@ func (s *AuthService) BeginPasskeyLogin(ctx context.Context, req *leapmuxv1.Begi
 			}
 			return nil, connect.Errorf(connect.CodeFailedPrecondition, "passkey login is not available for this account")
 		}
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	return &leapmuxv1.BeginPasskeyLoginResponse{
 		SessionId:   sessionID,
@@ -59,7 +59,7 @@ func (s *AuthService) FinishPasskeyLogin(ctx context.Context, req *leapmuxv1.Fin
 	info := serverCallInfo(ctx)
 	wa, err := s.webauthnService(ctx)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeFailedPrecondition, err)
 	}
 	user, passkeyCount, err := wa.FinishLogin(ctx, req.GetSessionId(), req.GetCredentialJson())
 	if err != nil {
@@ -85,15 +85,15 @@ func (s *AuthService) FinishPasskeyLogin(ctx context.Context, req *leapmuxv1.Fin
 			// Unauthenticated does not reach them -- and reporting a hub
 			// misconfiguration as "authentication failed" tells the user to
 			// try another credential for something no credential can fix.
-			return nil, connect.NewError(connect.CodeFailedPrecondition, err.Error()).WithCause(err)
+			return nil, wrappedConnectError(connect.CodeFailedPrecondition, err)
 		case webAuthnErrorInfrastructure:
 			// Store and infrastructure failures (keystore decrypt, session
 			// consume, sign-count update) are not credential failures, so
 			// they must not read as one in the anonymous client's response
 			// body.
-			return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+			return nil, wrappedConnectError(connect.CodeInternal, err)
 		}
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	loginUID, mintErr := mintRowUserID(user.ID)
 	if mintErr != nil {
@@ -117,7 +117,7 @@ func (s *AuthService) BeginPasskeySignUp(ctx context.Context, req *leapmuxv1.Beg
 	}
 	hasUser, err := s.checkHasAnyUser(ctx)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	isSetupMode := !hasUser
 	// The signup setting is an administrator's decision, and setup mode is
@@ -132,7 +132,7 @@ func (s *AuthService) BeginPasskeySignUp(ctx context.Context, req *leapmuxv1.Beg
 
 	username, err := validate.SanitizeSlug("username", req.GetUsername())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInvalidArgument, err)
 	}
 	displayName, err := validate.SanitizeDisplayName(req.GetDisplayName(), username)
 	if err != nil {
@@ -148,7 +148,7 @@ func (s *AuthService) BeginPasskeySignUp(ctx context.Context, req *leapmuxv1.Beg
 
 	wa, err := s.webauthnService(ctx)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeFailedPrecondition, err)
 	}
 	sessionID, optionsJSON, err := wa.BeginSignUp(ctx, hubwebauthn.SignupDraft{
 		Username:    username,
@@ -156,7 +156,7 @@ func (s *AuthService) BeginPasskeySignUp(ctx context.Context, req *leapmuxv1.Beg
 		DisplayName: displayName,
 	}, originFromRequest(ctx))
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	return &leapmuxv1.BeginPasskeySignUpResponse{
 		SessionId:   sessionID,
@@ -171,11 +171,11 @@ func (s *AuthService) FinishPasskeySignUp(ctx context.Context, req *leapmuxv1.Fi
 	}
 	wa, err := s.webauthnService(ctx)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeFailedPrecondition, err)
 	}
 	draft, cred, err := wa.FinishSignUp(ctx, req.GetSessionId(), req.GetCredentialJson())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInvalidArgument, err)
 	}
 
 	// Re-check the controls at finish so an admin disable or a race on

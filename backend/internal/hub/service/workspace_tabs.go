@@ -36,7 +36,7 @@ func (s *WorkspaceService) ListTabs(
 		if connect.CodeOf(err) == connect.CodePermissionDenied {
 			return nil, err
 		}
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 
 	var pbTabs []*leapmuxv1.WorkspaceTab

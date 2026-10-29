@@ -108,7 +108,7 @@ func (s *AdminWorkerService) DeregisterWorker(ctx context.Context, req *leapmuxv
 		return nil, connect.Errorf(connect.CodeNotFound, "worker %s not found or not active", req.GetId())
 	}
 	if err := s.deregisterEffects.Apply(ctx, req.GetId(), w.RegisteredBy); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	return &leapmuxv1.AdminWorkerServiceDeregisterWorkerResponse{}, nil
 }
@@ -165,7 +165,7 @@ func (s *AdminWorkerService) PurgeExpiredRegistrationKeys(ctx context.Context, _
 	})
 	if err != nil {
 		cause := fmt.Errorf("purge expired registration keys: %w", err)
-		return nil, connect.NewError(connect.CodeInternal, cause.Error()).WithCause(cause)
+		return nil, wrappedConnectError(connect.CodeInternal, cause)
 	}
 	return &leapmuxv1.PurgeExpiredRegistrationKeysResponse{Purged: total}, nil
 }

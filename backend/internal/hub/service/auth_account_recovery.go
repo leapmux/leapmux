@@ -65,7 +65,7 @@ func (s *AuthService) RequestAccountRecovery(ctx context.Context, req *leapmuxv1
 		if errors.Is(err, store.ErrNotFound) {
 			return &leapmuxv1.RequestAccountRecoveryResponse{}, nil
 		}
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	// Every miss path returns the same empty body as a hit. This code does
 	// NOT equalize the timing: the hit path sends SMTP mail synchronously,
@@ -114,7 +114,7 @@ func (s *AuthService) RequestAccountRecovery(ctx context.Context, req *leapmuxv1
 		Now:                        now,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	if !minted {
 		// A concurrent or recent request holds a live token: keep it (its
@@ -167,7 +167,7 @@ func (s *AuthService) chargeRecoveryAttempt(ctx context.Context, token string) (
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, connect.Errorf(connect.CodeNotFound, "invalid or expired recovery token")
 		}
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	// Attempt 6+ expires the token in SQL (sets expires_at = now). Refuse
 	// before any expensive work so the attempt budget is a hard cap, not soft.
@@ -188,7 +188,7 @@ func (s *AuthService) CompleteAccountRecoveryPassword(ctx context.Context, req *
 		return nil, err
 	}
 	if err := validate.ValidatePassword(req.GetNewPassword()); err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInvalidArgument, err)
 	}
 	user, err := s.chargeRecoveryAttempt(ctx, req.GetToken())
 	if err != nil {
@@ -198,7 +198,7 @@ func (s *AuthService) CompleteAccountRecoveryPassword(ctx context.Context, req *
 
 	hashed, err := pwdhash.Hash(req.GetNewPassword())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 
 	uid, mintErr := mintRowUserID(user.ID)
@@ -228,7 +228,7 @@ func (s *AuthService) BeginAccountRecoveryPasskey(ctx context.Context, req *leap
 	// budget that password completion also uses.
 	wa, err := s.webauthnService(ctx)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeFailedPrecondition, err)
 	}
 	if err := wa.CheckOrigin(originFromRequest(ctx)); err != nil {
 		return nil, mapPasskeyConnectError(ctx, err)
@@ -264,7 +264,7 @@ func (s *AuthService) FinishAccountRecoveryPasskey(ctx context.Context, req *lea
 	}
 	wa, err := s.webauthnService(ctx)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeFailedPrecondition, err)
 	}
 	hashedToken := hashBrowserSecret(req.GetToken())
 	// Refuse a force-expired or reminted token BEFORE consuming the
@@ -276,7 +276,7 @@ func (s *AuthService) FinishAccountRecoveryPasskey(ctx context.Context, req *lea
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, connect.Errorf(connect.CodeNotFound, "invalid or expired recovery token")
 		}
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	// Verify the attestation OUTSIDE the write transaction, the ordering
 	// VerifyRegistration states for the SQLite single-writer lock. Finish
@@ -361,5 +361,5 @@ func recoveryTxError(err error) error {
 	if errors.As(err, &connectErr) {
 		return connectErr
 	}
-	return connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+	return wrappedConnectError(connect.CodeInternal, err)
 }

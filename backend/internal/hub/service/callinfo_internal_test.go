@@ -9,7 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// A raw ServerFunc invocation carries no CallInfo, and connect v2 names that
+// A raw ServerFunc invocation carries no CallInfo, and connect v2 documents that
 // case: CallInfoForServerContext reports false. The accessor must not panic
 // there, because response metadata is written before anyone checks.
 func TestServerCallInfo_AbsentCallReadsAsEmptyAndSurvivesWrites(t *testing.T) {

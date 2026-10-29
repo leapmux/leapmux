@@ -329,7 +329,7 @@ func (s *AdminSettingsService) ResetSettings(ctx context.Context, req *leapmuxv1
 func (s *AdminSettingsService) runAfterReset(ctx context.Context, descs []settings.Descriptor) error {
 	for _, desc := range descs {
 		if err := s.set.AfterReset(ctx, desc); err != nil {
-			return connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+			return wrappedConnectError(connect.CodeInternal, err)
 		}
 	}
 	return nil
@@ -350,11 +350,11 @@ func (s *AdminSettingsService) runAfterReset(ctx context.Context, descs []settin
 func settingWriteConnectError(err error) error {
 	var undecryptable *settings.SecretUndecryptableError
 	if errors.As(err, &undecryptable) {
-		return connect.NewError(connect.CodeFailedPrecondition, err.Error()).WithCause(err)
+		return wrappedConnectError(connect.CodeFailedPrecondition, err)
 	}
 	var invalid *settings.InvalidError
 	if errors.As(err, &invalid) {
-		return connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
+		return wrappedConnectError(connect.CodeInvalidArgument, err)
 	}
-	return connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+	return wrappedConnectError(connect.CodeInternal, err)
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -439,7 +440,13 @@ func TestInterceptor_LeapMuxBearer_CachedEntryExpiresWithCredential(t *testing.T
 
 	tokenID := newTestTokenID()
 	secret := auth.MintAccessSecret()
-	expiresAt := time.Now().Add(50 * time.Millisecond)
+	// Keep elapsed test time separate from credential expiry. The validator's
+	// clock moves only after each request completes.
+	start := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
+	var clock atomic.Int64
+	clock.Store(start.UnixNano())
+	tv.Now = func() time.Time { return time.Unix(0, clock.Load()).UTC() }
+	expiresAt := start.Add(10 * time.Second)
 	require.NoError(t, st.APITokens().Create(context.Background(), store.CreateAPITokenParams{
 		ID:               tokenID,
 		UserID:           userid.MustNew(userID),
@@ -454,10 +461,15 @@ func TestInterceptor_LeapMuxBearer_CachedEntryExpiresWithCredential(t *testing.T
 	_, err := client.GetCurrentUser(bearerReq(context.Background(), &leapmuxv1.GetCurrentUserRequest{}, bearer))
 	require.NoError(t, err)
 
-	require.Eventually(t, func() bool {
-		_, err := client.GetCurrentUser(bearerReq(context.Background(), &leapmuxv1.GetCurrentUserRequest{}, bearer))
-		return connect.CodeOf(err) == connect.CodeUnauthenticated
-	}, time.Second, 10*time.Millisecond, "cached bearer must stop authenticating at its persisted expiry")
+	clock.Store(expiresAt.Add(-time.Nanosecond).UnixNano())
+	_, err = client.GetCurrentUser(bearerReq(context.Background(), &leapmuxv1.GetCurrentUserRequest{}, bearer))
+	require.NoError(t, err, "the cached credential remains valid before its exclusive expiry")
+
+	clock.Store(expiresAt.UnixNano())
+	_, err = client.GetCurrentUser(bearerReq(context.Background(), &leapmuxv1.GetCurrentUserRequest{}, bearer))
+	require.Error(t, err)
+	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err),
+		"cached bearer must stop authenticating at its persisted expiry")
 }
 
 func TestInterceptor_DelegationBearer_RejectsAccountProcedure(t *testing.T) {

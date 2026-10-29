@@ -114,7 +114,7 @@ func resolveAdminUser(ctx context.Context, st store.Store, id, username string) 
 	case errors.Is(err, ErrNoUserSelector):
 		return nil, connect.NewError(connect.CodeInvalidArgument, "id or username is required")
 	case errors.Is(err, ErrAmbiguousUserSelector):
-		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInvalidArgument, err)
 	case err != nil && id != "":
 		return nil, storeConnectError(err, "get user by id")
 	case err != nil:
@@ -166,12 +166,12 @@ func storeConnectError(err error, op string) error {
 		// without this case it read as a hub fault — and WorkerManagement
 		// classifies the same sentinel as InvalidArgument, so the two
 		// admin surfaces disagreed.
-		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf(
-			"%s: %w (pass the cursor printed at the end of the previous page, or omit it to start from the first page)", op, err).Error())
+		return wrappedConnectError(connect.CodeInvalidArgument, fmt.Errorf(
+			"%s: %w (pass the cursor printed at the end of the previous page, or omit it to start from the first page)", op, err))
 	case errors.Is(err, store.ErrInvalidArgument):
-		return connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
+		return wrappedConnectError(connect.CodeInvalidArgument, err)
 	default:
-		return connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return wrappedConnectError(connect.CodeInternal, err)
 	}
 }
 
@@ -186,7 +186,7 @@ func storeConnectError(err error, op string) error {
 // email at all.
 func userConflictError(err error, username, email string) error {
 	if !errors.Is(err, store.ErrConflict) {
-		return connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return wrappedConnectError(connect.CodeInternal, err)
 	}
 	switch {
 	case username != "" && email != "":
@@ -357,13 +357,13 @@ func (s *AdminUserService) CreateUser(ctx context.Context, req *leapmuxv1.Create
 	msg := req
 	username, err := validate.SanitizeSlug("username", msg.GetUsername())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInvalidArgument, err)
 	}
 	if usernames.IsReservedSystem(username) {
 		return nil, connect.Errorf(connect.CodeInvalidArgument, "username %q is reserved", username)
 	}
 	if err := validate.ValidatePassword(msg.GetPassword()); err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInvalidArgument, err)
 	}
 	displayName, err := validate.SanitizeDisplayName(msg.GetDisplayName(), username)
 	if err != nil {
@@ -372,7 +372,7 @@ func (s *AdminUserService) CreateUser(ctx context.Context, req *leapmuxv1.Create
 	email := msg.GetEmail()
 	if email != "" {
 		if err := validate.ValidateEmail(email); err != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
+			return nil, wrappedConnectError(connect.CodeInvalidArgument, err)
 		}
 	}
 	// When the hub requires verification, an email-less unverified
@@ -542,7 +542,7 @@ func (s *AdminUserService) UpdateUser(ctx context.Context, req *leapmuxv1.Update
 	}
 	if updateEmail && msg.GetEmail() != "" {
 		if err := validate.ValidateEmail(msg.GetEmail()); err != nil {
-			return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
+			return nil, wrappedConnectError(connect.CodeInvalidArgument, err)
 		}
 	}
 	emailVerifiedAfter, applyEmailVerified := resolveEmailVerified(user, msg)
@@ -623,7 +623,7 @@ func (s *AdminUserService) UpdateUser(ctx context.Context, req *leapmuxv1.Update
 		if errors.As(err, &connectErr) {
 			return nil, connectErr
 		}
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	updated, err := s.store.Users().GetByID(ctx, user.ID)
 	if err != nil {
@@ -702,7 +702,7 @@ func (s *AdminUserService) DeleteUser(ctx context.Context, req *leapmuxv1.Delete
 		if errors.As(err, &connectErr) {
 			return nil, connectErr
 		}
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	// AFTER the commit, never inside it. SendDeregister persists a
 	// notification row and moves worker-manager state, so a rollback after
@@ -812,7 +812,7 @@ func (s *AdminUserService) SetUserAdmin(ctx context.Context, req *leapmuxv1.SetU
 			if errors.As(err, &connectErr) {
 				return connectErr
 			}
-			return connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+			return wrappedConnectError(connect.CodeInternal, err)
 		}
 		return nil
 	}); err != nil {
@@ -857,7 +857,7 @@ func (s *AdminUserService) ResetPassword(ctx context.Context, req *leapmuxv1.Res
 		return nil, err
 	}
 	if err := validate.ValidatePassword(msg.GetPassword()); err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInvalidArgument, err)
 	}
 	hashed, err := password.Hash(msg.GetPassword())
 	if err != nil {
@@ -902,7 +902,7 @@ func (s *AdminUserService) ResetPassword(ctx context.Context, req *leapmuxv1.Res
 		if errors.As(err, &connectErr) {
 			return nil, connectErr
 		}
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	// AFTER the commit, the half RevokeCredentialsAfterRotation leaves to
 	// its caller.
@@ -989,7 +989,7 @@ func (s *AdminUserService) RevokeUserSessions(ctx context.Context, req *leapmuxv
 		return err
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	// AFTER the commit, the half RevokeCredentialsAfterRotation leaves to
 	// its caller.
@@ -1103,8 +1103,8 @@ func (s *AdminUserService) IssueAPIToken(ctx context.Context, req *leapmuxv1.Iss
 	}
 	appCeiling, err := authscope.Parse(app.Scopes)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal,
-			fmt.Errorf("app %s carries an unreadable scope ceiling: %w", clientID, err).Error())
+		return nil, wrappedConnectError(connect.CodeInternal,
+			fmt.Errorf("app %s carries an unreadable scope ceiling: %w", clientID, err))
 	}
 	owner, err := mintRowUserID(user.ID)
 	if err != nil {
@@ -1143,7 +1143,7 @@ func (s *AdminUserService) IssueAPIToken(ctx context.Context, req *leapmuxv1.Iss
 	}
 	grantedString, err := granted.Storable()
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	// ttl_seconds picks WHICH KIND of credential this is, and the two kinds
 	// are exclusive.
@@ -1287,7 +1287,7 @@ func resolveIssuedScopes(tokens []string, owner *store.User, actor *auth.UserInf
 	if len(tokens) > 0 {
 		parsed, err := authscope.Parse(strings.Join(tokens, " "))
 		if err != nil {
-			return authscope.ScopeSet{}, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
+			return authscope.ScopeSet{}, wrappedConnectError(connect.CodeInvalidArgument, err)
 		}
 		requested = parsed
 	}

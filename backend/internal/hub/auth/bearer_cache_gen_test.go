@@ -1423,3 +1423,26 @@ func TestBatchedBearerEvictionBumpsTheGenerationOnce(t *testing.T) {
 	_, marked = state.bearerInvalidations.Load(refs[0])
 	assert.True(t, marked, "the deduplicated row still carries its mark")
 }
+
+func TestBearerCacheFresh_UsesTheValidatorClockForCredentialExpiry(t *testing.T) {
+	start := time.Now().Add(time.Hour)
+	expiresAt := start.Add(10 * time.Second)
+	now := start
+	a := &authInterceptor{state: &authState{}, tokenValidator: &TokenValidator{Now: func() time.Time { return now }}}
+	key := bearerCacheKey(BearerKindAPI, "clocked-token", []byte("secret"))
+	cached := cachedSession{user: &UserInfo{ID: userid.MustNew("user"), CredentialExpiresAt: DeadlineAt(expiresAt)}, cachedAt: time.Now()}
+	for _, tc := range []struct {
+		name string
+		at   time.Time
+		want bool
+	}{
+		{name: "before expiry", at: expiresAt.Add(-time.Nanosecond), want: true},
+		{name: "exact expiry", at: expiresAt, want: false},
+		{name: "after expiry", at: expiresAt.Add(time.Nanosecond), want: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now = tc.at
+			assert.Equal(t, tc.want, a.bearerCacheFresh(key, cached))
+		})
+	}
+}

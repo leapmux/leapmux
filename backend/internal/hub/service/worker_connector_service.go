@@ -153,7 +153,7 @@ func (s *WorkerConnectorService) refuseIfAtWorkerCap(
 	})
 	if err != nil {
 		cause := fmt.Errorf("count workers: %w", err)
-		return connect.NewError(connect.CodeInternal, cause.Error()).WithCause(cause)
+		return wrappedConnectError(connect.CodeInternal, cause)
 	}
 	if int64(len(page.Rows)) < limit {
 		return nil
@@ -161,7 +161,7 @@ func (s *WorkerConnectorService) refuseIfAtWorkerCap(
 	// The typed cause is what Register's errors.As matches to count the
 	// refusal; sending its text alone would drop that.
 	limitErr := &workerRegistrationLimitError{limit: limit}
-	return connect.NewError(connect.CodeResourceExhausted, limitErr.Error()).WithCause(limitErr)
+	return wrappedConnectError(connect.CodeResourceExhausted, limitErr)
 }
 
 // Register handles the worker → hub registration RPC.
@@ -182,7 +182,7 @@ func (s *WorkerConnectorService) Register(
 	}
 
 	if _, err := validate.ValidateProperty("version", req.GetVersion()); err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInvalidArgument, err)
 	}
 
 	publicKey := ptrconv.OrEmpty(req.GetPublicKey())
@@ -275,7 +275,7 @@ func (s *WorkerConnectorService) Connect(
 		if errors.Is(err, store.ErrNotFound) {
 			return connect.Errorf(connect.CodeUnauthenticated, "invalid auth token")
 		}
-		return connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return wrappedConnectError(connect.CodeInternal, err)
 	}
 	// No soft-delete check here, deliberately. GetByAuthToken already excludes a
 	// DELETED worker (`status != 3`), and a DEREGISTERING one must still be able
@@ -315,7 +315,7 @@ func (s *WorkerConnectorService) Connect(
 			// (ConnectWithReconnect gives up only on Unauthenticated), so this
 			// is for the operator reading logs and for any proxy or future
 			// client that does distinguish the two.
-			return connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
+			return wrappedConnectError(connect.CodeUnavailable, err)
 		}
 		if errors.Is(err, workermgr.ErrTooManyWorkers) {
 			// Counted on the same series as a refusal at Register: both are one
@@ -327,7 +327,7 @@ func (s *WorkerConnectorService) Connect(
 			// condition clears when another of this account's connections goes
 			// away.
 			metrics.CountWorkerAdmissionRefused(metrics.WorkerStageConnect)
-			return connect.NewError(connect.CodeResourceExhausted, err.Error()).WithCause(err)
+			return wrappedConnectError(connect.CodeResourceExhausted, err)
 		}
 		return wrappedConnectError(connect.CodeInternal, fmt.Errorf("greet worker: %w", err))
 	}
@@ -463,7 +463,7 @@ func (s *WorkerConnectorService) Connect(
 		}
 		resetIdle()
 		if err := s.processWorkerMessage(ctx, conn, worker.ID, worker.RegisteredBy, result.msg); err != nil {
-			return connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
+			return wrappedConnectError(connect.CodeInvalidArgument, err)
 		}
 		return nil
 	}

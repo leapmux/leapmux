@@ -102,9 +102,9 @@ const maxConnectRequestBytes = crdt.MaxResumeDeltaBytes
 // mountConnect mounts the hub's Connect services on mux with the
 // request-size cap applied.
 //
-// It is the ONE place the cap is bound. The test that pins the cap calls
-// this too, so an edit that drops the option reddens that test rather than
-// leaving it probing a number nothing enforces.
+// It is the one place that applies the cap. Production and the test use
+// this helper, so the test verifies the effective cap through the same mount.
+// The test documents why the current library default masks an omitted option.
 func mountConnect(mux connecthttp.ServeMux, server *connect.Server) {
 	connecthttp.Mount(mux, server, connecthttp.WithReadMaxBytes(maxConnectRequestBytes))
 }

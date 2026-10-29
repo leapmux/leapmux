@@ -36,8 +36,6 @@ import (
 // signupKey is a real settings key whose write path takes the elevation gate.
 func signupKey() string { return settings.KeySignupEnabled.Name() }
 
-// writeOneSetting performs one real write verb, authenticated by `authorize`,
-// and returns the response so a test can read its header.
 // writeOneSetting performs one settings write and returns the call's
 // CallInfo, which is where the elevation report the response header carries
 // is readable.

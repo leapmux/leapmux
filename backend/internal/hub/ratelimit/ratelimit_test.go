@@ -6,9 +6,12 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/reflect/protoregistry"
 
 	"connectrpc.com/connect/v2"
@@ -615,6 +618,67 @@ func TestPanickingHandlerReleasesReservation(t *testing.T) {
 	assert.Equal(t, 1, *calls)
 }
 
+type admissionTestStream struct {
+	receive func(any) error
+}
+
+func (s admissionTestStream) Receive(msg any) error { return s.receive(msg) }
+func (admissionTestStream) SendHeaders() error      { return nil }
+func (admissionTestStream) Send(any) error          { return nil }
+
+func callLimitedLogin(ctx context.Context, m *Manager, stream connect.ServerStream, handler func() error) error {
+	return NewInterceptor(m)(func(_ context.Context, _ connect.Spec, stream connect.ServerStream) error {
+		if err := stream.Receive(&leapmuxv1.LoginRequest{}); err != nil {
+			return err
+		}
+		return handler()
+	})(ctx, connect.Spec{Procedure: leapmuxv1connect.AuthServiceLoginProcedure, StreamType: connect.StreamTypeUnary}, stream)
+}
+
+func TestInterceptorDoesNotReserveWhileReceivingTheRequest(t *testing.T) {
+	m := newTestManager(t)
+	upsertLimit(t, m, OpLoginAnonymous, true, 1, 900)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	ctx = peer.WithClientIP(ctx, "192.0.2.1")
+	started, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	finishReceive := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(finishReceive)
+	done := make(chan error, 1)
+	go func() {
+		done <- callLimitedLogin(ctx, m, admissionTestStream{receive: func(any) error {
+			close(started)
+			select {
+			case <-release:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}}, func() error { return nil })
+	}()
+	select {
+	case <-started:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	otherCalled := false
+	err := callLimitedLogin(ctx, m, admissionTestStream{receive: func(any) error { return nil }}, func() error {
+		otherCalled = true
+		return nil
+	})
+	assert.NoError(t, err, "an incomplete request must not consume another login's allowance")
+	assert.True(t, otherCalled, "the complete request must reach its handler")
+	finishReceive()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	assert.Empty(t, m.inFlight)
+}
+
 func TestKnownOperationsSortedAndEffectiveLimitsOverlay(t *testing.T) {
 	assert.Equal(t, []Operation{OpElevation, OpEmailChange, OpLoginAnonymous, OpOAuthAnonymous, OpSoloPasswordSetup}, KnownOperations())
 
@@ -725,6 +789,16 @@ var httpRoutedOperations = map[Operation]string{
 func TestProcedureRoutingAndCatalogueAgree(t *testing.T) {
 	assert.NotEmpty(t, procedureOperations, "no procedures are routed; the tripwire is vacuous")
 	for proc, spec := range procedureOperations {
+		serviceName, methodName, ok := strings.Cut(strings.TrimPrefix(proc, "/"), "/")
+		require.True(t, ok, "a routed procedure must identify its service and method")
+		descriptor, err := protoregistry.GlobalFiles.FindDescriptorByName(protoreflect.FullName(serviceName))
+		require.NoError(t, err)
+		service, ok := descriptor.(protoreflect.ServiceDescriptor)
+		require.True(t, ok)
+		method := service.Methods().ByName(protoreflect.Name(methodName))
+		require.NotNil(t, method)
+		assert.False(t, method.IsStreamingClient(), "%s must have one request to admit", proc)
+		assert.False(t, method.IsStreamingServer(), "%s must finish its reservation with one response", proc)
 		assert.Containsf(t, defaults, spec.op,
 			"procedure %q routes to operation %q with no defaults entry; every call would fail closed with CodeUnavailable", proc, spec.op)
 	}
@@ -1196,4 +1270,85 @@ func TestLoginAnonymousCountsOnlyAWrongPassword(t *testing.T) {
 	assert.False(t, spec.isCredentialFailure(
 		connect.NewError(connect.CodeUnavailable, "store down")))
 	assert.False(t, spec.isCredentialFailure(errors.New("plain error")))
+}
+
+func TestInterceptorAdmitsOnceAndReleasesAfterTheHandler(t *testing.T) {
+	m := newTestManager(t)
+	upsertLimit(t, m, OpLoginAnonymous, true, 1, 900)
+	ctx := peer.WithClientIP(t.Context(), "192.0.2.1")
+	spec := connect.Spec{Procedure: leapmuxv1connect.AuthServiceLoginProcedure, StreamType: connect.StreamTypeUnary}
+	receives := 0
+	stream := admissionTestStream{receive: func(any) error { receives++; return nil }}
+	err := NewInterceptor(m)(func(_ context.Context, _ connect.Spec, stream connect.ServerStream) error {
+		for range 2 {
+			require.NoError(t, stream.Receive(&leapmuxv1.LoginRequest{}))
+			assert.EqualValues(t, 1, m.inFlight[windowKey{OpLoginAnonymous, anonymousBudgetKey(ctx)}])
+		}
+		otherCalled := false
+		err := callLimitedLogin(ctx, m, admissionTestStream{receive: func(any) error { return nil }}, func() error {
+			otherCalled = true
+			return nil
+		})
+		assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(err))
+		assert.False(t, otherCalled)
+		return connect.NewError(connect.CodeInvalidArgument, "invalid login")
+	})(ctx, spec, stream)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	assert.Equal(t, 2, receives)
+	assert.Empty(t, m.inFlight)
+	require.NoError(t, callLimitedLogin(ctx, m, admissionTestStream{receive: func(any) error { return nil }}, func() error { return nil }))
+}
+
+func TestInterceptorDoesNotReserveForRejectedInput(t *testing.T) {
+	for _, receiveErr := range []error{
+		connect.NewError(connect.CodeInvalidArgument, "cannot decode request"),
+		connect.NewError(connect.CodePermissionDenied, "captcha verification failed"),
+	} {
+		t.Run(receiveErr.Error(), func(t *testing.T) {
+			m := newTestManager(t)
+			upsertLimit(t, m, OpLoginAnonymous, true, 1, 900)
+			called := false
+			err := callLimitedLogin(peer.WithClientIP(t.Context(), "192.0.2.1"), m, admissionTestStream{receive: func(any) error {
+				assert.Empty(t, m.inFlight, "decoding and verification must precede reservation")
+				return receiveErr
+			}}, func() error { called = true; return nil })
+			assert.ErrorIs(t, err, receiveErr)
+			assert.False(t, called)
+			assert.Empty(t, m.inFlight)
+			assert.Zero(t, m.windows.Len())
+		})
+	}
+}
+
+func TestInterceptorRetainsAnAdmissionDenial(t *testing.T) {
+	m := newTestManager(t)
+	upsertLimit(t, m, OpLoginAnonymous, true, 1, 900)
+	ctx := peer.WithClientIP(t.Context(), "192.0.2.1")
+	held, allowed, _, err := m.allow(ctx, procedureOperations[leapmuxv1connect.AuthServiceLoginProcedure], anonymousBudgetKey(ctx))
+	require.NoError(t, err)
+	require.True(t, allowed)
+	defer m.complete(held, nil)
+	receives := 0
+	err = NewInterceptor(m)(func(_ context.Context, _ connect.Spec, stream connect.ServerStream) error {
+		first := stream.Receive(&leapmuxv1.LoginRequest{})
+		assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(first))
+		assert.Same(t, first, stream.Receive(&leapmuxv1.LoginRequest{}))
+		return first
+	})(ctx, connect.Spec{Procedure: leapmuxv1connect.AuthServiceLoginProcedure, StreamType: connect.StreamTypeUnary}, admissionTestStream{receive: func(any) error { receives++; return nil }})
+	assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(err))
+	assert.Equal(t, 1, receives, "a refused call must not read another request")
+	assert.EqualValues(t, 1, m.inFlight[windowKey{OpLoginAnonymous, anonymousBudgetKey(ctx)}])
+}
+
+func TestInterceptorPanicBeforeReceiveAcquiresNoReservation(t *testing.T) {
+	m := newTestManager(t)
+	upsertLimit(t, m, OpLoginAnonymous, true, 1, 900)
+	require.Panics(t, func() {
+		_ = NewInterceptor(m)(func(context.Context, connect.Spec, connect.ServerStream) error { panic("before receive") })(
+			peer.WithClientIP(t.Context(), "192.0.2.1"),
+			connect.Spec{Procedure: leapmuxv1connect.AuthServiceLoginProcedure, StreamType: connect.StreamTypeUnary},
+			admissionTestStream{receive: func(any) error { t.Fatal("unexpected receive"); return nil }})
+	})
+	assert.Empty(t, m.inFlight)
+	assert.Zero(t, m.windows.Len())
 }

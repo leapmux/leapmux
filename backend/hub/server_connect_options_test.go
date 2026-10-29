@@ -61,8 +61,8 @@ func submitOpsOfSize(atLeast int) *leapmuxv1.SubmitOpsRequest {
 // user's single-writer manager goroutine: one oversized batch would otherwise
 // serialize every other tab's submits behind its own unmarshal + validate.
 //
-// The mount goes through mountConnect, the ONE helper that binds the cap, so
-// an edit that drops the option there reddens this test. Interceptors are
+// The mount goes through mountConnect, the same helper production uses.
+// These probes verify the effective cap. Interceptors are
 // omitted deliberately: the cap is enforced at receive time inside the handler
 // the chain would wrap, and the real chain needs a store, a keystore and a
 // shutdown channel.

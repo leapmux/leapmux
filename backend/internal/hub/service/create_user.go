@@ -302,14 +302,14 @@ func AvailabilityConnectError(err error) error {
 	}
 	var taken *FieldTakenError
 	if errors.As(err, &taken) {
-		return connect.NewError(connect.CodeAlreadyExists, taken.Error()).WithCause(taken)
+		return wrappedConnectError(connect.CodeAlreadyExists, taken)
 	}
 	// A refused conditional mint is the resend cooldown, not a fault: the
 	// caller asked again too soon and the live code is still valid.
 	if errors.Is(err, ErrVerificationCooldown) {
-		return connect.NewError(connect.CodeResourceExhausted, err.Error()).WithCause(err)
+		return wrappedConnectError(connect.CodeResourceExhausted, err)
 	}
-	return connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+	return wrappedConnectError(connect.CodeInternal, err)
 }
 
 // verifyPendingEmailToken validates the verification code submitted by
@@ -347,7 +347,7 @@ func verifyPendingEmailToken(ctx context.Context, st store.Store, userID, submit
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, connect.Errorf(connect.CodeFailedPrecondition, "no pending email change")
 		}
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 
 	// The store's WHERE filter only checks pending_email_token; an
@@ -369,12 +369,12 @@ func verifyPendingEmailToken(ctx context.Context, st store.Store, userID, submit
 	}
 
 	if err := promotePendingEmail(ctx, st, user.ID, user.PendingEmail); err != nil {
-		return nil, connect.NewError(connect.CodeAlreadyExists, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeAlreadyExists, err)
 	}
 
 	updatedUser, err := st.Users().GetByID(ctx, user.ID)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	return updatedUser, nil
 }

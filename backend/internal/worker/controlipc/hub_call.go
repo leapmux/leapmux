@@ -35,10 +35,10 @@ import (
 // means adding a hub method is one entry rather than two parallel switches.
 //
 // **Why mirror HubEventStreamer instead of folding both into one
-// type?** Streaming and unary go through different ConnectRPC code
-// paths (`stream.Receive()` loop vs. unary `Response.Msg`) and pool
-// differently. Sharing a delegation provider + http transport keeps
-// the duplication small while letting each lane evolve independently.
+// type?** Unary calls use ConnectRPC; HubEventStreamer consumes a long-lived
+// WebSocket. Each needs its own HTTP client because unary calls require an
+// overall timeout and subscriptions require none. They share the delegation
+// provider and the endpoint's connection pools while retaining those policies.
 type HubUnaryBridge struct {
 	Delegation crossworker.DelegationProvider
 	HTTPClient *http.Client

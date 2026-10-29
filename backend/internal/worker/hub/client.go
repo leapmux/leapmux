@@ -82,7 +82,6 @@ type Client struct {
 	TabSyncProvider func() *leapmuxv1.WorkerTabInventory
 
 	mu           sync.Mutex
-	stream       *leapmuxv1connect.WorkerConnectorServiceConnectClientStream
 	writer       *sendq.Writer[*leapmuxv1.ConnectRequest]
 	connCancel   context.CancelFunc // cancel function for current connection context
 	lastSendTime time.Time          // last time a message was ENQUEUED (for idle heartbeat)
@@ -383,11 +382,10 @@ func (c *Client) Connect(ctx context.Context, authToken string) error {
 	c.authToken = authToken
 	c.mu.Unlock()
 
-	// Seed the CallInfo BEFORE deriving connCtx below. The stream opens on
-	// connCtx, and connect reads the request header off the CallInfo that
-	// context carries; seeding on the parent instead puts the bearer on a
-	// context the stream never sees, and the hub rejects the worker as
-	// unauthenticated.
+	// Attach the CallInfo before deriving connCtx, so connCtx inherits the
+	// authorization header. Deriving connCtx first and then replacing ctx
+	// with NewClientContext's returned context would leave connCtx without
+	// that metadata, and the hub would reject the worker as unauthenticated.
 	ctx, info := connect.NewClientContext(ctx)
 	info.RequestHeader().Set("Authorization", "Bearer "+authToken)
 
@@ -457,7 +455,6 @@ func (c *Client) Connect(ctx context.Context, authToken string) error {
 
 	connectedAt := c.clock.Now(hubConnectTimestampTag)
 	c.mu.Lock()
-	c.stream = &stream
 	c.writer = writer
 	c.connCancel = connCancel
 	c.lastSendTime = connectedAt
@@ -465,7 +462,6 @@ func (c *Client) Connect(ctx context.Context, authToken string) error {
 	defer func() {
 		c.mu.Lock()
 		w := c.writer
-		c.stream = nil
 		c.writer = nil
 		c.connCancel = nil
 		c.mu.Unlock()
