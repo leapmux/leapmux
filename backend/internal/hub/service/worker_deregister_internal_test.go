@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -335,8 +335,8 @@ func TestDeleteUserTellsEveryWorkerPastTheFirstPage(t *testing.T) {
 // handlers take. These cases call the handler directly rather than through
 // a mounted server, because what they assert is the EFFECT the handler
 // runs after the store write, not the transport.
-func connectRequestForTest[T any](msg *T) *connect.Request[T] {
-	return connect.NewRequest(msg)
+func connectRequestForTest[T any](msg *T) *T {
+	return msg
 }
 
 // TestAdminDeregisterEvictsTheWorkersMemoizedScope pins the effect the doc

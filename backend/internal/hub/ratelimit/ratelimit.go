@@ -14,7 +14,7 @@ import (
 	"sync"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
@@ -460,8 +460,8 @@ type procedureSpec struct {
 // The interceptor must be registered AFTER the auth interceptor so the
 // authenticated user is already in the context.
 //
-// Everything routed here takes an in-flight slot. Only the two paths that
-// verify a secret carry provesCredential; see procedureSpec.
+// Everything routed here takes an in-flight slot. Procedures that verify a
+// credential carry provesCredential; see procedureSpec.
 var procedureOperations = map[string]procedureSpec{
 	// The two factor paths. A wrong answer counts, and a right one clears.
 	leapmuxv1connect.UserServiceElevateSessionProcedure:         {op: OpElevation, provesCredential: true},
@@ -753,56 +753,90 @@ func (m *Manager) resolve(ctx context.Context, op Operation) (effectiveLimit, er
 	}, nil
 }
 
-// NewInterceptor returns a unary interceptor enforcing per-user limits on
+// NewInterceptor returns a server interceptor enforcing per-user limits on
 // the routed procedures. It must be chained inside (after) the auth
-// interceptor: it reads the authenticated user from the context, and for
-// unauthenticated calls it stands down and lets auth produce the error.
-func NewInterceptor(m *Manager) connect.UnaryInterceptorFunc {
-	return func(next connect.UnaryFunc) connect.UnaryFunc {
-		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-			spec, ok := procedureOperations[req.Spec().Procedure]
+// interceptor so user-keyed operations see the authenticated user. Those
+// operations stand down without a user and let auth produce the error.
+// Address-keyed operations enforce their limits for anonymous callers too.
+//
+// Admission follows the first successful Receive. The outer captcha
+// interceptor verifies the decoded message during that receive, so an
+// incomplete or unverified request cannot occupy an operation's allowance.
+func NewInterceptor(m *Manager) connect.ServerInterceptor {
+	return func(next connect.ServerFunc) connect.ServerFunc {
+		return func(ctx context.Context, spec connect.Spec, stream connect.ServerStream) error {
+			op, ok := procedureOperations[spec.Procedure]
 			if !ok {
-				return next(ctx, req)
+				return next(ctx, spec, stream)
 			}
-			budgetKey, ok := budgetKeyFor(ctx, m, spec)
+			budgetKey, ok := budgetKeyFor(ctx, m, op)
 			if !ok {
-				return next(ctx, req)
+				return next(ctx, spec, stream)
 			}
 
-			att, allowed, retryAfter, err := m.allow(ctx, spec, budgetKey)
-			if err != nil {
-				// Config unreachable: fail closed for safety, same as the
-				// captcha interceptor — but with an honest code, so
-				// monitoring can tell an infrastructure fault from an
-				// enforced lockout (both surface as ResourceExhausted
-				// otherwise). The handler would likely fail on the same
-				// store anyway.
-				return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("rate limit unavailable, try again"))
-			}
-			if !allowed {
-				return nil, connect.NewError(connect.CodeResourceExhausted,
-					fmt.Errorf("too many attempts; try again in %s", formatWindow(retryAfter)))
-			}
+			limited := &rateLimitStream{ServerStream: stream, ctx: ctx, manager: m, operation: op, budgetKey: budgetKey}
 
 			// A panicking handler must not leak the reservation: complete
 			// runs on the unwind with a non-countable error (the panic is
 			// not a credential failure), and the panic continues up to
 			// net/http's per-connection recover exactly as before.
-			var resp connect.AnyResponse
 			var handlerErr error
 			func() {
 				defer func() {
 					if r := recover(); r != nil {
-						m.complete(att, errHandlerPanicked)
+						m.complete(limited.attempt, errHandlerPanicked)
 						panic(r)
 					}
 				}()
-				resp, handlerErr = next(ctx, req)
+				handlerErr = next(ctx, spec, limited)
 			}()
-			m.complete(att, handlerErr)
-			return resp, handlerErr
+			m.complete(limited.attempt, handlerErr)
+			return handlerErr
 		}
 	}
+}
+
+// rateLimitStream reserves an operation's allowance after its request passes
+// decoding and any outer verification. Each routed procedure is unary, so
+// only one message needs admission. Retaining the result also prevents an
+// additional Receive from acquiring a second reservation.
+type rateLimitStream struct {
+	connect.ServerStream
+	ctx          context.Context
+	manager      *Manager
+	operation    procedureSpec
+	budgetKey    string
+	attempt      *attempt
+	admissionErr error
+}
+
+func (s *rateLimitStream) Receive(msg any) error {
+	if s.admissionErr != nil {
+		return s.admissionErr
+	}
+	if err := s.ServerStream.Receive(msg); err != nil {
+		return err
+	}
+	if s.attempt != nil {
+		return nil
+	}
+	att, allowed, retryAfter, err := s.manager.allow(s.ctx, s.operation, s.budgetKey)
+	switch {
+	case err != nil:
+		// Config unreachable: fail closed for safety, same as the
+		// captcha interceptor — but with an honest code, so
+		// monitoring can tell an infrastructure fault from an
+		// enforced lockout (both surface as ResourceExhausted
+		// otherwise). The handler would likely fail on the same
+		// store anyway.
+		s.admissionErr = connect.Errorf(connect.CodeUnavailable, "rate limit unavailable, try again")
+	case !allowed:
+		s.admissionErr = connect.Errorf(connect.CodeResourceExhausted,
+			"too many attempts; try again in %s", formatWindow(retryAfter))
+	default:
+		s.attempt = att
+	}
+	return s.admissionErr
 }
 
 // budgetKeyFor picks the budget an operation counts against, and reports

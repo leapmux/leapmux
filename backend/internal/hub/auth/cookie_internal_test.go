@@ -2,13 +2,11 @@ package auth
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
-	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"connectrpc.com/connect/v2"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -16,7 +14,7 @@ import (
 
 func TestSessionRefreshApplyTo_WritesSlidExpiry(t *testing.T) {
 	expires := time.Now().Add(DefaultSessionDuration).UTC().Truncate(time.Second)
-	h := http.Header{}
+	h := &connect.Header{}
 
 	sessionRefresh{sessionID: "sess-123", expiresAt: expires}.applyTo(h, false)
 
@@ -32,7 +30,7 @@ func TestSessionRefreshApplyTo_WritesSlidExpiry(t *testing.T) {
 }
 
 func TestSessionRefreshApplyTo_UsesSecureCookieName(t *testing.T) {
-	h := http.Header{}
+	h := &connect.Header{}
 
 	sessionRefresh{sessionID: "sess-123", expiresAt: time.Now().Add(time.Hour)}.applyTo(h, true)
 
@@ -43,7 +41,7 @@ func TestSessionRefreshApplyTo_UsesSecureCookieName(t *testing.T) {
 }
 
 func TestSessionRefreshApplyTo_ZeroValueWritesNothing(t *testing.T) {
-	h := http.Header{}
+	h := &connect.Header{}
 
 	sessionRefresh{}.applyTo(h, false)
 
@@ -55,7 +53,7 @@ func TestSessionRefreshApplyTo_ZeroValueWritesNothing(t *testing.T) {
 // order and keeps the last, so appending a refresh after the clearing cookie
 // would leave the user signed in.
 func TestSessionRefreshApplyTo_KeepsHandlerCookie(t *testing.T) {
-	h := http.Header{}
+	h := &connect.Header{}
 	h.Set("Set-Cookie", ClearSessionCookie(false).String())
 
 	sessionRefresh{sessionID: "sess-123", expiresAt: time.Now().Add(time.Hour)}.applyTo(h, false)
@@ -73,7 +71,7 @@ func TestSessionRefreshApplyTo_KeepsHandlerCookie(t *testing.T) {
 // every Set-Cookie would silently stop refreshing the session on each response
 // that also carried, say, an OAuth state cookie.
 func TestSessionRefreshApplyTo_WritesAlongsideAnUnrelatedCookie(t *testing.T) {
-	h := http.Header{}
+	h := &connect.Header{}
 	h.Add("Set-Cookie", "oauth-state=abc; Path=/")
 
 	sessionRefresh{sessionID: "sess-123", expiresAt: time.Now().Add(time.Hour)}.applyTo(h, false)
@@ -90,7 +88,7 @@ func TestSessionRefreshApplyTo_WritesAlongsideAnUnrelatedCookie(t *testing.T) {
 // costs a throttle window; overwriting a cookie meant for the browser could
 // sign a user in again after a logout.
 func TestSessionRefreshApplyTo_StandsBackFromAnUnreadableCookie(t *testing.T) {
-	h := http.Header{}
+	h := &connect.Header{}
 	h.Add("Set-Cookie", "this is not a cookie")
 
 	sessionRefresh{sessionID: "sess-123", expiresAt: time.Now().Add(time.Hour)}.applyTo(h, false)
@@ -101,7 +99,7 @@ func TestSessionRefreshApplyTo_StandsBackFromAnUnreadableCookie(t *testing.T) {
 // The secure name is a different name, so a handler's plain-name cookie must not
 // stop a secure refresh, and the reverse.
 func TestSessionRefreshApplyTo_MatchesTheNameInUse(t *testing.T) {
-	h := http.Header{}
+	h := &connect.Header{}
 	h.Add("Set-Cookie", ClearSessionCookie(false).String())
 
 	sessionRefresh{sessionID: "sess-123", expiresAt: time.Now().Add(time.Hour)}.applyTo(h, true)
@@ -111,62 +109,6 @@ func TestSessionRefreshApplyTo_MatchesTheNameInUse(t *testing.T) {
 	parsed, err := http.ParseSetCookie(values[1])
 	require.NoError(t, err)
 	assert.Equal(t, SecureCookieName, parsed.Name)
-}
-
-// A failed unary call still has to carry the cookie. The slide already
-// committed to the row, and the throttle blocks every other request for a whole
-// window, so a client whose calls keep failing would never receive one.
-func TestSessionRefreshApplyToError_AttachesToConnectError(t *testing.T) {
-	expires := time.Now().Add(time.Hour).UTC().Truncate(time.Second)
-	refresh := sessionRefresh{sessionID: "sess-123", expiresAt: expires}
-
-	t.Run("a connect error keeps its code and message", func(t *testing.T) {
-		orig := connect.NewError(connect.CodePermissionDenied, errors.New("nope"))
-		out := refresh.applyToError(orig, false)
-
-		var connectErr *connect.Error
-		require.ErrorAs(t, out, &connectErr)
-		assert.Equal(t, connect.CodePermissionDenied, connectErr.Code())
-		assert.Contains(t, connectErr.Message(), "nope")
-		parsed, err := http.ParseSetCookie(connectErr.Meta().Get("Set-Cookie"))
-		require.NoError(t, err)
-		assert.Equal(t, "sess-123", parsed.Value)
-	})
-
-	// Wrapping a plain error to give it metadata would decide its status code
-	// here, and connect.CodeOf answers CodeUnknown for a context.Canceled that
-	// connect-go itself reports as CodeCanceled. Losing one refresh costs a
-	// throttle window; changing the code a client sees for every cancelled
-	// request costs more.
-	t.Run("a plain error passes through untouched", func(t *testing.T) {
-		sentinel := errors.New("boom")
-		out := refresh.applyToError(sentinel, false)
-
-		assert.Equal(t, sentinel, out, "the error must reach connect-go's own mapping unchanged")
-		var connectErr *connect.Error
-		assert.False(t, errors.As(out, &connectErr), "it must not become a connect.Error here")
-	})
-
-	t.Run("a context cancellation keeps the code connect-go gives it", func(t *testing.T) {
-		out := refresh.applyToError(context.Canceled, false)
-
-		assert.ErrorIs(t, out, context.Canceled)
-		assert.Equal(t, context.Canceled, out,
-			"wrapping would report CodeUnknown where connect-go reports CodeCanceled")
-	})
-
-	t.Run("a request that slid nothing adds no cookie", func(t *testing.T) {
-		orig := connect.NewError(connect.CodeUnauthenticated, errors.New("no"))
-		out := sessionRefresh{}.applyToError(orig, false)
-
-		var connectErr *connect.Error
-		require.ErrorAs(t, out, &connectErr)
-		assert.Empty(t, connectErr.Meta().Get("Set-Cookie"))
-	})
-
-	t.Run("no error stays no error", func(t *testing.T) {
-		assert.NoError(t, refresh.applyToError(nil, false))
-	})
 }
 
 // A session must be able to slide BEFORE it expires. This is the property a
@@ -273,20 +215,35 @@ func TestSlideDurationFallsBackToDefault(t *testing.T) {
 	assert.Equal(t, DefaultSessionDuration+sessionTouchThreshold, a.slideDuration(a.currentPolicy(context.Background())))
 }
 
-// The configured duration, not the default, is what a slide writes.
+// The configured duration, not the default, is what a slide writes. NewInterceptor
+// returns a bare ServerInterceptor func in v2, so the value is observed where
+// the slide writes it: the expiry of the Touch the interceptor issued.
 func TestSlideDurationHonoursConfiguredValue(t *testing.T) {
 	configured := 36 * time.Hour
+	sessions := &touchRecordingSessionStore{row: validSessionRow("user", "user")}
 	interceptor, registry := NewInterceptor(InterceptorOptions{
+		Store:  sessionValidationOverrideStore{sessions: sessions},
 		Policy: func(context.Context) Policy { return Policy{SessionDuration: configured} },
 	})
 	t.Cleanup(registry.Stop)
 
-	assert.Equal(t, configured+sessionTouchThreshold, interceptor.(*authInterceptor).slideDuration(interceptor.(*authInterceptor).currentPolicy(context.Background())))
+	before := time.Now()
+	info := cookieCallInfo()
+	require.NoError(t, callWrap(t, interceptor, "/private", info, func(context.Context, connect.Spec, connect.ServerStream) error {
+		return nil
+	}))
+
+	assert.WithinDuration(t, before.Add(configured+sessionTouchThreshold), sessions.touched.ExpiresAt, time.Second,
+		"the slide must write the configured duration, not the default")
+	parsed, err := http.ParseSetCookie(info.ResponseHeader().Get("Set-Cookie"))
+	require.NoError(t, err)
+	assert.WithinDuration(t, sessions.touched.ExpiresAt, parsed.Expires.UTC(), time.Second,
+		"the re-issued cookie must carry the expiry the slide wrote")
 }
 
 // TestPolicyResolvedOncePerRequest pins the request-path cost contract:
-// the wrappers resolve the (snapshot-backed, mutex-guarded) Policy once
-// and pass it through the chain, instead of re-entering the settings
+// the wrapper resolves the (snapshot-backed, mutex-guarded) Policy once
+// and passes it through the chain, instead of re-entering the settings
 // snapshot at every consumer — the hot path must not multiply global
 // lock acquisitions per request.
 func TestPolicyResolvedOncePerRequest(t *testing.T) {
@@ -298,12 +255,11 @@ func TestPolicyResolvedOncePerRequest(t *testing.T) {
 		},
 		state: &authState{},
 	}
-	wrapped := inc.WrapUnary(func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-		return nil, nil
-	})
-	// A bare request's empty procedure is not public, so the wrapper's
+	// An empty procedure is not public, so the wrapper's
 	// authentication chain runs far enough to consume the policy (cookie
 	// header parsing) before it rejects the request.
-	_, _ = wrapped(context.Background(), connect.NewRequest(&leapmuxv1.GetAltchaChallengeRequest{}))
+	_ = callWrap(t, inc.wrap, "", &connect.CallInfo{}, func(context.Context, connect.Spec, connect.ServerStream) error {
+		return nil
+	})
 	assert.EqualValues(t, 1, calls, "one request resolves the policy exactly once")
 }

@@ -9,7 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -39,11 +40,12 @@ func newBearerAuthHub(
 	interceptor, cache := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, TokenValidator: validator})
 	t.Cleanup(cache.Stop)
 	authService := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{}, servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(cache, nil, nil)))
-	path, handler := leapmuxv1connect.NewAuthServiceHandler(authService, connect.WithInterceptors(interceptor))
-	mux.Handle(path, handler)
+	connectServer := connect.NewServer(interceptor)
+	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authService)
+	connecthttp.Mount(mux, connectServer)
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	return leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL), cache
+	return leapmuxv1connect.NewAuthServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0)))), cache
 }
 
 func authenticateAPIBearer(
@@ -51,8 +53,9 @@ func authenticateAPIBearer(
 	client leapmuxv1connect.AuthServiceClient,
 	bearer string,
 ) error {
-	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
-	req.Header().Set("Authorization", "Bearer "+bearer)
+	req := &leapmuxv1.GetCurrentUserRequest{}
+	ctx, info := connect.NewClientContext(ctx)
+	info.RequestHeader().Set("Authorization", "Bearer "+bearer)
 	_, err := client.GetCurrentUser(ctx, req)
 	return err
 }

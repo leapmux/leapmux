@@ -8,7 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -53,22 +54,21 @@ func setupAdminGateServer(t *testing.T) *adminGateFixture {
 
 	mux := http.NewServeMux()
 	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, TokenValidator: tv})
-	interceptors := connect.WithInterceptors(interceptor)
+	connectServer := connect.NewServer(interceptor)
 
 	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{}, servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil)))
-	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
-	mux.Handle(authPath, authHandler)
+	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authSvc)
 
 	adminSvc := service.NewAdminSettingsService(servicetest.NewSettingsManager(t, st, nil), &config.Config{}, st)
-	adminPath, adminHandler := leapmuxv1connect.NewAdminSettingsServiceHandler(adminSvc, interceptors)
-	mux.Handle(adminPath, adminHandler)
+	leapmuxv1connect.RegisterAdminSettingsServiceHandler(connectServer, adminSvc)
+	connecthttp.Mount(mux, connectServer)
 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
 	return &adminGateFixture{
-		authClient:  leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL),
-		adminClient: leapmuxv1connect.NewAdminSettingsServiceClient(server.Client(), server.URL),
+		authClient:  leapmuxv1connect.NewAuthServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0)))),
+		adminClient: leapmuxv1connect.NewAdminSettingsServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0)))),
 		st:          st,
 		tv:          tv,
 		adminUserID: func() string {
@@ -81,34 +81,32 @@ func setupAdminGateServer(t *testing.T) *adminGateFixture {
 }
 
 func (f *adminGateFixture) adminCookie(t *testing.T) string {
-	resp, err := f.authClient.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
+	ctx, info := connect.NewClientContext(context.Background())
+	_, err := f.authClient.Login(ctx, &leapmuxv1.LoginRequest{
 		Username: "admin", Password: "admin123",
-	}))
+	})
 	require.NoError(t, err)
-	return hubtestutil.SessionFromCookie(t, resp.Header().Get("Set-Cookie"))
+	return hubtestutil.SessionFromCookie(t, info.ResponseHeader().Get("Set-Cookie"))
 }
 
 func (f *adminGateFixture) plainUserCookie(t *testing.T) string {
-	resp, err := f.authClient.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
+	ctx, info := connect.NewClientContext(context.Background())
+	_, err := f.authClient.Login(ctx, &leapmuxv1.LoginRequest{
 		Username: "plainuser", Password: "plainpass123",
-	}))
+	})
 	require.NoError(t, err)
-	return hubtestutil.SessionFromCookie(t, resp.Header().Get("Set-Cookie"))
+	return hubtestutil.SessionFromCookie(t, info.ResponseHeader().Get("Set-Cookie"))
 }
 
 func TestAdminGate_AdminCookieAllowed(t *testing.T) {
 	f := setupAdminGateServer(t)
-	req := connect.NewRequest(&leapmuxv1.ListSettingsRequest{})
-	req.Header().Set("Cookie", auth.CookieName+"="+f.adminCookie(t))
-	_, err := f.adminClient.ListSettings(context.Background(), req)
+	_, err := f.adminClient.ListSettings(authedReq(context.Background(), &leapmuxv1.ListSettingsRequest{}, f.adminCookie(t)))
 	require.NoError(t, err)
 }
 
 func TestAdminGate_NonAdminCookieDenied(t *testing.T) {
 	f := setupAdminGateServer(t)
-	req := connect.NewRequest(&leapmuxv1.ListSettingsRequest{})
-	req.Header().Set("Cookie", auth.CookieName+"="+f.plainUserCookie(t))
-	_, err := f.adminClient.ListSettings(context.Background(), req)
+	_, err := f.adminClient.ListSettings(authedReq(context.Background(), &leapmuxv1.ListSettingsRequest{}, f.plainUserCookie(t)))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "administrator privileges are required")
@@ -116,7 +114,7 @@ func TestAdminGate_NonAdminCookieDenied(t *testing.T) {
 
 func TestAdminGate_Unauthenticated(t *testing.T) {
 	f := setupAdminGateServer(t)
-	_, err := f.adminClient.ListSettings(context.Background(), connect.NewRequest(&leapmuxv1.ListSettingsRequest{}))
+	_, err := f.adminClient.ListSettings(context.Background(), &leapmuxv1.ListSettingsRequest{})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
@@ -152,9 +150,7 @@ func TestAdminGate_AdminBearerNeedsAnAdminScope(t *testing.T) {
 		return auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)
 	}
 	listSettings := func(bearer string) error {
-		req := connect.NewRequest(&leapmuxv1.ListSettingsRequest{})
-		req.Header().Set("Authorization", "Bearer "+bearer)
-		_, err := f.adminClient.ListSettings(context.Background(), req)
+		_, err := f.adminClient.ListSettings(bearerReq(context.Background(), &leapmuxv1.ListSettingsRequest{}, "Bearer "+bearer))
 		return err
 	}
 
@@ -199,9 +195,8 @@ func TestAdminGate_NonAdminAdminScopedBearerStillDenied(t *testing.T) {
 		SecretHash:    f.tv.HashSecret(secret),
 	}))
 
-	req := connect.NewRequest(&leapmuxv1.ListSettingsRequest{})
-	req.Header().Set("Authorization", "Bearer "+auth.FormatBearer(auth.BearerKindAPI, tokenID, secret))
-	_, err := f.adminClient.ListSettings(context.Background(), req)
+	_, err := f.adminClient.ListSettings(bearerReq(context.Background(), &leapmuxv1.ListSettingsRequest{},
+		"Bearer "+auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "administrator privileges are required",
@@ -244,9 +239,8 @@ func TestAdminGate_DelegationBearerOfAdminRefused(t *testing.T) {
 		ExpiresAt:     time.Now().Add(time.Hour),
 	}))
 
-	req := connect.NewRequest(&leapmuxv1.ListSettingsRequest{})
-	req.Header().Set("Authorization", "Bearer "+auth.FormatBearer(auth.BearerKindDelegation, tokenID, secret))
-	_, callErr := f.adminClient.ListSettings(context.Background(), req)
+	_, callErr := f.adminClient.ListSettings(bearerReq(context.Background(), &leapmuxv1.ListSettingsRequest{},
+		"Bearer "+auth.FormatBearer(auth.BearerKindDelegation, tokenID, secret)))
 	require.Error(t, callErr)
 	err := callErr
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
@@ -262,10 +256,10 @@ func TestAdminGate_SoloModeAutoAdmin(t *testing.T) {
 
 	mux := http.NewServeMux()
 	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, SoloUser: soloUser})
-	interceptors := connect.WithInterceptors(interceptor)
+	connectServer := connect.NewServer(interceptor)
 	adminSvc := service.NewAdminSettingsService(servicetest.NewSettingsManager(t, st, nil), &config.Config{SoloMode: true}, st)
-	adminPath, adminHandler := leapmuxv1connect.NewAdminSettingsServiceHandler(adminSvc, interceptors)
-	mux.Handle(adminPath, adminHandler)
+	leapmuxv1connect.RegisterAdminSettingsServiceHandler(connectServer, adminSvc)
+	connecthttp.Mount(mux, connectServer)
 
 	server := httptest.NewUnstartedServer(mux)
 	server.Config.BaseContext = func(net.Listener) context.Context {
@@ -274,21 +268,21 @@ func TestAdminGate_SoloModeAutoAdmin(t *testing.T) {
 	server.Start()
 	t.Cleanup(server.Close)
 
-	client := leapmuxv1connect.NewAdminSettingsServiceClient(server.Client(), server.URL)
+	client := leapmuxv1connect.NewAdminSettingsServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0))))
 	// No cookie, no bearer: the solo short-circuit authenticates the
 	// request, and the bootstrapped solo user is an admin.
-	resp, err := client.ListSettings(context.Background(), connect.NewRequest(&leapmuxv1.ListSettingsRequest{}))
+	resp, err := client.ListSettings(context.Background(), &leapmuxv1.ListSettingsRequest{})
 	require.NoError(t, err)
 
 	// Solo mode also omits the HiddenInSolo descriptors: sign-up, SMTP,
 	// captcha, and the per-user rate limits. The exact set is asserted in
 	// admin_settings_service_test.go; here the point is only that the
 	// solo listing drops them rather than flagging them.
-	for _, d := range resp.Msg.GetDescriptors() {
+	for _, d := range resp.GetDescriptors() {
 		assert.False(t, d.GetHiddenInSolo(), "solo listing must omit hidden-in-solo keys, not flag them: %s", d.GetKey())
 		if d.GetKey() == "captcha.enabled" || d.GetKey() == "rate_limit.elevation" {
 			t.Fatalf("solo listing must omit %s entirely", d.GetKey())
 		}
 	}
-	assert.NotEmpty(t, resp.Msg.GetDescriptors())
+	assert.NotEmpty(t, resp.GetDescriptors())
 }

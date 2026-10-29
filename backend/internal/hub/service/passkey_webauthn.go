@@ -5,8 +5,6 @@ import (
 	"errors"
 	"fmt"
 
-	"connectrpc.com/connect"
-
 	"github.com/leapmux/leapmux/internal/hub/config"
 	"github.com/leapmux/leapmux/internal/hub/keystore"
 	"github.com/leapmux/leapmux/internal/hub/settings"
@@ -118,8 +116,12 @@ func (s *AuthService) passkeysRunnableForOrigin(ctx context.Context, origin stri
 // originFromRequest returns the browser origin of a Connect request. The
 // WebAuthn layer accepts only origins the hub itself configured; an absent
 // header (non-browser client) falls back to the default RP ID.
-func originFromRequest[T any](req *connect.Request[T]) string {
-	return req.Header().Get("Origin")
+//
+// The origin is request metadata, so ctx carries it: connect v2 puts headers
+// on the call's CallInfo rather than on the request message.
+func originFromRequest(ctx context.Context) string {
+	info := serverCallInfo(ctx)
+	return info.RequestHeader().Get("Origin")
 }
 
 // webAuthnErrorClass says how a passkey surface must answer a ceremony

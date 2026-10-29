@@ -20,10 +20,10 @@ import (
 	"github.com/leapmux/leapmux/internal/util/userid"
 )
 
-// TestElevationSlideInterceptorIsMounted pins the WIRING, which no test in
+// TestElevationResponseInterceptorIsMounted pins the WIRING, which no test in
 // the service package can reach.
 //
-// Every test of the report itself mounts NewElevationSlideInterceptor in its
+// Every test of the report itself mounts NewElevationResponseInterceptor in its
 // own harness, so all of them keep passing when NewServer stops building with
 // it -- and the hub then ships a slide that reports nothing, which leaves every
 // client's copy of the deadline up to a whole auth.ElevationWindow early for the
@@ -32,7 +32,7 @@ import (
 //
 // It drives the REAL server wiring, through the same mux the binaries serve,
 // with a real elevated session and a real restricted write.
-func TestElevationSlideInterceptorIsMounted(t *testing.T) {
+func TestElevationResponseInterceptorIsMounted(t *testing.T) {
 	ctx := context.Background()
 	srv := startTestServer(t, &config.Config{})
 	st := srv.Store()

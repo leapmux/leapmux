@@ -1,10 +1,11 @@
 package service
 
 import (
+	"errors"
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -55,10 +56,12 @@ func TestMintAuthority(t *testing.T) {
 		t.Parallel()
 		err := mintedByActor(session(nil)).assert(now)
 		require.Error(t, err)
-		var connectErr *connect.Error
-		require.ErrorAs(t, err, &connectErr)
-		assert.Equal(t, connect.CodeFailedPrecondition, connectErr.Code())
-		assert.Equal(t, "1", connectErr.Meta().Get(ElevationRequiredHeader))
+		assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+		// The prompt marker rides the response header, keyed on the sentinel
+		// (NewElevationResponseInterceptor): a refusal that wraps it is the one
+		// a step-up prompt can clear.
+		assert.True(t, errors.Is(err, errElevationRequired),
+			"the refusal must be the one a step-up prompt can clear")
 	})
 
 	t.Run("a lapsed elevation is refused", func(t *testing.T) {

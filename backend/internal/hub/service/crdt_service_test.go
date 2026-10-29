@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -269,10 +269,10 @@ func TestCRDTService_SubmitOps_RequiresAuth(t *testing.T) {
 
 	env := setupCRDTService(t)
 
-	req := connect.NewRequest(&leapmuxv1.SubmitOpsRequest{
+	req := &leapmuxv1.SubmitOpsRequest{
 		Epoch:   env.mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch(),
 		Batches: []*leapmuxv1.OpBatch{{BatchId: "b1", Ops: addTabOps("op1", "tA", "root1", "wkr1", "p1")}},
-	})
+	}
 
 	_, err := env.svc.SubmitOps(context.Background(), req)
 	require.Error(t, err)
@@ -292,15 +292,15 @@ func TestCRDTService_SubmitOps_StampsPrincipalAndOrigin(t *testing.T) {
 	env := setupCRDTService(t)
 	ctx := auth.WithUser(context.Background(), sessionCaller(env.userID))
 
-	req := connect.NewRequest(&leapmuxv1.SubmitOpsRequest{
+	req := &leapmuxv1.SubmitOpsRequest{
 		Epoch:   env.mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch(),
 		Batches: []*leapmuxv1.OpBatch{{BatchId: "b1", Ops: addTabOps("op1", "tA", "root1", "wkr1", "p1")}},
-	})
+	}
 
 	resp, err := env.svc.SubmitOps(ctx, req)
 	require.NoError(t, err)
-	require.Len(t, resp.Msg.GetResults(), 1)
-	require.NotNil(t, resp.Msg.GetResults()[0].GetCommitted())
+	require.Len(t, resp.GetResults(), 1)
+	require.NotNil(t, resp.GetResults()[0].GetCommitted())
 
 	// The dedup row landed under principal_id=env.userID — proving the
 	// service stamped it, not a value the request body controlled.
@@ -327,14 +327,14 @@ func TestCRDTService_SubmitOps_OriginClientIdSpoofingRejected(t *testing.T) {
 		op.OriginClientId = "hub-spoofed"
 	}
 
-	req := connect.NewRequest(&leapmuxv1.SubmitOpsRequest{
+	req := &leapmuxv1.SubmitOpsRequest{
 		Epoch:   env.mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch(),
 		Batches: []*leapmuxv1.OpBatch{{BatchId: "b2", Ops: spoofed}},
-	})
+	}
 
 	resp, err := env.svc.SubmitOps(ctx, req)
 	require.NoError(t, err)
-	committed := resp.Msg.GetResults()[0].GetCommitted()
+	committed := resp.GetResults()[0].GetCommitted()
 	require.NotNil(t, committed)
 	require.Len(t, committed.GetCommitted(), 3)
 
@@ -381,14 +381,14 @@ func TestCRDTService_SubmitOps_TabOutsideAnyWorkspaceRejected(t *testing.T) {
 	require.NoError(t, err)
 
 	ctx := auth.WithUser(context.Background(), sessionCaller(env.userID))
-	req := connect.NewRequest(&leapmuxv1.SubmitOpsRequest{
+	req := &leapmuxv1.SubmitOpsRequest{
 		Epoch:   env.mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch(),
 		Batches: []*leapmuxv1.OpBatch{{BatchId: "b-orphan", Ops: addTabOps("opX", "tOrphan", "orphan-root", "wkr1", "p1")}},
-	})
+	}
 
 	resp, err := env.svc.SubmitOps(ctx, req)
 	require.NoError(t, err, "the rejection is in-band, not an RPC error")
-	rejected := resp.Msg.GetResults()[0].GetRejected()
+	rejected := resp.GetResults()[0].GetRejected()
 	require.NotNil(t, rejected, "the batch must be rejected")
 	assert.Equal(t, leapmuxv1.BatchRejectionReason_BATCH_REJECTION_TAB_PLACEMENT_INVALID, rejected.GetReason())
 
@@ -396,13 +396,13 @@ func TestCRDTService_SubmitOps_TabOutsideAnyWorkspaceRejected(t *testing.T) {
 	assert.NotContains(t, env.mgr.State().GetTabs(), "tOrphan")
 	// And the seeded workspace's own root still takes tabs — the guard
 	// rejects the placement, not the submitter.
-	req2 := connect.NewRequest(&leapmuxv1.SubmitOpsRequest{
+	req2 := &leapmuxv1.SubmitOpsRequest{
 		Epoch:   env.mgr.Materialized(crdt.SubscriberFilter{}).GetCurrentEpoch(),
 		Batches: []*leapmuxv1.OpBatch{{BatchId: "b-ok", Ops: addTabOps("opY", "tFine", "root1", "wkr1", "p1")}},
-	})
+	}
 	resp2, err := env.svc.SubmitOps(ctx, req2)
 	require.NoError(t, err)
-	require.NotNil(t, resp2.Msg.GetResults()[0].GetCommitted(), "a tab on a registered root still commits")
+	require.NotNil(t, resp2.GetResults()[0].GetCommitted(), "a tab on a registered root still commits")
 }
 
 // TestCRDTService_UpdatePresence_RequiresAuth ensures presence calls
@@ -411,7 +411,7 @@ func TestCRDTService_UpdatePresence_RequiresAuth(t *testing.T) {
 	t.Parallel()
 
 	env := setupCRDTService(t)
-	req := connect.NewRequest(&leapmuxv1.UpdatePresenceRequest{WorkspaceId: "w1"})
+	req := &leapmuxv1.UpdatePresenceRequest{WorkspaceId: "w1"}
 	_, err := env.svc.UpdatePresence(context.Background(), req)
 	require.Error(t, err)
 	var ce *connect.Error
@@ -431,12 +431,12 @@ func TestCRDTService_GetMaterialized_DelegationEmptyAccessDoesNotAllowAll(t *tes
 		Credential: auth.DelegationCredential("test-delegation", "worker-mint"),
 	})
 
-	resp, err := svc.GetMaterialized(ctx, connect.NewRequest(&leapmuxv1.GetMaterializedRequest{}))
+	resp, err := svc.GetMaterialized(ctx, &leapmuxv1.GetMaterializedRequest{})
 	require.NoError(t, err)
-	assert.Empty(t, resp.Msg.GetState().GetWorkspaces(),
+	assert.Empty(t, resp.GetState().GetWorkspaces(),
 		"an empty delegated ACL must not be interpreted as the all-workspaces materialized filter")
-	assert.Empty(t, resp.Msg.GetState().GetNodes())
-	assert.Empty(t, resp.Msg.GetState().GetTabs())
+	assert.Empty(t, resp.GetState().GetNodes())
+	assert.Empty(t, resp.GetState().GetTabs())
 }
 
 func TestCRDTService_UpdatePresence_RequiresCanonicalWorkspaceReadAccess(t *testing.T) {
@@ -449,9 +449,9 @@ func TestCRDTService_UpdatePresence_RequiresCanonicalWorkspaceReadAccess(t *test
 		svc := service.NewCRDTService(st, env.registry, nil, nil)
 
 		ctx := auth.WithUser(context.Background(), sessionCaller(user.ID))
-		_, err := svc.UpdatePresence(ctx, connect.NewRequest(&leapmuxv1.UpdatePresenceRequest{
+		_, err := svc.UpdatePresence(ctx, &leapmuxv1.UpdatePresenceRequest{
 			WorkspaceId: "does-not-exist",
-		}))
+		})
 		require.Error(t, err)
 		assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 	})
@@ -471,9 +471,9 @@ func TestCRDTService_UpdatePresence_RequiresCanonicalWorkspaceReadAccess(t *test
 			ID:         userid.MustNew(other.ID),
 			Credential: auth.DelegationCredential("delegation-token", "worker-mint"),
 		})
-		_, err := svc.UpdatePresence(ctx, connect.NewRequest(&leapmuxv1.UpdatePresenceRequest{
+		_, err := svc.UpdatePresence(ctx, &leapmuxv1.UpdatePresenceRequest{
 			WorkspaceId: workspaceID,
-		}))
+		})
 		require.Error(t, err)
 		assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 	})
@@ -508,9 +508,9 @@ func TestCRDTService_UpdatePresence_DelegationReachesOwnersOtherWorkspace(t *tes
 		ID:         userid.MustNew(owner.ID),
 		Credential: auth.DelegationCredential("delegation-token", "worker-mint"),
 	})
-	_, err := svc.UpdatePresence(ctx, connect.NewRequest(&leapmuxv1.UpdatePresenceRequest{
+	_, err := svc.UpdatePresence(ctx, &leapmuxv1.UpdatePresenceRequest{
 		WorkspaceId: sibling,
-	}))
+	})
 	require.NoError(t, err,
 		"a delegated heartbeat must reach every workspace its owner owns")
 }
@@ -582,9 +582,9 @@ func TestCRDTService_UpdatePresence_ClientIDNamespaces(t *testing.T) {
 			defer unsub()
 
 			ctx := auth.WithUser(context.Background(), tc.info)
-			_, err := svc.UpdatePresence(ctx, connect.NewRequest(&leapmuxv1.UpdatePresenceRequest{
+			_, err := svc.UpdatePresence(ctx, &leapmuxv1.UpdatePresenceRequest{
 				WorkspaceId: "w1",
-			}))
+			})
 			require.NoError(t, err)
 
 			// Allow the manager goroutine to fan out the broadcast.

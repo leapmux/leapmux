@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"golang.org/x/sync/singleflight"
 
 	leapmuxv1connect "github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
@@ -305,8 +305,9 @@ func PolicyFromSettings(ctx context.Context, snap *settings.Snapshot) Policy {
 	}
 }
 
-// authInterceptor implements connect.Interceptor to validate session cookies
-// on both unary and streaming RPCs.
+// authInterceptor validates session cookies and bearer credentials on every
+// RPC, unary and streaming alike. Its wrap method is the Connect v2
+// interceptor entry.
 type authInterceptor struct {
 	store          store.Store
 	policy         func(context.Context) Policy
@@ -365,7 +366,7 @@ type InterceptorOptions struct {
 // Callers use the returned AuthContextRegistry to evict entries from the
 // in-memory touch throttle (e.g. on logout). Call AuthContextRegistry.Stop to terminate
 // the background sweep goroutine.
-func NewInterceptor(opts InterceptorOptions) (connect.Interceptor, *AuthContextRegistry) {
+func NewInterceptor(opts InterceptorOptions) (connect.ServerInterceptor, *AuthContextRegistry) {
 	st := opts.Store
 	state := &authState{}
 	soloGate := opts.SoloGate
@@ -407,7 +408,7 @@ func NewInterceptor(opts InterceptorOptions) (connect.Interceptor, *AuthContextR
 	periodic.Start(sweepCtx, periodic.Schedule{Interval: touchSweepInterval, SkipFirstRun: true}, func(context.Context) {
 		a.sweepCachesOnce()
 	})
-	return a, sc
+	return a.wrap, sc
 }
 
 // AuthContextRegistry provides eviction access to the interceptor's in-memory
@@ -959,54 +960,38 @@ func (c *AuthContextRegistry) Stop() {
 	c.state.cancelLeases(leases)
 }
 
-func (a *authInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
-	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
+// wrap is the Connect v2 interceptor entry. v2 gives an interceptor one
+// ServerFunc for every RPC and carries request and response metadata on
+// the call's CallInfo instead of on request/response wrappers, so the
+// unary and streaming paths below become one.
+func (a *authInterceptor) wrap(next connect.ServerFunc) connect.ServerFunc {
+	return func(ctx context.Context, spec connect.Spec, stream connect.ServerStream) error {
+		// A raw ServerFunc invocation carries no CallInfo and no transport,
+		// so fall back to a detached one: it reads as empty and absorbs the
+		// slide cookie that has nowhere to travel. connect.Server.Call
+		// attaches the real one for every live RPC.
+		info, ok := connect.CallInfoForServerContext(ctx)
+		if !ok {
+			info = &connect.CallInfo{}
+		}
 		p := a.currentPolicy(ctx)
-		ctx, refresh, err := a.authenticate(ctx, req.Spec().Procedure, req.Header().Get("Cookie"), req.Header().Get("Authorization"), p)
-		if err != nil {
-			// authenticate rejects an authenticated request too -- an unverified
-			// user reaches the email-verification gate after the slide committed --
-			// so this rejection carries the cookie for the same reason the handler's
-			// does below.
-			return nil, refresh.applyToError(err, p.SecureCookies)
-		}
-		resp, err := next(ctx, req)
-		if err != nil {
-			// A failed call has no response to hang a header on, but a
-			// connect.Error carries its own metadata, and connect-go merges that
-			// into the response header before it writes the status. Without this
-			// branch a client whose calls keep failing -- a permission denial, a
-			// validation error, a procedure that fails briefly -- slides the
-			// row on every request and is still signed out at the login deadline,
-			// because the throttle gives the cookie no other request to ride.
-			return nil, refresh.applyToError(err, p.SecureCookies)
-		}
-		if resp == nil {
-			return resp, err
-		}
-		refresh.applyTo(resp.Header(), p.SecureCookies)
-		return resp, nil
-	}
-}
-
-func (a *authInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
-	return next
-}
-
-func (a *authInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
-	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
-		p := a.currentPolicy(ctx)
-		ctx, refresh, err := a.authenticate(ctx, conn.Spec().Procedure, conn.RequestHeader().Get("Cookie"), conn.RequestHeader().Get("Authorization"), p)
-		// Before the handler runs, not after: the response header of a stream
-		// goes out with the first message, and a long-lived stream sends that
-		// message long before it returns. The write happens on the rejection path
-		// too, because a stream carries an error in its body and not in the
-		// header, so the header is the only place a cookie can travel either way.
-		refresh.applyTo(conn.ResponseHeader(), p.SecureCookies)
+		ctx, refresh, err := a.authenticate(ctx, spec.Procedure, info.RequestHeader().Get("Cookie"), info.RequestHeader().Get("Authorization"), p)
+		// Write the slide before the handler runs, not after. A stream's
+		// response header goes out with its first message, long before the
+		// call returns, and the transport flushes this same header when it
+		// writes an error status. So one write covers the success path and
+		// the rejection path alike -- authenticate rejects an authenticated
+		// request too, an unverified user reaching the email-verification
+		// gate after the slide committed. Without it a client whose calls
+		// keep failing -- a permission denial, a validation error, a
+		// procedure that fails briefly -- slides the row on every request
+		// and is still signed out at the login deadline, because the
+		// throttle gives the cookie no other request to ride.
+		refresh.applyTo(info.ResponseHeader(), p.SecureCookies)
 		if err != nil {
 			return err
 		}
-		return next(ctx, conn)
+		return next(ctx, spec, stream)
 	}
 }
 
@@ -1071,7 +1056,7 @@ func (a *authInterceptor) authenticate(ctx context.Context, procedure, cookieHea
 	// which AuthenticateHTTP serves -- kept the session alive.
 	token := SessionIDFromCookieHeader(cookieHeader, p.SecureCookies)
 	if token == "" {
-		return ctx, noRefresh, connect.NewError(connect.CodeUnauthenticated, nil)
+		return ctx, noRefresh, connect.NewError(connect.CodeUnauthenticated, "")
 	}
 
 	userInfo, err := a.validateTokenCached(ctx, token)
@@ -1144,7 +1129,7 @@ func (a *authInterceptor) enforceEmailVerification(procedure string, userInfo *U
 	if unverifiedAllowedProcedures[procedure] {
 		return nil
 	}
-	return connect.NewError(connect.CodePermissionDenied, fmt.Errorf("email verification required"))
+	return connect.Errorf(connect.CodePermissionDenied, "email verification required")
 }
 
 // enforceAdmin rejects a non-admin caller from an admin procedure, in the
@@ -1169,7 +1154,7 @@ func enforceAdmin(procedure string, userInfo *UserInfo) error {
 		return nil
 	}
 	if !userInfo.IsAdmin {
-		return connect.NewError(connect.CodePermissionDenied, fmt.Errorf("administrator privileges are required"))
+		return connect.Errorf(connect.CodePermissionDenied, "administrator privileges are required")
 	}
 	return nil
 }
@@ -1189,7 +1174,7 @@ func (a *authInterceptor) tryAuthenticateBearer(ctx context.Context, authHeader 
 
 	kind, tokenID, secret, err := ParseBearer(bearer)
 	if err != nil {
-		return nil, false, connect.NewError(connect.CodeUnauthenticated, ErrInvalidToken)
+		return nil, false, connect.NewError(connect.CodeUnauthenticated, ErrInvalidToken.Error()).WithCause(ErrInvalidToken)
 	}
 	cacheKey := bearerCacheKey(kind, tokenID, a.tokenValidator.HashSecret(secret))
 	if v, ok := a.state.bearers.Load(cacheKey); ok {
@@ -1227,7 +1212,7 @@ func (a *authInterceptor) tryAuthenticateBearer(ctx context.Context, authHeader 
 			a.state.revocationMu.Lock()
 			if a.bearerRevoked(cacheKey, u, validationGen) {
 				a.state.revocationMu.Unlock()
-				return nil, connect.NewError(connect.CodeUnauthenticated, ErrTokenRevoked)
+				return nil, connect.NewError(connect.CodeUnauthenticated, ErrTokenRevoked.Error()).WithCause(ErrTokenRevoked)
 			}
 			if bearerRevokedAfter(&a.state.bearerInvalidations, cacheKey.bearerRef(), validationGen) {
 				a.state.revocationMu.Unlock()
@@ -1293,14 +1278,18 @@ func (k bearerCacheKeyParts) bearerRef() BearerRef {
 // per-credential revocation / invalidation checks are kind-specific and stay
 // with each caller; sharing this prefix keeps the bearer and session hot paths
 // from disagreeing on what "within the cache window" means.
-func cacheEntryFresh(cs cachedSession) bool {
-	return time.Since(cs.cachedAt) < sessionCacheTTL && cs.user.CredentialCurrent(time.Now())
+func cacheEntryFresh(cs cachedSession, credentialNow time.Time) bool {
+	return time.Since(cs.cachedAt) < sessionCacheTTL && cs.user.CredentialCurrent(credentialNow)
 }
 
 // bearerCacheFresh returns true when cs is within TTL and no matching
 // revocation or user-cache invalidation followed its validation.
 func (a *authInterceptor) bearerCacheFresh(key bearerCacheKeyParts, cs cachedSession) bool {
-	if !cacheEntryFresh(cs) {
+	credentialClock := time.Now
+	if a.tokenValidator != nil {
+		credentialClock = a.tokenValidator.now
+	}
+	if !cacheEntryFresh(cs, credentialClock()) {
 		return false
 	}
 	// Lock-free: the revocation/invalidation marks live in concurrency-safe
@@ -1340,7 +1329,7 @@ func (a *authInterceptor) validateTokenCached(ctx context.Context, token string)
 		a.state.revocationMu.Lock()
 		if a.sessionRevoked(token, userInfo, validationGen) {
 			a.state.revocationMu.Unlock()
-			return nil, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("session revoked"))
+			return nil, connect.Errorf(connect.CodeUnauthenticated, "session revoked")
 		}
 		if userInvalidatedAfter(&a.state.userInvalidations, userInfo.ID.String(), validationGen) {
 			a.state.revocationMu.Unlock()
@@ -1355,7 +1344,7 @@ func (a *authInterceptor) validateTokenCached(ctx context.Context, token string)
 }
 
 func (a *authInterceptor) sessionCacheFresh(sessionID string, cached cachedSession) bool {
-	if !cacheEntryFresh(cached) {
+	if !cacheEntryFresh(cached, time.Now()) {
 		return false
 	}
 	// Lock-free for the same reason as bearerCacheFresh: monotonic marks in

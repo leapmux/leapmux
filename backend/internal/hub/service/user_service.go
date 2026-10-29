@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/config"
@@ -46,7 +46,7 @@ func NewUserService(st store.Store, cfg *config.Config, set *settings.Manager, l
 	return &UserService{store: st, cfg: cfg, set: set, lifecycle: lifecycle, mail: sender, renderer: renderer, keystore: ks}
 }
 
-func (s *UserService) UpdateProfile(ctx context.Context, req *connect.Request[leapmuxv1.UpdateProfileRequest]) (*connect.Response[leapmuxv1.UpdateProfileResponse], error) {
+func (s *UserService) UpdateProfile(ctx context.Context, req *leapmuxv1.UpdateProfileRequest) (*leapmuxv1.UpdateProfileResponse, error) {
 	if err := rejectSolo(s.cfg.SoloMode, "profile changes"); err != nil {
 		return nil, err
 	}
@@ -57,17 +57,17 @@ func (s *UserService) UpdateProfile(ctx context.Context, req *connect.Request[le
 
 	user, err := s.store.Users().GetByID(ctx, userInfo.ID.String())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 
-	newUsername, err := validate.SanitizeSlug("username", req.Msg.GetUsername())
+	newUsername, err := validate.SanitizeSlug("username", req.GetUsername())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		return nil, wrappedConnectError(connect.CodeInvalidArgument, err)
 	}
 
-	displayName, err := validate.SanitizeDisplayName(req.Msg.GetDisplayName(), newUsername)
+	displayName, err := validate.SanitizeDisplayName(req.GetDisplayName(), newUsername)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("display name: %w", err))
+		return nil, wrappedConnectError(connect.CodeInvalidArgument, fmt.Errorf("display name: %w", err))
 	}
 
 	usernameChanged := newUsername != user.Username
@@ -76,10 +76,10 @@ func (s *UserService) UpdateProfile(ctx context.Context, req *connect.Request[le
 	if usernameChanged {
 		existing, err := s.store.Users().GetByUsername(ctx, newUsername)
 		if err != nil && !errors.Is(err, store.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeInternal, err)
+			return nil, wrappedConnectError(connect.CodeInternal, err)
 		}
 		if err == nil && existing.ID != user.ID {
-			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("username %q is already taken", newUsername))
+			return nil, connect.Errorf(connect.CodeInvalidArgument, "username %q is already taken", newUsername)
 		}
 	}
 
@@ -95,16 +95,16 @@ func (s *UserService) UpdateProfile(ctx context.Context, req *connect.Request[le
 		// to the same clear "already taken" error the pre-check returns rather than
 		// leaking an opaque 500.
 		if errors.Is(err, store.ErrConflict) {
-			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("username %q is already taken", newUsername))
+			return nil, connect.Errorf(connect.CodeInvalidArgument, "username %q is already taken", newUsername)
 		}
 		// The store re-validates the slug it will actually persist
 		// (UpdateUserProfileParams.Validate); the sanitize above makes that
 		// unreachable from this handler, but a validation the store adds later
 		// must surface as bad input, not an opaque 500.
 		if errors.Is(err, store.ErrInvalidArgument) {
-			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+			return nil, wrappedConnectError(connect.CodeInvalidArgument, err)
 		}
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	// Drop the local cached UserInfo only when a cached field (username) changed;
 	// a display-name-only edit touches nothing UserInfo caches. This mirrors the
@@ -113,15 +113,15 @@ func (s *UserService) UpdateProfile(ctx context.Context, req *connect.Request[le
 		s.lifecycle.UserInfoInvalidated(user.ID)
 	}
 
-	return connect.NewResponse(&leapmuxv1.UpdateProfileResponse{
+	return &leapmuxv1.UpdateProfileResponse{
 		Username:     newUsername,
 		DisplayName:  displayName,
 		Email:        user.Email,
 		PendingEmail: user.PendingEmail,
-	}), nil
+	}, nil
 }
 
-func (s *UserService) RequestEmailChange(ctx context.Context, req *connect.Request[leapmuxv1.RequestEmailChangeRequest]) (*connect.Response[leapmuxv1.RequestEmailChangeResponse], error) {
+func (s *UserService) RequestEmailChange(ctx context.Context, req *leapmuxv1.RequestEmailChangeRequest) (*leapmuxv1.RequestEmailChangeResponse, error) {
 	if err := rejectSolo(s.cfg.SoloMode, "email changes"); err != nil {
 		return nil, err
 	}
@@ -130,12 +130,12 @@ func (s *UserService) RequestEmailChange(ctx context.Context, req *connect.Reque
 		return nil, err
 	}
 
-	newEmail := req.Msg.GetNewEmail()
+	newEmail := req.GetNewEmail()
 	if newEmail == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("email cannot be empty"))
+		return nil, connect.Errorf(connect.CodeInvalidArgument, "email cannot be empty")
 	}
 	if err := validate.ValidateEmail(newEmail); err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		return nil, wrappedConnectError(connect.CodeInvalidArgument, err)
 	}
 
 	// The account email is a recovery identity: it receives the account-recovery
@@ -156,10 +156,10 @@ func (s *UserService) RequestEmailChange(ctx context.Context, req *connect.Reque
 
 	user, err := s.store.Users().GetByID(ctx, userInfo.ID.String())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	if newEmail == user.Email {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("email is unchanged"))
+		return nil, connect.Errorf(connect.CodeInvalidArgument, "email is unchanged")
 	}
 
 	// Check that no other user has this email.
@@ -206,7 +206,7 @@ func (s *UserService) RequestEmailChange(ctx context.Context, req *connect.Reque
 		}
 		if !verificationRequired {
 			if err := SetEmailAndClearCompeting(ctx, tx, user.ID, newEmail, false); err != nil {
-				return connect.NewError(connect.CodeInternal, err)
+				return wrappedConnectError(connect.CodeInternal, err)
 			}
 			return nil
 		}
@@ -217,9 +217,9 @@ func (s *UserService) RequestEmailChange(ctx context.Context, req *connect.Reque
 			// address is caller-supplied, so an unconditional mint sends a
 			// message per request to any address the caller specifies.
 			if errors.Is(err, ErrVerificationCooldown) {
-				return connect.NewError(connect.CodeResourceExhausted, err)
+				return wrappedConnectError(connect.CodeResourceExhausted, err)
 			}
-			return connect.NewError(connect.CodeUnavailable, err)
+			return wrappedConnectError(connect.CodeUnavailable, err)
 		}
 		storedCode = code
 		mintedUnblockedAt = blockedUntil
@@ -235,9 +235,9 @@ func (s *UserService) RequestEmailChange(ctx context.Context, req *connect.Reque
 	if !verificationRequired {
 		s.lifecycle.UserInfoInvalidated(user.ID)
 		slideElevation(ctx, s.store, userInfo, s.now())
-		return connect.NewResponse(&leapmuxv1.RequestEmailChangeResponse{
+		return &leapmuxv1.RequestEmailChangeResponse{
 			VerificationRequired: false,
-		}), nil
+		}, nil
 	}
 
 	// On a send failure the helper drops the undelivered code and keeps the
@@ -252,13 +252,13 @@ func (s *UserService) RequestEmailChange(ctx context.Context, req *connect.Reque
 		now:             s.now,
 	}); !sent {
 		return nil, connect.NewError(connect.CodeUnavailable,
-			errors.New("the hub could not send the verification email"))
+			"the hub could not send the verification email")
 	}
 
 	slideElevation(ctx, s.store, userInfo, s.now())
-	return connect.NewResponse(&leapmuxv1.RequestEmailChangeResponse{
+	return &leapmuxv1.RequestEmailChangeResponse{
 		VerificationRequired: true,
-	}), nil
+	}, nil
 }
 
 // ResendVerificationEmail re-issues the verification mail for the
@@ -266,7 +266,7 @@ func (s *UserService) RequestEmailChange(ctx context.Context, req *connect.Reque
 // who actually have a pending row — there is nothing to re-send
 // otherwise. The hub enforces the cooldown on the server; the frontend
 // rate-limit UI is purely cosmetic.
-func (s *UserService) ResendVerificationEmail(ctx context.Context, _ *connect.Request[leapmuxv1.ResendVerificationEmailRequest]) (*connect.Response[leapmuxv1.ResendVerificationEmailResponse], error) {
+func (s *UserService) ResendVerificationEmail(ctx context.Context, _ *leapmuxv1.ResendVerificationEmailRequest) (*leapmuxv1.ResendVerificationEmailResponse, error) {
 	userInfo, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
@@ -274,7 +274,7 @@ func (s *UserService) ResendVerificationEmail(ctx context.Context, _ *connect.Re
 
 	full, err := s.store.Users().GetByID(ctx, userInfo.ID.String())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 
 	targetEmail := full.PendingEmail
@@ -284,7 +284,7 @@ func (s *UserService) ResendVerificationEmail(ctx context.Context, _ *connect.Re
 		targetEmail = full.Email
 	}
 	if targetEmail == "" {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("no pending email change"))
+		return nil, connect.Errorf(connect.CodeFailedPrecondition, "no pending email change")
 	}
 
 	// The cooldown lives in the conditional mint inside
@@ -308,7 +308,7 @@ func (s *UserService) ResendVerificationEmail(ctx context.Context, _ *connect.Re
 	if nextResend != nil {
 		resp.NextResendAvailableAt = timestamppb.New(*nextResend)
 	}
-	return connect.NewResponse(resp), nil
+	return resp, nil
 }
 
 // VerifyEmail handles both signup verification and email-change verification.
@@ -316,13 +316,13 @@ func (s *UserService) ResendVerificationEmail(ctx context.Context, _ *connect.Re
 // user's* pending row, so user B cannot redeem user A's code (the code
 // simply does not exist for user B). See verifyPendingEmailToken for the
 // per-user lookup, expiry/mismatch oracle handling, and rate limit.
-func (s *UserService) VerifyEmail(ctx context.Context, req *connect.Request[leapmuxv1.VerifyEmailRequest]) (*connect.Response[leapmuxv1.VerifyEmailResponse], error) {
+func (s *UserService) VerifyEmail(ctx context.Context, req *leapmuxv1.VerifyEmailRequest) (*leapmuxv1.VerifyEmailResponse, error) {
 	userInfo, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	updatedUser, err := verifyPendingEmailToken(ctx, s.store, userInfo.ID.String(), req.Msg.GetVerificationToken(), s.now())
+	updatedUser, err := verifyPendingEmailToken(ctx, s.store, userInfo.ID.String(), req.GetVerificationToken(), s.now())
 	if err != nil {
 		return nil, err
 	}
@@ -334,9 +334,9 @@ func (s *UserService) VerifyEmail(ctx context.Context, req *connect.Request[leap
 
 	userProto := userToProtoWithPasskeys(ctx, s.store, updatedUser)
 
-	return connect.NewResponse(&leapmuxv1.VerifyEmailResponse{
+	return &leapmuxv1.VerifyEmailResponse{
 		User: userProto,
-	}), nil
+	}, nil
 }
 
 // ChangePassword sets or replaces the caller's password.
@@ -344,14 +344,14 @@ func (s *UserService) VerifyEmail(ctx context.Context, req *connect.Request[leap
 // It is reachable in solo mode for an authenticated caller. Local IPC receives
 // the synthetic solo identity. A TCP caller without a session uses
 // AuthService.SetInitialSoloPassword instead.
-func (s *UserService) ChangePassword(ctx context.Context, req *connect.Request[leapmuxv1.ChangePasswordRequest]) (*connect.Response[leapmuxv1.ChangePasswordResponse], error) {
+func (s *UserService) ChangePassword(ctx context.Context, req *leapmuxv1.ChangePasswordRequest) (*leapmuxv1.ChangePasswordResponse, error) {
 	userInfo, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	if err := validate.ValidatePassword(req.Msg.GetNewPassword()); err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	if err := validate.ValidatePassword(req.GetNewPassword()); err != nil {
+		return nil, wrappedConnectError(connect.CodeInvalidArgument, err)
 	}
 
 	// runStepUpMutationTx hashes the new password and commits the write: the
@@ -364,9 +364,9 @@ func (s *UserService) ChangePassword(ctx context.Context, req *connect.Request[l
 	// first-passkey path enforces.
 	var hashed string
 	prepare := func(*store.User) error {
-		h, err := password.Hash(req.Msg.GetNewPassword())
+		h, err := password.Hash(req.GetNewPassword())
 		if err != nil {
-			return connect.NewError(connect.CodeInternal, fmt.Errorf("hash password: %w", err))
+			return wrappedConnectError(connect.CodeInternal, fmt.Errorf("hash password: %w", err))
 		}
 		hashed = h
 		return nil
@@ -403,10 +403,10 @@ func (s *UserService) ChangePassword(ctx context.Context, req *connect.Request[l
 		return nil, mapPasskeyConnectError(ctx, err)
 	}
 
-	return connect.NewResponse(&leapmuxv1.ChangePasswordResponse{}), nil
+	return &leapmuxv1.ChangePasswordResponse{}, nil
 }
 
-func (s *UserService) UnlinkOAuthProvider(ctx context.Context, req *connect.Request[leapmuxv1.UnlinkOAuthProviderRequest]) (*connect.Response[leapmuxv1.UnlinkOAuthProviderResponse], error) {
+func (s *UserService) UnlinkOAuthProvider(ctx context.Context, req *leapmuxv1.UnlinkOAuthProviderRequest) (*leapmuxv1.UnlinkOAuthProviderResponse, error) {
 	if err := rejectSolo(s.cfg.SoloMode, "provider links"); err != nil {
 		return nil, err
 	}
@@ -415,9 +415,9 @@ func (s *UserService) UnlinkOAuthProvider(ctx context.Context, req *connect.Requ
 		return nil, err
 	}
 
-	providerID := req.Msg.GetProviderId()
+	providerID := req.GetProviderId()
 	if providerID == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("provider_id is required"))
+		return nil, connect.Errorf(connect.CodeInvalidArgument, "provider_id is required")
 	}
 
 	// Detaching a provider removes a login method, and for an OAuth-only
@@ -432,12 +432,12 @@ func (s *UserService) UnlinkOAuthProvider(ctx context.Context, req *connect.Requ
 
 	user, err := s.store.Users().GetByID(ctx, userInfo.ID.String())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 
 	links, err := s.store.OAuthUserLinks().ListByUser(ctx, userInfo.ID)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 
 	// Verify the user actually has a link to this provider.
@@ -449,7 +449,7 @@ func (s *UserService) UnlinkOAuthProvider(ctx context.Context, req *connect.Requ
 		}
 	}
 	if !found {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("no linked account for provider %q", providerID))
+		return nil, connect.Errorf(connect.CodeNotFound, "no linked account for provider %q", providerID)
 	}
 
 	// ONE read of the enabled-provider set, for BOTH runs of the rule below.
@@ -504,14 +504,14 @@ func (s *UserService) UnlinkOAuthProvider(ctx context.Context, req *connect.Requ
 		// same row while holding the writer lock.
 		lockedUser, err := tx.Users().GetByID(ctx, user.ID)
 		if err != nil {
-			return connect.NewError(connect.CodeInternal, err)
+			return wrappedConnectError(connect.CodeInternal, err)
 		}
 		if err := refuseIfActingAuthorityMovedFrom(ctx, tx, lockedUser, userInfo, s.now()); err != nil {
 			return err
 		}
 		lockedLinks, err := tx.OAuthUserLinks().ListByUser(ctx, userInfo.ID)
 		if err != nil {
-			return connect.NewError(connect.CodeInternal, err)
+			return wrappedConnectError(connect.CodeInternal, err)
 		}
 		if err := assertRemovingTheLinkLeavesALoginMethod(ctx, tx, lockedUser, lockedLinks, enabled, providerID); err != nil {
 			return err
@@ -520,7 +520,7 @@ func (s *UserService) UnlinkOAuthProvider(ctx context.Context, req *connect.Requ
 			UserID:     rowUID,
 			ProviderID: providerID,
 		}); err != nil {
-			return connect.NewError(connect.CodeInternal, err)
+			return wrappedConnectError(connect.CodeInternal, err)
 		}
 		return nil
 	}); err != nil {
@@ -528,7 +528,7 @@ func (s *UserService) UnlinkOAuthProvider(ctx context.Context, req *connect.Requ
 	}
 
 	slideElevation(ctx, s.store, userInfo, s.now())
-	return connect.NewResponse(&leapmuxv1.UnlinkOAuthProviderResponse{}), nil
+	return &leapmuxv1.UnlinkOAuthProviderResponse{}, nil
 }
 
 // enabledProviderIDs reports whether each configured OAuth provider is
@@ -541,7 +541,7 @@ func (s *UserService) UnlinkOAuthProvider(ctx context.Context, req *connect.Requ
 func enabledProviderIDs(ctx context.Context, st store.Store) (map[string]bool, error) {
 	rows, err := st.OAuthProviders().ListAll(ctx)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal,
+		return nil, wrappedConnectError(connect.CodeInternal,
 			fmt.Errorf("list the configured OAuth providers: %w", err))
 	}
 	enabled := make(map[string]bool, len(rows))
@@ -603,16 +603,16 @@ func assertRemovingTheLinkLeavesALoginMethod(
 	}
 	passkeys, err := st.PasskeyCredentials().CountByUser(ctx, user.ID)
 	if err != nil {
-		return connect.NewError(connect.CodeInternal, err)
+		return wrappedConnectError(connect.CodeInternal, err)
 	}
 	if passkeys > 0 {
 		return nil
 	}
-	return connect.NewError(connect.CodeFailedPrecondition,
+	return connect.Errorf(connect.CodeFailedPrecondition,
 		// "unlink", the word the button, the RPC and the docs all use. One
 		// term per concept: a second word for this action would read as a
 		// second action.
-		fmt.Errorf("cannot unlink your only login method; set a password first"))
+		"cannot unlink your only login method; set a password first")
 }
 
 // userSettingValueToProto assembles one account setting's wire value from
@@ -639,7 +639,7 @@ func userSettingValue(prefsJSON, key string) *leapmuxv1.SettingValue {
 	return userSettingValueToProto(key, state.Raw, state.Value, state.Customized)
 }
 
-func (s *UserService) ListUserSettings(ctx context.Context, _ *connect.Request[leapmuxv1.ListUserSettingsRequest]) (*connect.Response[leapmuxv1.ListUserSettingsResponse], error) {
+func (s *UserService) ListUserSettings(ctx context.Context, _ *leapmuxv1.ListUserSettingsRequest) (*leapmuxv1.ListUserSettingsResponse, error) {
 	userInfo, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
@@ -666,10 +666,10 @@ func (s *UserService) ListUserSettings(ctx context.Context, _ *connect.Request[l
 		descrs = append(descrs, settingDescriptorToProto(d))
 		vals = append(vals, userSettingValueToProto(name, state.Raw, state.Value, state.Customized))
 	}
-	return connect.NewResponse(&leapmuxv1.ListUserSettingsResponse{
+	return &leapmuxv1.ListUserSettingsResponse{
 		Descriptors: descrs,
 		Values:      vals,
-	}), nil
+	}, nil
 }
 
 // mutateUserPrefs runs one key-scoped mutation over the caller's prefs
@@ -690,7 +690,7 @@ func (s *UserService) mutateUserPrefs(
 		return nil, err
 	}
 	if key == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("key is required"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, "key is required")
 	}
 
 	var updated string
@@ -715,12 +715,12 @@ func (s *UserService) mutateUserPrefs(
 	if err != nil {
 		var invalid *settings.InvalidError
 		if errors.As(err, &invalid) {
-			return nil, connect.NewError(connect.CodeInvalidArgument, invalid)
+			return nil, wrappedConnectError(connect.CodeInvalidArgument, invalid)
 		}
 		// Stored corruption, not caller input: say so rather than blaming
 		// the request or answering with a bare 500.
 		if errors.Is(err, usersettings.ErrMalformedBlob) {
-			return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("stored preferences are malformed; contact support: %w", err))
+			return nil, wrappedConnectError(connect.CodeFailedPrecondition, fmt.Errorf("stored preferences are malformed; contact support: %w", err))
 		}
 		// The store's own sentinels classify the same way here as on the
 		// admin surface. A user soft-deleted while a session is still live
@@ -731,29 +731,29 @@ func (s *UserService) mutateUserPrefs(
 	return userSettingValue(updated, key), nil
 }
 
-func (s *UserService) UpdateUserSetting(ctx context.Context, req *connect.Request[leapmuxv1.UpdateUserSettingRequest]) (*connect.Response[leapmuxv1.UpdateUserSettingResponse], error) {
-	key := req.Msg.GetKey()
+func (s *UserService) UpdateUserSetting(ctx context.Context, req *leapmuxv1.UpdateUserSettingRequest) (*leapmuxv1.UpdateUserSettingResponse, error) {
+	key := req.GetKey()
 	value, err := s.mutateUserPrefs(ctx, key, func(prefs string) (string, error) {
-		return usersettings.Default.ApplyPartial(prefs, key, json.RawMessage(req.Msg.GetPartialJson()))
+		return usersettings.Default.ApplyPartial(prefs, key, json.RawMessage(req.GetPartialJson()))
 	})
 	if err != nil {
 		return nil, err
 	}
-	return connect.NewResponse(&leapmuxv1.UpdateUserSettingResponse{Value: value}), nil
+	return &leapmuxv1.UpdateUserSettingResponse{Value: value}, nil
 }
 
-func (s *UserService) ResetUserSetting(ctx context.Context, req *connect.Request[leapmuxv1.ResetUserSettingRequest]) (*connect.Response[leapmuxv1.ResetUserSettingResponse], error) {
-	key := req.Msg.GetKey()
+func (s *UserService) ResetUserSetting(ctx context.Context, req *leapmuxv1.ResetUserSettingRequest) (*leapmuxv1.ResetUserSettingResponse, error) {
+	key := req.GetKey()
 	value, err := s.mutateUserPrefs(ctx, key, func(prefs string) (string, error) {
 		return usersettings.Default.Reset(prefs, key)
 	})
 	if err != nil {
 		return nil, err
 	}
-	return connect.NewResponse(&leapmuxv1.ResetUserSettingResponse{Value: value}), nil
+	return &leapmuxv1.ResetUserSettingResponse{Value: value}, nil
 }
 
-func (s *UserService) GetTimeouts(ctx context.Context, req *connect.Request[leapmuxv1.GetTimeoutsRequest]) (*connect.Response[leapmuxv1.GetTimeoutsResponse], error) {
+func (s *UserService) GetTimeouts(ctx context.Context, req *leapmuxv1.GetTimeoutsRequest) (*leapmuxv1.GetTimeoutsResponse, error) {
 	if _, err := auth.MustGetUser(ctx); err != nil {
 		return nil, err
 	}
@@ -763,9 +763,9 @@ func (s *UserService) GetTimeouts(ctx context.Context, req *connect.Request[leap
 	// every budget at settings.MaxTimeoutSeconds, and the snapshot degrades
 	// a value that fails validation to the default. Widen that cap and the
 	// wire type has to widen with it.
-	return connect.NewResponse(&leapmuxv1.GetTimeoutsResponse{
+	return &leapmuxv1.GetTimeoutsResponse{
 		ApiTimeoutSeconds:            int32(t.APITimeoutSeconds),
 		AgentStartupTimeoutSeconds:   int32(t.AgentStartupTimeoutSeconds),
 		WorktreeCreateTimeoutSeconds: int32(t.WorktreeCreateSecs),
-	}), nil
+	}, nil
 }

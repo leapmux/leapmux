@@ -3,11 +3,10 @@ package auth
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"net/http"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 )
 
 const (
@@ -307,7 +306,7 @@ type sessionRefresh struct {
 // overwrite this one. A guard that left every Set-Cookie alone would stop
 // refreshing the session on the first response that also carried an unrelated
 // cookie, silently and with nothing to point at the cause.
-func (r sessionRefresh) applyTo(h http.Header, secure bool) {
+func (r sessionRefresh) applyTo(h *connect.Header, secure bool) {
 	if r.sessionID == "" {
 		return
 	}
@@ -323,35 +322,6 @@ func (r sessionRefresh) applyTo(h http.Header, secure bool) {
 		}
 	}
 	h.Add("Set-Cookie", BuildSessionCookie(r.sessionID, r.expiresAt, secure).String())
-}
-
-// applyToError writes the refreshed session cookie into err's metadata and
-// returns the error to answer with.
-//
-// A ConnectRPC unary handler that fails has no response to carry a header, but
-// connect-go merges a *connect.Error's metadata into the response header before
-// it writes the status, so the cookie still reaches the browser.
-//
-// An error of any other type passes through untouched, and loses this one
-// refresh. Wrapping it to give it metadata would decide its status code here,
-// and connect.CodeOf answers CodeUnknown for a context.Canceled that connect-go
-// itself reports as CodeCanceled -- so the wrapper would change what the client
-// sees for every cancelled request that happened to slide. The cookie is worth
-// less than the code: the row already slid, and the next slide re-issues it.
-//
-// A stream cannot use this: connect-go puts a stream error's metadata in the
-// body trailer, where a browser ignores Set-Cookie. WrapStreamingHandler writes
-// the cookie to the response header instead.
-func (r sessionRefresh) applyToError(err error, secure bool) error {
-	if err == nil || r.sessionID == "" {
-		return err
-	}
-	var connectErr *connect.Error
-	if !errors.As(err, &connectErr) {
-		return err
-	}
-	r.applyTo(connectErr.Meta(), secure)
-	return err
 }
 
 // ClearSessionCookie creates a cookie that clears the session.

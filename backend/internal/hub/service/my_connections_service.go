@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -96,7 +96,7 @@ func callerAPITokenID(userInfo *auth.UserInfo) string {
 	return userInfo.Credential.APITokenID()
 }
 
-func (s *UserService) ListMyAPITokens(ctx context.Context, req *connect.Request[leapmuxv1.ListMyAPITokensRequest]) (*connect.Response[leapmuxv1.ListMyAPITokensResponse], error) {
+func (s *UserService) ListMyAPITokens(ctx context.Context, req *leapmuxv1.ListMyAPITokensRequest) (*leapmuxv1.ListMyAPITokensResponse, error) {
 	userInfo, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
@@ -107,23 +107,23 @@ func (s *UserService) ListMyAPITokens(ctx context.Context, req *connect.Request[
 		// omitted limit is the proto3 zero, and the queries read zero as
 		// "return no rows", so a caller that simply left it out would get an
 		// empty page it could not distinguish from an empty table.
-		PageParams: NormalizePageParams(req.Msg.GetCursor(), req.Msg.GetLimit()),
+		PageParams: NormalizePageParams(req.GetCursor(), req.GetLimit()),
 	})
 	if err != nil {
 		if errors.Is(err, store.ErrInvalidCursor) {
-			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+			return nil, wrappedConnectError(connect.CodeInvalidArgument, err)
 		}
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	currentTokenID := callerAPITokenID(userInfo)
 	tokens := make([]*leapmuxv1.MyAPIToken, 0, len(page.Rows))
 	for _, row := range page.Rows {
 		tokens = append(tokens, myAPITokenToProto(row, currentTokenID))
 	}
-	return connect.NewResponse(&leapmuxv1.ListMyAPITokensResponse{
+	return &leapmuxv1.ListMyAPITokensResponse{
 		Tokens:     tokens,
 		NextCursor: page.NextCursor,
-	}), nil
+	}, nil
 }
 
 // DisconnectApp ends this account's whole authorization of one app.
@@ -146,21 +146,21 @@ func (s *UserService) ListMyAPITokens(ctx context.Context, req *connect.Request[
 // It also refuses to confirm whether an unknown client_id identifies a real
 // app,
 // which the app catalogue's own visibility rule already refuses.
-func (s *UserService) DisconnectApp(ctx context.Context, req *connect.Request[leapmuxv1.DisconnectAppRequest]) (*connect.Response[leapmuxv1.DisconnectAppResponse], error) {
+func (s *UserService) DisconnectApp(ctx context.Context, req *leapmuxv1.DisconnectAppRequest) (*leapmuxv1.DisconnectAppResponse, error) {
 	userInfo, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
 	}
-	clientID := req.Msg.GetClientId()
+	clientID := req.GetClientId()
 	if clientID == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("client_id is required"))
+		return nil, connect.Errorf(connect.CodeInvalidArgument, "client_id is required")
 	}
 	// The rows are READ before the cascade, because each one's lifecycle
 	// effects run AFTER the write commits: effects accumulate, and a retried
 	// transaction would apply some of them twice.
 	refs, err := s.store.OAuthClients().ListUserTokenRefs(ctx, clientID, userInfo.ID)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list app credentials: %w", err))
+		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("list app credentials: %w", err))
 	}
 	// The three writes run in ONE transaction, like the equivalent cascade in
 	// AppService.RevokeApp: a failure or crash between them would leave the
@@ -188,7 +188,7 @@ func (s *UserService) DisconnectApp(ctx context.Context, req *connect.Request[le
 		return nil
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	// ONE batched eviction, exactly as RevokeApp runs its cascade's effects.
 	ids := make([]string, 0, len(refs))
@@ -196,31 +196,31 @@ func (s *UserService) DisconnectApp(ctx context.Context, req *connect.Request[le
 		ids = append(ids, ref.ID)
 	}
 	s.lifecycle.BearerRevokedBatch(auth.BearerKindAPI, ids)
-	return connect.NewResponse(&leapmuxv1.DisconnectAppResponse{RevokedCredentialCount: revoked}), nil
+	return &leapmuxv1.DisconnectAppResponse{RevokedCredentialCount: revoked}, nil
 }
 
-func (s *UserService) RevokeMyAPIToken(ctx context.Context, req *connect.Request[leapmuxv1.RevokeMyAPITokenRequest]) (*connect.Response[leapmuxv1.RevokeMyAPITokenResponse], error) {
+func (s *UserService) RevokeMyAPIToken(ctx context.Context, req *leapmuxv1.RevokeMyAPITokenRequest) (*leapmuxv1.RevokeMyAPITokenResponse, error) {
 	userInfo, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if req.Msg.GetId() == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("id is required"))
+	if req.GetId() == "" {
+		return nil, connect.Errorf(connect.CodeInvalidArgument, "id is required")
 	}
 	// The owner equality lives in the UPDATE, so a token id that belongs to
 	// somebody else matches no row, and the handler answers it exactly like a
 	// missing one -- the listing is per-user, so a caller has no legitimate
 	// way to learn another user's token id, and this refuses to confirm one.
 	n, err := s.store.APITokens().RevokeOwned(ctx, store.RevokeOwnedAPITokenParams{
-		ID:     req.Msg.GetId(),
+		ID:     req.GetId(),
 		UserID: userInfo.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	if n == 0 {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("no such credential"))
+		return nil, connect.Errorf(connect.CodeNotFound, "no such credential")
 	}
-	s.lifecycle.BearerRevoked(auth.BearerKindAPI, req.Msg.GetId())
-	return connect.NewResponse(&leapmuxv1.RevokeMyAPITokenResponse{}), nil
+	s.lifecycle.BearerRevoked(auth.BearerKindAPI, req.GetId())
+	return &leapmuxv1.RevokeMyAPITokenResponse{}, nil
 }

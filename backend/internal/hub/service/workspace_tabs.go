@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
@@ -18,15 +18,15 @@ import (
 // this RPC is read-only.
 func (s *WorkspaceService) ListTabs(
 	ctx context.Context,
-	req *connect.Request[leapmuxv1.ListTabsRequest],
-) (*connect.Response[leapmuxv1.ListTabsResponse], error) {
+	req *leapmuxv1.ListTabsRequest,
+) (*leapmuxv1.ListTabsResponse, error) {
 	user, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
 	}
 
 	workspaceIDs, err := resolveAllowedWorkspacesForUser(
-		ctx, s.store, req.Msg.GetWorkspaceIds(), user)
+		ctx, s.store, req.GetWorkspaceIds(), user)
 	if err != nil {
 		// Only a delegation-scope PermissionDenied is a genuine authorization
 		// failure; an uncoded transient store failure must surface as a retryable
@@ -36,7 +36,7 @@ func (s *WorkspaceService) ListTabs(
 		if connect.CodeOf(err) == connect.CodePermissionDenied {
 			return nil, err
 		}
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 
 	var pbTabs []*leapmuxv1.WorkspaceTab
@@ -51,7 +51,7 @@ func (s *WorkspaceService) ListTabs(
 			WorkspaceIDs: workspaceIDs,
 		})
 		if err != nil {
-			return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list rendered tabs: %w", err))
+			return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("list rendered tabs: %w", err))
 		}
 		pbTabs = make([]*leapmuxv1.WorkspaceTab, 0, len(rows))
 		for _, t := range rows {
@@ -59,22 +59,22 @@ func (s *WorkspaceService) ListTabs(
 		}
 	}
 
-	return connect.NewResponse(&leapmuxv1.ListTabsResponse{
+	return &leapmuxv1.ListTabsResponse{
 		Tabs: pbTabs,
-	}), nil
+	}, nil
 }
 
 // GetTab resolves a single workspace tab from the materialized
 // rendered-tab view.
 func (s *WorkspaceService) GetTab(
 	ctx context.Context,
-	req *connect.Request[leapmuxv1.GetTabRequest],
-) (*connect.Response[leapmuxv1.GetTabResponse], error) {
+	req *leapmuxv1.GetTabRequest,
+) (*leapmuxv1.GetTabResponse, error) {
 	user, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if _, err := loadWorkspaceForRead(ctx, s.store, req.Msg.GetWorkspaceId(), user); err != nil {
+	if _, err := loadWorkspaceForRead(ctx, s.store, req.GetWorkspaceId(), user); err != nil {
 		return nil, err
 	}
 	// loadWorkspaceForRead proved the caller owns the workspace; user.ID is
@@ -83,19 +83,19 @@ func (s *WorkspaceService) GetTab(
 	// FK, so any tenant may name any workspace -- from answering this lookup.
 	row, err := s.store.WorkspaceTabIndex().GetRendered(ctx, store.GetRenderedTabParams{
 		UserID:      user.ID,
-		WorkspaceID: req.Msg.GetWorkspaceId(),
-		TabType:     req.Msg.GetTabType(),
-		TabID:       req.Msg.GetTabId(),
+		WorkspaceID: req.GetWorkspaceId(),
+		TabType:     req.GetTabType(),
+		TabID:       req.GetTabId(),
 	})
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("tab not found"))
+			return nil, connect.Errorf(connect.CodeNotFound, "tab not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get tab: %w", err))
+		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("get tab: %w", err))
 	}
-	return connect.NewResponse(&leapmuxv1.GetTabResponse{
+	return &leapmuxv1.GetTabResponse{
 		Tab: workspaceTabToProto(row),
-	}), nil
+	}, nil
 }
 
 // LocateTab finds a tab by (tab_type, tab_id) without a workspace
@@ -105,14 +105,14 @@ func (s *WorkspaceService) GetTab(
 // (workspace / tile / worker) from just the env-injected tab id.
 func (s *WorkspaceService) LocateTab(
 	ctx context.Context,
-	req *connect.Request[leapmuxv1.LocateTabRequest],
-) (*connect.Response[leapmuxv1.LocateTabResponse], error) {
+	req *leapmuxv1.LocateTabRequest,
+) (*leapmuxv1.LocateTabResponse, error) {
 	user, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if req.Msg.GetTabId() == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("tab_id is required"))
+	if req.GetTabId() == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, "tab_id is required")
 	}
 	// One lookup for every credential kind. A delegation bearer used to take a
 	// separate arm that pinned the search to its mint-scope workspace; with the
@@ -120,18 +120,18 @@ func (s *WorkspaceService) LocateTab(
 	// user owns -- so the search is the same search.
 	row, err := s.store.WorkspaceTabIndex().LocateAccessibleRendered(ctx, store.LocateAccessibleRenderedTabParams{
 		UserID:  user.ID,
-		TabType: req.Msg.GetTabType(),
-		TabID:   req.Msg.GetTabId(),
+		TabType: req.GetTabType(),
+		TabID:   req.GetTabId(),
 	})
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("tab not found in any accessible workspace"))
+			return nil, connect.Errorf(connect.CodeNotFound, "tab not found in any accessible workspace")
 		}
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("locate tab: %w", err))
+		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("locate tab: %w", err))
 	}
-	return connect.NewResponse(&leapmuxv1.LocateTabResponse{
+	return &leapmuxv1.LocateTabResponse{
 		Tab: workspaceTabToProto(row),
-	}), nil
+	}, nil
 }
 
 // LocateTile resolves a tile_id to its workspace_id by walking the
@@ -151,21 +151,21 @@ func (s *WorkspaceService) LocateTab(
 // for follow-up CRDT mutations.
 func (s *WorkspaceService) LocateTile(
 	ctx context.Context,
-	req *connect.Request[leapmuxv1.LocateTileRequest],
-) (*connect.Response[leapmuxv1.LocateTileResponse], error) {
+	req *leapmuxv1.LocateTileRequest,
+) (*leapmuxv1.LocateTileResponse, error) {
 	user, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
 	}
-	tileID := req.Msg.GetTileId()
+	tileID := req.GetTileId()
 	if tileID == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("tile_id is required"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, "tile_id is required")
 	}
 	if s.registry == nil {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("crdt registry not configured"))
+		return nil, connect.NewError(connect.CodeFailedPrecondition, "crdt registry not configured")
 	}
 	userID := user.ID.String()
-	notFound := connect.NewError(connect.CodeNotFound, fmt.Errorf("tile not found in any accessible workspace"))
+	notFound := connect.Errorf(connect.CodeNotFound, "tile not found in any accessible workspace")
 	mgr, err := s.registry.Get(ctx, userID)
 	if err != nil {
 		// A transient failure bootstrapping the manager must NOT collapse to
@@ -174,7 +174,7 @@ func (s *WorkspaceService) LocateTile(
 		// gone. Surface a retryable Internal instead, and log the ids the wrapped
 		// error doesn't carry.
 		slog.Warn("locate tile: get crdt manager failed", "user_id", userID, "tile_id", tileID, "error", err)
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("get crdt manager: %w", err))
+		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("get crdt manager: %w", err))
 	}
 	workspaceID := mgr.LocateTileWorkspace(tileID)
 	if workspaceID == "" {
@@ -186,9 +186,9 @@ func (s *WorkspaceService) LocateTile(
 	if _, err := readWorkspaceOrNotFound(ctx, s.store, workspaceID, user, notFound); err != nil {
 		return nil, err
 	}
-	return connect.NewResponse(&leapmuxv1.LocateTileResponse{
+	return &leapmuxv1.LocateTileResponse{
 		WorkspaceId: workspaceID,
-	}), nil
+	}, nil
 }
 
 func workspaceTabToProto(row *store.WorkspaceTabRow) *leapmuxv1.WorkspaceTab {

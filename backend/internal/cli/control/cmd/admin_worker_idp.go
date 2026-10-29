@@ -6,7 +6,6 @@ import (
 	"flag"
 	"strconv"
 
-	"connectrpc.com/connect"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/cli/control"
 )
@@ -41,17 +40,17 @@ func RunAdminWorkerList(rawCtx any, args []string) error {
 			return nil
 		},
 		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AdminWorkerService().ListWorkers(context.Background(), connect.NewRequest(&leapmuxv1.AdminWorkerServiceListWorkersRequest{
+			resp, err := c.AdminWorkerService().ListWorkers(context.Background(), &leapmuxv1.AdminWorkerServiceListWorkersRequest{
 				UserId: userID, Username: username, Status: statusEnum, Limit: page.Limit, Cursor: page.Cursor,
-			}))
+			})
 			if err != nil {
 				return control.EmitErrorWith("rpc_failed", err)
 			}
-			rows := make([]map[string]any, 0, len(resp.Msg.GetWorkers()))
-			for _, w := range resp.Msg.GetWorkers() {
+			rows := make([]map[string]any, 0, len(resp.GetWorkers()))
+			for _, w := range resp.GetWorkers() {
 				rows = append(rows, adminWorkerJSON(w))
 			}
-			return control.EmitData(map[string]any{"workers": rows, "next_cursor": resp.Msg.GetNextCursor()})
+			return control.EmitData(map[string]any{"workers": rows, "next_cursor": resp.GetNextCursor()})
 		},
 	})
 }
@@ -84,11 +83,11 @@ func RunAdminWorkerGet(rawCtx any, args []string) error {
 		},
 		BeforeDial: requireFlag(&id, "id"),
 		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AdminWorkerService().GetWorker(context.Background(), connect.NewRequest(&leapmuxv1.AdminWorkerServiceGetWorkerRequest{Id: id}))
+			resp, err := c.AdminWorkerService().GetWorker(context.Background(), &leapmuxv1.AdminWorkerServiceGetWorkerRequest{Id: id})
 			if err != nil {
 				return control.EmitErrorWith("rpc_failed", err)
 			}
-			return control.EmitData(adminWorkerJSON(resp.Msg.GetWorker()))
+			return control.EmitData(adminWorkerJSON(resp.GetWorker()))
 		},
 	})
 }
@@ -101,7 +100,7 @@ func RunAdminWorkerDeregister(rawCtx any, args []string) error {
 		},
 		BeforeDial: requireFlag(&id, "id"),
 		Run: func(c *control.Client, _ adminArgs) error {
-			if _, err := c.AdminWorkerService().DeregisterWorker(context.Background(), connect.NewRequest(&leapmuxv1.AdminWorkerServiceDeregisterWorkerRequest{Id: id})); err != nil {
+			if _, err := c.AdminWorkerService().DeregisterWorker(context.Background(), &leapmuxv1.AdminWorkerServiceDeregisterWorkerRequest{Id: id}); err != nil {
 				return control.EmitErrorWith("deregister_failed", err)
 			}
 			return control.EmitData(map[string]any{"deregistered": id})
@@ -118,17 +117,17 @@ func RunAdminWorkerRegKeyList(rawCtx any, args []string) error {
 			fs.BoolVar(&includeExpired, "include-expired", false, "include revoked or expired keys (forensics; default shows only live keys)")
 		},
 		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AdminWorkerService().ListRegistrationKeys(context.Background(), connect.NewRequest(&leapmuxv1.ListRegistrationKeysRequest{
+			resp, err := c.AdminWorkerService().ListRegistrationKeys(context.Background(), &leapmuxv1.ListRegistrationKeysRequest{
 				IncludeExpired: includeExpired, Limit: page.Limit, Cursor: page.Cursor,
-			}))
+			})
 			if err != nil {
 				return control.EmitErrorWith("rpc_failed", err)
 			}
-			rows := make([]map[string]any, 0, len(resp.Msg.GetKeys()))
-			for _, k := range resp.Msg.GetKeys() {
+			rows := make([]map[string]any, 0, len(resp.GetKeys()))
+			for _, k := range resp.GetKeys() {
 				rows = append(rows, adminRegistrationKeyJSON(k))
 			}
-			return control.EmitData(map[string]any{"keys": rows, "next_cursor": resp.Msg.GetNextCursor()})
+			return control.EmitData(map[string]any{"keys": rows, "next_cursor": resp.GetNextCursor()})
 		},
 	})
 }
@@ -160,7 +159,7 @@ func RunAdminWorkerRegKeyRevoke(rawCtx any, args []string) error {
 		},
 		BeforeDial: requireFlag(&id, "id"),
 		Run: func(c *control.Client, _ adminArgs) error {
-			if _, err := c.AdminWorkerService().RevokeRegistrationKey(context.Background(), connect.NewRequest(&leapmuxv1.RevokeRegistrationKeyRequest{Id: id})); err != nil {
+			if _, err := c.AdminWorkerService().RevokeRegistrationKey(context.Background(), &leapmuxv1.RevokeRegistrationKeyRequest{Id: id}); err != nil {
 				return control.EmitErrorWith("revoke_failed", err)
 			}
 			return control.EmitData(map[string]any{"revoked": id})
@@ -171,11 +170,11 @@ func RunAdminWorkerRegKeyRevoke(rawCtx any, args []string) error {
 func RunAdminWorkerRegKeyPurgeExpired(rawCtx any, args []string) error {
 	return adminVerb(rawCtx, args, adminVerbSpec{
 		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AdminWorkerService().PurgeExpiredRegistrationKeys(context.Background(), connect.NewRequest(&leapmuxv1.PurgeExpiredRegistrationKeysRequest{}))
+			resp, err := c.AdminWorkerService().PurgeExpiredRegistrationKeys(context.Background(), &leapmuxv1.PurgeExpiredRegistrationKeysRequest{})
 			if err != nil {
 				return control.EmitErrorWith("purge_failed", err)
 			}
-			return control.EmitData(map[string]any{"purged": resp.Msg.GetPurged()})
+			return control.EmitData(map[string]any{"purged": resp.GetPurged()})
 		},
 	})
 }
@@ -226,11 +225,11 @@ func RunAdminOAuthProviderAdd(rawCtx any, args []string) error {
 			return nil
 		},
 		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AdminIdPService().AddOAuthProvider(context.Background(), connect.NewRequest(req))
+			resp, err := c.AdminIdPService().AddOAuthProvider(context.Background(), req)
 			if err != nil {
 				return control.EmitErrorWith("add_failed", err)
 			}
-			return control.EmitData(adminOAuthProviderJSON(resp.Msg.GetProvider()))
+			return control.EmitData(adminOAuthProviderJSON(resp.GetProvider()))
 		},
 	})
 }
@@ -238,12 +237,12 @@ func RunAdminOAuthProviderAdd(rawCtx any, args []string) error {
 func RunAdminOAuthProviderList(rawCtx any, args []string) error {
 	return adminVerb(rawCtx, args, adminVerbSpec{
 		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AdminIdPService().ListOAuthProviders(context.Background(), connect.NewRequest(&leapmuxv1.ListOAuthProvidersRequest{}))
+			resp, err := c.AdminIdPService().ListOAuthProviders(context.Background(), &leapmuxv1.ListOAuthProvidersRequest{})
 			if err != nil {
 				return control.EmitErrorWith("rpc_failed", err)
 			}
-			providers := make([]map[string]any, 0, len(resp.Msg.GetProviders()))
-			for _, p := range resp.Msg.GetProviders() {
+			providers := make([]map[string]any, 0, len(resp.GetProviders()))
+			for _, p := range resp.GetProviders() {
 				providers = append(providers, adminOAuthProviderJSON(p))
 			}
 			return control.EmitData(providers)
@@ -272,13 +271,13 @@ func RunAdminOAuthProviderRemove(rawCtx any, args []string) error {
 		},
 		BeforeDial: requireFlag(&id, "id"),
 		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AdminIdPService().RemoveOAuthProvider(context.Background(), connect.NewRequest(&leapmuxv1.RemoveOAuthProviderRequest{
+			resp, err := c.AdminIdPService().RemoveOAuthProvider(context.Background(), &leapmuxv1.RemoveOAuthProviderRequest{
 				Id: id, Force: force,
-			}))
+			})
 			if err != nil {
 				return control.EmitErrorWith("remove_failed", err)
 			}
-			return control.EmitData(map[string]any{"removed": id, "locked_out_users": resp.Msg.GetLockedOutUsers()})
+			return control.EmitData(map[string]any{"removed": id, "locked_out_users": resp.GetLockedOutUsers()})
 		},
 	})
 }
@@ -293,9 +292,9 @@ func RunAdminOAuthProviderSetEnabled(rawCtx any, args []string, enabled bool) er
 		},
 		BeforeDial: requireFlag(&id, "id"),
 		Run: func(c *control.Client, _ adminArgs) error {
-			if _, err := c.AdminIdPService().SetOAuthProviderEnabled(context.Background(), connect.NewRequest(&leapmuxv1.SetOAuthProviderEnabledRequest{
+			if _, err := c.AdminIdPService().SetOAuthProviderEnabled(context.Background(), &leapmuxv1.SetOAuthProviderEnabledRequest{
 				Id: id, Enabled: enabled,
-			})); err != nil {
+			}); err != nil {
 				return control.EmitErrorWith("update_failed", err)
 			}
 			return control.EmitData(map[string]any{"id": id, "enabled": enabled})

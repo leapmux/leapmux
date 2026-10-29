@@ -2,10 +2,11 @@ package service
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -208,15 +209,14 @@ func TestStepUpMutationAuth_FirstCredentialRequiresFreshAuth(t *testing.T) {
 	assert.False(t, admission.firstCredential,
 		"admitted on the ELEVATED branch, so the locked re-check verifies the window")
 
-	// The refusal a prompt CAN resolve carries the marker that opens one.
-	// Without it the client printed the sentence as raw text beside a form
-	// and offered nothing.
+	// The refusal a prompt CAN resolve wraps the sentinel the step-up
+	// marker is keyed on (NewElevationResponseInterceptor). Without that
+	// marker the client printed the sentence as raw text beside a form and
+	// offered nothing.
 	_, err = svc.stepUpMutationAuth(
 		ctx, entryStepUp(info(time.Now().UTC().Add(-24*time.Hour))), user)
 	require.Error(t, err)
-	var connectErr *connect.Error
-	require.ErrorAs(t, err, &connectErr)
-	assert.Equal(t, "1", connectErr.Meta().Get(ElevationRequiredHeader),
+	assert.True(t, errors.Is(err, errElevationRequired),
 		"a stale sign-in is now resolvable by proving a factor, so it must open a prompt")
 }
 
@@ -293,16 +293,17 @@ func TestStepUpMutationAuth_ElevationRequiredOnceACredentialExists(t *testing.T)
 	assert.False(t, cliAdmission.firstCredential,
 		"admitted on the ELEVATED branch, so the locked re-check verifies the window")
 
-	// UN-elevated, it is refused WITH the marker: the CLI runs the browser
-	// leg and retries, rather than reporting a refusal it cannot act on.
+	// UN-elevated, it is refused as the step-up class: the CLI runs the
+	// browser leg and retries, rather than reporting a refusal it cannot act
+	// on. The sentinel is what the marker is keyed on, so wrapping it is
+	// what makes the refusal resolvable.
 	unelevatedCLI := *base
 	unelevatedCLI.Credential = auth.APICredential("tok-1")
 	_, err = svc.stepUpMutationAuth(ctx, entryStepUp(&unelevatedCLI), user)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
-	var cliErr *connect.Error
-	require.ErrorAs(t, err, &cliErr)
-	assert.Equal(t, "1", cliErr.Meta().Get(ElevationRequiredHeader))
+	assert.True(t, errors.Is(err, errElevationRequired),
+		"the CLI must be told to run the browser leg and retry")
 
 	// A LAPSED window on the same credential is refused the same way.
 	lapsedCLI := *base
@@ -323,10 +324,9 @@ func TestStepUpMutationAuth_ElevationRequiredOnceACredentialExists(t *testing.T)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 	// And it is NOT offered a step-up prompt. The marker means "prove a
 	// factor and retry", and this caller has nothing to prove: a prompt would
-	// collect a factor and then refuse the retry for the same reason.
-	var connectErr *connect.Error
-	require.ErrorAs(t, err, &connectErr)
-	assert.Empty(t, connectErr.Meta().Get(ElevationRequiredHeader))
+	// collect a factor and then refuse the retry for the same reason. A
+	// refusal that wraps no sentinel carries no marker.
+	assert.False(t, errors.Is(err, errElevationRequired))
 
 	// The FIRST-CREDENTIAL shape is the one case that still refuses a
 	// command-line credential, and it refuses it without a marker. The
@@ -353,9 +353,8 @@ func TestStepUpMutationAuth_ElevationRequiredOnceACredentialExists(t *testing.T)
 	_, err = svc.stepUpMutationAuth(ctx, entryStepUp(freshCLI), shellUser)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
-	var shellErr *connect.Error
-	require.ErrorAs(t, err, &shellErr)
-	assert.Empty(t, shellErr.Meta().Get(ElevationRequiredHeader))
+	assert.False(t, errors.Is(err, errElevationRequired),
+		"the first-credential refusal to a bearer is not one a prompt can clear")
 }
 
 // TestFirstCredentialCeremonyWindowOutlastsOneCeremony pins the

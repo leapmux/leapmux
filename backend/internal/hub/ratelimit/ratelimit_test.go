@@ -6,12 +6,16 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/reflect/protoregistry"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -57,7 +61,7 @@ func upsertLimit(t *testing.T, m *Manager, op Operation, enabled bool, maxAttemp
 }
 
 func wrongPasswordError() error {
-	return connect.NewError(connect.CodeUnauthenticated, auth.ErrInvalidCurrentPassword)
+	return connect.NewError(connect.CodeUnauthenticated, auth.ErrInvalidCurrentPassword.Error()).WithCause(auth.ErrInvalidCurrentPassword)
 }
 
 // elevateSessionClient wires a one-procedure ElevateSession handler behind
@@ -74,31 +78,35 @@ func elevateSessionClient(t *testing.T, m *Manager, handlerErr error, authentica
 func elevateSessionClientAs(t *testing.T, m *Manager, handlerErr error, authenticated, solo bool) (leapmuxv1connect.UserServiceClient, *int) {
 	t.Helper()
 	handlerCalls := 0
-	handler := connect.NewUnaryHandler(
-		leapmuxv1connect.UserServiceElevateSessionProcedure,
-		func(ctx context.Context, req *connect.Request[leapmuxv1.ElevateSessionRequest]) (*connect.Response[leapmuxv1.ElevateSessionResponse], error) {
+	connectServer := connect.NewServer(NewInterceptor(m))
+	connectServer.Register(connect.Method{
+		Spec: connect.Spec{StreamType: connect.StreamTypeUnary, Procedure: leapmuxv1connect.UserServiceElevateSessionProcedure},
+		Handler: func(_ context.Context, _ connect.Spec, stream connect.ServerStream) error {
+			var req leapmuxv1.ElevateSessionRequest
+			if err := stream.Receive(&req); err != nil {
+				return err
+			}
 			handlerCalls++
 			if handlerErr != nil {
-				return nil, handlerErr
+				return handlerErr
 			}
-			return connect.NewResponse(&leapmuxv1.ElevateSessionResponse{}), nil
+			return stream.Send(&leapmuxv1.ElevateSessionResponse{})
 		},
-		connect.WithInterceptors(NewInterceptor(m)),
-	)
+	})
 	mux := http.NewServeMux()
-	mux.Handle(leapmuxv1connect.UserServiceElevateSessionProcedure, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	connecthttp.Mount(mux, connectServer)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if authenticated {
 			r = r.WithContext(auth.WithUser(r.Context(), &auth.UserInfo{ID: userid.MustNew("usr_test123"), Solo: solo}))
 		}
-		handler.ServeHTTP(w, r)
+		mux.ServeHTTP(w, r)
 	}))
-	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	return leapmuxv1connect.NewUserServiceClient(server.Client(), server.URL), &handlerCalls
+	return leapmuxv1connect.NewUserServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0)))), &handlerCalls
 }
 
 func rejectedAssertionError() error {
-	return connect.NewError(connect.CodeUnauthenticated, auth.ErrInvalidElevationAssertion)
+	return connect.NewError(connect.CodeUnauthenticated, auth.ErrInvalidElevationAssertion.Error()).WithCause(auth.ErrInvalidElevationAssertion)
 }
 
 // finishPasskeyElevationClient is the passkey path's twin of
@@ -107,43 +115,47 @@ func rejectedAssertionError() error {
 func finishPasskeyElevationClient(t *testing.T, m *Manager, handlerErr error, authenticated bool) (leapmuxv1connect.UserServiceClient, *int) {
 	t.Helper()
 	handlerCalls := 0
-	handler := connect.NewUnaryHandler(
-		leapmuxv1connect.UserServiceFinishPasskeyElevationProcedure,
-		func(ctx context.Context, req *connect.Request[leapmuxv1.FinishPasskeyElevationRequest]) (*connect.Response[leapmuxv1.ElevateSessionResponse], error) {
+	connectServer := connect.NewServer(NewInterceptor(m))
+	connectServer.Register(connect.Method{
+		Spec: connect.Spec{StreamType: connect.StreamTypeUnary, Procedure: leapmuxv1connect.UserServiceFinishPasskeyElevationProcedure},
+		Handler: func(_ context.Context, _ connect.Spec, stream connect.ServerStream) error {
+			var req leapmuxv1.FinishPasskeyElevationRequest
+			if err := stream.Receive(&req); err != nil {
+				return err
+			}
 			handlerCalls++
 			if handlerErr != nil {
-				return nil, handlerErr
+				return handlerErr
 			}
-			return connect.NewResponse(&leapmuxv1.ElevateSessionResponse{}), nil
+			return stream.Send(&leapmuxv1.ElevateSessionResponse{})
 		},
-		connect.WithInterceptors(NewInterceptor(m)),
-	)
+	})
 	mux := http.NewServeMux()
-	mux.Handle(leapmuxv1connect.UserServiceFinishPasskeyElevationProcedure, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	connecthttp.Mount(mux, connectServer)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if authenticated {
 			r = r.WithContext(auth.WithUser(r.Context(), &auth.UserInfo{ID: userid.MustNew("usr_test123")}))
 		}
-		handler.ServeHTTP(w, r)
+		mux.ServeHTTP(w, r)
 	}))
-	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	return leapmuxv1connect.NewUserServiceClient(server.Client(), server.URL), &handlerCalls
+	return leapmuxv1connect.NewUserServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0)))), &handlerCalls
 }
 
 func tryFinishPasskeyElevation(t *testing.T, client leapmuxv1connect.UserServiceClient) error {
 	t.Helper()
-	_, err := client.FinishPasskeyElevation(context.Background(), connect.NewRequest(&leapmuxv1.FinishPasskeyElevationRequest{
+	_, err := client.FinishPasskeyElevation(context.Background(), &leapmuxv1.FinishPasskeyElevationRequest{
 		SessionId:      "wa-1",
 		CredentialJson: "{}",
-	}))
+	})
 	return err
 }
 
 func tryElevateSession(t *testing.T, client leapmuxv1connect.UserServiceClient) error {
 	t.Helper()
-	_, err := client.ElevateSession(context.Background(), connect.NewRequest(&leapmuxv1.ElevateSessionRequest{
+	_, err := client.ElevateSession(context.Background(), &leapmuxv1.ElevateSessionRequest{
 		CurrentPassword: "wrong",
-	}))
+	})
 	return err
 }
 
@@ -174,12 +186,12 @@ func TestLimiterCountsOnlyCredentialFailures(t *testing.T) {
 	upsertLimit(t, m, OpElevation, true, 2, 900)
 
 	// Weak-new-password validation errors must not count.
-	weakClient, _ := elevateSessionClient(t, m, connect.NewError(connect.CodeInvalidArgument, errors.New("password too weak")), true)
+	weakClient, _ := elevateSessionClient(t, m, connect.NewError(connect.CodeInvalidArgument, "password too weak"), true)
 	for i := 0; i < 5; i++ {
 		assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(tryElevateSession(t, weakClient)))
 	}
 	// Internal errors must not count.
-	internalClient, _ := elevateSessionClient(t, m, connect.NewError(connect.CodeInternal, errors.New("db down")), true)
+	internalClient, _ := elevateSessionClient(t, m, connect.NewError(connect.CodeInternal, "db down"), true)
 	assert.Equal(t, connect.CodeInternal, connect.CodeOf(tryElevateSession(t, internalClient)))
 
 	// Only genuine credential failures consume the budget.
@@ -311,7 +323,7 @@ func TestConcurrentBurstCannotExceedBudget(t *testing.T) {
 	// reservation without opening a failure window, so the next attempt
 	// passes again.
 	for _, a := range inFlight {
-		m.complete(a, connect.NewError(connect.CodeInternal, errors.New("db down")))
+		m.complete(a, connect.NewError(connect.CodeInternal, "db down"))
 	}
 	m.windowMu.Lock()
 	assert.Empty(t, m.inFlight, "completed attempts must release their reservations")
@@ -379,7 +391,7 @@ func TestUnreservedAttemptCompletionReleasesNothing(t *testing.T) {
 		"an unreserved attempt's completion must not release another attempt's reservation")
 	m.windowMu.Unlock()
 
-	m.complete(reserved, connect.NewError(connect.CodeInternal, errors.New("db down")))
+	m.complete(reserved, connect.NewError(connect.CodeInternal, "db down"))
 	m.windowMu.Lock()
 	assert.Empty(t, m.inFlight, "the reserved attempt's completion releases its own reservation")
 	m.windowMu.Unlock()
@@ -545,12 +557,12 @@ func TestExpensiveMutationsAreRouted(t *testing.T) {
 	// caller could exhaust the operator's budget with garbage that never
 	// hashed.
 	proceeds := defaults[OpSoloPasswordSetup].proceedsToBudget
-	assert.False(t, proceeds(connect.NewError(connect.CodeFailedPrecondition, errors.New("already set"))),
+	assert.False(t, proceeds(connect.NewError(connect.CodeFailedPrecondition, "already set")),
 		"a refusal before the hash costs nothing")
-	assert.False(t, proceeds(connect.NewError(connect.CodeInvalidArgument, errors.New("weak password"))),
+	assert.False(t, proceeds(connect.NewError(connect.CodeInvalidArgument, "weak password")),
 		"a password the validator rejects never reaches the hash")
 	assert.True(t, proceeds(nil), "a success ran the hash")
-	assert.True(t, proceeds(connect.NewError(connect.CodeInternal, errors.New("store failed"))),
+	assert.True(t, proceeds(connect.NewError(connect.CodeInternal, "store failed")),
 		"a failure after the hash still paid for it")
 
 	// The negative half, and it is the half OpElevation's doc has to keep
@@ -571,21 +583,25 @@ func TestPanickingHandlerReleasesReservation(t *testing.T) {
 	m := newTestManager(t)
 	upsertLimit(t, m, OpElevation, true, 1, 900)
 
-	handler := connect.NewUnaryHandler(
-		leapmuxv1connect.UserServiceElevateSessionProcedure,
-		func(ctx context.Context, req *connect.Request[leapmuxv1.ElevateSessionRequest]) (*connect.Response[leapmuxv1.ElevateSessionResponse], error) {
+	connectServer := connect.NewServer(NewInterceptor(m))
+	connectServer.Register(connect.Method{
+		Spec: connect.Spec{StreamType: connect.StreamTypeUnary, Procedure: leapmuxv1connect.UserServiceElevateSessionProcedure},
+		Handler: func(_ context.Context, _ connect.Spec, stream connect.ServerStream) error {
+			var req leapmuxv1.ElevateSessionRequest
+			if err := stream.Receive(&req); err != nil {
+				return err
+			}
 			panic("boom")
 		},
-		connect.WithInterceptors(NewInterceptor(m)),
-	)
+	})
 	mux := http.NewServeMux()
-	mux.Handle(leapmuxv1connect.UserServiceElevateSessionProcedure, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	connecthttp.Mount(mux, connectServer)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r = r.WithContext(auth.WithUser(r.Context(), &auth.UserInfo{ID: userid.MustNew("usr_test123")}))
-		handler.ServeHTTP(w, r)
+		mux.ServeHTTP(w, r)
 	}))
-	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	client := leapmuxv1connect.NewUserServiceClient(server.Client(), server.URL)
+	client := leapmuxv1connect.NewUserServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0))))
 
 	require.Error(t, tryElevateSession(t, client), "the aborted connection surfaces as an error to the client")
 
@@ -600,6 +616,67 @@ func TestPanickingHandlerReleasesReservation(t *testing.T) {
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(tryElevateSession(t, wrongClient)),
 		"the released reservation must re-open the budget")
 	assert.Equal(t, 1, *calls)
+}
+
+type admissionTestStream struct {
+	receive func(any) error
+}
+
+func (s admissionTestStream) Receive(msg any) error { return s.receive(msg) }
+func (admissionTestStream) SendHeaders() error      { return nil }
+func (admissionTestStream) Send(any) error          { return nil }
+
+func callLimitedLogin(ctx context.Context, m *Manager, stream connect.ServerStream, handler func() error) error {
+	return NewInterceptor(m)(func(_ context.Context, _ connect.Spec, stream connect.ServerStream) error {
+		if err := stream.Receive(&leapmuxv1.LoginRequest{}); err != nil {
+			return err
+		}
+		return handler()
+	})(ctx, connect.Spec{Procedure: leapmuxv1connect.AuthServiceLoginProcedure, StreamType: connect.StreamTypeUnary}, stream)
+}
+
+func TestInterceptorDoesNotReserveWhileReceivingTheRequest(t *testing.T) {
+	m := newTestManager(t)
+	upsertLimit(t, m, OpLoginAnonymous, true, 1, 900)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	ctx = peer.WithClientIP(ctx, "192.0.2.1")
+	started, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	finishReceive := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(finishReceive)
+	done := make(chan error, 1)
+	go func() {
+		done <- callLimitedLogin(ctx, m, admissionTestStream{receive: func(any) error {
+			close(started)
+			select {
+			case <-release:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}}, func() error { return nil })
+	}()
+	select {
+	case <-started:
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	otherCalled := false
+	err := callLimitedLogin(ctx, m, admissionTestStream{receive: func(any) error { return nil }}, func() error {
+		otherCalled = true
+		return nil
+	})
+	assert.NoError(t, err, "an incomplete request must not consume another login's allowance")
+	assert.True(t, otherCalled, "the complete request must reach its handler")
+	finishReceive()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	assert.Empty(t, m.inFlight)
 }
 
 func TestKnownOperationsSortedAndEffectiveLimitsOverlay(t *testing.T) {
@@ -712,6 +789,16 @@ var httpRoutedOperations = map[Operation]string{
 func TestProcedureRoutingAndCatalogueAgree(t *testing.T) {
 	assert.NotEmpty(t, procedureOperations, "no procedures are routed; the tripwire is vacuous")
 	for proc, spec := range procedureOperations {
+		serviceName, methodName, ok := strings.Cut(strings.TrimPrefix(proc, "/"), "/")
+		require.True(t, ok, "a routed procedure must identify its service and method")
+		descriptor, err := protoregistry.GlobalFiles.FindDescriptorByName(protoreflect.FullName(serviceName))
+		require.NoError(t, err)
+		service, ok := descriptor.(protoreflect.ServiceDescriptor)
+		require.True(t, ok)
+		method := service.Methods().ByName(protoreflect.Name(methodName))
+		require.NotNil(t, method)
+		assert.False(t, method.IsStreamingClient(), "%s must have one request to admit", proc)
+		assert.False(t, method.IsStreamingServer(), "%s must finish its reservation with one response", proc)
 		assert.Containsf(t, defaults, spec.op,
 			"procedure %q routes to operation %q with no defaults entry; every call would fail closed with CodeUnavailable", proc, spec.op)
 	}
@@ -867,7 +954,7 @@ func TestElevationRefusalDoesNotSpendTheBudget(t *testing.T) {
 	m := newTestManager(t)
 	upsertLimit(t, m, OpElevation, true, 1, 900)
 
-	refusal := connect.NewError(connect.CodeFailedPrecondition, errors.New("this action needs a recent sign-in"))
+	refusal := connect.NewError(connect.CodeFailedPrecondition, "this action needs a recent sign-in")
 	client, calls := elevateSessionClient(t, m, refusal, true)
 	for i := 0; i < 5; i++ {
 		assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(tryElevateSession(t, client)))
@@ -908,9 +995,9 @@ func TestEmailChangeCountsProceededRequests(t *testing.T) {
 	// Pre-work refusals spend nothing: an elevation prompt, a malformed
 	// address, and a taken address, each answered before any mint or send.
 	for _, refusal := range []error{
-		connect.NewError(connect.CodeFailedPrecondition, errors.New("elevation required")),
-		connect.NewError(connect.CodeInvalidArgument, errors.New("address unchanged")),
-		connect.NewError(connect.CodeAlreadyExists, errors.New("email already in use")),
+		connect.NewError(connect.CodeFailedPrecondition, "elevation required"),
+		connect.NewError(connect.CodeInvalidArgument, "address unchanged"),
+		connect.NewError(connect.CodeAlreadyExists, "email already in use"),
 	} {
 		a, allowed, _, err := m.allow(context.Background(), spec, "usr_test123")
 		require.NoError(t, err)
@@ -921,7 +1008,7 @@ func TestEmailChangeCountsProceededRequests(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, allowed, "pre-work refusals must not spend the window")
 	assert.Zero(t, retryAfter)
-	m.complete(probe, connect.NewError(connect.CodeFailedPrecondition, errors.New("elevation required")))
+	m.complete(probe, connect.NewError(connect.CodeFailedPrecondition, "elevation required"))
 
 	for i := 0; i < 6; i++ {
 		a, allowed, _, err := m.allow(context.Background(), spec, "usr_test123")
@@ -934,9 +1021,9 @@ func TestEmailChangeCountsProceededRequests(t *testing.T) {
 		case 0:
 			outcome = nil
 		case 1:
-			outcome = connect.NewError(connect.CodeUnavailable, errors.New("the hub could not send the verification email"))
+			outcome = connect.NewError(connect.CodeUnavailable, "the hub could not send the verification email")
 		default:
-			outcome = connect.NewError(connect.CodeResourceExhausted, errors.New("the hub sent mail recently"))
+			outcome = connect.NewError(connect.CodeResourceExhausted, "the hub sent mail recently")
 		}
 		m.complete(a, outcome) // every one of them proceeded; none may reset the window
 	}
@@ -1125,7 +1212,7 @@ func TestLoginAnonymousCountsFailuresAndClearsOnSuccess(t *testing.T) {
 	spec := procedureOperations[leapmuxv1connect.AuthServiceLoginProcedure]
 	const key = "anonymous:192.168.1.24"
 
-	wrongPassword := connect.NewError(connect.CodeUnauthenticated, errors.New("invalid credentials"))
+	wrongPassword := connect.NewError(connect.CodeUnauthenticated, "invalid credentials")
 
 	for range 2 {
 		att, allowed, _, err := m.allow(context.Background(), spec, key)
@@ -1176,11 +1263,92 @@ func TestLoginAnonymousCountsOnlyAWrongPassword(t *testing.T) {
 	require.NotNil(t, spec.isCredentialFailure)
 
 	assert.True(t, spec.isCredentialFailure(
-		connect.NewError(connect.CodeUnauthenticated, errors.New("invalid credentials"))))
+		connect.NewError(connect.CodeUnauthenticated, "invalid credentials")))
 	assert.False(t, spec.isCredentialFailure(nil))
 	assert.False(t, spec.isCredentialFailure(
-		connect.NewError(connect.CodeResourceExhausted, errors.New("captcha required"))))
+		connect.NewError(connect.CodeResourceExhausted, "captcha required")))
 	assert.False(t, spec.isCredentialFailure(
-		connect.NewError(connect.CodeUnavailable, errors.New("store down"))))
+		connect.NewError(connect.CodeUnavailable, "store down")))
 	assert.False(t, spec.isCredentialFailure(errors.New("plain error")))
+}
+
+func TestInterceptorAdmitsOnceAndReleasesAfterTheHandler(t *testing.T) {
+	m := newTestManager(t)
+	upsertLimit(t, m, OpLoginAnonymous, true, 1, 900)
+	ctx := peer.WithClientIP(t.Context(), "192.0.2.1")
+	spec := connect.Spec{Procedure: leapmuxv1connect.AuthServiceLoginProcedure, StreamType: connect.StreamTypeUnary}
+	receives := 0
+	stream := admissionTestStream{receive: func(any) error { receives++; return nil }}
+	err := NewInterceptor(m)(func(_ context.Context, _ connect.Spec, stream connect.ServerStream) error {
+		for range 2 {
+			require.NoError(t, stream.Receive(&leapmuxv1.LoginRequest{}))
+			assert.EqualValues(t, 1, m.inFlight[windowKey{OpLoginAnonymous, anonymousBudgetKey(ctx)}])
+		}
+		otherCalled := false
+		err := callLimitedLogin(ctx, m, admissionTestStream{receive: func(any) error { return nil }}, func() error {
+			otherCalled = true
+			return nil
+		})
+		assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(err))
+		assert.False(t, otherCalled)
+		return connect.NewError(connect.CodeInvalidArgument, "invalid login")
+	})(ctx, spec, stream)
+	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	assert.Equal(t, 2, receives)
+	assert.Empty(t, m.inFlight)
+	require.NoError(t, callLimitedLogin(ctx, m, admissionTestStream{receive: func(any) error { return nil }}, func() error { return nil }))
+}
+
+func TestInterceptorDoesNotReserveForRejectedInput(t *testing.T) {
+	for _, receiveErr := range []error{
+		connect.NewError(connect.CodeInvalidArgument, "cannot decode request"),
+		connect.NewError(connect.CodePermissionDenied, "captcha verification failed"),
+	} {
+		t.Run(receiveErr.Error(), func(t *testing.T) {
+			m := newTestManager(t)
+			upsertLimit(t, m, OpLoginAnonymous, true, 1, 900)
+			called := false
+			err := callLimitedLogin(peer.WithClientIP(t.Context(), "192.0.2.1"), m, admissionTestStream{receive: func(any) error {
+				assert.Empty(t, m.inFlight, "decoding and verification must precede reservation")
+				return receiveErr
+			}}, func() error { called = true; return nil })
+			assert.ErrorIs(t, err, receiveErr)
+			assert.False(t, called)
+			assert.Empty(t, m.inFlight)
+			assert.Zero(t, m.windows.Len())
+		})
+	}
+}
+
+func TestInterceptorRetainsAnAdmissionDenial(t *testing.T) {
+	m := newTestManager(t)
+	upsertLimit(t, m, OpLoginAnonymous, true, 1, 900)
+	ctx := peer.WithClientIP(t.Context(), "192.0.2.1")
+	held, allowed, _, err := m.allow(ctx, procedureOperations[leapmuxv1connect.AuthServiceLoginProcedure], anonymousBudgetKey(ctx))
+	require.NoError(t, err)
+	require.True(t, allowed)
+	defer m.complete(held, nil)
+	receives := 0
+	err = NewInterceptor(m)(func(_ context.Context, _ connect.Spec, stream connect.ServerStream) error {
+		first := stream.Receive(&leapmuxv1.LoginRequest{})
+		assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(first))
+		assert.Same(t, first, stream.Receive(&leapmuxv1.LoginRequest{}))
+		return first
+	})(ctx, connect.Spec{Procedure: leapmuxv1connect.AuthServiceLoginProcedure, StreamType: connect.StreamTypeUnary}, admissionTestStream{receive: func(any) error { receives++; return nil }})
+	assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(err))
+	assert.Equal(t, 1, receives, "a refused call must not read another request")
+	assert.EqualValues(t, 1, m.inFlight[windowKey{OpLoginAnonymous, anonymousBudgetKey(ctx)}])
+}
+
+func TestInterceptorPanicBeforeReceiveAcquiresNoReservation(t *testing.T) {
+	m := newTestManager(t)
+	upsertLimit(t, m, OpLoginAnonymous, true, 1, 900)
+	require.Panics(t, func() {
+		_ = NewInterceptor(m)(func(context.Context, connect.Spec, connect.ServerStream) error { panic("before receive") })(
+			peer.WithClientIP(t.Context(), "192.0.2.1"),
+			connect.Spec{Procedure: leapmuxv1connect.AuthServiceLoginProcedure, StreamType: connect.StreamTypeUnary},
+			admissionTestStream{receive: func(any) error { t.Fatal("unexpected receive"); return nil }})
+	})
+	assert.Empty(t, m.inFlight)
+	assert.Zero(t, m.windows.Len())
 }

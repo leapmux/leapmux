@@ -7,7 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -60,20 +61,19 @@ func setupBearerChannelEnv(t *testing.T) *bearerChannelEnv {
 	mux := http.NewServeMux()
 	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, TokenValidator: tv})
 	t.Cleanup(sc.Stop)
-	opts := connect.WithInterceptors(interceptor)
+	connectServer := connect.NewServer(interceptor)
 
-	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(service.NewAuthService(servicetest.AuthServiceDeps(st, testConfig(), servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil))), opts)
-	mux.Handle(authPath, authHandler)
+	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, service.NewAuthService(servicetest.AuthServiceDeps(st, testConfig(), servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil))))
 
 	channelSvc := service.NewChannelService(st, wMgr, cMgr, pendingReqs, allowAllAuthFreshness{})
-	channelPath, channelHandler := leapmuxv1connect.NewChannelServiceHandler(channelSvc, opts)
-	mux.Handle(channelPath, channelHandler)
+	leapmuxv1connect.RegisterChannelServiceHandler(connectServer, channelSvc)
+	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
 	return &bearerChannelEnv{
-		channelClient: leapmuxv1connect.NewChannelServiceClient(srv.Client(), srv.URL),
+		channelClient: leapmuxv1connect.NewChannelServiceClient(connect.NewClient(connecthttp.NewTransport(srv.Client(), srv.URL, connecthttp.WithReadMaxBytes(0)))),
 		store:         st,
 		workerMgr:     wMgr,
 		channelMgr:    cMgr,
@@ -212,12 +212,13 @@ func TestOpenChannel_DelegationCannotReachAnotherUsersWorker(t *testing.T) {
 	env := setupBearerChannelEnv(t)
 	victimWorkerID, _, bearer := env.seedCrossTenantDelegation(t)
 
-	req := connect.NewRequest(&leapmuxv1.OpenChannelRequest{
+	req := &leapmuxv1.OpenChannelRequest{
 		WorkerId:         victimWorkerID,
 		HandshakePayload: []byte("hs1"),
-	})
-	req.Header().Set("Authorization", "Bearer "+bearer)
-	_, err := env.channelClient.OpenChannel(context.Background(), req)
+	}
+	ctx, info := connect.NewClientContext(context.Background())
+	info.RequestHeader().Set("Authorization", "Bearer "+bearer)
+	_, err := env.channelClient.OpenChannel(ctx, req)
 
 	require.Error(t, err, "a token minted by another user's worker must not reach the victim's worker")
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
@@ -238,9 +239,10 @@ func TestGetWorkerHandshakeParams_DelegationCannotReachAnotherUsersWorker(t *tes
 	env := setupBearerChannelEnv(t)
 	victimWorkerID, _, bearer := env.seedCrossTenantDelegation(t)
 
-	req := connect.NewRequest(&leapmuxv1.GetWorkerHandshakeParamsRequest{WorkerId: victimWorkerID})
-	req.Header().Set("Authorization", "Bearer "+bearer)
-	_, err := env.channelClient.GetWorkerHandshakeParams(context.Background(), req)
+	req := &leapmuxv1.GetWorkerHandshakeParamsRequest{WorkerId: victimWorkerID}
+	ctx, info := connect.NewClientContext(context.Background())
+	info.RequestHeader().Set("Authorization", "Bearer "+bearer)
+	_, err := env.channelClient.GetWorkerHandshakeParams(ctx, req)
 
 	require.Error(t, err, "a token minted by another user's worker must not read the victim worker's keys")
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
@@ -255,9 +257,10 @@ func TestGetWorkerHandshakeParams_DelegationReachesItsMintingWorker(t *testing.T
 	userID, wsA, _, workerID := env.seedUserWorkspaceWorker(t)
 	bearer, _ := env.mintDelegation(t, userID, workerID, wsA)
 
-	req := connect.NewRequest(&leapmuxv1.GetWorkerHandshakeParamsRequest{WorkerId: workerID})
-	req.Header().Set("Authorization", "Bearer "+bearer)
-	_, err := env.channelClient.GetWorkerHandshakeParams(context.Background(), req)
+	req := &leapmuxv1.GetWorkerHandshakeParamsRequest{WorkerId: workerID}
+	ctx, info := connect.NewClientContext(context.Background())
+	info.RequestHeader().Set("Authorization", "Bearer "+bearer)
+	_, err := env.channelClient.GetWorkerHandshakeParams(ctx, req)
 
 	assert.NotEqual(t, connect.CodePermissionDenied, connect.CodeOf(err),
 		"the minting worker's own params must remain readable: %v", err)
@@ -276,11 +279,12 @@ func TestOpenChannel_DelegationReachesItsMintingWorker(t *testing.T) {
 
 	shortCtx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
-	req := connect.NewRequest(&leapmuxv1.OpenChannelRequest{
+	req := &leapmuxv1.OpenChannelRequest{
 		WorkerId:         workerID,
 		HandshakePayload: []byte("hs1"),
-	})
-	req.Header().Set("Authorization", "Bearer "+bearer)
+	}
+	shortCtx, info := connect.NewClientContext(shortCtx)
+	info.RequestHeader().Set("Authorization", "Bearer "+bearer)
 	_, err := env.channelClient.OpenChannel(shortCtx, req)
 	require.Error(t, err, "no fake worker response → expected timeout, not a permission denial")
 	assert.NotEqual(t, connect.CodePermissionDenied, connect.CodeOf(err),
@@ -317,17 +321,17 @@ func TestCloseChannel_DelegationRequiresSameBearerScope(t *testing.T) {
 		Credential: auth.DelegationCredential(tokenID, "worker-mint"),
 	})
 
-	_, err := env.channelSvc.CloseChannel(ctx, connect.NewRequest(&leapmuxv1.CloseChannelRequest{ChannelId: cookieChannelID}))
+	_, err := env.channelSvc.CloseChannel(ctx, &leapmuxv1.CloseChannelRequest{ChannelId: cookieChannelID})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
 	assert.True(t, env.channelMgr.Exists(cookieChannelID), "delegation caller must not close unrestricted same-user channel")
 
-	_, err = env.channelSvc.CloseChannel(ctx, connect.NewRequest(&leapmuxv1.CloseChannelRequest{ChannelId: otherDelegationChannelID}))
+	_, err = env.channelSvc.CloseChannel(ctx, &leapmuxv1.CloseChannelRequest{ChannelId: otherDelegationChannelID})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
 	assert.True(t, env.channelMgr.Exists(otherDelegationChannelID), "delegation caller must not close another delegation token's channel")
 
-	_, err = env.channelSvc.CloseChannel(ctx, connect.NewRequest(&leapmuxv1.CloseChannelRequest{ChannelId: scopedChannelID}))
+	_, err = env.channelSvc.CloseChannel(ctx, &leapmuxv1.CloseChannelRequest{ChannelId: scopedChannelID})
 	require.NoError(t, err)
 	assert.False(t, env.channelMgr.Exists(scopedChannelID), "matching delegation channel must close")
 }

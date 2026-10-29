@@ -13,7 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -110,15 +111,15 @@ func startTestSolo(t *testing.T) (hubURL, localListenURL, userID, workerID strin
 	jar, err := cookiejar.New(nil)
 	require.NoError(t, err)
 	apiClient := &http.Client{Timeout: 10 * time.Second, Jar: jar}
-	authClient := leapmuxv1connect.NewAuthServiceClient(apiClient, hubURL)
-	setup, err := authClient.SetInitialSoloPassword(ctx, connect.NewRequest(
-		&leapmuxv1.SetInitialSoloPasswordRequest{Password: "correct-horse-battery-staple"}))
+	authClient := leapmuxv1connect.NewAuthServiceClient(connect.NewClient(connecthttp.NewTransport(apiClient, hubURL, connecthttp.WithReadMaxBytes(0))))
+	ctx, info := connect.NewClientContext(ctx)
+	_, err = authClient.SetInitialSoloPassword(ctx, &leapmuxv1.SetInitialSoloPasswordRequest{Password: "correct-horse-battery-staple"})
 	require.NoError(t, err)
-	require.NotEmpty(t, setup.Header().Get("Set-Cookie"))
+	require.NotEmpty(t, info.ResponseHeader().Get("Set-Cookie"))
 
-	meResp, err := authClient.GetCurrentUser(ctx, connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{}))
+	meResp, err := authClient.GetCurrentUser(ctx, &leapmuxv1.GetCurrentUserRequest{})
 	require.NoError(t, err)
-	userID = meResp.Msg.GetUser().GetId()
+	userID = meResp.GetUser().GetId()
 	require.NotEmpty(t, userID)
 
 	// Get worker ID by listing workers (poll until online).
@@ -128,14 +129,14 @@ func startTestSolo(t *testing.T) (hubURL, localListenURL, userID, workerID strin
 	// in tens of milliseconds, so a 500ms tick spent nearly all of its time
 	// asleep after the worker was already up -- twice, once here and once for
 	// the handshake params -- on every test in this file.
-	mgmtClient := leapmuxv1connect.NewWorkerManagementServiceClient(apiClient, hubURL)
+	mgmtClient := leapmuxv1connect.NewWorkerManagementServiceClient(connect.NewClient(connecthttp.NewTransport(apiClient, hubURL, connecthttp.WithReadMaxBytes(0))))
 	var wID string
 	require.Eventually(t, func() bool {
-		listResp, listErr := mgmtClient.ListWorkers(ctx, connect.NewRequest(&leapmuxv1.ListWorkersRequest{}))
+		listResp, listErr := mgmtClient.ListWorkers(ctx, &leapmuxv1.ListWorkersRequest{})
 		if listErr != nil {
 			return false
 		}
-		for _, w := range listResp.Msg.GetWorkers() {
+		for _, w := range listResp.GetWorkers() {
 			if w.GetOnline() {
 				wID = w.GetId()
 				return true
@@ -147,12 +148,10 @@ func startTestSolo(t *testing.T) (hubURL, localListenURL, userID, workerID strin
 	// Wait for the worker to upload its public key. The key is sent over
 	// the bidi stream shortly after connect, so there is a brief window
 	// where the worker is online but has no public key yet.
-	channelClient := leapmuxv1connect.NewChannelServiceClient(apiClient, hubURL)
+	channelClient := leapmuxv1connect.NewChannelServiceClient(connect.NewClient(connecthttp.NewTransport(apiClient, hubURL, connecthttp.WithReadMaxBytes(0))))
 	require.Eventually(t, func() bool {
-		resp, keyErr := channelClient.GetWorkerHandshakeParams(ctx, connect.NewRequest(
-			&leapmuxv1.GetWorkerHandshakeParamsRequest{WorkerId: wID},
-		))
-		return keyErr == nil && len(resp.Msg.GetPublicKey()) > 0
+		resp, keyErr := channelClient.GetWorkerHandshakeParams(ctx, &leapmuxv1.GetWorkerHandshakeParamsRequest{WorkerId: wID})
+		return keyErr == nil && len(resp.GetPublicKey()) > 0
 	}, 30*time.Second, 10*time.Millisecond, "worker handshake params not available in time")
 
 	return hubURL, localListenURL, userID, wID, &http.Client{Jar: jar}

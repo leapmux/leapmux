@@ -13,7 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -86,8 +87,13 @@ func Listen(opts Options) (*Server, error) {
 
 	mux := http.NewServeMux()
 	svc := &handler{tokens: tokens, router: opts.Router}
-	path, h := leapmuxv1connect.NewControlIPCServiceHandler(svc)
-	mux.Handle(path, withAuth(svc, h))
+	connectServer := connect.NewServer()
+	leapmuxv1connect.RegisterControlIPCServiceHandler(connectServer, svc)
+	connectMux := http.NewServeMux()
+	// Unbounded, as this surface was before: the read limit is per message,
+	// and an inner RPC's payload is whatever the outer one carried.
+	connecthttp.Mount(connectMux, connectServer, connecthttp.WithReadMaxBytes(0))
+	mux.Handle("/", withAuth(svc, connectMux))
 
 	protocols := &http.Protocols{}
 	protocols.SetHTTP1(true)
@@ -312,61 +318,61 @@ type handler struct {
 	router *Router
 }
 
-func (h *handler) Whoami(ctx context.Context, req *connect.Request[leapmuxv1.WhoamiRequest]) (*connect.Response[leapmuxv1.WhoamiResponse], error) {
+func (h *handler) Whoami(ctx context.Context, req *leapmuxv1.WhoamiRequest) (*leapmuxv1.WhoamiResponse, error) {
 	info, _, ok := tokenFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("no token"))
+		return nil, connect.NewError(connect.CodeUnauthenticated, "no token")
 	}
-	return connect.NewResponse(&leapmuxv1.WhoamiResponse{
+	return &leapmuxv1.WhoamiResponse{
 		UserId:   info.UserID.String(),
 		WorkerId: info.WorkerID,
 		TabId:    info.TabID,
 		TabType:  info.TabType,
-	}), nil
+	}, nil
 }
 
-func (h *handler) CallInner(ctx context.Context, req *connect.Request[leapmuxv1.CallInnerRequest]) (*connect.Response[leapmuxv1.CallInnerResponse], error) {
+func (h *handler) CallInner(ctx context.Context, req *leapmuxv1.CallInnerRequest) (*leapmuxv1.CallInnerResponse, error) {
 	info, _, ok := tokenFromContext(ctx)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("no token"))
+		return nil, connect.NewError(connect.CodeUnauthenticated, "no token")
 	}
 	resp, err := h.router.CallInner(ctx, info,
-		req.Msg.GetMethod(), req.Msg.GetPayload(),
-		req.Msg.GetTargetWorkerId())
+		req.GetMethod(), req.GetPayload(),
+		req.GetTargetWorkerId())
 	if err != nil {
 		return nil, err
 	}
-	return connect.NewResponse(resp), nil
+	return resp, nil
 }
 
-func (h *handler) StreamInner(ctx context.Context, req *connect.Request[leapmuxv1.StreamInnerRequest], stream *connect.ServerStream[leapmuxv1.StreamInnerEnvelope]) error {
+func (h *handler) StreamInner(ctx context.Context, req *leapmuxv1.StreamInnerRequest, stream leapmuxv1connect.ControlIPCServiceStreamInnerServerStream) error {
 	info, _, ok := tokenFromContext(ctx)
 	if !ok {
-		return connect.NewError(connect.CodeUnauthenticated, errors.New("no token"))
+		return connect.NewError(connect.CodeUnauthenticated, "no token")
 	}
 	return h.router.StreamInner(ctx, info,
-		req.Msg.GetMethod(), req.Msg.GetPayload(),
-		req.Msg.GetTargetWorkerId(),
-		req.Msg.GetClientRequestId(),
+		req.GetMethod(), req.GetPayload(),
+		req.GetTargetWorkerId(),
+		req.GetClientRequestId(),
 		func(env *leapmuxv1.StreamInnerEnvelope) error {
 			return stream.Send(env)
 		})
 }
 
-func (h *handler) Cancel(ctx context.Context, req *connect.Request[leapmuxv1.CancelRequest]) (*connect.Response[leapmuxv1.CancelResponse], error) {
-	if id := req.Msg.GetClientRequestId(); id != "" {
+func (h *handler) Cancel(ctx context.Context, req *leapmuxv1.CancelRequest) (*leapmuxv1.CancelResponse, error) {
+	if id := req.GetClientRequestId(); id != "" {
 		h.router.CancelStream(id)
 	}
-	return connect.NewResponse(&leapmuxv1.CancelResponse{}), nil
+	return &leapmuxv1.CancelResponse{}, nil
 }
 
-func (h *handler) UpdateStream(ctx context.Context, req *connect.Request[leapmuxv1.UpdateStreamRequest]) (*connect.Response[leapmuxv1.UpdateStreamResponse], error) {
-	if id := req.Msg.GetClientRequestId(); id != "" {
-		if err := h.router.UpdateStream(id, req.Msg.GetPayload()); err != nil {
-			return nil, connect.NewError(connect.CodeResourceExhausted, err)
+func (h *handler) UpdateStream(ctx context.Context, req *leapmuxv1.UpdateStreamRequest) (*leapmuxv1.UpdateStreamResponse, error) {
+	if id := req.GetClientRequestId(); id != "" {
+		if err := h.router.UpdateStream(id, req.GetPayload()); err != nil {
+			return nil, connect.NewError(connect.CodeResourceExhausted, err.Error()).WithCause(err)
 		}
 	}
-	return connect.NewResponse(&leapmuxv1.UpdateStreamResponse{}), nil
+	return &leapmuxv1.UpdateStreamResponse{}, nil
 }
 
 // tabTypeWireName projects a TabType enum to the canonical lowercase wire

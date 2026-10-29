@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -95,8 +95,8 @@ func NewWorkerManagementService(st store.Store, mgr *workermgr.Manager, b *HubEv
 
 func (s *WorkerManagementService) CreateRegistrationKey(
 	ctx context.Context,
-	_ *connect.Request[leapmuxv1.CreateRegistrationKeyRequest],
-) (*connect.Response[leapmuxv1.CreateRegistrationKeyResponse], error) {
+	_ *leapmuxv1.CreateRegistrationKeyRequest,
+) (*leapmuxv1.CreateRegistrationKeyResponse, error) {
 	user, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
@@ -109,27 +109,27 @@ func (s *WorkerManagementService) CreateRegistrationKey(
 		CreatedBy: user.ID,
 		ExpiresAt: expiresAt,
 	}); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create registration key: %w", err))
+		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("create registration key: %w", err))
 	}
 
-	return connect.NewResponse(&leapmuxv1.CreateRegistrationKeyResponse{
+	return &leapmuxv1.CreateRegistrationKeyResponse{
 		RegistrationKey: key,
 		ExpiresAt:       timestamppb.New(expiresAt),
-	}), nil
+	}, nil
 }
 
 func (s *WorkerManagementService) ExtendRegistrationKey(
 	ctx context.Context,
-	req *connect.Request[leapmuxv1.ExtendRegistrationKeyRequest],
-) (*connect.Response[leapmuxv1.ExtendRegistrationKeyResponse], error) {
+	req *leapmuxv1.ExtendRegistrationKeyRequest,
+) (*leapmuxv1.ExtendRegistrationKeyResponse, error) {
 	user, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	keyID := req.Msg.GetRegistrationKey()
+	keyID := req.GetRegistrationKey()
 	if keyID == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("registration_key is required"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, "registration_key is required")
 	}
 
 	// The SELECT reads the row the anti-spam buffer check needs and
@@ -149,7 +149,7 @@ func (s *WorkerManagementService) ExtendRegistrationKey(
 	// this check (negative remaining < buffer), and the UPDATE's
 	// expires_at > now guard below rejects it.
 	if row.ExpiresAt.Sub(now) >= RegistrationKeyExtendBuffer {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("extension not allowed yet"))
+		return nil, connect.NewError(connect.CodeFailedPrecondition, "extension not allowed yet")
 	}
 
 	newExpiresAt := now.Add(RegistrationKeyTTL)
@@ -159,33 +159,33 @@ func (s *WorkerManagementService) ExtendRegistrationKey(
 		ExpiresAt: newExpiresAt,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("extend registration key: %w", err))
+		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("extend registration key: %w", err))
 	}
 	// 0 rows means the row was already dead (soft-deleted or expired)
 	// when the UPDATE ran — either it was already past its TTL, or a
 	// concurrent Consume consumed it between the SELECT and the UPDATE.
 	// Either way, the caller must mint a fresh key.
 	if rows == 0 {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("the registration key expired"))
+		return nil, connect.NewError(connect.CodeFailedPrecondition, "the registration key expired")
 	}
 
-	return connect.NewResponse(&leapmuxv1.ExtendRegistrationKeyResponse{
+	return &leapmuxv1.ExtendRegistrationKeyResponse{
 		ExpiresAt: timestamppb.New(newExpiresAt),
-	}), nil
+	}, nil
 }
 
 func (s *WorkerManagementService) DeleteRegistrationKey(
 	ctx context.Context,
-	req *connect.Request[leapmuxv1.DeleteRegistrationKeyRequest],
-) (*connect.Response[leapmuxv1.DeleteRegistrationKeyResponse], error) {
+	req *leapmuxv1.DeleteRegistrationKeyRequest,
+) (*leapmuxv1.DeleteRegistrationKeyResponse, error) {
 	user, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	keyID := req.Msg.GetRegistrationKey()
+	keyID := req.GetRegistrationKey()
 	if keyID == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("registration_key is required"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, "registration_key is required")
 	}
 
 	// One conditional UPDATE: ownership lives in the WHERE clause, so a
@@ -198,38 +198,38 @@ func (s *WorkerManagementService) DeleteRegistrationKey(
 		CreatedBy: user.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("soft delete registration key: %w", err))
+		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("soft delete registration key: %w", err))
 	}
 	if rows == 0 {
-		return nil, connect.NewError(connect.CodeNotFound, errors.New("registration key not found"))
+		return nil, connect.NewError(connect.CodeNotFound, "registration key not found")
 	}
 
-	return connect.NewResponse(&leapmuxv1.DeleteRegistrationKeyResponse{}), nil
+	return &leapmuxv1.DeleteRegistrationKeyResponse{}, nil
 }
 
 func (s *WorkerManagementService) EmailRegistrationInstructions(
 	ctx context.Context,
-	req *connect.Request[leapmuxv1.EmailRegistrationInstructionsRequest],
-) (*connect.Response[leapmuxv1.EmailRegistrationInstructionsResponse], error) {
+	req *leapmuxv1.EmailRegistrationInstructionsRequest,
+) (*leapmuxv1.EmailRegistrationInstructionsResponse, error) {
 	user, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	keyID := req.Msg.GetRegistrationKey()
-	command := req.Msg.GetCommand()
+	keyID := req.GetRegistrationKey()
+	command := req.GetCommand()
 	if keyID == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("registration_key is required"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, "registration_key is required")
 	}
 	if command == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("command is required"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, "command is required")
 	}
 
 	// All recipient details come from the cached UserInfo, so this whole
 	// handler is one query (the getOwnedKey SELECT). Worst-case
 	// staleness is sessionCacheTTL — see UserInfo's doc comment.
 	if !user.EmailVerified || user.Email == "" {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("verified email address required to email instructions"))
+		return nil, connect.NewError(connect.CodeFailedPrecondition, "verified email address required to email instructions")
 	}
 
 	// Defense in depth: reject if SMTP is not configured. The frontend
@@ -238,7 +238,7 @@ func (s *WorkerManagementService) EmailRegistrationInstructions(
 	// FailedPrecondition is clearer than the disabledSender's
 	// ErrEmailDisabled, which surfaces as a generic Unavailable.
 	if !settings.KeySMTP.Of(s.set.Snapshot(ctx)).Enabled() {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("hub is not configured to send email"))
+		return nil, connect.NewError(connect.CodeFailedPrecondition, "hub is not configured to send email")
 	}
 
 	// Ownership + liveness checks: never email instructions for a dead
@@ -248,14 +248,14 @@ func (s *WorkerManagementService) EmailRegistrationInstructions(
 		return nil, err
 	}
 	if !time.Now().UTC().Before(row.ExpiresAt) {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("the registration key expired"))
+		return nil, connect.NewError(connect.CodeFailedPrecondition, "the registration key expired")
 	}
 
 	if err := s.mail.Send(ctx, s.renderer.RegistrationInstructions(user.Email, command)); err != nil {
-		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("send mail: %w", err))
+		return nil, wrappedConnectError(connect.CodeUnavailable, fmt.Errorf("send mail: %w", err))
 	}
 
-	return connect.NewResponse(&leapmuxv1.EmailRegistrationInstructionsResponse{}), nil
+	return &leapmuxv1.EmailRegistrationInstructionsResponse{}, nil
 }
 
 // getOwnedKey thinly wraps RegistrationKeys().GetOwned with the
@@ -269,17 +269,17 @@ func (s *WorkerManagementService) getOwnedKey(ctx context.Context, id string, us
 	row, err := s.store.RegistrationKeys().GetOwned(ctx, store.GetOwnedRegistrationKeyParams{ID: id, CreatedBy: userID})
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeNotFound, errors.New("registration key not found"))
+			return nil, connect.NewError(connect.CodeNotFound, "registration key not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	return row, nil
 }
 
 func (s *WorkerManagementService) ListWorkers(
 	ctx context.Context,
-	req *connect.Request[leapmuxv1.ListWorkersRequest],
-) (*connect.Response[leapmuxv1.ListWorkersResponse], error) {
+	req *leapmuxv1.ListWorkersRequest,
+) (*leapmuxv1.ListWorkersResponse, error) {
 	user, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
@@ -289,7 +289,7 @@ func (s *WorkerManagementService) ListWorkers(
 	// default AND the same ceiling every other paginated handler uses. The
 	// hand-written form had no ceiling at all, so `page.limit = 100000`
 	// returned the caller's whole worker row set in one response.
-	reqPage := req.Msg.GetPage()
+	reqPage := req.GetPage()
 	page, err := s.store.Workers().ListByUserID(ctx, store.ListWorkersByUserIDParams{
 		RegisteredBy: user.ID,
 		PageParams:   NormalizePageParams(reqPage.GetCursor(), int64(reqPage.GetLimit())),
@@ -300,9 +300,9 @@ func (s *WorkerManagementService) ListWorkers(
 		// any query runs, and it must surface as 400 InvalidArgument rather
 		// than the 500 Internal that genuine store failures map to.
 		if errors.Is(err, store.ErrInvalidCursor) {
-			return nil, connect.NewError(connect.CodeInvalidArgument, err)
+			return nil, wrappedConnectError(connect.CodeInvalidArgument, err)
 		}
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 
 	protoWorkers := make([]*leapmuxv1.Worker, len(page.Rows))
@@ -310,19 +310,19 @@ func (s *WorkerManagementService) ListWorkers(
 		protoWorkers[i] = s.workerToProto(&page.Rows[i])
 	}
 
-	return connect.NewResponse(&leapmuxv1.ListWorkersResponse{
+	return &leapmuxv1.ListWorkersResponse{
 		Workers: protoWorkers,
 		Page: &leapmuxv1.PageResponse{
 			NextCursor: page.NextCursor,
 			HasMore:    page.HasMore(),
 		},
-	}), nil
+	}, nil
 }
 
 func (s *WorkerManagementService) GetWorker(
 	ctx context.Context,
-	req *connect.Request[leapmuxv1.GetWorkerRequest],
-) (*connect.Response[leapmuxv1.GetWorkerResponse], error) {
+	req *leapmuxv1.GetWorkerRequest,
+) (*leapmuxv1.GetWorkerResponse, error) {
 	user, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
@@ -330,24 +330,24 @@ func (s *WorkerManagementService) GetWorker(
 
 	worker, err := s.store.Workers().GetOwned(ctx, store.GetOwnedWorkerParams{
 		UserID:   user.ID,
-		WorkerID: req.Msg.GetWorkerId(),
+		WorkerID: req.GetWorkerId(),
 	})
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("worker not found"))
+			return nil, connect.Errorf(connect.CodeNotFound, "worker not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 
-	return connect.NewResponse(&leapmuxv1.GetWorkerResponse{
+	return &leapmuxv1.GetWorkerResponse{
 		Worker: s.workerToProto(worker),
-	}), nil
+	}, nil
 }
 
 func (s *WorkerManagementService) DeregisterWorker(
 	ctx context.Context,
-	req *connect.Request[leapmuxv1.DeregisterWorkerRequest],
-) (*connect.Response[leapmuxv1.DeregisterWorkerResponse], error) {
+	req *leapmuxv1.DeregisterWorkerRequest,
+) (*leapmuxv1.DeregisterWorkerResponse, error) {
 	user, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
@@ -360,34 +360,34 @@ func (s *WorkerManagementService) DeregisterWorker(
 	// defense-in-depth check against a hand-crafted RPC call.
 	worker, err := s.store.Workers().GetOwned(ctx, store.GetOwnedWorkerParams{
 		UserID:   user.ID,
-		WorkerID: req.Msg.GetWorkerId(),
+		WorkerID: req.GetWorkerId(),
 	})
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("worker not found"))
+			return nil, connect.Errorf(connect.CodeNotFound, "worker not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	if worker.AutoRegistered {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("the bundled local worker cannot be deregistered"))
+		return nil, connect.Errorf(connect.CodeFailedPrecondition, "the bundled local worker cannot be deregistered")
 	}
 
 	rows, err := s.store.Workers().Deregister(ctx, store.DeregisterWorkerParams{
-		ID:           req.Msg.GetWorkerId(),
+		ID:           req.GetWorkerId(),
 		RegisteredBy: user.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	if rows == 0 {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("worker not found"))
+		return nil, connect.Errorf(connect.CodeNotFound, "worker not found")
 	}
 
-	if err := s.deregisterEffects.Apply(ctx, req.Msg.GetWorkerId(), user.ID.String()); err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+	if err := s.deregisterEffects.Apply(ctx, req.GetWorkerId(), user.ID.String()); err != nil {
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 
-	return connect.NewResponse(&leapmuxv1.DeregisterWorkerResponse{}), nil
+	return &leapmuxv1.DeregisterWorkerResponse{}, nil
 }
 
 // workerToProto converts a store.Worker into the wire-side Worker

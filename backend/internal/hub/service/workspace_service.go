@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
@@ -79,9 +79,9 @@ func loadWorkspaceOr404(ctx context.Context, st store.Store, workspaceID string)
 	ws, err := st.Workspaces().GetByID(ctx, workspaceID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("workspace not found"))
+			return nil, connect.Errorf(connect.CodeNotFound, "workspace not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 	return ws, nil
 }
@@ -102,7 +102,7 @@ func loadOwnedWorkspaceOr403(ctx context.Context, st store.Store, workspaceID st
 		return nil, err
 	}
 	if !auth.IsOwner(ws, userID) {
-		return nil, connect.NewError(connect.CodePermissionDenied, errors.New(denyMsg))
+		return nil, connect.NewError(connect.CodePermissionDenied, denyMsg)
 	}
 	return ws, nil
 }
@@ -136,10 +136,10 @@ func refuseArchivedWorkspace(ctx context.Context, tx store.Store, workspaceID st
 		WorkspaceID: workspaceID,
 	})
 	if err != nil {
-		return connect.NewError(connect.CodeInternal, fmt.Errorf("check archived section: %w", err))
+		return wrappedConnectError(connect.CodeInternal, fmt.Errorf("check archived section: %w", err))
 	}
 	if archived {
-		return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("cannot %s an archived workspace", verb))
+		return connect.Errorf(connect.CodeFailedPrecondition, "cannot %s an archived workspace", verb)
 	}
 	return nil
 }
@@ -180,8 +180,8 @@ func loadWorkspaceForRead(ctx context.Context, st store.Store, workspaceID strin
 
 func (s *WorkspaceService) CreateWorkspace(
 	ctx context.Context,
-	req *connect.Request[leapmuxv1.CreateWorkspaceRequest],
-) (*connect.Response[leapmuxv1.CreateWorkspaceResponse], error) {
+	req *leapmuxv1.CreateWorkspaceRequest,
+) (*leapmuxv1.CreateWorkspaceResponse, error) {
 	user, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
@@ -195,9 +195,9 @@ func (s *WorkspaceService) CreateWorkspace(
 	// lands in the caller's UserCRDT namespace.
 	userID := user.ID.String()
 
-	title, err := validate.SanitizeName(req.Msg.GetTitle())
+	title, err := validate.SanitizeName(req.GetTitle())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("title: %w", err))
+		return nil, wrappedConnectError(connect.CodeInvalidArgument, fmt.Errorf("title: %w", err))
 	}
 
 	wsID := id.Generate()
@@ -211,7 +211,7 @@ func (s *WorkspaceService) CreateWorkspace(
 				OwnerUserID: user.ID,
 				Title:       title,
 			}); err != nil {
-				return "", crdt.LifecyclePayload{}, nil, connect.NewError(connect.CodeInternal, fmt.Errorf("create workspace: %w", err))
+				return "", crdt.LifecyclePayload{}, nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("create workspace: %w", err))
 			}
 			return userID, crdt.LifecyclePayload{
 				OpType:      crdt.LifecycleOpCreate,
@@ -224,15 +224,15 @@ func (s *WorkspaceService) CreateWorkspace(
 		return nil, err
 	}
 
-	return connect.NewResponse(&leapmuxv1.CreateWorkspaceResponse{
+	return &leapmuxv1.CreateWorkspaceResponse{
 		WorkspaceId: wsID,
-	}), nil
+	}, nil
 }
 
 func (s *WorkspaceService) ListWorkspaces(
 	ctx context.Context,
-	req *connect.Request[leapmuxv1.ListWorkspacesRequest],
-) (*connect.Response[leapmuxv1.ListWorkspacesResponse], error) {
+	req *leapmuxv1.ListWorkspacesRequest,
+) (*leapmuxv1.ListWorkspacesResponse, error) {
 	user, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
@@ -245,34 +245,34 @@ func (s *WorkspaceService) ListWorkspaces(
 		UserID: user.ID,
 	})
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list workspaces: %w", err))
+		return nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("list workspaces: %w", err))
 	}
-	return connect.NewResponse(&leapmuxv1.ListWorkspacesResponse{
+	return &leapmuxv1.ListWorkspacesResponse{
 		Workspaces: workspacesToProto(workspaces),
-	}), nil
+	}, nil
 }
 
 func (s *WorkspaceService) GetWorkspace(
 	ctx context.Context,
-	req *connect.Request[leapmuxv1.GetWorkspaceRequest],
-) (*connect.Response[leapmuxv1.GetWorkspaceResponse], error) {
+	req *leapmuxv1.GetWorkspaceRequest,
+) (*leapmuxv1.GetWorkspaceResponse, error) {
 	user, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
 	}
-	ws, err := loadWorkspaceForRead(ctx, s.store, req.Msg.GetWorkspaceId(), user)
+	ws, err := loadWorkspaceForRead(ctx, s.store, req.GetWorkspaceId(), user)
 	if err != nil {
 		return nil, err
 	}
-	return connect.NewResponse(&leapmuxv1.GetWorkspaceResponse{
+	return &leapmuxv1.GetWorkspaceResponse{
 		Workspace: workspaceToProto(ws),
-	}), nil
+	}, nil
 }
 
 func (s *WorkspaceService) RenameWorkspace(
 	ctx context.Context,
-	req *connect.Request[leapmuxv1.RenameWorkspaceRequest],
-) (*connect.Response[leapmuxv1.RenameWorkspaceResponse], error) {
+	req *leapmuxv1.RenameWorkspaceRequest,
+) (*leapmuxv1.RenameWorkspaceResponse, error) {
 	user, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
@@ -280,15 +280,15 @@ func (s *WorkspaceService) RenameWorkspace(
 	if err := rejectDelegationBearer(user, "workspace lifecycle mutation"); err != nil {
 		return nil, err
 	}
-	title, err := validate.SanitizeName(req.Msg.GetTitle())
+	title, err := validate.SanitizeName(req.GetTitle())
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("title: %w", err))
+		return nil, wrappedConnectError(connect.CodeInvalidArgument, fmt.Errorf("title: %w", err))
 	}
 
 	if err := s.runLifecycleMutation(ctx, lifecycleMutation{
 		OpType: crdt.LifecycleOpRename,
 		Fn: func(tx store.Store) (string, crdt.LifecyclePayload, []*leapmuxv1.CrdtOp, error) {
-			ws, err := loadOwnedWorkspaceOr403(ctx, tx, req.Msg.GetWorkspaceId(), user.ID, "only workspace owner can modify workspace state")
+			ws, err := loadOwnedWorkspaceOr403(ctx, tx, req.GetWorkspaceId(), user.ID, "only workspace owner can modify workspace state")
 			if err != nil {
 				return "", crdt.LifecyclePayload{}, nil, err
 			}
@@ -296,23 +296,23 @@ func (s *WorkspaceService) RenameWorkspace(
 			// rename commit or abort together -- an archive landing between a
 			// check outside and the update would otherwise slip through. It is
 			// a read, so it is safe under storetest.NewDoubleRunStore.
-			if err := refuseArchivedWorkspace(ctx, tx, req.Msg.GetWorkspaceId(), user.ID, "rename"); err != nil {
+			if err := refuseArchivedWorkspace(ctx, tx, req.GetWorkspaceId(), user.ID, "rename"); err != nil {
 				return "", crdt.LifecyclePayload{}, nil, err
 			}
 			rows, err := tx.Workspaces().Rename(ctx, store.RenameWorkspaceParams{
 				Title:       title,
-				ID:          req.Msg.GetWorkspaceId(),
+				ID:          req.GetWorkspaceId(),
 				OwnerUserID: user.ID,
 			})
 			if err != nil {
-				return "", crdt.LifecyclePayload{}, nil, connect.NewError(connect.CodeInternal, fmt.Errorf("rename workspace: %w", err))
+				return "", crdt.LifecyclePayload{}, nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("rename workspace: %w", err))
 			}
 			if rows == 0 {
-				return "", crdt.LifecyclePayload{}, nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("workspace not found or not owner"))
+				return "", crdt.LifecyclePayload{}, nil, connect.Errorf(connect.CodeNotFound, "workspace not found or not owner")
 			}
 			return ws.OwnerUserID, crdt.LifecyclePayload{
 				OpType:      crdt.LifecycleOpRename,
-				WorkspaceID: req.Msg.GetWorkspaceId(),
+				WorkspaceID: req.GetWorkspaceId(),
 				NewTitle:    title,
 			}, nil, nil
 		},
@@ -320,7 +320,7 @@ func (s *WorkspaceService) RenameWorkspace(
 		return nil, err
 	}
 
-	return connect.NewResponse(&leapmuxv1.RenameWorkspaceResponse{}), nil
+	return &leapmuxv1.RenameWorkspaceResponse{}, nil
 }
 
 // SetWorkspaceArchiveState moves a workspace across the archive boundary and
@@ -333,8 +333,8 @@ func (s *WorkspaceService) RenameWorkspace(
 // other client would skip.
 func (s *WorkspaceService) SetWorkspaceArchiveState(
 	ctx context.Context,
-	req *connect.Request[leapmuxv1.SetWorkspaceArchiveStateRequest],
-) (*connect.Response[leapmuxv1.SetWorkspaceArchiveStateResponse], error) {
+	req *leapmuxv1.SetWorkspaceArchiveStateRequest,
+) (*leapmuxv1.SetWorkspaceArchiveStateResponse, error) {
 	user, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
@@ -343,13 +343,13 @@ func (s *WorkspaceService) SetWorkspaceArchiveState(
 		return nil, err
 	}
 
-	requested := req.Msg.GetArchiveState()
+	requested := req.GetArchiveState()
 	if requested != leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE &&
 		requested != leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("archive_state must be ACTIVE or ARCHIVED"))
+		return nil, connect.Errorf(connect.CodeInvalidArgument, "archive_state must be ACTIVE or ARCHIVED")
 	}
 
-	workspaceID := req.Msg.GetWorkspaceId()
+	workspaceID := req.GetWorkspaceId()
 	var workerIDs []string
 	err = s.store.RunInTransaction(ctx, func(tx store.Store) error {
 		if _, err := loadOwnedWorkspaceOr403(ctx, tx, workspaceID, user.ID, "only workspace owner can modify workspace state"); err != nil {
@@ -379,13 +379,13 @@ func (s *WorkspaceService) SetWorkspaceArchiveState(
 		// An explicit destination moves the workspace even when it is already
 		// on the requested side, because "Move to <section>" on an archived
 		// workspace is one call now: unarchive AND land where the user asked.
-		explicitDestination := req.Msg.GetDestinationSectionId()
+		explicitDestination := req.GetDestinationSectionId()
 		if currentlyArchived != requestArchived || explicitDestination != "" {
 			destinationID, err := resolveArchiveDestination(ctx, tx, user.ID, explicitDestination, requestArchived)
 			if err != nil {
 				return err
 			}
-			position := req.Msg.GetPosition()
+			position := req.GetPosition()
 			if position == "" {
 				items, err := tx.WorkspaceSectionItems().ListByUser(ctx, user.ID)
 				if err != nil {
@@ -418,7 +418,7 @@ func (s *WorkspaceService) SetWorkspaceArchiveState(
 		if errors.As(err, &connectErr) {
 			return nil, connectErr
 		}
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 
 	if s.reconcileNudger != nil {
@@ -426,7 +426,7 @@ func (s *WorkspaceService) SetWorkspaceArchiveState(
 			s.reconcileNudger.NudgeReconcile(workerID)
 		}
 	}
-	return connect.NewResponse(&leapmuxv1.SetWorkspaceArchiveStateResponse{}), nil
+	return &leapmuxv1.SetWorkspaceArchiveStateResponse{}, nil
 }
 
 // resolveArchiveDestination answers which section the workspace lands in.
@@ -461,8 +461,8 @@ func resolveArchiveDestination(ctx context.Context, tx store.Store, userID useri
 	}
 	destinationArchived := destination.SectionType == leapmuxv1.SectionType_SECTION_TYPE_WORKSPACES_ARCHIVED
 	if destinationArchived != requestArchived {
-		return "", connect.NewError(connect.CodeInvalidArgument,
-			fmt.Errorf("destination section %s is on the other side of the archive boundary than the requested state", destination.ID))
+		return "", connect.Errorf(connect.CodeInvalidArgument,
+			"destination section %s is on the other side of the archive boundary than the requested state", destination.ID)
 	}
 	return destination.ID, nil
 }
@@ -487,8 +487,8 @@ func distinctWorkerIDs(tabs []store.OwnedTabRef) []string {
 
 func (s *WorkspaceService) DeleteWorkspace(
 	ctx context.Context,
-	req *connect.Request[leapmuxv1.DeleteWorkspaceRequest],
-) (*connect.Response[leapmuxv1.DeleteWorkspaceResponse], error) {
+	req *leapmuxv1.DeleteWorkspaceRequest,
+) (*leapmuxv1.DeleteWorkspaceResponse, error) {
 	user, err := auth.MustGetUser(ctx)
 	if err != nil {
 		return nil, err
@@ -496,7 +496,7 @@ func (s *WorkspaceService) DeleteWorkspace(
 	if err := rejectDelegationBearer(user, "workspace lifecycle mutation"); err != nil {
 		return nil, err
 	}
-	workspaceID := req.Msg.GetWorkspaceId()
+	workspaceID := req.GetWorkspaceId()
 
 	var (
 		workerIDs  []string
@@ -529,7 +529,7 @@ func (s *WorkspaceService) DeleteWorkspace(
 				WorkspaceID: workspaceID,
 			})
 			if err != nil {
-				return "", crdt.LifecyclePayload{}, nil, connect.NewError(connect.CodeInternal, fmt.Errorf("list workspace tabs: %w", err))
+				return "", crdt.LifecyclePayload{}, nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("list workspace tabs: %w", err))
 			}
 			workerTabs = groupTabsByWorker(tabs)
 			workerIDs = make([]string, 0, len(workerTabs))
@@ -541,10 +541,10 @@ func (s *WorkspaceService) DeleteWorkspace(
 				OwnerUserID: user.ID,
 			})
 			if err != nil {
-				return "", crdt.LifecyclePayload{}, nil, connect.NewError(connect.CodeInternal, fmt.Errorf("delete workspace: %w", err))
+				return "", crdt.LifecyclePayload{}, nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("delete workspace: %w", err))
 			}
 			if rows == 0 {
-				return "", crdt.LifecyclePayload{}, nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("workspace not found or not owner"))
+				return "", crdt.LifecyclePayload{}, nil, connect.Errorf(connect.CodeNotFound, "workspace not found or not owner")
 			}
 			// Drop the sidebar placement in the SAME transaction. A section item
 			// states where a workspace sits, so one for a workspace that no
@@ -559,7 +559,7 @@ func (s *WorkspaceService) DeleteWorkspace(
 				UserID:      user.ID,
 				WorkspaceID: workspaceID,
 			}); err != nil {
-				return "", crdt.LifecyclePayload{}, nil, connect.NewError(connect.CodeInternal, fmt.Errorf("delete workspace section item: %w", err))
+				return "", crdt.LifecyclePayload{}, nil, wrappedConnectError(connect.CodeInternal, fmt.Errorf("delete workspace section item: %w", err))
 			}
 			return ws.OwnerUserID, crdt.LifecyclePayload{
 				OpType:      crdt.LifecycleOpDelete,
@@ -570,9 +570,9 @@ func (s *WorkspaceService) DeleteWorkspace(
 	}); err != nil {
 		return nil, err
 	}
-	return connect.NewResponse(&leapmuxv1.DeleteWorkspaceResponse{
+	return &leapmuxv1.DeleteWorkspaceResponse{
 		WorkerTabs: workerTabs,
-	}), nil
+	}, nil
 }
 
 // appendPositionAfter returns a rank that sorts after last and that no OTHER

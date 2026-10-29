@@ -2,12 +2,11 @@ package hub
 
 import (
 	"context"
-	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"github.com/coder/quartz"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -23,15 +22,18 @@ import (
 type mockConnectorClient struct {
 	leapmuxv1connect.UnimplementedWorkerConnectorServiceHandler
 
-	registerFn func(ctx context.Context, req *connect.Request[leapmuxv1.RegisterRequest]) (*connect.Response[leapmuxv1.RegisterResponse], error)
+	registerFn func(ctx context.Context, req *leapmuxv1.RegisterRequest) (*leapmuxv1.RegisterResponse, error)
 }
 
-func (m *mockConnectorClient) Register(ctx context.Context, req *connect.Request[leapmuxv1.RegisterRequest]) (*connect.Response[leapmuxv1.RegisterResponse], error) {
+func (m *mockConnectorClient) Register(ctx context.Context, req *leapmuxv1.RegisterRequest) (*leapmuxv1.RegisterResponse, error) {
 	return m.registerFn(ctx, req)
 }
 
-func (m *mockConnectorClient) Connect(_ context.Context) *connect.BidiStreamForClient[leapmuxv1.ConnectRequest, leapmuxv1.ConnectResponse] {
-	return nil
+// Connect satisfies the client interface but is never exercised by the
+// Register flow under test. Connect v2 names the stream type, and the
+// constructor returns an error alongside it.
+func (m *mockConnectorClient) Connect(_ context.Context) (leapmuxv1connect.WorkerConnectorServiceConnectClientStream, error) {
+	return leapmuxv1connect.WorkerConnectorServiceConnectClientStream{}, nil
 }
 
 // fastRegisterRetry is the production registration policy with a tiny backoff
@@ -49,17 +51,20 @@ func TestRegisterWithClient_RetriesUntilHubAvailable(t *testing.T) {
 	failCount := 3
 
 	mock := &mockConnectorClient{
-		registerFn: func(_ context.Context, req *connect.Request[leapmuxv1.RegisterRequest]) (*connect.Response[leapmuxv1.RegisterResponse], error) {
-			// Bearer must be passed through on every retry.
-			assert.Equal(t, "Bearer key123", req.Header().Get("Authorization"))
+		registerFn: func(ctx context.Context, req *leapmuxv1.RegisterRequest) (*leapmuxv1.RegisterResponse, error) {
+			// Bearer must be passed through on every retry. The mock
+			// stands in for the transport, so it reads the request
+			// header off the CallInfo the production call seeded.
+			info, _ := connect.CallInfoForClientContext(ctx)
+			assert.Equal(t, "Bearer key123", info.RequestHeader().Get("Authorization"))
 			n := int(attempts.Add(1))
 			if n <= failCount {
-				return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("hub down"))
+				return nil, connect.Errorf(connect.CodeUnavailable, "hub down")
 			}
-			return connect.NewResponse(&leapmuxv1.RegisterResponse{
+			return &leapmuxv1.RegisterResponse{
 				WorkerId:  "worker-123",
 				AuthToken: "auth-token-abc",
-			}), nil
+			}, nil
 		},
 	}
 
@@ -97,7 +102,7 @@ func TestRegisterWithClient_RetriesUntilHubAvailable(t *testing.T) {
 
 func TestRegisterWithClient_RejectsEmptyKey(t *testing.T) {
 	mock := &mockConnectorClient{
-		registerFn: func(_ context.Context, _ *connect.Request[leapmuxv1.RegisterRequest]) (*connect.Response[leapmuxv1.RegisterResponse], error) {
+		registerFn: func(_ context.Context, _ *leapmuxv1.RegisterRequest) (*leapmuxv1.RegisterResponse, error) {
 			t.Fatal("Register must not be called with an empty key")
 			return nil, nil
 		},
@@ -113,9 +118,9 @@ func TestRegisterWithClient_StopsOnContextCancel(t *testing.T) {
 	var attempts atomic.Int32
 
 	mock := &mockConnectorClient{
-		registerFn: func(_ context.Context, _ *connect.Request[leapmuxv1.RegisterRequest]) (*connect.Response[leapmuxv1.RegisterResponse], error) {
+		registerFn: func(_ context.Context, _ *leapmuxv1.RegisterRequest) (*leapmuxv1.RegisterResponse, error) {
 			attempts.Add(1)
-			return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("hub down"))
+			return nil, connect.Errorf(connect.CodeUnavailable, "hub down")
 		},
 	}
 
@@ -156,9 +161,9 @@ func TestRegisterWithClient_DoesNotRetryUnauthenticated(t *testing.T) {
 	// hub that already told us "no". The user has to mint a fresh key.
 	var attempts atomic.Int32
 	mock := &mockConnectorClient{
-		registerFn: func(_ context.Context, _ *connect.Request[leapmuxv1.RegisterRequest]) (*connect.Response[leapmuxv1.RegisterResponse], error) {
+		registerFn: func(_ context.Context, _ *leapmuxv1.RegisterRequest) (*leapmuxv1.RegisterResponse, error) {
 			attempts.Add(1)
-			return nil, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("nope"))
+			return nil, connect.Errorf(connect.CodeUnauthenticated, "nope")
 		},
 	}
 	clock := testutil.NewQuartzMock(t)
@@ -182,12 +187,12 @@ func TestRegisterWithClient_BackoffFollowsItsLadder(t *testing.T) {
 	failCount := 4
 
 	mock := &mockConnectorClient{
-		registerFn: func(_ context.Context, _ *connect.Request[leapmuxv1.RegisterRequest]) (*connect.Response[leapmuxv1.RegisterResponse], error) {
+		registerFn: func(_ context.Context, _ *leapmuxv1.RegisterRequest) (*leapmuxv1.RegisterResponse, error) {
 			n := int(attempts.Add(1))
 			if n <= failCount {
-				return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("hub down"))
+				return nil, connect.Errorf(connect.CodeUnavailable, "hub down")
 			}
-			return connect.NewResponse(&leapmuxv1.RegisterResponse{WorkerId: "w", AuthToken: "t"}), nil
+			return &leapmuxv1.RegisterResponse{WorkerId: "w", AuthToken: "t"}, nil
 		},
 	}
 
@@ -244,7 +249,7 @@ func TestRegisterWithClient_LimitsOneAttempt(t *testing.T) {
 	var sawDeadline atomic.Bool
 
 	mock := &mockConnectorClient{
-		registerFn: func(ctx context.Context, _ *connect.Request[leapmuxv1.RegisterRequest]) (*connect.Response[leapmuxv1.RegisterResponse], error) {
+		registerFn: func(ctx context.Context, _ *leapmuxv1.RegisterRequest) (*leapmuxv1.RegisterResponse, error) {
 			if _, ok := ctx.Deadline(); ok {
 				sawDeadline.Store(true)
 			}
@@ -254,9 +259,9 @@ func TestRegisterWithClient_LimitsOneAttempt(t *testing.T) {
 				<-ctx.Done()
 				return nil, ctx.Err()
 			}
-			return connect.NewResponse(&leapmuxv1.RegisterResponse{
+			return &leapmuxv1.RegisterResponse{
 				WorkerId: "w-1", AuthToken: "tok",
-			}), nil
+			}, nil
 		},
 	}
 
@@ -298,7 +303,7 @@ func TestRegisterWithClient_LimitsOneAttempt(t *testing.T) {
 func TestRegisterWithClient_AttemptLimitDoesNotHideCallerCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	mock := &mockConnectorClient{
-		registerFn: func(ctx context.Context, _ *connect.Request[leapmuxv1.RegisterRequest]) (*connect.Response[leapmuxv1.RegisterResponse], error) {
+		registerFn: func(ctx context.Context, _ *leapmuxv1.RegisterRequest) (*leapmuxv1.RegisterResponse, error) {
 			cancel()
 			<-ctx.Done()
 			return nil, ctx.Err()

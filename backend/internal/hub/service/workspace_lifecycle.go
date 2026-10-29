@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
@@ -65,18 +65,18 @@ func emitLifecycleOutbox(
 	// delayed. Every caller reaches this with an authenticated user's id.
 	owner, ok := userid.New(userID)
 	if !ok {
-		return connect.NewError(connect.CodeInternal, fmt.Errorf("lifecycle outbox: blank user id"))
+		return connect.Errorf(connect.CodeInternal, "lifecycle outbox: blank user id")
 	}
 	encoded, err := crdt.EncodeLifecyclePayload(payload, seedOps)
 	if err != nil {
-		return connect.NewError(connect.CodeInternal, fmt.Errorf("encode lifecycle payload: %w", err))
+		return wrappedConnectError(connect.CodeInternal, fmt.Errorf("encode lifecycle payload: %w", err))
 	}
 	if err := tx.LifecycleOutbox().Insert(ctx, store.InsertLifecycleOutboxParams{
 		UserID:  owner,
 		OpType:  leapmuxv1.WorkspaceLifecycleOp(opType),
 		Payload: encoded,
 	}); err != nil {
-		return connect.NewError(connect.CodeInternal, fmt.Errorf("insert lifecycle outbox: %w", err))
+		return wrappedConnectError(connect.CodeInternal, fmt.Errorf("insert lifecycle outbox: %w", err))
 	}
 	return nil
 }

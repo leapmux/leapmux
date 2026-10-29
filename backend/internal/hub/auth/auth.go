@@ -7,7 +7,7 @@ import (
 	"log/slog"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	"github.com/leapmux/leapmux/internal/authscope"
 	pwdhash "github.com/leapmux/leapmux/internal/hub/password"
@@ -230,7 +230,7 @@ func GetUser(ctx context.Context) *UserInfo {
 func MustGetUser(ctx context.Context) (*UserInfo, error) {
 	u := GetUser(ctx)
 	if u == nil {
-		return nil, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("not authenticated"))
+		return nil, connect.Errorf(connect.CodeUnauthenticated, "not authenticated")
 	}
 	return u, nil
 }
@@ -372,9 +372,13 @@ func Login(ctx context.Context, st store.Store, username, password string, lifet
 	user, err := st.Users().GetByUsername(ctx, username)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return "", nil, zero, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid credentials"))
+			return "", nil, zero, connect.Errorf(connect.CodeUnauthenticated, "invalid credentials")
 		}
-		return "", nil, zero, connect.NewError(connect.CodeInternal, fmt.Errorf("query user: %w", err))
+		// connect.NewError takes a string and serializes only that, so the
+		// wrapped cause is attached separately or errors.Is on the store
+		// error would stop matching.
+		cause := fmt.Errorf("query user: %w", err)
+		return "", nil, zero, connect.NewError(connect.CodeInternal, cause.Error()).WithCause(cause)
 	}
 
 	// Mint once, here, from the row we just read. Everything below -- the auth
@@ -383,14 +387,14 @@ func Login(ctx context.Context, st store.Store, username, password string, lifet
 	// mid-transaction on the credential path.
 	loginUID, mintOK := userid.New(user.ID)
 	if !mintOK {
-		return "", nil, zero, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid credentials"))
+		return "", nil, zero, connect.Errorf(connect.CodeUnauthenticated, "invalid credentials")
 	}
 
 	// Passkey-only / OAuth-only accounts store PlaceholderHash. Verify would
 	// return a parse error mapped to CodeInternal and leak that the username
 	// exists without a password. Treat "no password" like a wrong password.
 	if !user.FirstCredentialExempt {
-		return "", nil, zero, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid credentials"))
+		return "", nil, zero, connect.Errorf(connect.CodeUnauthenticated, "invalid credentials")
 	}
 
 	// Verify the password OUTSIDE the auth transaction. On the default
@@ -410,16 +414,16 @@ func Login(ctx context.Context, st store.Store, username, password string, lifet
 	err = st.RunInUserAuthTransaction(ctx, loginUID, func(tx store.Store) error {
 		lockedUser, err := tx.Users().GetByID(ctx, user.ID)
 		if errors.Is(err, store.ErrNotFound) {
-			return connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid credentials"))
+			return connect.Errorf(connect.CodeUnauthenticated, "invalid credentials")
 		}
 		if err != nil {
 			return fmt.Errorf("query locked user: %w", err)
 		}
 		if lockedUser.Username != store.NormalizeUsername(username) {
-			return connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid credentials"))
+			return connect.Errorf(connect.CodeUnauthenticated, "invalid credentials")
 		}
 		if !lockedUser.FirstCredentialExempt {
-			return connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid credentials"))
+			return connect.Errorf(connect.CodeUnauthenticated, "invalid credentials")
 		}
 		match, verifyErr := matchPrelock, verifyErrPrelock
 		if lockedUser.PasswordHash != prelockHash {
@@ -435,10 +439,10 @@ func Login(ctx context.Context, st store.Store, username, password string, lifet
 			// operator signal at all.
 			slog.WarnContext(ctx, "stored password hash failed to parse",
 				"user_id", user.ID, "err", verifyErr)
-			return connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid credentials"))
+			return connect.Errorf(connect.CodeUnauthenticated, "invalid credentials")
 		}
 		if !match {
-			return connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid credentials"))
+			return connect.Errorf(connect.CodeUnauthenticated, "invalid credentials")
 		}
 		// Re-mint from the LOCKED row rather than reusing loginUID: the lock
 		// re-read is the authoritative one, and this is a column, so MustNew's
@@ -448,7 +452,7 @@ func Login(ctx context.Context, st store.Store, username, password string, lifet
 		// bad password is.
 		sessUID, sessMintOK := userid.New(lockedUser.ID)
 		if !sessMintOK {
-			return connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid credentials"))
+			return connect.Errorf(connect.CodeUnauthenticated, "invalid credentials")
 		}
 		sessionID, expiresAt, err = CreateSession(ctx, tx, sessUID, lifetime)
 		if err != nil {
@@ -463,9 +467,9 @@ func Login(ctx context.Context, st store.Store, username, password string, lifet
 			return "", nil, zero, connectErr
 		}
 		if errors.Is(err, store.ErrNotFound) {
-			return "", nil, zero, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid credentials"))
+			return "", nil, zero, connect.Errorf(connect.CodeUnauthenticated, "invalid credentials")
 		}
-		return "", nil, zero, connect.NewError(connect.CodeInternal, err)
+		return "", nil, zero, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
 	return sessionID, user, expiresAt, nil
 }
@@ -513,7 +517,7 @@ func ValidateToken(ctx context.Context, st store.Store, token string) (*UserInfo
 	row, err := st.Sessions().ValidateWithUser(ctx, token, time.Now().UTC())
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid or expired token"))
+			return nil, connect.Errorf(connect.CodeUnauthenticated, "invalid or expired token")
 		}
 		return nil, fmt.Errorf("validate session: %w", err)
 	}
@@ -525,7 +529,7 @@ func ValidateToken(ctx context.Context, st store.Store, token string) (*UserInfo
 	// panic that reads to the client as a torn connection.
 	id, ok := userid.New(row.UserID)
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid or expired token"))
+		return nil, connect.Errorf(connect.CodeUnauthenticated, "invalid or expired token")
 	}
 	return &UserInfo{
 		ID:         id,

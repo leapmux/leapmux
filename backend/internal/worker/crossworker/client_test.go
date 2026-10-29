@@ -8,7 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/hubtransport"
@@ -277,13 +278,13 @@ type fakeChannelService struct {
 
 func (f *fakeChannelService) GetWorkerHandshakeParams(
 	_ context.Context,
-	req *connect.Request[leapmuxv1.GetWorkerHandshakeParamsRequest],
-) (*connect.Response[leapmuxv1.GetWorkerHandshakeParamsResponse], error) {
+	req *leapmuxv1.GetWorkerHandshakeParamsRequest,
+) (*leapmuxv1.GetWorkerHandshakeParamsResponse, error) {
 	select {
-	case f.called <- req.Msg.GetWorkerId():
+	case f.called <- req.GetWorkerId():
 	default:
 	}
-	return nil, connect.NewError(connect.CodeNotFound, errors.New("sibling worker is not registered"))
+	return nil, connect.NewError(connect.CodeNotFound, "sibling worker is not registered")
 }
 
 // TestOpenChannel_ReachesAHubOverASocket covers a hub addressed by `unix:` or
@@ -297,8 +298,9 @@ func (f *fakeChannelService) GetWorkerHandshakeParams(
 func TestOpenChannel_ReachesAHubOverASocket(t *testing.T) {
 	fake := &fakeChannelService{called: make(chan string, 1)}
 	mux := http.NewServeMux()
-	path, handler := leapmuxv1connect.NewChannelServiceHandler(fake)
-	mux.Handle(path, handler)
+	server := connect.NewServer()
+	leapmuxv1connect.RegisterChannelServiceHandler(server, fake)
+	connecthttp.Mount(mux, server, connecthttp.WithReadMaxBytes(0))
 
 	socketURL := hubtransporttest.NewSocketServer(t, "crossworker", mux)
 

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -75,7 +75,7 @@ func TestChangePassword_FromAnElevatedCLICredentialKeepsThatCredentialUsable(t *
 	otherSession, _, err := auth.CreateSession(ctx, env.store, userid.MustNew(env.userID), auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
-	_, err = env.client.ChangePassword(ctx, bearerReq(&leapmuxv1.ChangePasswordRequest{
+	_, err = env.client.ChangePassword(bearerReq(ctx, &leapmuxv1.ChangePasswordRequest{
 		NewPassword: "newpass123",
 	}, bearer))
 	require.NoError(t, err, "an elevated command-line credential may change its owner's password")
@@ -99,14 +99,14 @@ func TestChangePassword_FromAnElevatedCLICredentialKeepsThatCredentialUsable(t *
 	// keeps the assertion about the committed rows rather than about a cache
 	// entry minted before the change.
 	env.contexts.EvictByUserID(env.userID)
-	_, err = env.client.GetTimeouts(ctx, bearerReq(&leapmuxv1.GetTimeoutsRequest{}, bearer))
+	_, err = env.client.GetTimeouts(bearerReq(ctx, &leapmuxv1.GetTimeoutsRequest{}, bearer))
 	require.NoError(t, err, "the acting credential must still authenticate after the change it made")
 
 	// The exclusion is NARROW: it spares one row and nothing else.
 	otherRow, err := env.store.APITokens().GetByID(ctx, otherTokenID)
 	require.NoError(t, err)
 	assert.NotNil(t, otherRow.RevokedAt, "every other command-line credential is revoked")
-	_, err = env.client.GetTimeouts(ctx, bearerReq(&leapmuxv1.GetTimeoutsRequest{}, otherBearer))
+	_, err = env.client.GetTimeouts(bearerReq(ctx, &leapmuxv1.GetTimeoutsRequest{}, otherBearer))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 
@@ -132,7 +132,7 @@ func TestChangePassword_FromAnElevatedSessionStillRevokesEveryCredential(t *test
 	elevateAPITokenRow(t, env.store, tokenID, env.userID)
 
 	env.elevate(t)
-	_, err := env.client.ChangePassword(ctx, authedReq(&leapmuxv1.ChangePasswordRequest{
+	_, err := env.client.ChangePassword(authedReq(ctx, &leapmuxv1.ChangePasswordRequest{
 		NewPassword: "newpass123",
 	}, env.token))
 	require.NoError(t, err)
@@ -181,7 +181,7 @@ func TestDeactivatePasskeyAuth_FromAnElevatedSessionKeepsThatSession(t *testing.
 	elevateAPITokenRow(t, env.store, tokenID, env.userID)
 
 	elevateSession(t, env.store, env.token, env.userID)
-	_, err := env.client.DeactivatePasskeyAuth(ctx, authedReq(&leapmuxv1.DeactivatePasskeyAuthRequest{
+	_, err := env.client.DeactivatePasskeyAuth(authedReq(ctx, &leapmuxv1.DeactivatePasskeyAuthRequest{
 		NewPassword: "newpass123",
 	}, env.token))
 	require.NoError(t, err)

@@ -7,7 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 
 	"github.com/stretchr/testify/require"
 
@@ -38,28 +39,32 @@ func TestConnect_DisconnectLogCarriesReasonWhenWorkerClosesStream(t *testing.T) 
 	env := setupRegKeyEnv(t)
 
 	token := env.login(t, "admin", "admin123")
-	createResp, err := env.mgmtClient.CreateRegistrationKey(context.Background(),
-		authedReq(&leapmuxv1.CreateRegistrationKeyRequest{}, token))
+	createResp, err := env.mgmtClient.CreateRegistrationKey(authedReq(context.Background(),
+		&leapmuxv1.CreateRegistrationKeyRequest{}, token))
 	require.NoError(t, err)
-	regResp, err := env.registerWithKey(t, createResp.Msg.GetRegistrationKey())
+	regResp, err := env.registerWithKey(t, createResp.GetRegistrationKey())
 	require.NoError(t, err)
-	worker, err := env.store.Workers().GetByID(context.Background(), regResp.Msg.GetWorkerId())
+	worker, err := env.store.Workers().GetByID(context.Background(), regResp.GetWorkerId())
 	require.NoError(t, err)
 
-	connectorClient := leapmuxv1connect.NewWorkerConnectorServiceClient(
-		env.serveOverUnixSocket(t, "hub-disconnect-reason"), "http://localhost", connect.WithGRPC())
+	connectorClient := leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(
+		env.serveOverUnixSocket(t, "hub-disconnect-reason"), "http://localhost", connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	stream := connectorClient.Connect(ctx)
-	stream.RequestHeader().Set("Authorization", "Bearer "+worker.AuthToken)
+	streamCtx, info := connect.NewClientContext(ctx)
+	info.RequestHeader().Set("Authorization", "Bearer "+worker.AuthToken)
+	stream, err := connectorClient.Connect(streamCtx)
+	if err != nil {
+		t.Fatal(err)
+	}
 	// ConnectRPC only sends headers on the first Send, so the worker speaks first.
 	require.NoError(t, stream.Send(&leapmuxv1.ConnectRequest{
 		Payload: &leapmuxv1.ConnectRequest_Heartbeat{Heartbeat: &leapmuxv1.Heartbeat{}},
 	}))
 	_, err = stream.Receive() // the WorkerIdentity greeting
 	require.NoError(t, err)
-	require.NoError(t, stream.CloseRequest()) // the worker hangs up cleanly
+	require.NoError(t, stream.CloseSend()) // the worker hangs up cleanly
 
 	require.Eventually(t, func() bool {
 		return strings.Contains(logs.String(), `msg="worker disconnected"`) &&

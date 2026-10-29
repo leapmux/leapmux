@@ -4,38 +4,28 @@ import (
 	"context"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 )
-
-// timeoutInterceptor enforces a default deadline on unary RPCs when
-// the client does not send a timeout header (Connect-Timeout-Ms or
-// grpc-timeout). Streaming RPCs are not affected.
-type timeoutInterceptor struct {
-	defaultTimeout func() time.Duration
-}
 
 // NewTimeoutInterceptor creates a ConnectRPC interceptor that applies
 // a default timeout to unary RPCs that have no client-supplied deadline.
 // The provided function is called on each request to get the current timeout.
-func NewTimeoutInterceptor(defaultTimeout func() time.Duration) connect.Interceptor {
-	return &timeoutInterceptor{defaultTimeout: defaultTimeout}
-}
-
-func (t *timeoutInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
-	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-		if _, ok := ctx.Deadline(); !ok {
-			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(ctx, t.defaultTimeout())
+//
+// Streaming RPCs are not affected: a stream is long-lived by design, so a
+// fixed default deadline would cut it off mid-flight. Connect v2 gives one
+// interceptor every RPC, so the unary/streaming split is a StreamType check.
+func NewTimeoutInterceptor(defaultTimeout func() time.Duration) connect.ServerInterceptor {
+	return func(next connect.ServerFunc) connect.ServerFunc {
+		return func(ctx context.Context, spec connect.Spec, stream connect.ServerStream) error {
+			if spec.StreamType != connect.StreamTypeUnary {
+				return next(ctx, spec, stream)
+			}
+			if _, ok := ctx.Deadline(); ok {
+				return next(ctx, spec, stream)
+			}
+			ctx, cancel := context.WithTimeout(ctx, defaultTimeout())
 			defer cancel()
+			return next(ctx, spec, stream)
 		}
-		return next(ctx, req)
 	}
-}
-
-func (t *timeoutInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
-	return next
-}
-
-func (t *timeoutInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
-	return next // No timeout on streaming RPCs.
 }

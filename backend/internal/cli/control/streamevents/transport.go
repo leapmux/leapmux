@@ -4,11 +4,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"sync/atomic"
 	"time"
 
-	"connectrpc.com/connect"
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -278,10 +278,10 @@ func (h *localIPCHandle) Update(req *leapmuxv1.WatchEventsRequest) error {
 	if err != nil {
 		return fmt.Errorf("marshal WatchEventsRequest: %w", err)
 	}
-	_, err = h.client.UpdateStream(h.parentCtx, connect.NewRequest(&leapmuxv1.UpdateStreamRequest{
+	_, err = h.client.UpdateStream(h.parentCtx, &leapmuxv1.UpdateStreamRequest{
 		ClientRequestId: h.clientReqID,
 		Payload:         payload,
-	}))
+	})
 	return err
 }
 
@@ -289,15 +289,17 @@ func (h *localIPCHandle) Cancel() {
 	if h.cancelled.Swap(true) {
 		return
 	}
+	// Stop the local stream before the remote cancellation can end it. Its
+	// receive loop must recognize this shutdown even while cleanup waits.
+	h.cancel()
 	// Detach from parentCtx so a cancelled parent still retires the worker stream.
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(h.parentCtx), 5*time.Second)
 	defer cancel()
-	if _, err := h.client.Cancel(ctx, connect.NewRequest(&leapmuxv1.CancelRequest{
+	if _, err := h.client.Cancel(ctx, &leapmuxv1.CancelRequest{
 		ClientRequestId: h.clientReqID,
-	})); err != nil {
+	}); err != nil {
 		slog.Debug("localIPCHandle.Cancel failed", "error", err)
 	}
-	h.cancel()
 }
 
 func (h *localIPCHandle) Done() <-chan struct{} { return h.done }
@@ -315,12 +317,12 @@ func (t *LocalIPCTransport) OpenWatchEvents(parentCtx context.Context, req *leap
 	}
 	clientReqID := fmt.Sprintf("watch-%d", t.nextReqID.Add(1))
 	ctx, cancel := context.WithCancel(parentCtx)
-	stream, err := t.client.StreamInner(ctx, connect.NewRequest(&leapmuxv1.StreamInnerRequest{
+	stream, err := t.client.StreamInner(ctx, &leapmuxv1.StreamInnerRequest{
 		Method:          "worker.WatchEvents",
 		Payload:         payload,
 		TargetWorkerId:  t.targetWorkerID,
 		ClientRequestId: clientReqID,
-	}))
+	})
 	if err != nil {
 		cancel()
 		return nil, err
@@ -329,8 +331,17 @@ func (t *LocalIPCTransport) OpenWatchEvents(parentCtx context.Context, req *leap
 	go func() {
 		defer close(done)
 		defer func() { _ = stream.Close() }()
-		for stream.Receive() {
-			env := stream.Msg()
+		for {
+			msg, err := stream.Receive()
+			if err != nil {
+				if errors.Is(err, io.EOF) || ctx.Err() != nil {
+					break
+				}
+				transportLogger(t.logger).Error("streamevents: subscription ended with a transport error",
+					"transport", "local-ipc", "error", err)
+				return
+			}
+			env := msg
 			if env.GetIsError() {
 				logEndingStreamError(transportLogger(t.logger), "local-ipc", env.GetErrorCode(), env.GetErrorMessage())
 				return

@@ -5,7 +5,6 @@ import (
 	"flag"
 	"strings"
 
-	"connectrpc.com/connect"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/cli/control"
 	"google.golang.org/protobuf/types/known/timestamppb"
@@ -41,17 +40,17 @@ func RunAdminUserList(rawCtx any, args []string) error {
 			fs.StringVar(&query, "query", "", "search query (empty = list all)")
 		},
 		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AdminUserService().ListUsers(context.Background(), connect.NewRequest(&leapmuxv1.ListUsersRequest{
+			resp, err := c.AdminUserService().ListUsers(context.Background(), &leapmuxv1.ListUsersRequest{
 				Query: query, Limit: page.Limit, Cursor: page.Cursor,
-			}))
+			})
 			if err != nil {
 				return control.EmitErrorWith("rpc_failed", err)
 			}
-			users := make([]map[string]any, 0, len(resp.Msg.GetUsers()))
-			for _, u := range resp.Msg.GetUsers() {
+			users := make([]map[string]any, 0, len(resp.GetUsers()))
+			for _, u := range resp.GetUsers() {
 				users = append(users, adminUserJSON(u))
 			}
-			return control.EmitData(map[string]any{"users": users, "next_cursor": resp.Msg.GetNextCursor()})
+			return control.EmitData(map[string]any{"users": users, "next_cursor": resp.GetNextCursor()})
 		},
 	})
 }
@@ -101,13 +100,13 @@ func RunAdminUserGet(rawCtx any, args []string) error {
 		Flags:      func(fs *flag.FlagSet) { sel.bind(fs, "id", "username") },
 		BeforeDial: sel.resolve,
 		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AdminUserService().GetUser(context.Background(), connect.NewRequest(&leapmuxv1.GetUserRequest{
+			resp, err := c.AdminUserService().GetUser(context.Background(), &leapmuxv1.GetUserRequest{
 				Id: sel.ID, Username: sel.Username,
-			}))
+			})
 			if err != nil {
 				return control.EmitErrorWith("rpc_failed", err)
 			}
-			return control.EmitData(adminUserJSON(resp.Msg.GetUser()))
+			return control.EmitData(adminUserJSON(resp.GetUser()))
 		},
 	})
 }
@@ -144,14 +143,14 @@ func RunAdminUserCreate(rawCtx any, args []string) error {
 			return nil
 		},
 		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AdminUserService().CreateUser(context.Background(), connect.NewRequest(&leapmuxv1.CreateUserRequest{
+			resp, err := c.AdminUserService().CreateUser(context.Background(), &leapmuxv1.CreateUserRequest{
 				Username: username, Password: password, DisplayName: displayName,
 				Email: email, EmailVerified: emailVerified, IsAdmin: admin,
-			}))
+			})
 			if err != nil {
 				return control.EmitErrorWith("create_failed", err)
 			}
-			return control.EmitData(adminUserJSON(resp.Msg.GetUser()))
+			return control.EmitData(adminUserJSON(resp.GetUser()))
 		},
 	})
 }
@@ -199,11 +198,11 @@ func RunAdminUserUpdate(rawCtx any, args []string) error {
 			return sel.resolve(a)
 		},
 		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AdminUserService().UpdateUser(context.Background(), connect.NewRequest(req))
+			resp, err := c.AdminUserService().UpdateUser(context.Background(), req)
 			if err != nil {
 				return control.EmitErrorWith("update_failed", err)
 			}
-			return control.EmitData(adminUserJSON(resp.Msg.GetUser()))
+			return control.EmitData(adminUserJSON(resp.GetUser()))
 		},
 	})
 }
@@ -219,9 +218,9 @@ func RunAdminUserDelete(rawCtx any, args []string) error {
 		},
 		BeforeDial: sel.resolve,
 		Run: func(c *control.Client, _ adminArgs) error {
-			if _, err := c.AdminUserService().DeleteUser(context.Background(), connect.NewRequest(&leapmuxv1.DeleteUserRequest{
+			if _, err := c.AdminUserService().DeleteUser(context.Background(), &leapmuxv1.DeleteUserRequest{
 				Id: sel.ID, Username: sel.Username, Force: force,
-			})); err != nil {
+			}); err != nil {
 				return control.EmitErrorWith("delete_failed", err)
 			}
 			return control.EmitData(map[string]any{"deleted": true})
@@ -245,13 +244,13 @@ func RunAdminUserSetAdmin(rawCtx any, args []string, admin bool) error {
 		},
 		BeforeDial: sel.resolve,
 		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AdminUserService().SetUserAdmin(context.Background(), connect.NewRequest(&leapmuxv1.SetUserAdminRequest{
+			resp, err := c.AdminUserService().SetUserAdmin(context.Background(), &leapmuxv1.SetUserAdminRequest{
 				Id: sel.ID, Username: sel.Username, IsAdmin: admin, Force: force,
-			}))
+			})
 			if err != nil {
 				return control.EmitErrorWith("update_failed", err)
 			}
-			return control.EmitData(adminUserJSON(resp.Msg.GetUser()))
+			return control.EmitData(adminUserJSON(resp.GetUser()))
 		},
 	})
 }
@@ -287,19 +286,19 @@ func RunAdminUserResetPassword(rawCtx any, args []string) error {
 			return nil
 		},
 		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AdminUserService().ResetPassword(context.Background(), connect.NewRequest(&leapmuxv1.ResetPasswordRequest{
+			resp, err := c.AdminUserService().ResetPassword(context.Background(), &leapmuxv1.ResetPasswordRequest{
 				Id: sel.ID, Username: sel.Username, Password: pw,
-			}))
+			})
 			if err != nil {
 				return control.EmitErrorWith("reset_failed", err)
 			}
 			// The subject comes back from the hub, so the envelope carries
 			// both handles whichever one the operator addressed the user by.
 			return control.EmitData(map[string]any{
-				"user_id":                   resp.Msg.GetUserId(),
-				"username":                  resp.Msg.GetUsername(),
-				"api_tokens_revoked":        resp.Msg.GetApiTokensRevoked(),
-				"delegation_tokens_revoked": resp.Msg.GetDelegationTokensRevoked(),
+				"user_id":                   resp.GetUserId(),
+				"username":                  resp.GetUsername(),
+				"api_tokens_revoked":        resp.GetApiTokensRevoked(),
+				"delegation_tokens_revoked": resp.GetDelegationTokensRevoked(),
 			})
 		},
 	})
@@ -314,15 +313,15 @@ func RunAdminUserListSessions(rawCtx any, args []string) error {
 		Flags:      func(fs *flag.FlagSet) { sel.bind(fs, "id", "username") },
 		BeforeDial: sel.resolve,
 		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AdminUserService().ListUserSessions(context.Background(), connect.NewRequest(&leapmuxv1.ListUserSessionsRequest{
+			resp, err := c.AdminUserService().ListUserSessions(context.Background(), &leapmuxv1.ListUserSessionsRequest{
 				Id: sel.ID, Username: sel.Username, Limit: page.Limit, Cursor: page.Cursor,
-			}))
+			})
 			if err != nil {
 				return control.EmitErrorWith("rpc_failed", err)
 			}
 			return control.EmitData(map[string]any{
-				"sessions":    adminSessionsJSON(resp.Msg.GetSessions()),
-				"next_cursor": resp.Msg.GetNextCursor(),
+				"sessions":    adminSessionsJSON(resp.GetSessions()),
+				"next_cursor": resp.GetNextCursor(),
 			})
 		},
 	})
@@ -414,15 +413,15 @@ func RunAdminSessionList(rawCtx any, args []string) error {
 	return adminVerb(rawCtx, args, adminVerbSpec{
 		Page: &page,
 		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AdminUserService().ListSessions(context.Background(), connect.NewRequest(&leapmuxv1.ListSessionsRequest{
+			resp, err := c.AdminUserService().ListSessions(context.Background(), &leapmuxv1.ListSessionsRequest{
 				Limit: page.Limit, Cursor: page.Cursor,
-			}))
+			})
 			if err != nil {
 				return control.EmitErrorWith("rpc_failed", err)
 			}
 			return control.EmitData(map[string]any{
-				"sessions":    adminSessionsJSON(resp.Msg.GetSessions()),
-				"next_cursor": resp.Msg.GetNextCursor(),
+				"sessions":    adminSessionsJSON(resp.GetSessions()),
+				"next_cursor": resp.GetNextCursor(),
 			})
 		},
 	})
@@ -437,7 +436,7 @@ func RunAdminSessionRevoke(rawCtx any, args []string) error {
 		},
 		BeforeDial: requireFlag(&id, "id"),
 		Run: func(c *control.Client, _ adminArgs) error {
-			if _, err := c.AdminUserService().RevokeSession(context.Background(), connect.NewRequest(&leapmuxv1.RevokeSessionRequest{Id: id})); err != nil {
+			if _, err := c.AdminUserService().RevokeSession(context.Background(), &leapmuxv1.RevokeSessionRequest{Id: id}); err != nil {
 				return control.EmitErrorWith("revoke_failed", err)
 			}
 			return control.EmitData(map[string]any{"revoked": id})
@@ -452,15 +451,15 @@ func RunAdminSessionRevokeUser(rawCtx any, args []string) error {
 		Flags:      func(fs *flag.FlagSet) { sel.bind(fs, "user-id", "username") },
 		BeforeDial: sel.resolve,
 		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AdminUserService().RevokeUserSessions(context.Background(), connect.NewRequest(&leapmuxv1.RevokeUserSessionsRequest{
+			resp, err := c.AdminUserService().RevokeUserSessions(context.Background(), &leapmuxv1.RevokeUserSessionsRequest{
 				Id: sel.ID, Username: sel.Username,
-			}))
+			})
 			if err != nil {
 				return control.EmitErrorWith("revoke_failed", err)
 			}
 			return control.EmitData(map[string]any{
-				"api_tokens_revoked":        resp.Msg.GetApiTokensRevoked(),
-				"delegation_tokens_revoked": resp.Msg.GetDelegationTokensRevoked(),
+				"api_tokens_revoked":        resp.GetApiTokensRevoked(),
+				"delegation_tokens_revoked": resp.GetDelegationTokensRevoked(),
 			})
 		},
 	})
@@ -470,11 +469,11 @@ func RunAdminSessionRevokeUser(rawCtx any, args []string) error {
 func RunAdminSessionPurgeExpired(rawCtx any, args []string) error {
 	return adminVerb(rawCtx, args, adminVerbSpec{
 		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AdminUserService().PurgeExpiredSessions(context.Background(), connect.NewRequest(&leapmuxv1.PurgeExpiredSessionsRequest{}))
+			resp, err := c.AdminUserService().PurgeExpiredSessions(context.Background(), &leapmuxv1.PurgeExpiredSessionsRequest{})
 			if err != nil {
 				return control.EmitErrorWith("purge_failed", err)
 			}
-			return control.EmitData(map[string]any{"purged": resp.Msg.GetPurged()})
+			return control.EmitData(map[string]any{"purged": resp.GetPurged()})
 		},
 	})
 }
@@ -493,18 +492,18 @@ func RunAdminAPITokenList(rawCtx any, args []string) error {
 			fs.BoolVar(&includeRevoked, "include-revoked", false, "include revoked tokens (forensics; default lists live tokens only)")
 		},
 		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AdminUserService().ListAPITokens(context.Background(), connect.NewRequest(&leapmuxv1.ListAPITokensRequest{
+			resp, err := c.AdminUserService().ListAPITokens(context.Background(), &leapmuxv1.ListAPITokensRequest{
 				UserId: userID, Username: username, ClientId: clientID,
 				IncludeRevoked: includeRevoked, Limit: page.Limit, Cursor: page.Cursor,
-			}))
+			})
 			if err != nil {
 				return control.EmitErrorWith("rpc_failed", err)
 			}
-			rows := make([]map[string]any, 0, len(resp.Msg.GetTokens()))
-			for _, t := range resp.Msg.GetTokens() {
+			rows := make([]map[string]any, 0, len(resp.GetTokens()))
+			for _, t := range resp.GetTokens() {
 				rows = append(rows, adminAPITokenJSON(t))
 			}
-			return control.EmitData(map[string]any{"tokens": rows, "next_cursor": resp.Msg.GetNextCursor()})
+			return control.EmitData(map[string]any{"tokens": rows, "next_cursor": resp.GetNextCursor()})
 		},
 	})
 }
@@ -558,20 +557,20 @@ func RunAdminAPITokenIssue(rawCtx any, args []string) error {
 			return nil
 		},
 		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AdminUserService().IssueAPIToken(context.Background(), connect.NewRequest(&leapmuxv1.IssueAPITokenRequest{
+			resp, err := c.AdminUserService().IssueAPIToken(context.Background(), &leapmuxv1.IssueAPITokenRequest{
 				UserId: sel.ID, Username: sel.Username, ClientId: clientID,
 				InstallationName: installationName,
 				TtlSeconds:       ttlSeconds, Scopes: scopeList,
-			}))
+			})
 			if err != nil {
 				return control.EmitErrorWith("issue_failed", err)
 			}
 			return control.EmitData(map[string]any{
-				"token_id":       resp.Msg.GetTokenId(),
-				"access_token":   resp.Msg.GetAccessToken(),
-				"refresh_token":  resp.Msg.GetRefreshToken(),
-				"client_id":      resp.Msg.GetClientId(),
-				"granted_scopes": resp.Msg.GetGrantedScopes(),
+				"token_id":       resp.GetTokenId(),
+				"access_token":   resp.GetAccessToken(),
+				"refresh_token":  resp.GetRefreshToken(),
+				"client_id":      resp.GetClientId(),
+				"granted_scopes": resp.GetGrantedScopes(),
 				"note":           "capture the tokens now; they cannot be retrieved later",
 			})
 		},
@@ -587,7 +586,7 @@ func RunAdminAPITokenRevoke(rawCtx any, args []string) error {
 		},
 		BeforeDial: requireFlag(&id, "id"),
 		Run: func(c *control.Client, _ adminArgs) error {
-			if _, err := c.AdminUserService().RevokeAPIToken(context.Background(), connect.NewRequest(&leapmuxv1.RevokeAPITokenRequest{Id: id})); err != nil {
+			if _, err := c.AdminUserService().RevokeAPIToken(context.Background(), &leapmuxv1.RevokeAPITokenRequest{Id: id}); err != nil {
 				return control.EmitErrorWith("revoke_failed", err)
 			}
 			return control.EmitData(map[string]any{"revoked": id})
@@ -608,17 +607,17 @@ func RunAdminDelegationTokenList(rawCtx any, args []string) error {
 			fs.BoolVar(&includeRevoked, "include-revoked", false, "include revoked tokens (forensics; default lists live tokens only)")
 		},
 		Run: func(c *control.Client, _ adminArgs) error {
-			resp, err := c.AdminUserService().ListDelegationTokens(context.Background(), connect.NewRequest(&leapmuxv1.ListDelegationTokensRequest{
+			resp, err := c.AdminUserService().ListDelegationTokens(context.Background(), &leapmuxv1.ListDelegationTokensRequest{
 				UserId: userID, Username: username, IncludeRevoked: includeRevoked, Limit: page.Limit, Cursor: page.Cursor,
-			}))
+			})
 			if err != nil {
 				return control.EmitErrorWith("rpc_failed", err)
 			}
-			rows := make([]map[string]any, 0, len(resp.Msg.GetTokens()))
-			for _, t := range resp.Msg.GetTokens() {
+			rows := make([]map[string]any, 0, len(resp.GetTokens()))
+			for _, t := range resp.GetTokens() {
 				rows = append(rows, adminDelegationTokenJSON(t))
 			}
-			return control.EmitData(map[string]any{"tokens": rows, "next_cursor": resp.Msg.GetNextCursor()})
+			return control.EmitData(map[string]any{"tokens": rows, "next_cursor": resp.GetNextCursor()})
 		},
 	})
 }
@@ -632,7 +631,7 @@ func RunAdminDelegationTokenRevoke(rawCtx any, args []string) error {
 		},
 		BeforeDial: requireFlag(&id, "id"),
 		Run: func(c *control.Client, _ adminArgs) error {
-			if _, err := c.AdminUserService().RevokeDelegationToken(context.Background(), connect.NewRequest(&leapmuxv1.AdminUserServiceRevokeDelegationTokenRequest{Id: id})); err != nil {
+			if _, err := c.AdminUserService().RevokeDelegationToken(context.Background(), &leapmuxv1.AdminUserServiceRevokeDelegationTokenRequest{Id: id}); err != nil {
 				return control.EmitErrorWith("revoke_failed", err)
 			}
 			return control.EmitData(map[string]any{"revoked": id})

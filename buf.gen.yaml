@@ -10,7 +10,7 @@ plugins:
     out: backend/generated/proto
     opt: paths=source_relative
   # Go client and server stubs for ConnectRPC and gRPC.
-  - remote: buf.build/connectrpc/go:v1.20.0
+  - remote: buf.build/connectrpc/go:v2.0.2
     out: backend/generated/proto
     opt: paths=source_relative
   # TypeScript types and service descriptors.

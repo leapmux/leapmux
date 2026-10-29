@@ -2,10 +2,11 @@ package service
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -71,9 +72,10 @@ func TestElevationRuleStillRefusesAnOrdinaryCallerWithNoCredential(t *testing.T)
 	err := requireElevation(bare, now)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
-	var connectErr *connect.Error
-	require.ErrorAs(t, err, &connectErr)
-	assert.Empty(t, connectErr.Meta().Get(ElevationRequiredHeader),
+	// The step-up marker rides the response header, keyed on the sentinel
+	// (NewElevationResponseInterceptor). A refusal that wraps no sentinel gets
+	// no marker.
+	assert.False(t, errors.Is(err, errElevationRequired),
 		"a credential that can never carry a window must not be sent to a prompt")
 
 	ctx := auth.WithUser(context.Background(), bare)

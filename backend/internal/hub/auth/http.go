@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"net/http"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	"github.com/leapmux/leapmux/internal/hub/store"
 )

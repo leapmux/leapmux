@@ -11,7 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/coder/websocket"
 	"google.golang.org/protobuf/proto"
 
@@ -266,22 +267,31 @@ func (c *Client) IsWorkerIPC() bool {
 	return c.peer == peerWorkerIPC
 }
 
-// ApplyAuth stamps the credential header the PEER consumes. Worker-IPC
-// peers read X-LeapMux-Token; hub peers read Authorization: Bearer —
-// including a hub addressed by a unix:/npipe: URL, whose listener is the
-// hub's own and expects the same Bearer as its http(s) face. Exported so
-// callers outside this package can apply the same auth shape to a
-// hand-constructed request (the same rationale as AuthInterceptor).
-func (c *Client) ApplyAuth(headers http.Header) {
+// applyAuthTo stamps the credential header the PEER consumes through set.
+// Worker-IPC peers read X-LeapMux-Token; hub peers read Authorization:
+// Bearer — including a hub addressed by a unix:/npipe: URL, whose listener
+// is the hub's own and expects the same Bearer as its http(s) face.
+//
+// It takes a setter rather than a header so the one decision serves both
+// header shapes this package touches: http.Header on a hand-built form
+// post, and the *connect.Header that carries Connect request metadata.
+func (c *Client) applyAuthTo(set func(key, value string)) {
 	bearer := c.currentBearer()
 	if bearer == "" {
 		return
 	}
 	if c.IsWorkerIPC() {
-		headers.Set("X-LeapMux-Token", bearer)
-	} else {
-		headers.Set("Authorization", "Bearer "+bearer)
+		set("X-LeapMux-Token", bearer)
+		return
 	}
+	set("Authorization", "Bearer "+bearer)
+}
+
+// ApplyAuth stamps the credential header the PEER consumes. Exported so
+// callers outside this package can apply the same auth shape to a
+// hand-constructed request (the same rationale as AuthInterceptor).
+func (c *Client) ApplyAuth(headers http.Header) {
+	c.applyAuthTo(headers.Set)
 }
 
 // currentBearer reads the access token under the lock a refresh writes it
@@ -314,22 +324,22 @@ func (c *Client) bearerNeedsRenewal() bool {
 	return c.accessExpiresAt.IsZero() || time.Until(c.accessExpiresAt) <= refreshSkew
 }
 
+// newConnectClient applies the shared authentication and response-size policy.
+// The caller chooses the HTTP client because subscriptions need no overall timeout.
+func (c *Client) newConnectClient(httpClient *http.Client) *connect.Client {
+	return connect.NewClient(connecthttp.NewTransport(httpClient, c.connectURL,
+		connecthttp.WithReadMaxBytes(0)), c.AuthInterceptor())
+}
+
 // WorkspaceService returns a ConnectRPC client for the hub-side
 // WorkspaceService. An interceptor injects the auth headers.
 func (c *Client) WorkspaceService() leapmuxv1connect.WorkspaceServiceClient {
-	return leapmuxv1connect.NewWorkspaceServiceClient(
-		c.HTTPClient,
-		c.connectURL,
-		connect.WithInterceptors(c.AuthInterceptor()),
-	)
+	return leapmuxv1connect.NewWorkspaceServiceClient(c.newConnectClient(c.HTTPClient))
 }
 
 // WorkerManagementService returns a ConnectRPC client for ListWorkers.
 func (c *Client) WorkerManagementService() leapmuxv1connect.WorkerManagementServiceClient {
-	return leapmuxv1connect.NewWorkerManagementServiceClient(
-		c.HTTPClient, c.connectURL,
-		connect.WithInterceptors(c.AuthInterceptor()),
-	)
+	return leapmuxv1connect.NewWorkerManagementServiceClient(c.newConnectClient(c.HTTPClient))
 }
 
 // UserCRDT returns a ConnectRPC client for the unary SubmitOps and
@@ -337,20 +347,14 @@ func (c *Client) WorkerManagementService() leapmuxv1connect.WorkerManagementServ
 // `WatchUser` streaming RPC) lives on `/ws/userevents` — see
 // `OpenUserEvents`. An interceptor injects the auth headers.
 func (c *Client) UserCRDT() leapmuxv1connect.UserCRDTClient {
-	return leapmuxv1connect.NewUserCRDTClient(
-		c.HTTPClient, c.connectURL,
-		connect.WithInterceptors(c.AuthInterceptor()),
-	)
+	return leapmuxv1connect.NewUserCRDTClient(c.newConnectClient(c.HTTPClient))
 }
 
 // ChannelService returns a ConnectRPC client for OpenChannel /
 // GetWorkerHandshakeParams when the CLI runs an E2EE inner RPC
 // directly (rare; most callers use OpenE2EEChannel below).
 func (c *Client) ChannelService() leapmuxv1connect.ChannelServiceClient {
-	return leapmuxv1connect.NewChannelServiceClient(
-		c.HTTPClient, c.connectURL,
-		connect.WithInterceptors(c.AuthInterceptor()),
-	)
+	return leapmuxv1connect.NewChannelServiceClient(c.newConnectClient(c.HTTPClient))
 }
 
 // ControlIPCService returns a ConnectRPC client for the worker-local
@@ -385,10 +389,7 @@ func (c *Client) controlIPCService(httpClient *http.Client) (leapmuxv1connect.Co
 	if httpClient == nil {
 		return nil, errors.New("ControlIPCService: this client carries no HTTP client for that lane")
 	}
-	return leapmuxv1connect.NewControlIPCServiceClient(
-		httpClient, c.connectURL,
-		connect.WithInterceptors(c.AuthInterceptor()),
-	), nil
+	return leapmuxv1connect.NewControlIPCServiceClient(c.newConnectClient(httpClient)), nil
 }
 
 // UserEventsStream is a read-only WebSocket subscription to the hub's
@@ -518,10 +519,7 @@ func (c *Client) OpenE2EEChannel(operationCtx, lifetimeCtx context.Context, work
 // drives). Not an Admin* client: every procedure on it acts on the account
 // the bearer belongs to.
 func (c *Client) UserService() leapmuxv1connect.UserServiceClient {
-	return leapmuxv1connect.NewUserServiceClient(
-		c.HTTPClient, c.connectURL,
-		connect.WithInterceptors(c.AuthInterceptor()),
-	)
+	return leapmuxv1connect.NewUserServiceClient(c.newConnectClient(c.HTTPClient))
 }
 
 // AuthService returns a ConnectRPC client for the session surface
@@ -531,10 +529,7 @@ func (c *Client) UserService() leapmuxv1connect.UserServiceClient {
 // stale access token rotates on the way through, and a revoked one ends in
 // invalid_grant with the credential file already deleted.
 func (c *Client) AuthService() leapmuxv1connect.AuthServiceClient {
-	return leapmuxv1connect.NewAuthServiceClient(
-		c.HTTPClient, c.connectURL,
-		connect.WithInterceptors(c.AuthInterceptor()),
-	)
+	return leapmuxv1connect.NewAuthServiceClient(c.newConnectClient(c.HTTPClient))
 }
 
 // AdminSettingsService returns a ConnectRPC client for the hub's
@@ -544,19 +539,13 @@ func (c *Client) AuthService() leapmuxv1connect.AuthServiceClient {
 // (any worker-spawned agent can call whatever it lists), so no admin
 // procedure is registered there.
 func (c *Client) AdminSettingsService() leapmuxv1connect.AdminSettingsServiceClient {
-	return leapmuxv1connect.NewAdminSettingsServiceClient(
-		c.HTTPClient, c.connectURL,
-		connect.WithInterceptors(c.AuthInterceptor()),
-	)
+	return leapmuxv1connect.NewAdminSettingsServiceClient(c.newConnectClient(c.HTTPClient))
 }
 
 // AdminUserService returns a ConnectRPC client for AdminUserService
 // (users, sessions, api-tokens, delegation-tokens).
 func (c *Client) AdminUserService() leapmuxv1connect.AdminUserServiceClient {
-	return leapmuxv1connect.NewAdminUserServiceClient(
-		c.HTTPClient, c.connectURL,
-		connect.WithInterceptors(c.AuthInterceptor()),
-	)
+	return leapmuxv1connect.NewAdminUserServiceClient(c.newConnectClient(c.HTTPClient))
 }
 
 // AppService is the app REGISTRATION surface.
@@ -567,27 +556,18 @@ func (c *Client) AdminUserService() leapmuxv1connect.AdminUserServiceClient {
 // verbs need an administrator -- a hub-wide registration and a vouch -- and
 // each says so in its own handler.
 func (c *Client) AppService() leapmuxv1connect.AppServiceClient {
-	return leapmuxv1connect.NewAppServiceClient(
-		c.HTTPClient, c.connectURL,
-		connect.WithInterceptors(c.AuthInterceptor()),
-	)
+	return leapmuxv1connect.NewAppServiceClient(c.newConnectClient(c.HTTPClient))
 }
 
 // AdminWorkerService returns a ConnectRPC client for AdminWorkerService
 // (cross-user worker administration and registration keys).
 func (c *Client) AdminWorkerService() leapmuxv1connect.AdminWorkerServiceClient {
-	return leapmuxv1connect.NewAdminWorkerServiceClient(
-		c.HTTPClient, c.connectURL,
-		connect.WithInterceptors(c.AuthInterceptor()),
-	)
+	return leapmuxv1connect.NewAdminWorkerServiceClient(c.newConnectClient(c.HTTPClient))
 }
 
 // AdminIdPService returns a ConnectRPC client for AdminIdPService.
 func (c *Client) AdminIdPService() leapmuxv1connect.AdminIdPServiceClient {
-	return leapmuxv1connect.NewAdminIdPServiceClient(
-		c.HTTPClient, c.connectURL,
-		connect.WithInterceptors(c.AuthInterceptor()),
-	)
+	return leapmuxv1connect.NewAdminIdPServiceClient(c.newConnectClient(c.HTTPClient))
 }
 
 // AuthInterceptor adds the Authorization (or X-LeapMux-Token) header
@@ -595,28 +575,28 @@ func (c *Client) AdminIdPService() leapmuxv1connect.AdminIdPServiceClient {
 // (e.g. cmd's hubrpc dispatch) can apply the same auth shape to a
 // generically-constructed connect.NewClient.
 //
-// Wraps both unary AND streaming clients. `connect.UnaryInterceptorFunc`
-// alone is a no-op on the streaming paths, which silently drops the
-// `X-LeapMux-Token` / `Authorization` header from `StreamInner`,
-// `OpenChannel`, and friends — the IPC server (or hub) then responds
-// 401 and the CLI surfaces it as "unauthenticated: HTTP status 401
-// Unauthorized". The streaming path matters here because CRDT
-// bootstrap (`hub.WatchUser`) and any future server-streaming RPC
-// flow through it.
-func (c *Client) AuthInterceptor() connect.Interceptor {
-	return &authInterceptor{client: c}
+// Wraps both unary AND streaming clients, which is the point: connect v2 has
+// one interceptor for every RPC shape, so a header that reached only the
+// unary path would silently vanish from `StreamInner`, `OpenChannel`, and
+// friends -- the IPC server (or hub) then responds 401 and the CLI surfaces
+// it as "unauthenticated: HTTP status 401 Unauthorized". The streaming path
+// matters here because CRDT bootstrap (`hub.WatchUser`) and any future
+// server-streaming RPC flow through it.
+func (c *Client) AuthInterceptor() connect.ClientInterceptor {
+	return (&authInterceptor{client: c}).intercept
 }
 
 // authInterceptor stamps c.ApplyAuth on every outgoing connect call,
-// unary or streaming. WrapStreamingHandler is a no-op because the CLI
-// only acts as a client.
+// unary or streaming, and replays a refused unary call after a repair
+// that can fix it.
 type authInterceptor struct{ client *Client }
 
 // unaryRepair is one repair the interceptor can apply to a refused unary
 // call: the test that recognizes the refusal, and the action that removes
-// its cause.
+// its cause. The test also takes the response header, because connect v2
+// carries no metadata on an error.
 type unaryRepair struct {
-	matches func(err error) bool
+	matches func(err error, responseHeader *connect.Header) bool
 	repair  func(ctx context.Context) error
 }
 
@@ -636,89 +616,155 @@ func (a *authInterceptor) repairs() []unaryRepair {
 	return []unaryRepair{
 		{matches: NeedsElevation, repair: a.client.Elevate},
 		{
-			matches: func(err error) bool { return connect.CodeOf(err) == connect.CodeUnauthenticated },
+			matches: func(err error, _ *connect.Header) bool { return connect.CodeOf(err) == connect.CodeUnauthenticated },
 			repair:  a.client.repairAfterUnauthenticated,
 		},
 	}
 }
 
-// WrapUnary renews the credential before the call, and replays the call
-// after each refusal it can repair.
+// intercept renews the credential before every attempt and stamps it on
+// the request. A unary call is additionally replayed after each refusal
+// it can repair; a stream is never replayed.
 //
+// Connect v2 client interceptors wrap the OPENING of a stream rather
+// than the whole call, so the repair loop lives on the returned stream:
+// it records the request message Send handed it and, when Receive
+// reports a refusal a repair can fix, repairs and re-runs the open /
+// Send / CloseSend / Receive sequence.
+func (a *authInterceptor) intercept(next connect.ClientFunc) connect.ClientFunc {
+	return func(ctx context.Context, spec connect.Spec) (connect.ClientStream, error) {
+		// One CallInfo for the whole call, so a replay clears and restamps
+		// the SAME metadata the outer caller reads back. Client call methods
+		// attach one before the chain runs; make one otherwise.
+		info, ok := connect.CallInfoForClientContext(ctx)
+		if !ok {
+			ctx, info = connect.NewClientContext(ctx)
+		}
+		stream, err := a.openAttempt(ctx, info, spec, next)
+		if err != nil {
+			return nil, err
+		}
+		if spec.StreamType != connect.StreamTypeUnary {
+			return stream, nil
+		}
+		open := func() (connect.ClientStream, error) {
+			return a.openAttempt(ctx, info, spec, next)
+		}
+		return &unaryReplayStream{ctx: ctx, info: info, open: open, stream: stream, repairs: a.repairs()}, nil
+	}
+}
+
+// openAttempt renews the credential, clears earlier response metadata, and
+// applies authentication before opening any RPC. Unary retries use the same
+// path. Non-unary streams are opened once and are never retried.
+func (a *authInterceptor) openAttempt(ctx context.Context, info *connect.CallInfo, spec connect.Spec, next connect.ClientFunc) (connect.ClientStream, error) {
+	// The freshness check runs before EVERY attempt, not only the
+	// first. A repair can block on a person for minutes (the browser
+	// step-up lives for ten), and the access token it started with
+	// lapses inside that window; a replay stamped with the token from
+	// before the prompt would fail as unauthenticated, and report that
+	// to a user who just finished verifying.
+	if err := a.client.EnsureFreshBearer(ctx); err != nil {
+		return nil, connect.NewError(bearerErrorCode(err), err.Error()).WithCause(err)
+	}
+	// A failed attempt left its own response metadata behind. The
+	// transport overwrites only the keys the next response carries, so
+	// clear first or a replayed success keeps the refusal's headers.
+	clearHeader(info.ResponseHeader())
+	clearHeader(info.ResponseTrailer())
+	a.client.applyAuthTo(info.RequestHeader().Set)
+	return next(ctx, spec)
+}
+
+// unaryReplayStream records the request message and replays the call
+// through a fresh stream after a repair. Connect v2 gives a client
+// interceptor the stream OPENING and not the whole call, so the repair
+// loop has to drive the stream rather than wrap the call.
+type unaryReplayStream struct {
+	ctx     context.Context
+	info    *connect.CallInfo
+	open    func() (connect.ClientStream, error)
+	repairs []unaryRepair
+	stream  connect.ClientStream
+	sent    any
+}
+
+func (s *unaryReplayStream) SendHeaders() error { return s.stream.SendHeaders() }
+func (s *unaryReplayStream) Send(msg any) error { s.sent = msg; return s.stream.Send(msg) }
+func (s *unaryReplayStream) CloseSend() error   { return s.stream.CloseSend() }
+func (s *unaryReplayStream) Close() error       { return s.stream.Close() }
+
+// Receive replays the call while some unused repair matches the refusal.
 // Each repair runs AT MOST ONCE, in any order, and the call is replayed
 // while some unused repair matches. Both properties are load-bearing:
 //
-//   - A call can need BOTH repairs. Another process rotates the credential,
-//     so the hub answers Unauthenticated; the replay then reaches the hub
-//     with a live credential that proved no factor, which is the marked
-//     refusal. A fixed sequence of one repair reported that second refusal
-//     raw, with no prompt.
+//   - A call can need BOTH repairs. Another process rotates the
+//     credential, so the hub answers Unauthenticated; the replay then
+//     reaches the hub with a live credential that proved no factor, which
+//     is the marked refusal. A fixed sequence of one repair reported that
+//     second refusal raw, with no prompt.
 //   - A repair that already ran cannot run again, so a hub that keeps
-//     refusing ends the loop. A second refusal of the same kind is the truth
-//     -- the factor was proven and the action is still refused -- and
-//     repeating the repair would ask the user to verify the same credential
-//     for ever.
+//     refusing ends the loop. A second refusal of the same kind is the
+//     truth -- the factor was proven and the action is still refused --
+//     and repeating the repair would ask the user to verify the same
+//     credential for ever.
 //
-// The freshness check runs before EVERY attempt, not only the first. A
-// repair can block on a person for minutes (the browser step-up lives for
-// ten), and the access token it started with lapses inside that window; a
-// replay stamped with the token from before the prompt would fail as
-// unauthenticated, and report that to a user who just finished verifying.
+// A unary call is always safe to replay: the hub refused it, so it acted
+// on nothing.
 //
-// A unary call is always safe to replay: the hub refused it, so it acted on
-// nothing.
-//
-// A proactive-refresh failure that leaves a usable token is swallowed inside
-// EnsureFreshBearer: the stored token may still work, and the call that
-// follows reports the truth.
-func (a *authInterceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
-	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-		repairs := a.repairs()
-		for {
-			if err := a.client.EnsureFreshBearer(ctx); err != nil {
-				return nil, connect.NewError(bearerErrorCode(err), err)
+// A proactive-refresh failure that leaves a usable token is swallowed
+// inside EnsureFreshBearer: the stored token may still work, and the call
+// that follows reports the truth.
+func (s *unaryReplayStream) Receive(res any) error {
+	for {
+		err := s.stream.Receive(res)
+		if err == nil {
+			return nil
+		}
+		i := slices.IndexFunc(s.repairs, func(r unaryRepair) bool {
+			return r.matches(err, s.info.ResponseHeader())
+		})
+		if i < 0 {
+			return err
+		}
+		repair := s.repairs[i].repair
+		s.repairs = slices.Delete(s.repairs, i, i+1)
+		if repairErr := repair(s.ctx); repairErr != nil {
+			if errors.Is(repairErr, ErrCredentialsNotSaved) {
+				return connect.NewError(bearerErrorCode(repairErr), repairErr.Error()).WithCause(repairErr)
 			}
-			a.client.ApplyAuth(req.Header())
-			resp, err := next(ctx, req)
-			if err == nil {
-				return resp, nil
-			}
-			i := slices.IndexFunc(repairs, func(r unaryRepair) bool { return r.matches(err) })
-			if i < 0 {
-				return resp, err
-			}
-			repair := repairs[i].repair
-			repairs = slices.Delete(repairs, i, i+1)
-			if repair(ctx) != nil {
-				// The hub's own refusal is what the user must read when a
-				// repair cannot run or the person declines it. Reporting the
-				// repair's failure instead would name the remedy as the
-				// problem.
-				return resp, err
-			}
+			// The hub's own refusal is what the user must read when a
+			// repair cannot run or the person declines it. Reporting the
+			// repair's failure instead would name the remedy as the
+			// problem.
+			return err
+		}
+		_ = s.stream.Close()
+		next, openErr := s.open()
+		if openErr != nil {
+			return openErr
+		}
+		s.stream = next
+		if msg, ok := res.(proto.Message); ok {
+			// Discard the failed attempt's partial response before sending
+			// the retry. The retry can fail before its decoder runs.
+			proto.Reset(msg)
+		}
+		if sendErr := s.stream.Send(s.sent); sendErr != nil {
+			return sendErr
+		}
+		if closeErr := s.stream.CloseSend(); closeErr != nil {
+			return closeErr
 		}
 	}
 }
 
-// WrapStreamingClient renews before the stream opens and never retries.
-// A stream already begins delivering before an error can surface, so a
-// replay would hand the caller the opening messages twice.
-//
-// The renewal error is discarded here alone, and it has to be: a streaming
-// interceptor returns a StreamingClientConn and no error, so there is
-// nowhere to report it. The refusal surfaces on the first Send or Receive
-// instead.
-func (a *authInterceptor) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
-	return func(ctx context.Context, spec connect.Spec) connect.StreamingClientConn {
-		_ = a.client.EnsureFreshBearer(ctx)
-		conn := next(ctx, spec)
-		a.client.ApplyAuth(conn.RequestHeader())
-		return conn
+// clearHeader drops every entry h holds. It is the connect.Header
+// equivalent of the reset the library runs on a fresh client call.
+func clearHeader(h *connect.Header) {
+	for key := range h.All() {
+		h.Delete(key)
 	}
-}
-
-func (a *authInterceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
-	return next
 }
 
 // buildHTTPClients returns the unary client, the WebSocket client, and the

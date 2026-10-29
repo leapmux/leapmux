@@ -5,7 +5,7 @@ import (
 	"errors"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/protobuf/proto"
 
@@ -164,11 +164,11 @@ func localIPCCallInnerBest(ctx context.Context, c *control.Client, workerID, met
 	if err != nil {
 		return &codedRPCError{Code: "invalid_request", Cause: err}
 	}
-	resp, err := ipc.CallInner(ctx, connect.NewRequest(&leapmuxv1.CallInnerRequest{
+	resp, err := ipc.CallInner(ctx, &leapmuxv1.CallInnerRequest{
 		Method:         "worker." + method,
 		Payload:        payload,
 		TargetWorkerId: workerID,
-	}))
+	})
 	if err != nil {
 		// These connection or authorization codes mean that the call could not reach the target.
 		// Match the hub transport's channel_open_failed code so isWorkerUnreachable permits the CRDT-only fallback on both transports.
@@ -178,13 +178,13 @@ func localIPCCallInnerBest(ctx context.Context, c *control.Client, workerID, met
 		}
 		return &codedRPCError{Code: "rpc_failed", Cause: err}
 	}
-	if resp.Msg.GetIsError() {
+	if resp.GetIsError() {
 		// dispatchLocal fills the in-band envelope with a gRPC code in ErrorCode.
 		// Rebuild the error with that code so callers can classify it.
-		return &codedRPCError{Code: "rpc_error", Cause: inBandError(resp.Msg)}
+		return &codedRPCError{Code: "rpc_error", Cause: inBandError(resp)}
 	}
-	if out != nil && len(resp.Msg.GetPayload()) > 0 {
-		if err := proto.Unmarshal(resp.Msg.GetPayload(), out); err != nil {
+	if out != nil && len(resp.GetPayload()) > 0 {
+		if err := proto.Unmarshal(resp.GetPayload(), out); err != nil {
 			return &codedRPCError{Code: "unmarshal_failed", Cause: err}
 		}
 	}
@@ -198,7 +198,7 @@ func localIPCCallInnerBest(ctx context.Context, c *control.Client, workerID, met
 func inBandError(msg *leapmuxv1.CallInnerResponse) error {
 	cause := errors.New(msg.GetErrorMessage())
 	if code := codes.Code(msg.GetErrorCode()); code != codes.OK {
-		return connect.NewError(grpcToConnectCode(code), cause)
+		return connect.NewError(grpcToConnectCode(code), cause.Error()).WithCause(cause)
 	}
 	return cause
 }

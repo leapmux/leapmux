@@ -5,58 +5,34 @@ import (
 	"strings"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 )
-
-// interceptor implements connect.Interceptor and records metrics for
-// both unary and streaming RPCs.
-type interceptor struct{}
 
 // NewInterceptor returns a ConnectRPC interceptor that records RPC
 // request count and duration per service/method/code.
-func NewInterceptor() connect.Interceptor {
-	return &interceptor{}
-}
+//
+// Connect v2 has a single ServerFunc shape for unary and streaming
+// calls, so the separate v1 unary and streaming wrappers collapse into
+// one. The hub registers it on the server only; client-side streaming
+// is not used here.
+func NewInterceptor() connect.ServerInterceptor {
+	return func(next connect.ServerFunc) connect.ServerFunc {
+		return func(ctx context.Context, spec connect.Spec, stream connect.ServerStream) error {
+			svc, method := ParseProcedure(spec.Procedure)
+			start := time.Now()
 
-func (i *interceptor) WrapUnary(next connect.UnaryFunc) connect.UnaryFunc {
-	return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-		svc, method := ParseProcedure(req.Spec().Procedure)
-		start := time.Now()
+			err := next(ctx, spec, stream)
 
-		resp, err := next(ctx, req)
+			code := "ok"
+			if err != nil {
+				code = connect.CodeOf(err).String()
+			}
 
-		code := "ok"
-		if err != nil {
-			code = connect.CodeOf(err).String()
+			RPCRequestsTotal.WithLabelValues(svc, method, code).Inc()
+			RPCRequestDuration.WithLabelValues(svc, method).Observe(time.Since(start).Seconds())
+
+			return err
 		}
-
-		RPCRequestsTotal.WithLabelValues(svc, method, code).Inc()
-		RPCRequestDuration.WithLabelValues(svc, method).Observe(time.Since(start).Seconds())
-
-		return resp, err
-	}
-}
-
-func (i *interceptor) WrapStreamingClient(next connect.StreamingClientFunc) connect.StreamingClientFunc {
-	return next // Client-side streaming is not used by the hub.
-}
-
-func (i *interceptor) WrapStreamingHandler(next connect.StreamingHandlerFunc) connect.StreamingHandlerFunc {
-	return func(ctx context.Context, conn connect.StreamingHandlerConn) error {
-		svc, method := ParseProcedure(conn.Spec().Procedure)
-		start := time.Now()
-
-		err := next(ctx, conn)
-
-		code := "ok"
-		if err != nil {
-			code = connect.CodeOf(err).String()
-		}
-
-		RPCRequestsTotal.WithLabelValues(svc, method, code).Inc()
-		RPCRequestDuration.WithLabelValues(svc, method).Observe(time.Since(start).Seconds())
-
-		return err
 	}
 }
 

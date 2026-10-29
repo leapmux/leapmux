@@ -7,7 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -76,26 +77,30 @@ type fakeWorkspaceService struct {
 	gotTabID   string
 }
 
-func (f *fakeWorkspaceService) GetTab(_ context.Context, req *connect.Request[leapmuxv1.GetTabRequest]) (*connect.Response[leapmuxv1.GetTabResponse], error) {
-	f.gotAuth = req.Header().Get("Authorization")
-	f.gotTabID = req.Msg.GetTabId()
+func (f *fakeWorkspaceService) GetTab(ctx context.Context, req *leapmuxv1.GetTabRequest) (*leapmuxv1.GetTabResponse, error) {
+	// Connect v2 carries request headers on the CallInfo attached to the
+	// handler's context, not on the request message.
+	info, _ := connect.CallInfoForServerContext(ctx)
+	f.gotAuth = info.RequestHeader().Get("Authorization")
+	f.gotTabID = req.GetTabId()
 	if f.getTabErr != nil {
 		return nil, f.getTabErr
 	}
 	if f.getTabResp == nil {
-		return connect.NewResponse(&leapmuxv1.GetTabResponse{}), nil
+		return &leapmuxv1.GetTabResponse{}, nil
 	}
-	return connect.NewResponse(f.getTabResp), nil
+	return f.getTabResp, nil
 }
 
 // startFakeHub spins up an httptest server hosting the fake
-// WorkspaceService and returns (baseURL, fakeHandler, teardown). The
-// returned baseURL plugs straight into Descriptor.Invoke.
+// WorkspaceService and returns its baseURL. The returned baseURL plugs
+// straight into a connect client for Descriptor.Invoke.
 func startFakeHub(t *testing.T, svc *fakeWorkspaceService) string {
 	t.Helper()
 	mux := http.NewServeMux()
-	path, handler := leapmuxv1connect.NewWorkspaceServiceHandler(svc)
-	mux.Handle(path, handler)
+	server := connect.NewServer()
+	leapmuxv1connect.RegisterWorkspaceServiceHandler(server, svc)
+	connecthttp.Mount(mux, server, connecthttp.WithReadMaxBytes(0))
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	return srv.URL
@@ -114,7 +119,10 @@ func TestInvoke_HappyPathRoundTripsRequestAndResponse(t *testing.T) {
 	in.TabType = leapmuxv1.TabType_TAB_TYPE_AGENT
 	out := desc.NewResponse().(*leapmuxv1.GetTabResponse)
 
-	require.NoError(t, desc.Invoke(context.Background(), http.DefaultClient, baseURL, in, out))
+	// Invoke dispatches through a caller-built client: the caller owns
+	// the transport and the interceptor chain.
+	client := connect.NewClient(connecthttp.NewTransport(http.DefaultClient, baseURL))
+	require.NoError(t, desc.Invoke(context.Background(), client, in, out))
 
 	// Verify the request reached the service with the expected fields.
 	assert.Equal(t, "t-123", svc.gotTabID, "wire round-trip must carry tab_id through")
@@ -135,21 +143,29 @@ func TestInvoke_AppliesProvidedClientOptions(t *testing.T) {
 
 	// Caller-supplied interceptor must reach the wire — both the CLI
 	// (session interceptor) and the worker bridge (bearer interceptor)
-	// rely on this seam.
-	authHeaderInterceptor := connect.UnaryInterceptorFunc(func(next connect.UnaryFunc) connect.UnaryFunc {
-		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-			req.Header().Set("Authorization", "Bearer my-token")
-			return next(ctx, req)
+	// rely on this seam. Connect v2 builds the interceptor chain into
+	// the client, so the caller passes it to connect.NewClient.
+	authHeaderInterceptor := func(next connect.ClientFunc) connect.ClientFunc {
+		return func(ctx context.Context, spec connect.Spec) (connect.ClientStream, error) {
+			// Request headers live on the CallInfo carried by the
+			// context; the call methods attach it before the chain
+			// runs, so make one only if this ClientFunc sees none.
+			info, ok := connect.CallInfoForClientContext(ctx)
+			if !ok {
+				ctx, info = connect.NewClientContext(ctx)
+			}
+			info.RequestHeader().Set("Authorization", "Bearer my-token")
+			return next(ctx, spec)
 		}
-	})
-	require.NoError(t, desc.Invoke(context.Background(), http.DefaultClient, baseURL, in, out,
-		connect.WithInterceptors(authHeaderInterceptor)))
+	}
+	client := connect.NewClient(connecthttp.NewTransport(http.DefaultClient, baseURL), authHeaderInterceptor)
+	require.NoError(t, desc.Invoke(context.Background(), client, in, out))
 
-	assert.Equal(t, "Bearer my-token", svc.gotAuth, "Invoke must thread caller's interceptor options to the connect client")
+	assert.Equal(t, "Bearer my-token", svc.gotAuth, "Invoke must dispatch through the caller's client so its interceptors reach the wire")
 }
 
 func TestInvoke_PropagatesHubErrors(t *testing.T) {
-	svc := &fakeWorkspaceService{getTabErr: connect.NewError(connect.CodeNotFound, errors.New("no such tab"))}
+	svc := &fakeWorkspaceService{getTabErr: connect.NewError(connect.CodeNotFound, "no such tab")}
 	baseURL := startFakeHub(t, svc)
 
 	desc, err := hubrpc.Lookup("GetTab")
@@ -157,7 +173,8 @@ func TestInvoke_PropagatesHubErrors(t *testing.T) {
 	in := desc.NewRequest()
 	out := desc.NewResponse()
 
-	err = desc.Invoke(context.Background(), http.DefaultClient, baseURL, in, out)
+	client := connect.NewClient(connecthttp.NewTransport(http.DefaultClient, baseURL))
+	err = desc.Invoke(context.Background(), client, in, out)
 	require.Error(t, err)
 	var connectErr *connect.Error
 	require.True(t, errors.As(err, &connectErr), "hub-side error must surface as connect.Error so callers can inspect Code()")
@@ -173,7 +190,8 @@ func TestInvoke_RequestTypeMismatchReturnsClearError(t *testing.T) {
 	wrongIn := &leapmuxv1.ListTabsRequest{}
 	out := desc.NewResponse()
 
-	err = desc.Invoke(context.Background(), &http.Client{}, "http://unused.invalid", wrongIn, out)
+	client := connect.NewClient(connecthttp.NewTransport(&http.Client{}, "http://unused.invalid"))
+	err = desc.Invoke(context.Background(), client, wrongIn, out)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "request type mismatch",
 		"caller should learn the request was the wrong proto type, not a generic network error")
@@ -186,7 +204,8 @@ func TestInvoke_ResponseTypeMismatchReturnsClearError(t *testing.T) {
 	// Wrong-shaped response slot — should fail before any network IO.
 	wrongOut := &leapmuxv1.ListTabsResponse{}
 
-	err = desc.Invoke(context.Background(), &http.Client{}, "http://unused.invalid", in, wrongOut)
+	client := connect.NewClient(connecthttp.NewTransport(&http.Client{}, "http://unused.invalid"))
+	err = desc.Invoke(context.Background(), client, in, wrongOut)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "response type mismatch")
 }

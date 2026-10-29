@@ -6,7 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -51,19 +52,28 @@ func TestListOwnedTabsForWorker_ScopedToRegistrant(t *testing.T) {
 		TabType: leapmuxv1.TabType_TAB_TYPE_FILE, TabID: sharedTabID, TileID: "tile-a", Position: "a0",
 	}))
 
-	req := connect.NewRequest(&leapmuxv1.ListOwnedTabsForWorkerRequest{})
-	req.Header().Set("Authorization", "Bearer "+worker.AuthToken)
-	resp, err := service.NewWorkerReconcilerService(st).ListOwnedTabsForWorker(ctx, req)
-	require.NoError(t, err)
+	req := &leapmuxv1.ListOwnedTabsForWorkerRequest{}
+	// The bearer rides the request header on the server CallInfo, so the call
+	// runs through callUnderServerInfo with the header a transport would
+	// deliver.
+	var resp *leapmuxv1.ListOwnedTabsForWorkerResponse
+	_, callErr := callUnderServerInfo(ctx, func(callCtx context.Context) error {
+		info, _ := connect.CallInfoForServerContext(callCtx)
+		info.RequestHeader().Set("Authorization", "Bearer "+worker.AuthToken)
+		var err error
+		resp, err = service.NewWorkerReconcilerService(st).ListOwnedTabsForWorker(callCtx, req)
+		return err
+	})
+	require.NoError(t, callErr)
 
-	require.Len(t, resp.Msg.GetTabStates(), 1, "a foreign owner's row must not be listed")
-	got := resp.Msg.GetTabStates()[0]
+	require.Len(t, resp.GetTabStates(), 1, "a foreign owner's row must not be listed")
+	got := resp.GetTabStates()[0]
 	assert.Equal(t, userA.ID, got.GetUserId())
 	assert.Equal(t, sharedTabID, got.GetTabId())
 	assert.Equal(t, leapmuxv1.TabType_TAB_TYPE_FILE, got.GetTabType(),
 		"alice's row, not bob's identically-named one")
 	assert.Equal(t, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ACTIVE, got.GetArchiveState())
-	assert.Equal(t, userA.ID, resp.Msg.GetOwnerUserId(),
+	assert.Equal(t, userA.ID, resp.GetOwnerUserId(),
 		"the response must declare the owner it is authoritative for")
 }
 
@@ -89,13 +99,19 @@ func TestListOwnedTabsForWorker_ReturnsArchivedState(t *testing.T) {
 		TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabID: "archived-agent", TileID: "tile", Position: "a",
 	}))
 
-	req := connect.NewRequest(&leapmuxv1.ListOwnedTabsForWorkerRequest{})
-	req.Header().Set("Authorization", "Bearer "+worker.AuthToken)
-	resp, err := service.NewWorkerReconcilerService(st).ListOwnedTabsForWorker(ctx, req)
-	require.NoError(t, err)
-	require.Len(t, resp.Msg.GetTabStates(), 1)
+	req := &leapmuxv1.ListOwnedTabsForWorkerRequest{}
+	var resp *leapmuxv1.ListOwnedTabsForWorkerResponse
+	_, callErr := callUnderServerInfo(ctx, func(callCtx context.Context) error {
+		info, _ := connect.CallInfoForServerContext(callCtx)
+		info.RequestHeader().Set("Authorization", "Bearer "+worker.AuthToken)
+		var err error
+		resp, err = service.NewWorkerReconcilerService(st).ListOwnedTabsForWorker(callCtx, req)
+		return err
+	})
+	require.NoError(t, callErr)
+	require.Len(t, resp.GetTabStates(), 1)
 	assert.Equal(t, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
-		resp.Msg.GetTabStates()[0].GetArchiveState())
+		resp.GetTabStates()[0].GetArchiveState())
 }
 
 // TestListOwnedTabsForWorker_RejectsUnauthenticated keeps the bearer gate
@@ -105,9 +121,15 @@ func TestListOwnedTabsForWorker_RejectsUnauthenticated(t *testing.T) {
 	t.Parallel()
 
 	st := hubtestutil.OpenTestStore(t)
-	req := connect.NewRequest(&leapmuxv1.ListOwnedTabsForWorkerRequest{})
-	req.Header().Set("Authorization", "Bearer nope")
-	_, err := service.NewWorkerReconcilerService(st).ListOwnedTabsForWorker(context.Background(), req)
+	// The bearer rides the request header on the server CallInfo, so the call
+	// runs through callUnderServerInfo with the header a transport would
+	// deliver: a bare method call carries no CallInfo, and reading one panics.
+	_, err := callUnderServerInfo(context.Background(), func(ctx context.Context) error {
+		info, _ := connect.CallInfoForServerContext(ctx)
+		info.RequestHeader().Set("Authorization", "Bearer nope")
+		_, callErr := service.NewWorkerReconcilerService(st).ListOwnedTabsForWorker(ctx, &leapmuxv1.ListOwnedTabsForWorkerRequest{})
+		return callErr
+	})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
@@ -141,21 +163,23 @@ func TestListOwnedTabsForWorker_ReachableThroughTheAuthInterceptor(t *testing.T)
 
 	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
 	mux := http.NewServeMux()
-	path, handler := leapmuxv1connect.NewWorkerReconcilerServiceHandler(
-		service.NewWorkerReconcilerService(st), connect.WithInterceptors(interceptor))
-	mux.Handle(path, handler)
+	connectServer := connect.NewServer(interceptor)
+	leapmuxv1connect.RegisterWorkerReconcilerServiceHandler(connectServer,
+		service.NewWorkerReconcilerService(st))
+	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	client := leapmuxv1connect.NewWorkerReconcilerServiceClient(server.Client(), server.URL)
-	req := connect.NewRequest(&leapmuxv1.ListOwnedTabsForWorkerRequest{})
-	req.Header().Set("Authorization", "Bearer "+worker.AuthToken)
+	client := leapmuxv1connect.NewWorkerReconcilerServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0))))
+	req := &leapmuxv1.ListOwnedTabsForWorkerRequest{}
+	ctx, info := connect.NewClientContext(ctx)
+	info.RequestHeader().Set("Authorization", "Bearer "+worker.AuthToken)
 
 	resp, err := client.ListOwnedTabsForWorker(ctx, req)
 	require.NoError(t, err, "a worker's own auth_token must reach the reconciler RPC")
-	require.Len(t, resp.Msg.GetTabStates(), 1)
-	assert.Equal(t, "agent-live", resp.Msg.GetTabStates()[0].GetTabId())
-	assert.Equal(t, owner.ID, resp.Msg.GetOwnerUserId())
+	require.Len(t, resp.GetTabStates(), 1)
+	assert.Equal(t, "agent-live", resp.GetTabStates()[0].GetTabId())
+	assert.Equal(t, owner.ID, resp.GetOwnerUserId())
 }
 
 // TestListOwnedTabsForWorker_InterceptorStillRejectsAStranger is the deny half
@@ -170,15 +194,16 @@ func TestListOwnedTabsForWorker_InterceptorStillRejectsAStranger(t *testing.T) {
 
 	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
 	mux := http.NewServeMux()
-	path, handler := leapmuxv1connect.NewWorkerReconcilerServiceHandler(
-		service.NewWorkerReconcilerService(st), connect.WithInterceptors(interceptor))
-	mux.Handle(path, handler)
+	connectServer := connect.NewServer(interceptor)
+	leapmuxv1connect.RegisterWorkerReconcilerServiceHandler(connectServer,
+		service.NewWorkerReconcilerService(st))
+	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	client := leapmuxv1connect.NewWorkerReconcilerServiceClient(server.Client(), server.URL)
+	client := leapmuxv1connect.NewWorkerReconcilerServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0))))
 	_, err := client.ListOwnedTabsForWorker(context.Background(),
-		connect.NewRequest(&leapmuxv1.ListOwnedTabsForWorkerRequest{}))
+		&leapmuxv1.ListOwnedTabsForWorkerRequest{})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }

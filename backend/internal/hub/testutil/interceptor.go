@@ -3,7 +3,7 @@ package testutil
 import (
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/store"
@@ -17,7 +17,7 @@ import (
 // test that built one leaked a sweeper for the rest of the run. Routing through
 // this helper makes the cleanup a property of asking for an interceptor rather
 // than a line each caller has to remember.
-func NewAuthInterceptor(t *testing.T, opts auth.InterceptorOptions) (connect.Interceptor, *auth.AuthContextRegistry) {
+func NewAuthInterceptor(t *testing.T, opts auth.InterceptorOptions) (connect.ServerInterceptor, *auth.AuthContextRegistry) {
 	t.Helper()
 	interceptor, registry := auth.NewInterceptor(opts)
 	t.Cleanup(registry.Stop)
@@ -26,7 +26,7 @@ func NewAuthInterceptor(t *testing.T, opts auth.InterceptorOptions) (connect.Int
 
 // NewStoreAuthInterceptor is NewAuthInterceptor for the common case: cookie
 // auth against a store, with every other option left at its default.
-func NewStoreAuthInterceptor(t *testing.T, st store.Store) connect.Interceptor {
+func NewStoreAuthInterceptor(t *testing.T, st store.Store) connect.ServerInterceptor {
 	t.Helper()
 	interceptor, _ := NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
 	return interceptor

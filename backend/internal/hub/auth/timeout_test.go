@@ -7,7 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -29,7 +30,7 @@ type timeoutCapture struct {
 	hasDeadline bool
 }
 
-func (c *timeoutCapture) GetSystemInfo(ctx context.Context, req *connect.Request[leapmuxv1.GetSystemInfoRequest]) (*connect.Response[leapmuxv1.GetSystemInfoResponse], error) {
+func (c *timeoutCapture) GetSystemInfo(ctx context.Context, req *leapmuxv1.GetSystemInfoRequest) (*leapmuxv1.GetSystemInfoResponse, error) {
 	c.deadline, c.hasDeadline = ctx.Deadline()
 	return c.inner.GetSystemInfo(ctx, req)
 }
@@ -43,14 +44,14 @@ func setupTimeoutTestServer(t *testing.T, timeout time.Duration) (leapmuxv1conne
 	capture := &timeoutCapture{inner: service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{}, servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil)))}
 
 	mux := http.NewServeMux()
-	interceptors := connect.WithInterceptors(auth.NewTimeoutInterceptor(func() time.Duration { return timeout }))
-	path, handler := leapmuxv1connect.NewAuthServiceHandler(capture, interceptors)
-	mux.Handle(path, handler)
+	connectServer := connect.NewServer(auth.NewTimeoutInterceptor(func() time.Duration { return timeout }))
+	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, capture)
+	connecthttp.Mount(mux, connectServer)
 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	client := leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL)
+	client := leapmuxv1connect.NewAuthServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0))))
 	return client, capture
 }
 
@@ -62,7 +63,7 @@ func TestTimeoutInterceptor_AppliesDefaultTimeout(t *testing.T) {
 
 	// Call without any client-side deadline. The interceptor should apply the
 	// default timeout so the handler sees a deadline.
-	_, err := client.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
+	_, err := client.GetSystemInfo(context.Background(), &leapmuxv1.GetSystemInfoRequest{})
 	require.NoError(t, err)
 
 	assert.True(t, capture.hasDeadline, "expected context to have a deadline")
@@ -83,7 +84,7 @@ func TestTimeoutInterceptor_PreservesExistingDeadline(t *testing.T) {
 	ctx, cancel := context.WithDeadline(context.Background(), customDeadline)
 	defer cancel()
 
-	_, err := client.GetSystemInfo(ctx, connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
+	_, err := client.GetSystemInfo(ctx, &leapmuxv1.GetSystemInfoRequest{})
 	require.NoError(t, err)
 
 	assert.True(t, capture.hasDeadline, "expected context to have a deadline")

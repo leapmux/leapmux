@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -36,14 +36,16 @@ import (
 // signupKey is a real settings key whose write path takes the elevation gate.
 func signupKey() string { return settings.KeySignupEnabled.Name() }
 
-// writeOneSetting performs one real write verb, authenticated by `authorize`,
-// and returns the response so a test can read its header.
-func writeOneSetting(t *testing.T, env *adminSettingsEnv, authorize requestAuth) *connect.Response[leapmuxv1.UpdateSettingResponse] {
+// writeOneSetting performs one settings write and returns the call's
+// CallInfo, which is where the elevation report the response header carries
+// is readable.
+func writeOneSetting(t *testing.T, env *adminSettingsEnv, authorize requestAuth) *connect.CallInfo {
 	t.Helper()
-	resp, err := env.client.UpdateSetting(context.Background(),
-		authorized(&leapmuxv1.UpdateSettingRequest{Key: signupKey(), PartialJson: `true`}, authorize))
+	ctx, info := connect.NewClientContext(context.Background())
+	_, err := env.client.UpdateSetting(authorized(ctx,
+		&leapmuxv1.UpdateSettingRequest{Key: signupKey(), PartialJson: `true`}, authorize))
 	require.NoError(t, err)
-	return resp
+	return info
 }
 
 // storedSessionDeadline reads the elevation deadline the session row holds
@@ -87,9 +89,9 @@ func TestElevationSlideReportsTheStoredDeadline(t *testing.T) {
 	base := aheadOfTheStamp()
 	env.svc.Now = func() time.Time { return base }
 
-	resp := writeOneSetting(t, env, cookieAuth(env.token))
+	info := writeOneSetting(t, env, cookieAuth(env.token))
 
-	reported := resp.Header().Get(service.ElevationExpiresAtHeader)
+	reported := info.ResponseHeader().Get(service.ElevationExpiresAtHeader)
 	require.NotEmpty(t, reported, "a verb that slides the window must report the new deadline")
 
 	stored := storedSessionDeadline(t, env.st, env.token)
@@ -109,7 +111,7 @@ func TestElevationSlideReportIsRFC3339InUTC(t *testing.T) {
 	base := aheadOfTheStamp()
 	env.svc.Now = func() time.Time { return base }
 
-	reported := writeOneSetting(t, env, cookieAuth(env.token)).Header().Get(service.ElevationExpiresAtHeader)
+	reported := writeOneSetting(t, env, cookieAuth(env.token)).ResponseHeader().Get(service.ElevationExpiresAtHeader)
 	require.NotEmpty(t, reported)
 
 	parsed, err := time.Parse(time.RFC3339Nano, reported)
@@ -145,7 +147,7 @@ func TestElevationSlideReportIsClampedToTheCap(t *testing.T) {
 	require.EqualValues(t, 1, n)
 	env.svc.Now = func() time.Time { return base }
 
-	reported := writeOneSetting(t, env, cookieAuth(env.token)).Header().Get(service.ElevationExpiresAtHeader)
+	reported := writeOneSetting(t, env, cookieAuth(env.token)).ResponseHeader().Get(service.ElevationExpiresAtHeader)
 	require.NotEmpty(t, reported)
 
 	ceiling := base.Add(time.Hour)
@@ -166,7 +168,7 @@ func TestElevationSlideReportsACommandLineCredentialsOwnRow(t *testing.T) {
 	base := aheadOfTheStamp()
 	env.svc.Now = func() time.Time { return base }
 
-	reported := writeOneSetting(t, env, bearerAuth(bearer)).Header().Get(service.ElevationExpiresAtHeader)
+	reported := writeOneSetting(t, env, bearerAuth(bearer)).ResponseHeader().Get(service.ElevationExpiresAtHeader)
 	require.NotEmpty(t, reported, "a command-line credential slides its own row, so it reports too")
 
 	assert.Equal(t, storedTokenDeadline(t, env.st, tokenID).UTC().Format(time.RFC3339Nano), reported)
@@ -179,11 +181,12 @@ func TestElevationSlideReportsACommandLineCredentialsOwnRow(t *testing.T) {
 func TestElevationSlideReportsNothingOnAReadVerb(t *testing.T) {
 	env := setupAdminSettingsTest(t, &config.Config{})
 
-	resp, err := env.client.ListSettings(context.Background(),
-		authedReq(&leapmuxv1.ListSettingsRequest{}, env.token))
+	ctx, info := connect.NewClientContext(context.Background())
+	_, err := env.client.ListSettings(authedReq(ctx,
+		&leapmuxv1.ListSettingsRequest{}, env.token))
 	require.NoError(t, err)
 
-	assert.Empty(t, resp.Header().Get(service.ElevationExpiresAtHeader),
+	assert.Empty(t, info.ResponseHeader().Get(service.ElevationExpiresAtHeader),
 		"a verb that does not slide the window must report no deadline")
 }
 
@@ -193,14 +196,13 @@ func TestElevationSlideReportsNothingOnAReadVerb(t *testing.T) {
 func TestElevationSlideReportsNothingOnARefusal(t *testing.T) {
 	env := setupAdminSettingsTestUnelevated(t, &config.Config{})
 
-	_, err := env.client.UpdateSetting(context.Background(),
-		authorized(&leapmuxv1.UpdateSettingRequest{Key: signupKey(), PartialJson: `true`}, cookieAuth(env.token)))
+	ctx, info := connect.NewClientContext(context.Background())
+	_, err := env.client.UpdateSetting(authorized(ctx,
+		&leapmuxv1.UpdateSettingRequest{Key: signupKey(), PartialJson: `true`}, cookieAuth(env.token)))
 	require.Error(t, err)
 
-	var connectErr *connect.Error
-	require.ErrorAs(t, err, &connectErr)
-	assert.Equal(t, "1", connectErr.Meta().Get(service.ElevationRequiredHeader),
+	assert.Equal(t, "1", info.ResponseHeader().Get(service.ElevationRequiredHeader),
 		"the refusal is still the one a step-up prompt can clear")
-	assert.Empty(t, connectErr.Meta().Get(service.ElevationExpiresAtHeader),
+	assert.Empty(t, info.ResponseHeader().Get(service.ElevationExpiresAtHeader),
 		"a refused request slid nothing, so it must report no deadline")
 }

@@ -9,7 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -69,31 +70,28 @@ func setupChannelTestServer(t *testing.T) *channelTestEnv {
 	mux := http.NewServeMux()
 	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
 	t.Cleanup(sc.Stop)
-	opts := connect.WithInterceptors(interceptor)
+	connectServer := connect.NewServer(interceptor)
 
-	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(service.NewAuthService(servicetest.AuthServiceDeps(st, cfg, set, auth.NewCredentialLifecycleEffects(nil, nil, nil))), opts)
-	mux.Handle(authPath, authHandler)
+	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, service.NewAuthService(servicetest.AuthServiceDeps(st, cfg, set, auth.NewCredentialLifecycleEffects(nil, nil, nil))))
 
-	connPath, connHandler := leapmuxv1connect.NewWorkerConnectorServiceHandler(
-		service.NewWorkerConnectorService(st, wMgr, nil, nil, nil, nil, nil, sendq.NewMaxBytesPoolForTest()), opts)
-	mux.Handle(connPath, connHandler)
+	leapmuxv1connect.RegisterWorkerConnectorServiceHandler(connectServer,
+		service.NewWorkerConnectorService(st, wMgr, nil, nil, nil, nil, nil, sendq.NewMaxBytesPoolForTest()))
 
-	mgmtPath, mgmtHandler := leapmuxv1connect.NewWorkerManagementServiceHandler(
-		service.NewWorkerManagementService(st, wMgr, nil, nil, mail.NewStubSender(), mail.Renderer{}, set, nil), opts)
-	mux.Handle(mgmtPath, mgmtHandler)
+	leapmuxv1connect.RegisterWorkerManagementServiceHandler(connectServer,
+		service.NewWorkerManagementService(st, wMgr, nil, nil, mail.NewStubSender(), mail.Renderer{}, set, nil))
 
 	channelSvc := service.NewChannelService(st, wMgr, cMgr, pendingReqs, sc)
-	channelPath, channelHandler := leapmuxv1connect.NewChannelServiceHandler(channelSvc, opts)
-	mux.Handle(channelPath, channelHandler)
+	leapmuxv1connect.RegisterChannelServiceHandler(connectServer, channelSvc)
+	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
 	return &channelTestEnv{
-		channelClient:   leapmuxv1connect.NewChannelServiceClient(server.Client(), server.URL),
-		connectorClient: leapmuxv1connect.NewWorkerConnectorServiceClient(server.Client(), server.URL),
-		mgmtClient:      leapmuxv1connect.NewWorkerManagementServiceClient(server.Client(), server.URL),
-		authClient:      leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL),
+		channelClient:   leapmuxv1connect.NewChannelServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0)))),
+		connectorClient: leapmuxv1connect.NewWorkerConnectorServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0)))),
+		mgmtClient:      leapmuxv1connect.NewWorkerManagementServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0)))),
+		authClient:      leapmuxv1connect.NewAuthServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0)))),
 		store:           st,
 		workerMgr:       wMgr,
 		channelMgr:      cMgr,
@@ -103,12 +101,13 @@ func setupChannelTestServer(t *testing.T) *channelTestEnv {
 
 func (e *channelTestEnv) adminToken(t *testing.T) string {
 	t.Helper()
-	resp, err := e.authClient.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
+	ctx, info := connect.NewClientContext(context.Background())
+	_, err := e.authClient.Login(ctx, &leapmuxv1.LoginRequest{
 		Username: "admin",
 		Password: "admin123",
-	}))
+	})
 	require.NoError(t, err)
-	return sessionFromCookie(t, resp.Header().Get("Set-Cookie"))
+	return sessionFromCookie(t, info.ResponseHeader().Get("Set-Cookie"))
 }
 
 func (e *channelTestEnv) createWorkerWithKey(t *testing.T, token string, publicKey []byte) string {
@@ -119,19 +118,20 @@ func (e *channelTestEnv) createWorkerWithKey(t *testing.T, token string, publicK
 	// worker presents it as a bearer credential. We exercise the actual
 	// RPC path here so the auth interceptor allowlist and the consume
 	// transaction are covered alongside the channel tests.
-	createReq := authedReq(&leapmuxv1.CreateRegistrationKeyRequest{}, token)
-	createResp, err := e.mgmtClient.CreateRegistrationKey(ctx, createReq)
+	createCtx, createReq := authedReq(ctx, &leapmuxv1.CreateRegistrationKeyRequest{}, token)
+	createResp, err := e.mgmtClient.CreateRegistrationKey(createCtx, createReq)
 	require.NoError(t, err)
 
-	regReq := connect.NewRequest(&leapmuxv1.RegisterRequest{
+	regReq := &leapmuxv1.RegisterRequest{
 		Version:   "v",
 		PublicKey: publicKey,
-	})
-	regReq.Header().Set("Authorization", "Bearer "+createResp.Msg.GetRegistrationKey())
+	}
+	ctx, info := connect.NewClientContext(ctx)
+	info.RequestHeader().Set("Authorization", "Bearer "+createResp.GetRegistrationKey())
 	regResp, err := e.connectorClient.Register(ctx, regReq)
 	require.NoError(t, err)
 
-	return regResp.Msg.GetWorkerId()
+	return regResp.GetWorkerId()
 }
 
 func registerOnlineWorker(t *testing.T, env *channelTestEnv, workerID string, mode leapmuxv1.EncryptionMode) {
@@ -152,11 +152,11 @@ func TestGetWorkerHandshakeParams(t *testing.T) {
 	workerID := env.createWorkerWithKey(t, token, pubKey)
 	registerOnlineWorker(t, env, workerID, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM)
 
-	resp, err := env.channelClient.GetWorkerHandshakeParams(ctx, authedReq(
+	resp, err := env.channelClient.GetWorkerHandshakeParams(authedReq(ctx,
 		&leapmuxv1.GetWorkerHandshakeParamsRequest{WorkerId: workerID}, token))
 	require.NoError(t, err)
-	assert.Equal(t, pubKey, resp.Msg.GetPublicKey())
-	assert.Equal(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, resp.Msg.GetEncryptionMode())
+	assert.Equal(t, pubKey, resp.GetPublicKey())
+	assert.Equal(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, resp.GetEncryptionMode())
 }
 
 func TestGetWorkerHandshakeParams_NoKey(t *testing.T) {
@@ -170,7 +170,7 @@ func TestGetWorkerHandshakeParams_NoKey(t *testing.T) {
 	workerID := env.createWorkerWithKey(t, token, nil)
 	registerOnlineWorker(t, env, workerID, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM)
 
-	_, err := env.channelClient.GetWorkerHandshakeParams(ctx, authedReq(
+	_, err := env.channelClient.GetWorkerHandshakeParams(authedReq(ctx,
 		&leapmuxv1.GetWorkerHandshakeParamsRequest{WorkerId: workerID}, token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
@@ -183,7 +183,7 @@ func TestGetWorkerHandshakeParams_NotFound(t *testing.T) {
 	ctx := context.Background()
 	token := env.adminToken(t)
 
-	_, err := env.channelClient.GetWorkerHandshakeParams(ctx, authedReq(
+	_, err := env.channelClient.GetWorkerHandshakeParams(authedReq(ctx,
 		&leapmuxv1.GetWorkerHandshakeParamsRequest{WorkerId: "nonexistent"}, token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
@@ -196,7 +196,7 @@ func TestGetWorkerHandshakeParams_EmptyWorkerID(t *testing.T) {
 	ctx := context.Background()
 	token := env.adminToken(t)
 
-	_, err := env.channelClient.GetWorkerHandshakeParams(ctx, authedReq(
+	_, err := env.channelClient.GetWorkerHandshakeParams(authedReq(ctx,
 		&leapmuxv1.GetWorkerHandshakeParamsRequest{WorkerId: ""}, token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
@@ -212,7 +212,7 @@ func TestGetWorkerHandshakeParams_WorkerOffline(t *testing.T) {
 	// Worker exists with a public key but is not registered as online.
 	workerID := env.createWorkerWithKey(t, token, []byte("key"))
 
-	_, err := env.channelClient.GetWorkerHandshakeParams(ctx, authedReq(
+	_, err := env.channelClient.GetWorkerHandshakeParams(authedReq(ctx,
 		&leapmuxv1.GetWorkerHandshakeParamsRequest{WorkerId: workerID}, token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnavailable, connect.CodeOf(err))
@@ -228,9 +228,9 @@ func TestGetWorkerHandshakeParams_RejectsStaleAuthGeneration(t *testing.T) {
 		ID: userid.MustNew(env.user.ID), Username: env.user.Username, AuthGeneration: 0,
 	})
 
-	_, err := channelSvc.GetWorkerHandshakeParams(ctx, connect.NewRequest(&leapmuxv1.GetWorkerHandshakeParamsRequest{
+	_, err := channelSvc.GetWorkerHandshakeParams(ctx, &leapmuxv1.GetWorkerHandshakeParamsRequest{
 		WorkerId: env.workerID,
-	}))
+	})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 	assert.Equal(t, int32(1), checker.calls.Load(), "handshake params should reject stale auth before worker lookup")
@@ -246,7 +246,7 @@ func TestOpenChannel_WorkerOffline(t *testing.T) {
 	pubKey := []byte("fake-public-key-32-bytes-long!!!!")
 	workerID := env.createWorkerWithKey(t, token, pubKey)
 
-	_, err := env.channelClient.OpenChannel(ctx, authedReq(
+	_, err := env.channelClient.OpenChannel(authedReq(ctx,
 		&leapmuxv1.OpenChannelRequest{
 			WorkerId:         workerID,
 			HandshakePayload: []byte("handshake-msg-1"),
@@ -263,7 +263,7 @@ func TestOpenChannel_EmptyFields(t *testing.T) {
 	token := env.adminToken(t)
 
 	// Empty worker_id.
-	_, err := env.channelClient.OpenChannel(ctx, authedReq(
+	_, err := env.channelClient.OpenChannel(authedReq(ctx,
 		&leapmuxv1.OpenChannelRequest{
 			WorkerId:         "",
 			HandshakePayload: []byte("data"),
@@ -297,7 +297,7 @@ func TestOpenChannel_WithMockWorker(t *testing.T) {
 	shortCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
 	defer cancel()
 
-	_, err := env.channelClient.OpenChannel(shortCtx, authedReq(
+	_, err := env.channelClient.OpenChannel(authedReq(shortCtx,
 		&leapmuxv1.OpenChannelRequest{
 			WorkerId:         workerID,
 			HandshakePayload: []byte("handshake-msg-1"),
@@ -427,10 +427,10 @@ func TestOpenChannel_UnregistersWhenAuthRevokedDuringRegistration(t *testing.T) 
 		ID: userid.MustNew(env.user.ID), Username: env.user.Username, AuthGeneration: 0,
 	})
 
-	_, err := channelSvc.OpenChannel(ctx, connect.NewRequest(&leapmuxv1.OpenChannelRequest{
+	_, err := channelSvc.OpenChannel(ctx, &leapmuxv1.OpenChannelRequest{
 		WorkerId:         env.workerID,
 		HandshakePayload: []byte("handshake"),
-	}))
+	})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 	assert.Empty(t, env.channels.CloseByUserRevocation(env.user.ID, 1), "stale auth must not leave a registered channel")
@@ -471,10 +471,10 @@ func TestOpenChannel_ClosesWorkerChannelWhenAuthRevokedDuringHandshake(t *testin
 		ID: userid.MustNew(env.user.ID), Username: env.user.Username, AuthGeneration: 0,
 	})
 
-	_, err := channelSvc.OpenChannel(ctx, connect.NewRequest(&leapmuxv1.OpenChannelRequest{
+	_, err := channelSvc.OpenChannel(ctx, &leapmuxv1.OpenChannelRequest{
 		WorkerId:         env.workerID,
 		HandshakePayload: []byte("handshake"),
-	}))
+	})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 	assert.Empty(t, env.channels.CloseByUserRevocation(env.user.ID, 1), "stale auth must not leave a registered channel")
@@ -517,10 +517,10 @@ func TestOpenChannel_ClosesLocalChannelWhenOpenWriteFails(t *testing.T) {
 		ID: userid.MustNew(env.user.ID), Username: env.user.Username,
 	})
 
-	_, err := channelSvc.OpenChannel(ctx, connect.NewRequest(&leapmuxv1.OpenChannelRequest{
+	_, err := channelSvc.OpenChannel(ctx, &leapmuxv1.OpenChannelRequest{
 		WorkerId:         env.workerID,
 		HandshakePayload: []byte("handshake"),
-	}))
+	})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnavailable, connect.CodeOf(err))
 
@@ -596,10 +596,10 @@ func TestOpenChannel_MapsWorkerErrorCodes(t *testing.T) {
 				ID:       userid.MustNew(env.user.ID),
 				Username: env.user.Username,
 			})
-			_, err := channelSvc.OpenChannel(ctx, connect.NewRequest(&leapmuxv1.OpenChannelRequest{
+			_, err := channelSvc.OpenChannel(ctx, &leapmuxv1.OpenChannelRequest{
 				WorkerId:         env.workerID,
 				HandshakePayload: []byte("handshake"),
-			}))
+			})
 			require.Error(t, err)
 			assert.Equal(t, tc.want, connect.CodeOf(err), "code %v must map via channelwire.ConnectCodeFromChannelOpenError", tc.code)
 		})
@@ -637,10 +637,10 @@ func TestOpenChannel_RejectsErrorCodeOnlyWithoutErrorString(t *testing.T) {
 		ID:       userid.MustNew(env.user.ID),
 		Username: env.user.Username,
 	})
-	_, err := channelSvc.OpenChannel(ctx, connect.NewRequest(&leapmuxv1.OpenChannelRequest{
+	_, err := channelSvc.OpenChannel(ctx, &leapmuxv1.OpenChannelRequest{
 		WorkerId:         env.workerID,
 		HandshakePayload: []byte("handshake"),
-	}))
+	})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "worker rejected channel")
@@ -677,10 +677,10 @@ func TestOpenChannel_MapsInvalidMaxMessageSizeErrorCode(t *testing.T) {
 		ID:       userid.MustNew(env.user.ID),
 		Username: env.user.Username,
 	})
-	_, err := channelSvc.OpenChannel(ctx, connect.NewRequest(&leapmuxv1.OpenChannelRequest{
+	_, err := channelSvc.OpenChannel(ctx, &leapmuxv1.OpenChannelRequest{
 		WorkerId:         env.workerID,
 		HandshakePayload: []byte("handshake"),
-	}))
+	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "invalid hub max_message_size")
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err),
@@ -716,10 +716,10 @@ func TestOpenChannel_UnspecifiedWorkerErrorStaysInternal(t *testing.T) {
 		ID:       userid.MustNew(env.user.ID),
 		Username: env.user.Username,
 	})
-	_, err := channelSvc.OpenChannel(ctx, connect.NewRequest(&leapmuxv1.OpenChannelRequest{
+	_, err := channelSvc.OpenChannel(ctx, &leapmuxv1.OpenChannelRequest{
 		WorkerId:         env.workerID,
 		HandshakePayload: []byte("handshake"),
-	}))
+	})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err))
 }
@@ -755,10 +755,10 @@ func TestOpenChannel_RejectsWorkerEchoAboveHubMax(t *testing.T) {
 		ID:       userid.MustNew(env.user.ID),
 		Username: env.user.Username,
 	})
-	_, err := channelSvc.OpenChannel(ctx, connect.NewRequest(&leapmuxv1.OpenChannelRequest{
+	_, err := channelSvc.OpenChannel(ctx, &leapmuxv1.OpenChannelRequest{
 		WorkerId:         env.workerID,
 		HandshakePayload: []byte("handshake"),
-	}))
+	})
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "above hub max")
 	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err),
@@ -802,10 +802,10 @@ func TestOpenChannel_RejectsWorkerEchoInvalidMaxMessageSize(t *testing.T) {
 				ID:       userid.MustNew(env.user.ID),
 				Username: env.user.Username,
 			})
-			_, err := channelSvc.OpenChannel(ctx, connect.NewRequest(&leapmuxv1.OpenChannelRequest{
+			_, err := channelSvc.OpenChannel(ctx, &leapmuxv1.OpenChannelRequest{
 				WorkerId:         env.workerID,
 				HandshakePayload: []byte("handshake"),
-			}))
+			})
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "max_message_size")
 			assert.Equal(t, connect.CodeInternal, connect.CodeOf(err),
@@ -850,18 +850,18 @@ func TestOpenChannel_AdoptsWorkerLoweredMaxMessageSize(t *testing.T) {
 		ID:       userid.MustNew(env.user.ID),
 		Username: env.user.Username,
 	})
-	resp, err := channelSvc.OpenChannel(ctx, connect.NewRequest(&leapmuxv1.OpenChannelRequest{
+	resp, err := channelSvc.OpenChannel(ctx, &leapmuxv1.OpenChannelRequest{
 		WorkerId:         env.workerID,
 		HandshakePayload: []byte("handshake"),
-	}))
+	})
 	require.NoError(t, err)
-	assert.Equal(t, uint64(lowered), resp.Msg.GetMaxMessageSize())
-	require.True(t, env.channels.Exists(resp.Msg.GetChannelId()))
+	assert.Equal(t, uint64(lowered), resp.GetMaxMessageSize())
+	require.True(t, env.channels.Exists(resp.GetChannelId()))
 
 	// Prove the per-channel tracker ceiling is MaxReassembledMessageSize(lowered):
 	// past the bare payload must still fit (headroom), past the derived ceiling must not
 	// (and must not silently keep the larger hub default).
-	channelID := resp.Msg.GetChannelId()
+	channelID := resp.GetChannelId()
 	ceiling := channelwire.MaxReassembledMessageSize(lowered)
 	chunkCiphertext := func(plaintext int) int {
 		return plaintext + contracts.NoiseAEADAuthTagSize
@@ -916,14 +916,14 @@ func TestOpenChannel_ReturnsNegotiatedMaxMessageSize(t *testing.T) {
 		ID:       userid.MustNew(env.user.ID),
 		Username: env.user.Username,
 	})
-	resp, err := channelSvc.OpenChannel(ctx, connect.NewRequest(&leapmuxv1.OpenChannelRequest{
+	resp, err := channelSvc.OpenChannel(ctx, &leapmuxv1.OpenChannelRequest{
 		WorkerId:         env.workerID,
 		HandshakePayload: []byte("handshake"),
-	}))
+	})
 	require.NoError(t, err)
-	assert.Equal(t, uint64(contracts.MaxMessageSize), resp.Msg.GetMaxMessageSize(),
+	assert.Equal(t, uint64(contracts.MaxMessageSize), resp.GetMaxMessageSize(),
 		"OpenChannelResponse must return the effective payload budget")
-	assert.True(t, env.channels.Exists(resp.Msg.GetChannelId()))
+	assert.True(t, env.channels.Exists(resp.GetChannelId()))
 }
 
 // TestOpenChannel_PropagatesAuthenticatedUserId pins the user-owned model:
@@ -959,14 +959,14 @@ func TestOpenChannel_PropagatesAuthenticatedUserId(t *testing.T) {
 		ID:       userid.MustNew(env.user.ID),
 		Username: env.user.Username,
 	})
-	resp, err := channelSvc.OpenChannel(ctx, connect.NewRequest(&leapmuxv1.OpenChannelRequest{
+	resp, err := channelSvc.OpenChannel(ctx, &leapmuxv1.OpenChannelRequest{
 		WorkerId:         env.workerID,
 		HandshakePayload: []byte("handshake"),
-	}))
+	})
 	require.NoError(t, err)
 	assert.Equal(t, env.user.ID, announcedToWorker,
 		"ChannelOpenRequest must carry the authenticated user id to the worker")
-	assert.Equal(t, env.user.ID, resp.Msg.GetUserId(),
+	assert.Equal(t, env.user.ID, resp.GetUserId(),
 		"OpenChannelResponse must echo the authenticated user id to the client")
 }
 
@@ -1007,15 +1007,15 @@ func TestOpenChannel_ClosesWhenCredentialExpires(t *testing.T) {
 		Username:            env.user.Username,
 		CredentialExpiresAt: auth.DeadlineAt(time.Now().Add(300 * time.Millisecond)),
 	})
-	resp, err := channelSvc.OpenChannel(ctx, connect.NewRequest(&leapmuxv1.OpenChannelRequest{
+	resp, err := channelSvc.OpenChannel(ctx, &leapmuxv1.OpenChannelRequest{
 		WorkerId:         env.workerID,
 		HandshakePayload: []byte("handshake"),
-	}))
+	})
 	require.NoError(t, err)
-	require.True(t, env.channels.Exists(resp.Msg.GetChannelId()))
+	require.True(t, env.channels.Exists(resp.GetChannelId()))
 
 	require.Eventually(t, func() bool {
-		return !env.channels.Exists(resp.Msg.GetChannelId())
+		return !env.channels.Exists(resp.GetChannelId())
 	}, time.Second, 10*time.Millisecond, "channel must close when its authenticating credential expires")
 
 	var closeSeen bool
@@ -1023,7 +1023,7 @@ func TestOpenChannel_ClosesWhenCredentialExpires(t *testing.T) {
 		select {
 		case msg := <-env.sent:
 			if closeMsg := msg.GetChannelClose(); closeMsg != nil {
-				assert.Equal(t, resp.Msg.GetChannelId(), closeMsg.GetChannelId())
+				assert.Equal(t, resp.GetChannelId(), closeMsg.GetChannelId())
 				closeSeen = true
 			}
 		case <-time.After(time.Second):
@@ -1162,7 +1162,7 @@ func TestCloseChannel_NotFound(t *testing.T) {
 	ctx := context.Background()
 	token := env.adminToken(t)
 
-	_, err := env.channelClient.CloseChannel(ctx, authedReq(
+	_, err := env.channelClient.CloseChannel(authedReq(ctx,
 		&leapmuxv1.CloseChannelRequest{ChannelId: "nonexistent"}, token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
@@ -1175,7 +1175,7 @@ func TestCloseChannel_EmptyChannelID(t *testing.T) {
 	ctx := context.Background()
 	token := env.adminToken(t)
 
-	_, err := env.channelClient.CloseChannel(ctx, authedReq(
+	_, err := env.channelClient.CloseChannel(authedReq(ctx,
 		&leapmuxv1.CloseChannelRequest{ChannelId: ""}, token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
@@ -1201,7 +1201,7 @@ func TestCloseChannel_Success(t *testing.T) {
 	}, nil)
 
 	// Close the channel.
-	_, err = env.channelClient.CloseChannel(ctx, authedReq(
+	_, err = env.channelClient.CloseChannel(authedReq(ctx,
 		&leapmuxv1.CloseChannelRequest{ChannelId: channelID}, token))
 	require.NoError(t, err)
 
@@ -1230,7 +1230,7 @@ func TestCloseChannel_WrongUser(t *testing.T) {
 	_, user2Token := env.createSecondUser(t)
 
 	// user2 should not be able to close admin's channel.
-	_, err = env.channelClient.CloseChannel(ctx, authedReq(
+	_, err = env.channelClient.CloseChannel(authedReq(ctx,
 		&leapmuxv1.CloseChannelRequest{ChannelId: channelID}, user2Token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
@@ -1242,8 +1242,7 @@ func TestGetWorkerHandshakeParams_Unauthenticated(t *testing.T) {
 	env := setupChannelTestServer(t)
 	ctx := context.Background()
 
-	_, err := env.channelClient.GetWorkerHandshakeParams(ctx, connect.NewRequest(
-		&leapmuxv1.GetWorkerHandshakeParamsRequest{WorkerId: "any"}))
+	_, err := env.channelClient.GetWorkerHandshakeParams(ctx, &leapmuxv1.GetWorkerHandshakeParamsRequest{WorkerId: "any"})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
@@ -1258,10 +1257,10 @@ func TestGetWorkerHandshakeParams_Classic(t *testing.T) {
 	workerID := env.createWorkerWithKey(t, token, []byte("key"))
 	registerOnlineWorker(t, env, workerID, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC)
 
-	resp, err := env.channelClient.GetWorkerHandshakeParams(ctx, authedReq(
+	resp, err := env.channelClient.GetWorkerHandshakeParams(authedReq(ctx,
 		&leapmuxv1.GetWorkerHandshakeParamsRequest{WorkerId: workerID}, token))
 	require.NoError(t, err)
-	assert.Equal(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC, resp.Msg.GetEncryptionMode())
+	assert.Equal(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_CLASSIC, resp.GetEncryptionMode())
 }
 
 func TestGetWorkerHandshakeParams_UnspecifiedDefaultsToPostQuantum(t *testing.T) {
@@ -1274,10 +1273,10 @@ func TestGetWorkerHandshakeParams_UnspecifiedDefaultsToPostQuantum(t *testing.T)
 	workerID := env.createWorkerWithKey(t, token, []byte("key"))
 	registerOnlineWorker(t, env, workerID, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_UNSPECIFIED)
 
-	resp, err := env.channelClient.GetWorkerHandshakeParams(ctx, authedReq(
+	resp, err := env.channelClient.GetWorkerHandshakeParams(authedReq(ctx,
 		&leapmuxv1.GetWorkerHandshakeParamsRequest{WorkerId: workerID}, token))
 	require.NoError(t, err)
-	assert.Equal(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, resp.Msg.GetEncryptionMode())
+	assert.Equal(t, leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM, resp.GetEncryptionMode())
 }
 
 // --- Handshake scenario tests with different encryption modes ---
@@ -1304,7 +1303,7 @@ func TestOpenChannel_PostQuantumHandshake(t *testing.T) {
 	shortCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
 	defer cancel()
 
-	_, err := env.channelClient.OpenChannel(shortCtx, authedReq(
+	_, err := env.channelClient.OpenChannel(authedReq(shortCtx,
 		&leapmuxv1.OpenChannelRequest{
 			WorkerId:         workerID,
 			HandshakePayload: []byte("pq-handshake-msg1"),
@@ -1349,7 +1348,7 @@ func TestOpenChannel_ClassicHandshake(t *testing.T) {
 	shortCtx, cancel := context.WithTimeout(ctx, 100*time.Millisecond)
 	defer cancel()
 
-	_, err := env.channelClient.OpenChannel(shortCtx, authedReq(
+	_, err := env.channelClient.OpenChannel(authedReq(shortCtx,
 		&leapmuxv1.OpenChannelRequest{
 			WorkerId:         workerID,
 			HandshakePayload: []byte("classic-handshake-msg1"),

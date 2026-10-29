@@ -4,7 +4,6 @@ import (
 	"context"
 	"testing"
 
-	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -74,15 +73,15 @@ func TestWorkspaceService_GetTab_BindsTheCallerAsOwner(t *testing.T) {
 	svc := service.NewWorkspaceService(st, nil, nil)
 	ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(ownerID)})
 
-	resp, err := svc.GetTab(ctx, connect.NewRequest(&leapmuxv1.GetTabRequest{
+	resp, err := svc.GetTab(ctx, &leapmuxv1.GetTabRequest{
 		WorkspaceId: wsID,
 		TabType:     leapmuxv1.TabType_TAB_TYPE_AGENT,
 		TabId:       "shared-tab-id",
-	}))
+	})
 	require.NoError(t, err)
-	assert.Equal(t, ownerTile, resp.Msg.GetTab().GetTileId(),
+	assert.Equal(t, ownerTile, resp.GetTab().GetTileId(),
 		"GetTab must answer from the caller's own row")
-	assert.NotEqual(t, strangerTile, resp.Msg.GetTab().GetTileId(),
+	assert.NotEqual(t, strangerTile, resp.GetTab().GetTileId(),
 		"a row owned by another user must never satisfy this lookup, even in a workspace the caller owns")
 }
 
@@ -127,23 +126,23 @@ func TestWorkspaceService_LocateTab_BindsTheCallerAsOwner(t *testing.T) {
 	}
 
 	svc := service.NewWorkspaceService(st, nil, nil)
-	locate := func(userID string) *connect.Response[leapmuxv1.LocateTabResponse] {
+	locate := func(userID string) *leapmuxv1.LocateTabResponse {
 		t.Helper()
 		ctx := auth.WithUser(context.Background(), &auth.UserInfo{ID: userid.MustNew(userID)})
-		resp, err := svc.LocateTab(ctx, connect.NewRequest(&leapmuxv1.LocateTabRequest{
+		resp, err := svc.LocateTab(ctx, &leapmuxv1.LocateTabRequest{
 			TabType: leapmuxv1.TabType_TAB_TYPE_AGENT,
 			TabId:   "shared-tab-id",
-		}))
+		})
 		require.NoError(t, err)
 		return resp
 	}
 
-	assert.Equal(t, ownerTile, locate(ownerID).Msg.GetTab().GetTileId(),
+	assert.Equal(t, ownerTile, locate(ownerID).GetTab().GetTileId(),
 		"the owner must locate their own row")
 
 	// The control that stops this being a one-sided assertion: the stranger
 	// reaches THEIR row, not an error and not the owner's. Both rows are live
 	// and share a key, so each side must be resolved by owner alone.
-	assert.Equal(t, strangerTile, locate(strangerID).Msg.GetTab().GetTileId(),
+	assert.Equal(t, strangerTile, locate(strangerID).GetTab().GetTileId(),
 		"the stranger must locate their own row, not the owner's")
 }

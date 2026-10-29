@@ -9,9 +9,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/channelmgr"
 	"github.com/leapmux/leapmux/internal/hub/crdt"
@@ -151,12 +152,16 @@ func (s *WorkerConnectorService) refuseIfAtWorkerCap(
 		PageParams:   store.PageParams{Limit: limit},
 	})
 	if err != nil {
-		return connect.NewError(connect.CodeInternal, fmt.Errorf("count workers: %w", err))
+		cause := fmt.Errorf("count workers: %w", err)
+		return wrappedConnectError(connect.CodeInternal, cause)
 	}
 	if int64(len(page.Rows)) < limit {
 		return nil
 	}
-	return connect.NewError(connect.CodeResourceExhausted, &workerRegistrationLimitError{limit: limit})
+	// The typed cause is what Register's errors.As matches to count the
+	// refusal; sending its text alone would drop that.
+	limitErr := &workerRegistrationLimitError{limit: limit}
+	return wrappedConnectError(connect.CodeResourceExhausted, limitErr)
 }
 
 // Register handles the worker → hub registration RPC.
@@ -168,20 +173,21 @@ func (s *WorkerConnectorService) refuseIfAtWorkerCap(
 // creates the worker row in one transaction.
 func (s *WorkerConnectorService) Register(
 	ctx context.Context,
-	req *connect.Request[leapmuxv1.RegisterRequest],
-) (*connect.Response[leapmuxv1.RegisterResponse], error) {
-	regKey, ok := auth.BearerToken(req.Header().Get("Authorization"))
+	req *leapmuxv1.RegisterRequest,
+) (*leapmuxv1.RegisterResponse, error) {
+	info := serverCallInfo(ctx)
+	regKey, ok := auth.BearerToken(info.RequestHeader().Get("Authorization"))
 	if !ok {
-		return nil, connect.NewError(connect.CodeUnauthenticated, errors.New("registration key required"))
+		return nil, connect.NewError(connect.CodeUnauthenticated, "registration key required")
 	}
 
-	if _, err := validate.ValidateProperty("version", req.Msg.GetVersion()); err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+	if _, err := validate.ValidateProperty("version", req.GetVersion()); err != nil {
+		return nil, wrappedConnectError(connect.CodeInvalidArgument, err)
 	}
 
-	publicKey := ptrconv.OrEmpty(req.Msg.GetPublicKey())
-	mlkemPublicKey := ptrconv.OrEmpty(req.Msg.GetMlkemPublicKey())
-	slhdsaPublicKey := ptrconv.OrEmpty(req.Msg.GetSlhdsaPublicKey())
+	publicKey := ptrconv.OrEmpty(req.GetPublicKey())
+	mlkemPublicKey := ptrconv.OrEmpty(req.GetMlkemPublicKey())
+	slhdsaPublicKey := ptrconv.OrEmpty(req.GetSlhdsaPublicKey())
 
 	workerID := id.Generate()
 	authToken := id.Generate()
@@ -194,9 +200,9 @@ func (s *WorkerConnectorService) Register(
 		row, err := tx.RegistrationKeys().Consume(ctx, regKey)
 		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
-				return connect.NewError(connect.CodeUnauthenticated, errors.New("registration key invalid or already consumed"))
+				return connect.NewError(connect.CodeUnauthenticated, "registration key invalid or already consumed")
 			}
-			return connect.NewError(connect.CodeInternal, fmt.Errorf("consume registration key: %w", err))
+			return wrappedConnectError(connect.CodeInternal, fmt.Errorf("consume registration key: %w", err))
 		}
 
 		registeredBy = row.CreatedBy
@@ -204,7 +210,7 @@ func (s *WorkerConnectorService) Register(
 		// the worker owned by nobody and unreachable by its real owner.
 		registrantUID, mintOK := userid.New(registeredBy)
 		if !mintOK {
-			return connect.NewError(connect.CodeInternal, errors.New("registration key has a blank creator"))
+			return connect.NewError(connect.CodeInternal, "registration key has a blank creator")
 		}
 		// Counted INSIDE the transaction that consumes the key and creates the
 		// row, so two registrations racing cannot both read an under-cap count
@@ -222,7 +228,7 @@ func (s *WorkerConnectorService) Register(
 			MlkemPublicKey:  mlkemPublicKey,
 			SlhdsaPublicKey: slhdsaPublicKey,
 		}); err != nil {
-			return connect.NewError(connect.CodeInternal, fmt.Errorf("create worker: %w", err))
+			return wrappedConnectError(connect.CodeInternal, fmt.Errorf("create worker: %w", err))
 		}
 		return nil
 	})
@@ -248,27 +254,28 @@ func (s *WorkerConnectorService) Register(
 	// registration made the worker's local copy a second source of truth, and a state
 	// file that predated the field, or was hand-edited or truncated, left the worker
 	// running with no owner and every machine-scoped family dead for its own user.
-	return connect.NewResponse(&leapmuxv1.RegisterResponse{
+	return &leapmuxv1.RegisterResponse{
 		WorkerId:  workerID,
 		AuthToken: authToken,
-	}), nil
+	}, nil
 }
 
 func (s *WorkerConnectorService) Connect(
 	ctx context.Context,
-	stream *connect.BidiStream[leapmuxv1.ConnectRequest, leapmuxv1.ConnectResponse],
+	stream leapmuxv1connect.WorkerConnectorServiceConnectServerStream,
 ) error {
-	token, ok := auth.BearerToken(stream.RequestHeader().Get("Authorization"))
+	info := serverCallInfo(ctx)
+	token, ok := auth.BearerToken(info.RequestHeader().Get("Authorization"))
 	if !ok {
-		return connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("auth_token required"))
+		return connect.Errorf(connect.CodeUnauthenticated, "auth_token required")
 	}
 
 	worker, err := s.store.Workers().GetByAuthToken(ctx, token)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("invalid auth token"))
+			return connect.Errorf(connect.CodeUnauthenticated, "invalid auth token")
 		}
-		return connect.NewError(connect.CodeInternal, err)
+		return wrappedConnectError(connect.CodeInternal, err)
 	}
 	// No soft-delete check here, deliberately. GetByAuthToken already excludes a
 	// DELETED worker (`status != 3`), and a DEREGISTERING one must still be able
@@ -308,7 +315,7 @@ func (s *WorkerConnectorService) Connect(
 			// (ConnectWithReconnect gives up only on Unauthenticated), so this
 			// is for the operator reading logs and for any proxy or future
 			// client that does distinguish the two.
-			return connect.NewError(connect.CodeUnavailable, err)
+			return wrappedConnectError(connect.CodeUnavailable, err)
 		}
 		if errors.Is(err, workermgr.ErrTooManyWorkers) {
 			// Counted on the same series as a refusal at Register: both are one
@@ -320,9 +327,9 @@ func (s *WorkerConnectorService) Connect(
 			// condition clears when another of this account's connections goes
 			// away.
 			metrics.CountWorkerAdmissionRefused(metrics.WorkerStageConnect)
-			return connect.NewError(connect.CodeResourceExhausted, err)
+			return wrappedConnectError(connect.CodeResourceExhausted, err)
 		}
-		return connect.NewError(connect.CodeInternal, fmt.Errorf("greet worker: %w", err))
+		return wrappedConnectError(connect.CodeInternal, fmt.Errorf("greet worker: %w", err))
 	}
 	if replaced {
 		// A new worker process replaced an older connection. The old
@@ -456,7 +463,7 @@ func (s *WorkerConnectorService) Connect(
 		}
 		resetIdle()
 		if err := s.processWorkerMessage(ctx, conn, worker.ID, worker.RegisteredBy, result.msg); err != nil {
-			return connect.NewError(connect.CodeInvalidArgument, err)
+			return wrappedConnectError(connect.CodeInvalidArgument, err)
 		}
 		return nil
 	}

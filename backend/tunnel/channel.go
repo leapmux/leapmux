@@ -13,7 +13,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/coder/websocket"
 	"google.golang.org/protobuf/proto"
 
@@ -226,7 +227,7 @@ type OpenChannelOptions struct {
 	// /ws/channel upgrade). Used by the leapmux control CLI and the
 	// worker-side cross-worker client.
 	//
-	// Apply it with applyAuth rather than by hand: an open touches the Hub four
+	// Apply it with applyAuthTo rather than by hand: an open touches the Hub four
 	// times and a fifth call that forgets the header would not fail loudly -- it
 	// would authenticate as nobody and read as a permission bug at the Hub.
 	BearerToken string
@@ -289,7 +290,7 @@ type KeyPinStore interface {
 // that could not see it, which is exactly the coupling-by-comment this replaces.
 const DefaultChannelOpenTimeout = 30 * time.Second
 
-// applyAuth adds this client's Hub credential to h, if it has one.
+// applyAuthTo adds this client's Hub credential through set, if it has one.
 //
 // It is the single home of "how this client authenticates to the Hub" because one
 // open touches the Hub four times -- the handshake-params call, the open call, the
@@ -298,14 +299,28 @@ const DefaultChannelOpenTimeout = 30 * time.Second
 // not fail loudly at the call site; it authenticates as nobody and surfaces as a
 // permission error from the Hub, at a layer that cannot tell the two apart.
 //
+// It takes a setter rather than a header so the one home covers both header
+// shapes an open touches: the *connect.Header carrying Connect request metadata,
+// and http.Header on the WebSocket upgrade.
+//
 // Nil-receiver-safe so callers need no guard: OpenChannel rejects a nil opts up
 // front, and rollbackRegisteredChannel runs on a failure path where defensiveness
 // is cheaper than a nil-check at each site.
-func (o *OpenChannelOptions) applyAuth(h http.Header) {
+func (o *OpenChannelOptions) applyAuthTo(set func(key, value string)) {
 	if o == nil || o.BearerToken == "" {
 		return
 	}
-	h.Set("Authorization", "Bearer "+o.BearerToken)
+	set("Authorization", "Bearer "+o.BearerToken)
+}
+
+// authedCtx returns ctx carrying Connect request metadata with this client's Hub
+// credential applied. Deriving the CallInfo here rather than at each call is what
+// keeps the fifth-call hazard the comment above describes impossible on the RPC
+// paths.
+func (o *OpenChannelOptions) authedCtx(ctx context.Context) context.Context {
+	ctx, info := connect.NewClientContext(ctx)
+	o.applyAuthTo(info.RequestHeader().Set)
+	return ctx
 }
 
 // initiatorHandshaker binds the two halves of a Noise_NK initiator handshake to ONE
@@ -376,12 +391,11 @@ func OpenChannel(ctx context.Context, hubURL, workerID string, opts *OpenChannel
 		httpClient = opts.HTTPClient
 	}
 	pinStore := opts.KeyPin
-	channelClient := leapmuxv1connect.NewChannelServiceClient(httpClient, hubURL)
+	channelClient := leapmuxv1connect.NewChannelServiceClient(connect.NewClient(connecthttp.NewTransport(httpClient, hubURL, connecthttp.WithReadMaxBytes(0))))
 
 	// 1. Get Worker's public key and encryption mode in one round trip.
-	paramsReq := connect.NewRequest(&leapmuxv1.GetWorkerHandshakeParamsRequest{WorkerId: workerID})
-	opts.applyAuth(paramsReq.Header())
-	paramsResp, err := channelClient.GetWorkerHandshakeParams(ctx, paramsReq)
+	paramsReq := &leapmuxv1.GetWorkerHandshakeParamsRequest{WorkerId: workerID}
+	paramsResp, err := channelClient.GetWorkerHandshakeParams(opts.authedCtx(ctx), paramsReq)
 	if err != nil {
 		return nil, fmt.Errorf("get worker handshake params: %w", err)
 	}
@@ -389,30 +403,29 @@ func OpenChannel(ctx context.Context, hubURL, workerID string, opts *OpenChannel
 	// TOFU key pinning — abort if the hub returns keys that don't match
 	// the recorded pin. First contact records the pin.
 	if pinStore != nil {
-		if err := pinStore.Verify(workerID, paramsResp.Msg.GetPublicKey(), paramsResp.Msg.GetMlkemPublicKey(), paramsResp.Msg.GetSlhdsaPublicKey()); err != nil {
+		if err := pinStore.Verify(workerID, paramsResp.GetPublicKey(), paramsResp.GetMlkemPublicKey(), paramsResp.GetSlhdsaPublicKey()); err != nil {
 			return nil, fmt.Errorf("worker key pin: %w", err)
 		}
 	}
 
 	// 2. Perform Noise_NK handshake (message 1). The mode is read once here; the
 	// matched message-2 half travels with it (see initiatorHandshaker).
-	handshaker := newInitiatorHandshaker(paramsResp.Msg)
+	handshaker := newInitiatorHandshaker(paramsResp)
 	hs, msg1, err := handshaker.start()
 	if err != nil {
 		return nil, fmt.Errorf("handshake1: %w", err)
 	}
 
 	// 3. Open channel via Hub.
-	openReq := connect.NewRequest(&leapmuxv1.OpenChannelRequest{
+	openReq := &leapmuxv1.OpenChannelRequest{
 		WorkerId:         workerID,
 		HandshakePayload: msg1,
-	})
-	opts.applyAuth(openReq.Header())
-	openResp, err := channelClient.OpenChannel(ctx, openReq)
+	}
+	openResp, err := channelClient.OpenChannel(opts.authedCtx(ctx), openReq)
 	if err != nil {
 		return nil, fmt.Errorf("open channel: %w", err)
 	}
-	channelID := openResp.Msg.GetChannelId()
+	channelID := openResp.GetChannelId()
 	if channelID == "" {
 		return nil, errors.New("open channel: hub returned an empty channel id")
 	}
@@ -425,7 +438,7 @@ func OpenChannel(ctx context.Context, hubURL, workerID string, opts *OpenChannel
 	// The Hub establishes channel identity and names it here; this end never
 	// asserts a locally-known id, because a stale one (an account or impersonation
 	// switch) must never be able to speak for the channel.
-	userID := openResp.Msg.GetUserId()
+	userID := openResp.GetUserId()
 	if userID == "" {
 		return nil, errors.New("open channel: hub returned an empty authenticated user id")
 	}
@@ -445,7 +458,7 @@ func OpenChannel(ctx context.Context, hubURL, workerID string, opts *OpenChannel
 	// a missing or out-of-bounds announcement means the peer is too old or
 	// misconfigured, and opening with a guessed default would silently disagree
 	// with the worker's send/reassembly ceiling.
-	maxMessageSize, err := channelwire.AdoptWireMaxMessageSize(openResp.Msg.GetMaxMessageSize())
+	maxMessageSize, err := channelwire.AdoptWireMaxMessageSize(openResp.GetMaxMessageSize())
 	if err != nil {
 		return nil, fmt.Errorf("open channel: hub returned %w", err)
 	}
@@ -453,7 +466,7 @@ func OpenChannel(ctx context.Context, hubURL, workerID string, opts *OpenChannel
 
 	// 4. Complete handshake (message 2), with the half that matches the message-1
 	// this handshaker already sent -- no second reading of the encryption mode.
-	session, err := handshaker.finish(hs, openResp.Msg.GetHandshakePayload())
+	session, err := handshaker.finish(hs, openResp.GetHandshakePayload())
 	if err != nil {
 		return nil, fmt.Errorf("handshake2: %w", err)
 	}
@@ -468,7 +481,7 @@ func OpenChannel(ctx context.Context, hubURL, workerID string, opts *OpenChannel
 	if opts.WebSocketHTTPClient != nil {
 		wsDialOpts.HTTPClient = opts.WebSocketHTTPClient
 	}
-	opts.applyAuth(wsDialOpts.HTTPHeader)
+	opts.applyAuthTo(wsDialOpts.HTTPHeader.Set)
 	wsConn, _, err := websocket.Dial(ctx, wsURL, wsDialOpts)
 	if err != nil {
 		return nil, fmt.Errorf("websocket dial: %w", err)
@@ -497,7 +510,7 @@ func OpenChannel(ctx context.Context, hubURL, workerID string, opts *OpenChannel
 			// GetWorkerHandshakeParams round trip. nil in classic mode; its
 			// presence is also the single source of truth for "is this a PQ
 			// channel".
-			workerMlkemPub: mlkemPubForRekey(paramsResp.Msg),
+			workerMlkemPub: mlkemPubForRekey(paramsResp),
 		},
 	}
 
@@ -563,9 +576,8 @@ func checkOpenCanceled(ctx, lifetimeCtx context.Context, cleanup func()) error {
 func rollbackRegisteredChannel(client leapmuxv1connect.ChannelServiceClient, opts *OpenChannelOptions, channelID string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	req := connect.NewRequest(&leapmuxv1.CloseChannelRequest{ChannelId: channelID})
-	opts.applyAuth(req.Header())
-	if _, err := client.CloseChannel(ctx, req); err != nil {
+	req := &leapmuxv1.CloseChannelRequest{ChannelId: channelID}
+	if _, err := client.CloseChannel(opts.authedCtx(ctx), req); err != nil {
 		slog.Warn("failed to roll back registered channel", "channel_id", channelID, "error", err)
 	}
 }

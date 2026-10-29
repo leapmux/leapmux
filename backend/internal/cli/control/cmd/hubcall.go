@@ -5,7 +5,8 @@ import (
 	"flag"
 	"fmt"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"google.golang.org/protobuf/proto"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -92,21 +93,21 @@ func hubCallLocalIPC(ctx context.Context, c *control.Client, method string, in p
 	if err != nil {
 		return err
 	}
-	resp, err := ipc.CallInner(ctx, connect.NewRequest(&leapmuxv1.CallInnerRequest{
+	resp, err := ipc.CallInner(ctx, &leapmuxv1.CallInnerRequest{
 		Method:  "hub." + method,
 		Payload: payload,
-	}))
+	})
 	if err != nil {
 		return err
 	}
-	if resp.Msg.GetIsError() {
+	if resp.GetIsError() {
 		// Keep the in-band code: classifyHubError tests connect.CodeOf, so
 		// flattening to a bare message here made `not_found` unreachable on
 		// this transport. See inBandError in innerrpc.go.
-		return inBandError(resp.Msg)
+		return inBandError(resp)
 	}
-	if out != nil && len(resp.Msg.GetPayload()) > 0 {
-		if err := proto.Unmarshal(resp.Msg.GetPayload(), out); err != nil {
+	if out != nil && len(resp.GetPayload()) > 0 {
+		if err := proto.Unmarshal(resp.GetPayload(), out); err != nil {
 			return fmt.Errorf("unmarshal %s response: %w", method, err)
 		}
 	}
@@ -115,15 +116,18 @@ func hubCallLocalIPC(ctx context.Context, c *control.Client, method string, in p
 
 // hubCallDirect dispatches a hub-bound RPC over the direct ConnectRPC
 // transport. The shared `hubrpc.Registry` lookup handles the typed
-// `connect.NewClient[Req, Resp]` instantiation; we contribute the
-// session-auth interceptor that `c.WorkspaceService()` & friends
-// would otherwise apply.
+// dispatch; we contribute the transport and the session-auth interceptor
+// that `c.WorkspaceService()` & friends would otherwise apply.
 func hubCallDirect(ctx context.Context, c *control.Client, method string, in proto.Message, out proto.Message) error {
 	desc, err := hubrpc.Lookup(method)
 	if err != nil {
 		return fmt.Errorf("unsupported hub method: %w", err)
 	}
-	return desc.Invoke(ctx, c.HTTPClient, c.ConnectURL(), in, out, connect.WithInterceptors(c.AuthInterceptor()))
+	client := connect.NewClient(
+		connecthttp.NewTransport(c.HTTPClient, c.ConnectURL(), connecthttp.WithReadMaxBytes(0)),
+		c.AuthInterceptor(),
+	)
+	return desc.Invoke(ctx, client, in, out)
 }
 
 // hubUnaryEmit collapses the boilerplate every read-only / single-shot

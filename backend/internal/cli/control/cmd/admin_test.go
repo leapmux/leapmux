@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -12,7 +11,8 @@ import (
 	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
 	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -944,9 +944,9 @@ type permissionDeniedUserService struct {
 
 func (s *permissionDeniedUserService) ListUsers(
 	_ context.Context,
-	_ *connect.Request[leapmuxv1.ListUsersRequest],
-) (*connect.Response[leapmuxv1.ListUsersResponse], error) {
-	return nil, connect.NewError(connect.CodePermissionDenied, errors.New(s.message))
+	_ *leapmuxv1.ListUsersRequest,
+) (*leapmuxv1.ListUsersResponse, error) {
+	return nil, connect.NewError(connect.CodePermissionDenied, s.message)
 }
 
 // TestAdminVerb_ReportsTheHubsRefusalVerbatim is why the CLI adds nothing of
@@ -969,9 +969,10 @@ func TestAdminVerb_ReportsTheHubsRefusalVerbatim(t *testing.T) {
 			// an agent inherits it.
 			t.Setenv("LEAPMUX_CONTROL_SOCK", "")
 			mux := http.NewServeMux()
-			path, handler := leapmuxv1connect.NewAdminUserServiceHandler(
+			connectServer := connect.NewServer()
+			leapmuxv1connect.RegisterAdminUserServiceHandler(connectServer,
 				&permissionDeniedUserService{message: message})
-			mux.Handle(path, handler)
+			connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 			srv := hubtransporttest.NewServer(t, mux)
 			t.Cleanup(srv.Close)
 

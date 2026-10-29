@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"github.com/coder/quartz"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -364,16 +364,16 @@ func TestIsCodeUnauthenticated(t *testing.T) {
 		assert.False(t, isCodeUnauthenticated(nil))
 	})
 	t.Run("direct connect.Error unauthenticated", func(t *testing.T) {
-		err := connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("bad token"))
+		err := connect.Errorf(connect.CodeUnauthenticated, "bad token")
 		assert.True(t, isCodeUnauthenticated(err))
 	})
 	t.Run("wrapped connect.Error unauthenticated", func(t *testing.T) {
-		inner := connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("bad token"))
+		inner := connect.Errorf(connect.CodeUnauthenticated, "bad token")
 		err := fmt.Errorf("connect to hub: %w", inner)
 		assert.True(t, isCodeUnauthenticated(err), "errors.As should unwrap")
 	})
 	t.Run("other connect code", func(t *testing.T) {
-		err := connect.NewError(connect.CodeUnavailable, fmt.Errorf("server down"))
+		err := connect.Errorf(connect.CodeUnavailable, "server down")
 		assert.False(t, isCodeUnauthenticated(err))
 	})
 	t.Run("non-connect error containing the word unauthenticated", func(t *testing.T) {

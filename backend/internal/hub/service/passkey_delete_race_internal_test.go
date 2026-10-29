@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -101,10 +101,10 @@ func TestDeletePasskey_RefusesWhenTheLockedCountNoLongerNeedsAPassword(t *testin
 		UserAuthGeneration: user.AuthGeneration,
 	})
 
-	_, err = svc.DeletePasskey(acting, connect.NewRequest(&leapmuxv1.DeletePasskeyRequest{
+	_, err = svc.DeletePasskey(acting, &leapmuxv1.DeletePasskeyRequest{
 		Id:          doomed,
 		NewPassword: "newpass123",
-	}))
+	})
 	require.Error(t, err, "prepare hashed for one branch, and a different branch now runs")
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "please retry")

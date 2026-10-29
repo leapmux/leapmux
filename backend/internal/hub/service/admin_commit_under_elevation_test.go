@@ -51,7 +51,7 @@ func adminCommitVerbs() map[string]adminCommitVerb {
 	return map[string]adminCommitVerb{
 		"CreateUser": {
 			call: func(ctx context.Context, env *adminUserEnv, _, _, token string) error {
-				_, err := env.client.CreateUser(ctx, authedReq(&leapmuxv1.CreateUserRequest{
+				_, err := env.client.CreateUser(authedReq(ctx, &leapmuxv1.CreateUserRequest{
 					Username: "planted", Password: "password123",
 				}, token))
 				return err
@@ -64,7 +64,7 @@ func adminCommitVerbs() map[string]adminCommitVerb {
 		},
 		"SetUserAdmin": {
 			call: func(ctx context.Context, env *adminUserEnv, subjectID, _, token string) error {
-				_, err := env.client.SetUserAdmin(ctx, authedReq(&leapmuxv1.SetUserAdminRequest{
+				_, err := env.client.SetUserAdmin(authedReq(ctx, &leapmuxv1.SetUserAdminRequest{
 					Id: subjectID, IsAdmin: true,
 				}, token))
 				return err
@@ -78,7 +78,7 @@ func adminCommitVerbs() map[string]adminCommitVerb {
 		},
 		"ResetPassword": {
 			call: func(ctx context.Context, env *adminUserEnv, subjectID, _, token string) error {
-				_, err := env.client.ResetPassword(ctx, authedReq(&leapmuxv1.ResetPasswordRequest{
+				_, err := env.client.ResetPassword(authedReq(ctx, &leapmuxv1.ResetPasswordRequest{
 					Id: subjectID, Password: adminCommitResetPassword,
 				}, token))
 				return err
@@ -92,7 +92,7 @@ func adminCommitVerbs() map[string]adminCommitVerb {
 		},
 		"DeleteUser": {
 			call: func(ctx context.Context, env *adminUserEnv, subjectID, _, token string) error {
-				_, err := env.client.DeleteUser(ctx, authedReq(&leapmuxv1.DeleteUserRequest{
+				_, err := env.client.DeleteUser(authedReq(ctx, &leapmuxv1.DeleteUserRequest{
 					Id: subjectID,
 				}, token))
 				return err
@@ -110,7 +110,7 @@ func adminCommitVerbs() map[string]adminCommitVerb {
 		},
 		"UpdateUser": {
 			call: func(ctx context.Context, env *adminUserEnv, subjectID, _, token string) error {
-				_, err := env.client.UpdateUser(ctx, authedReq(&leapmuxv1.UpdateUserRequest{
+				_, err := env.client.UpdateUser(authedReq(ctx, &leapmuxv1.UpdateUserRequest{
 					Id: subjectID, DisplayName: proto.String("Renamed"),
 				}, token))
 				return err
@@ -124,7 +124,7 @@ func adminCommitVerbs() map[string]adminCommitVerb {
 		},
 		"IssueAPIToken": {
 			call: func(ctx context.Context, env *adminUserEnv, subjectID, _, token string) error {
-				_, err := env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
+				_, err := env.client.IssueAPIToken(authedReq(ctx, &leapmuxv1.IssueAPITokenRequest{
 					UserId: subjectID, InstallationName: "ci-bot",
 				}, token))
 				return err
@@ -155,11 +155,11 @@ const adminCommitResetPassword = "brand-new-subject-pass"
 // the handler forgot.
 func seedCommitSubject(t *testing.T, env *adminUserEnv) (id, username string) {
 	t.Helper()
-	created, err := env.client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
+	created, err := env.client.CreateUser(authedReq(context.Background(), &leapmuxv1.CreateUserRequest{
 		Username: "subject", Password: "subjectpass123", DisplayName: "Subject",
 	}, env.token))
 	require.NoError(t, err)
-	return created.Msg.GetUser().GetId(), "subject"
+	return created.GetUser().GetId(), "subject"
 }
 
 // TestAdminUserService_CommitRefusesAWithdrawnActingSession pins the re-read.
@@ -188,7 +188,7 @@ func TestAdminUserService_CommitRefusesAWithdrawnActingSession(t *testing.T) {
 			// validated UserInfo. That entry is the staleness the re-read
 			// exists to answer, and it is what makes the handler -- rather
 			// than the interceptor -- the thing under test.
-			_, err := env.client.GetUser(ctx, authedReq(&leapmuxv1.GetUserRequest{Id: env.adminID}, env.token))
+			_, err := env.client.GetUser(authedReq(ctx, &leapmuxv1.GetUserRequest{Id: env.adminID}, env.token))
 			require.NoError(t, err)
 
 			// An administrator takes the acting session away. This writes the

@@ -2,14 +2,13 @@ package cmd
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sync"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 
@@ -121,7 +120,7 @@ func (h *recordingHub) CallInner(_ context.Context, _ userid.UserID, method stri
 		}
 		return proto.Marshal(&leapmuxv1.ListWorkersResponse{Workers: workers})
 	default:
-		return nil, connect.NewError(connect.CodePermissionDenied, errors.New("delegation token cannot call this procedure: "+method))
+		return nil, connect.NewError(connect.CodePermissionDenied, "delegation token cannot call this procedure: "+method)
 	}
 }
 

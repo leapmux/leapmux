@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -21,9 +21,9 @@ import (
 // a passkey-capable server and returns the token from the sent mail.
 func requestRecoveryLinkFor(t *testing.T, client passkeyAuthTestEnv, sender *mailSenderDouble, identifier string) string {
 	t.Helper()
-	_, err := client.client.RequestAccountRecovery(context.Background(), connect.NewRequest(&leapmuxv1.RequestAccountRecoveryRequest{
+	_, err := client.client.RequestAccountRecovery(context.Background(), &leapmuxv1.RequestAccountRecoveryRequest{
 		Identifier: identifier,
-	}))
+	})
 	require.NoError(t, err)
 	last := sender.last()
 	require.NotNil(t, last)
@@ -36,11 +36,10 @@ func requestRecoveryLinkFor(t *testing.T, client passkeyAuthTestEnv, sender *mai
 // browser origin every other ceremony test uses.
 func beginRecoveryPasskey(t *testing.T, env passkeyAuthTestEnv, token string) *leapmuxv1.BeginAccountRecoveryPasskeyResponse {
 	t.Helper()
-	req := connect.NewRequest(&leapmuxv1.BeginAccountRecoveryPasskeyRequest{Token: token})
-	req.Header().Set("Origin", passkeyTestOrigin)
-	resp, err := env.client.BeginAccountRecoveryPasskey(context.Background(), req)
+	req := &leapmuxv1.BeginAccountRecoveryPasskeyRequest{Token: token}
+	resp, err := env.client.BeginAccountRecoveryPasskey(passkeyCtx(context.Background()), req)
 	require.NoError(t, err)
-	return resp.Msg
+	return resp
 }
 
 // TestFinishAccountRecoveryPasskey_ReplacesEverythingWithTheNewPasskey pins
@@ -80,11 +79,11 @@ func TestFinishAccountRecoveryPasskey_ReplacesEverythingWithTheNewPasskey(t *tes
 	credentialJSON, err := ceremony.registrationResponse(begin.GetOptionsJson())
 	require.NoError(t, err)
 
-	_, err = env.client.FinishAccountRecoveryPasskey(context.Background(), connect.NewRequest(&leapmuxv1.FinishAccountRecoveryPasskeyRequest{
+	_, err = env.client.FinishAccountRecoveryPasskey(context.Background(), &leapmuxv1.FinishAccountRecoveryPasskeyRequest{
 		Token:          token,
 		SessionId:      begin.GetSessionId(),
 		CredentialJson: credentialJSON,
-	}))
+	})
 	require.NoError(t, err)
 
 	// Passkey-only now: one credential (the new one), no password, and no
@@ -102,16 +101,15 @@ func TestFinishAccountRecoveryPasskey_ReplacesEverythingWithTheNewPasskey(t *tes
 	assert.ErrorIs(t, err, store.ErrNotFound)
 
 	// The enrolled credential signs in: same ceremony, assertion half.
-	loginReq := connect.NewRequest(&leapmuxv1.BeginPasskeyLoginRequest{Username: "pkrecover"})
-	loginReq.Header().Set("Origin", passkeyTestOrigin)
-	loginBegin, err := env.client.BeginPasskeyLogin(context.Background(), loginReq)
+	loginReq := &leapmuxv1.BeginPasskeyLoginRequest{Username: "pkrecover"}
+	loginBegin, err := env.client.BeginPasskeyLogin(passkeyCtx(context.Background()), loginReq)
 	require.NoError(t, err)
-	assertionJSON, err := ceremony.assertionResponse(loginBegin.Msg.GetOptionsJson())
+	assertionJSON, err := ceremony.assertionResponse(loginBegin.GetOptionsJson())
 	require.NoError(t, err)
-	_, err = env.client.FinishPasskeyLogin(context.Background(), connect.NewRequest(&leapmuxv1.FinishPasskeyLoginRequest{
-		SessionId:      loginBegin.Msg.GetSessionId(),
+	_, err = env.client.FinishPasskeyLogin(context.Background(), &leapmuxv1.FinishPasskeyLoginRequest{
+		SessionId:      loginBegin.GetSessionId(),
 		CredentialJson: assertionJSON,
-	}))
+	})
 	require.NoError(t, err)
 
 	// Recovering AGAIN revokes the first flow's passkey: a fresh ceremony
@@ -122,33 +120,32 @@ func TestFinishAccountRecoveryPasskey_ReplacesEverythingWithTheNewPasskey(t *tes
 	ceremony2 := newPasskeyCeremony()
 	credentialJSON2, err := ceremony2.registrationResponse(begin2.GetOptionsJson())
 	require.NoError(t, err)
-	_, err = env.client.FinishAccountRecoveryPasskey(context.Background(), connect.NewRequest(&leapmuxv1.FinishAccountRecoveryPasskeyRequest{
+	_, err = env.client.FinishAccountRecoveryPasskey(context.Background(), &leapmuxv1.FinishAccountRecoveryPasskeyRequest{
 		Token:          token2,
 		SessionId:      begin2.GetSessionId(),
 		CredentialJson: credentialJSON2,
-	}))
+	})
 	require.NoError(t, err)
 	count, err = env.store.PasskeyCredentials().CountByUser(context.Background(), userID)
 	require.NoError(t, err)
 	assert.EqualValues(t, 1, count, "the previous recovery's passkey must be revoked")
 
-	reloginReq := connect.NewRequest(&leapmuxv1.BeginPasskeyLoginRequest{Username: "pkrecover"})
-	reloginReq.Header().Set("Origin", passkeyTestOrigin)
-	reloginBegin, err := env.client.BeginPasskeyLogin(context.Background(), reloginReq)
+	reloginReq := &leapmuxv1.BeginPasskeyLoginRequest{Username: "pkrecover"}
+	reloginBegin, err := env.client.BeginPasskeyLogin(passkeyCtx(context.Background()), reloginReq)
 	require.NoError(t, err)
-	oldAssertion, err := ceremony.assertionResponse(reloginBegin.Msg.GetOptionsJson())
+	oldAssertion, err := ceremony.assertionResponse(reloginBegin.GetOptionsJson())
 	require.NoError(t, err)
-	_, err = env.client.FinishPasskeyLogin(context.Background(), connect.NewRequest(&leapmuxv1.FinishPasskeyLoginRequest{
-		SessionId:      reloginBegin.Msg.GetSessionId(),
+	_, err = env.client.FinishPasskeyLogin(context.Background(), &leapmuxv1.FinishPasskeyLoginRequest{
+		SessionId:      reloginBegin.GetSessionId(),
 		CredentialJson: oldAssertion,
-	}))
+	})
 	assert.Error(t, err, "the revoked first-recovery passkey must not sign in")
-	newAssertion, err := ceremony2.assertionResponse(reloginBegin.Msg.GetOptionsJson())
+	newAssertion, err := ceremony2.assertionResponse(reloginBegin.GetOptionsJson())
 	require.NoError(t, err)
-	_, err = env.client.FinishPasskeyLogin(context.Background(), connect.NewRequest(&leapmuxv1.FinishPasskeyLoginRequest{
-		SessionId:      reloginBegin.Msg.GetSessionId(),
+	_, err = env.client.FinishPasskeyLogin(context.Background(), &leapmuxv1.FinishPasskeyLoginRequest{
+		SessionId:      reloginBegin.GetSessionId(),
 		CredentialJson: newAssertion,
-	}))
+	})
 	assert.Error(t, err, "a ceremony session is single-use; the second Finish must refuse")
 }
 
@@ -182,17 +179,17 @@ func TestFinishAccountRecoveryPasskey_TokenSpentByPassword(t *testing.T) {
 	credentialJSON, err := ceremony.registrationResponse(begin.GetOptionsJson())
 	require.NoError(t, err)
 
-	_, err = env.client.CompleteAccountRecoveryPassword(context.Background(), connect.NewRequest(&leapmuxv1.CompleteAccountRecoveryPasswordRequest{
+	_, err = env.client.CompleteAccountRecoveryPassword(context.Background(), &leapmuxv1.CompleteAccountRecoveryPasswordRequest{
 		Token:       token,
 		NewPassword: "newpass123",
-	}))
+	})
 	require.NoError(t, err)
 
-	_, err = env.client.FinishAccountRecoveryPasskey(context.Background(), connect.NewRequest(&leapmuxv1.FinishAccountRecoveryPasskeyRequest{
+	_, err = env.client.FinishAccountRecoveryPasskey(context.Background(), &leapmuxv1.FinishAccountRecoveryPasskeyRequest{
 		Token:          token,
 		SessionId:      begin.GetSessionId(),
 		CredentialJson: credentialJSON,
-	}))
+	})
 	// The password path spent the token, so Finish refuses -- never a
 	// success, never a half-spent write.
 	require.Error(t, err)
@@ -228,15 +225,14 @@ func TestBeginAccountRecoveryPasskey_AfterPasswordComplete(t *testing.T) {
 	}))
 
 	token := requestRecoveryLinkFor(t, env, sender, "spentbegin")
-	_, err := env.client.CompleteAccountRecoveryPassword(context.Background(), connect.NewRequest(&leapmuxv1.CompleteAccountRecoveryPasswordRequest{
+	_, err := env.client.CompleteAccountRecoveryPassword(context.Background(), &leapmuxv1.CompleteAccountRecoveryPasswordRequest{
 		Token:       token,
 		NewPassword: "newpass123",
-	}))
+	})
 	require.NoError(t, err)
 
-	req := connect.NewRequest(&leapmuxv1.BeginAccountRecoveryPasskeyRequest{Token: token})
-	req.Header().Set("Origin", passkeyTestOrigin)
-	_, err = env.client.BeginAccountRecoveryPasskey(context.Background(), req)
+	req := &leapmuxv1.BeginAccountRecoveryPasskeyRequest{Token: token}
+	_, err = env.client.BeginAccountRecoveryPasskey(passkeyCtx(context.Background()), req)
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
 }
 
@@ -249,9 +245,8 @@ func TestBeginAccountRecoveryPasskey_InvalidToken(t *testing.T) {
 	sender := &mailSenderDouble{}
 	env := setupPasskeyAuthTestServer(t, nil, sender)
 
-	req := connect.NewRequest(&leapmuxv1.BeginAccountRecoveryPasskeyRequest{Token: "not-a-real-token"})
-	req.Header().Set("Origin", passkeyTestOrigin)
-	_, err := env.client.BeginAccountRecoveryPasskey(context.Background(), req)
+	req := &leapmuxv1.BeginAccountRecoveryPasskeyRequest{Token: "not-a-real-token"}
+	_, err := env.client.BeginAccountRecoveryPasskey(passkeyCtx(context.Background()), req)
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
 }
 
@@ -275,19 +270,17 @@ func TestBeginAccountRecoveryPasskey_ChargesTheSharedBudget(t *testing.T) {
 
 	token := requestRecoveryLinkFor(t, env, sender, "budgetburn")
 	for range 5 {
-		req := connect.NewRequest(&leapmuxv1.BeginAccountRecoveryPasskeyRequest{Token: token})
-		req.Header().Set("Origin", passkeyTestOrigin)
-		_, err := env.client.BeginAccountRecoveryPasskey(context.Background(), req)
+		req := &leapmuxv1.BeginAccountRecoveryPasskeyRequest{Token: token}
+		_, err := env.client.BeginAccountRecoveryPasskey(passkeyCtx(context.Background()), req)
 		require.NoError(t, err)
 	}
-	req := connect.NewRequest(&leapmuxv1.BeginAccountRecoveryPasskeyRequest{Token: token})
-	req.Header().Set("Origin", passkeyTestOrigin)
-	_, err := env.client.BeginAccountRecoveryPasskey(context.Background(), req)
+	req := &leapmuxv1.BeginAccountRecoveryPasskeyRequest{Token: token}
+	_, err := env.client.BeginAccountRecoveryPasskey(passkeyCtx(context.Background()), req)
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
-	_, err = env.client.CompleteAccountRecoveryPassword(context.Background(), connect.NewRequest(&leapmuxv1.CompleteAccountRecoveryPasswordRequest{
+	_, err = env.client.CompleteAccountRecoveryPassword(context.Background(), &leapmuxv1.CompleteAccountRecoveryPasswordRequest{
 		Token:       token,
 		NewPassword: "newpass123",
-	}))
+	})
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
 }
 
@@ -312,22 +305,20 @@ func TestAccountRecovery_InterleavedPasskeyBeginThenPasswordComplete(t *testing.
 
 	token := requestRecoveryLinkFor(t, env, sender, "interleave")
 	for range 4 {
-		req := connect.NewRequest(&leapmuxv1.BeginAccountRecoveryPasskeyRequest{Token: token})
-		req.Header().Set("Origin", passkeyTestOrigin)
-		_, err := env.client.BeginAccountRecoveryPasskey(context.Background(), req)
+		req := &leapmuxv1.BeginAccountRecoveryPasskeyRequest{Token: token}
+		_, err := env.client.BeginAccountRecoveryPasskey(passkeyCtx(context.Background()), req)
 		require.NoError(t, err)
 	}
-	_, err := env.client.CompleteAccountRecoveryPassword(context.Background(), connect.NewRequest(&leapmuxv1.CompleteAccountRecoveryPasswordRequest{
+	_, err := env.client.CompleteAccountRecoveryPassword(context.Background(), &leapmuxv1.CompleteAccountRecoveryPasswordRequest{
 		Token:       token,
 		NewPassword: "newpass123",
-	}))
+	})
 	require.NoError(t, err)
 	_, _, _, err = auth.Login(context.Background(), env.store, "interleave", "newpass123", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
-	req := connect.NewRequest(&leapmuxv1.BeginAccountRecoveryPasskeyRequest{Token: token})
-	req.Header().Set("Origin", passkeyTestOrigin)
-	_, err = env.client.BeginAccountRecoveryPasskey(context.Background(), req)
+	req := &leapmuxv1.BeginAccountRecoveryPasskeyRequest{Token: token}
+	_, err = env.client.BeginAccountRecoveryPasskey(passkeyCtx(context.Background()), req)
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err), "a spent token must refuse both paths")
 }
 
@@ -352,9 +343,10 @@ func TestBeginAccountRecoveryPasskey_UnservedOrigin(t *testing.T) {
 	}))
 	token := requestRecoveryLinkFor(t, env, sender, "wrongorigin")
 
-	req := connect.NewRequest(&leapmuxv1.BeginAccountRecoveryPasskeyRequest{Token: token})
-	req.Header().Set("Origin", "https://elsewhere.example.com")
-	_, err := env.client.BeginAccountRecoveryPasskey(context.Background(), req)
+	req := &leapmuxv1.BeginAccountRecoveryPasskeyRequest{Token: token}
+	ctx, info := connect.NewClientContext(context.Background())
+	info.RequestHeader().Set("Origin", "https://elsewhere.example.com")
+	_, err := env.client.BeginAccountRecoveryPasskey(ctx, req)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 
 	row, err := env.store.Users().GetByID(context.Background(), userID)
@@ -416,29 +408,28 @@ func TestFinishAccountRecoveryPasskey_RefusesAfterForceExpire(t *testing.T) {
 	for range 5 {
 		last = beginRecoveryPasskey(t, env, token)
 	}
-	req := connect.NewRequest(&leapmuxv1.BeginAccountRecoveryPasskeyRequest{Token: token})
-	req.Header().Set("Origin", passkeyTestOrigin)
-	_, err := env.client.BeginAccountRecoveryPasskey(context.Background(), req)
+	req := &leapmuxv1.BeginAccountRecoveryPasskeyRequest{Token: token}
+	_, err := env.client.BeginAccountRecoveryPasskey(passkeyCtx(context.Background()), req)
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
 
 	ceremony := newPasskeyCeremony()
 	credentialJSON, err := ceremony.registrationResponse(last.GetOptionsJson())
 	require.NoError(t, err)
-	_, err = env.client.FinishAccountRecoveryPasskey(context.Background(), connect.NewRequest(&leapmuxv1.FinishAccountRecoveryPasskeyRequest{
+	_, err = env.client.FinishAccountRecoveryPasskey(context.Background(), &leapmuxv1.FinishAccountRecoveryPasskeyRequest{
 		Token:          token,
 		SessionId:      last.GetSessionId(),
 		CredentialJson: credentialJSON,
-	}))
+	})
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
 
 	count, err := env.store.PasskeyCredentials().CountByUser(context.Background(), userID)
 	require.NoError(t, err)
 	assert.EqualValues(t, 0, count)
 
-	_, err = env.client.CompleteAccountRecoveryPassword(context.Background(), connect.NewRequest(&leapmuxv1.CompleteAccountRecoveryPasswordRequest{
+	_, err = env.client.CompleteAccountRecoveryPassword(context.Background(), &leapmuxv1.CompleteAccountRecoveryPasswordRequest{
 		Token:       token,
 		NewPassword: "newpass123",
-	}))
+	})
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
 }
 
@@ -453,10 +444,10 @@ func TestAccountRecoveryPasskey_RequiredFields(t *testing.T) {
 	env := setupPasskeyAuthTestServer(t, nil, sender)
 
 	_, err := env.client.BeginAccountRecoveryPasskey(context.Background(),
-		connect.NewRequest(&leapmuxv1.BeginAccountRecoveryPasskeyRequest{}))
+		&leapmuxv1.BeginAccountRecoveryPasskeyRequest{})
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 
 	_, err = env.client.FinishAccountRecoveryPasskey(context.Background(),
-		connect.NewRequest(&leapmuxv1.FinishAccountRecoveryPasskeyRequest{Token: "tok"}))
+		&leapmuxv1.FinishAccountRecoveryPasskeyRequest{Token: "tok"})
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 }

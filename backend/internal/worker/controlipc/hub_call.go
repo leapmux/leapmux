@@ -6,7 +6,8 @@ import (
 	"fmt"
 	"net/http"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"google.golang.org/protobuf/proto"
 
 	"github.com/leapmux/leapmux/hubtransport"
@@ -34,10 +35,10 @@ import (
 // means adding a hub method is one entry rather than two parallel switches.
 //
 // **Why mirror HubEventStreamer instead of folding both into one
-// type?** Streaming and unary go through different ConnectRPC code
-// paths (`stream.Receive()` loop vs. unary `Response.Msg`) and pool
-// differently. Sharing a delegation provider + http transport keeps
-// the duplication small while letting each lane evolve independently.
+// type?** Unary calls use ConnectRPC; HubEventStreamer consumes a long-lived
+// WebSocket. Each needs its own HTTP client because unary calls require an
+// overall timeout and subscriptions require none. They share the delegation
+// provider and the endpoint's connection pools while retaining those policies.
 type HubUnaryBridge struct {
 	Delegation crossworker.DelegationProvider
 	HTTPClient *http.Client
@@ -84,20 +85,31 @@ func (b *HubUnaryBridge) CallHub(ctx context.Context, userID userid.UserID, meth
 	if err != nil {
 		return nil, fmt.Errorf("delegation bearer: %w", err)
 	}
-	if err := desc.Invoke(ctx, b.HTTPClient, b.ConnectURL, in, out, connect.WithInterceptors(bearerInterceptor(bearer))); err != nil {
+	client := connect.NewClient(
+		connecthttp.NewTransport(b.HTTPClient, b.ConnectURL, connecthttp.WithReadMaxBytes(0)),
+		bearerInterceptor(bearer),
+	)
+	if err := desc.Invoke(ctx, client, in, out); err != nil {
 		return nil, err
 	}
 	return proto.Marshal(out)
 }
 
 // bearerInterceptor sets `Authorization: Bearer <token>` on every
-// outbound unary call. ConnectRPC's interceptor chain runs once per
-// connect.NewClient, so it costs nothing to construct per call.
-func bearerInterceptor(bearer string) connect.Interceptor {
-	return connect.UnaryInterceptorFunc(func(next connect.UnaryFunc) connect.UnaryFunc {
-		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-			req.Header().Set("Authorization", "Bearer "+bearer)
-			return next(ctx, req)
+// outbound call. Connect v2 builds the interceptor chain once per
+// connect.NewClient, so it costs nothing to construct per call -- and
+// the bearer here is minted per call anyway.
+func bearerInterceptor(bearer string) connect.ClientInterceptor {
+	return func(next connect.ClientFunc) connect.ClientFunc {
+		return func(ctx context.Context, spec connect.Spec) (connect.ClientStream, error) {
+			// Client call methods attach the CallInfo before the chain
+			// runs; make one if this ClientFunc is reached without them.
+			info, ok := connect.CallInfoForClientContext(ctx)
+			if !ok {
+				ctx, info = connect.NewClientContext(ctx)
+			}
+			info.RequestHeader().Set("Authorization", "Bearer "+bearer)
+			return next(ctx, spec)
 		}
-	})
+	}
 }

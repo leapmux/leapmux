@@ -7,7 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -19,8 +20,8 @@ import (
 // countingCRDTService is a stand-in UserCRDT handler that records whether the
 // request ever reached application code. That is the load-bearing assertion for
 // the size cap: connect-go must refuse an oversized body while READING it, so an
-// over-cap SubmitOps must never be unmarshaled, authorized, or handed to the
-// user's single-writer manager goroutine.
+// over-cap SubmitOps must never be unmarshaled or handed to the user's
+// single-writer manager goroutine.
 type countingCRDTService struct {
 	leapmuxv1connect.UnimplementedUserCRDTHandler
 	submits int
@@ -32,19 +33,19 @@ type countingCRDTService struct {
 
 func (s *countingCRDTService) SubmitOps(
 	_ context.Context,
-	req *connect.Request[leapmuxv1.SubmitOpsRequest],
-) (*connect.Response[leapmuxv1.SubmitOpsResponse], error) {
+	req *leapmuxv1.SubmitOpsRequest,
+) (*leapmuxv1.SubmitOpsResponse, error) {
 	s.submits++
-	s.lastBatches = len(req.Msg.GetBatches())
-	return connect.NewResponse(&leapmuxv1.SubmitOpsResponse{}), nil
+	s.lastBatches = len(req.GetBatches())
+	return &leapmuxv1.SubmitOpsResponse{}, nil
 }
 
 // submitOpsOfSize builds a SubmitOpsRequest whose marshaled size is at least
 // `atLeast` bytes, by padding the batch id. The padding is NOT compressible-
 // friendly filler that could slip past the cap: connect-go clients default to
-// sending uncompressed requests (see connect.WithSendGzip's doc), and the
-// handler's limit is applied to the raw read, so the wire size is the size built
-// here.
+// sending uncompressed requests (see connecthttp.WithSendCompression's doc),
+// and the handler's limit is applied to the raw read, so the wire size is the
+// size built here.
 func submitOpsOfSize(atLeast int) *leapmuxv1.SubmitOpsRequest {
 	return &leapmuxv1.SubmitOpsRequest{
 		Epoch:   1,
@@ -52,39 +53,48 @@ func submitOpsOfSize(atLeast int) *leapmuxv1.SubmitOpsRequest {
 	}
 }
 
-// TestConnectOptions_BoundsInboundRequestBodies pins the request-size cap every
-// Connect handler on the hub mux is mounted with.
+// TestMaxConnectRequestBytes_CapsInboundRequestBodies pins the request-size
+// cap every Connect handler on the hub mux is mounted with.
 //
-// connect-go defaults to allowing ANY request size, so before this the whole
-// body of an authenticated SubmitOps was buffered, unmarshaled, and then applied
-// on that user's single-writer CRDT goroutine -- one caller could stall every
-// other tab's submits for as long as its own batch took to process.
+// connect-go's reader refuses an over-limit body while READING it, before
+// decode, so an over-cap SubmitOps must never be unmarshaled or handed to the
+// user's single-writer manager goroutine: one oversized batch would otherwise
+// serialize every other tab's submits behind its own unmarshal + validate.
 //
-// The production option value (connectOptions) is what is mounted here, not a
-// hand-rolled copy, so a future edit that drops WithReadMaxBytes from the shared
-// builder reddens this test. Interceptors are omitted deliberately: the cap is
-// enforced by the protocol reader, BELOW the interceptor chain, and the real
-// chain needs a store, a keystore and a shutdown channel.
-func TestConnectOptions_BoundsInboundRequestBodies(t *testing.T) {
+// The mount goes through mountConnect, the same helper production uses.
+// These probes verify the effective cap. Interceptors are
+// omitted deliberately: the cap is enforced at receive time inside the handler
+// the chain would wrap, and the real chain needs a store, a keystore and a
+// shutdown channel.
+//
+// One honest gap: connect v2's own default is 4 MiB per message, which today
+// equals maxConnectRequestBytes. While the two agree, these probes cannot tell
+// "the option is passed" from "the option is missing and the default applies"
+// -- both accept 2 MiB and refuse 5 MiB. They separate the moment the budget
+// moves off 4 MiB, and the failure mode below is pinned either way. Making the
+// cap an operator setting would close the gap, because a test could then hold
+// a non-default value: https://github.com/leapmux/leapmux/issues/554
+func TestMaxConnectRequestBytes_CapsInboundRequestBodies(t *testing.T) {
 	svc := &countingCRDTService{}
-	path, handler := leapmuxv1connect.NewUserCRDTHandler(svc, connectOptions())
+	connectServer := connect.NewServer()
+	leapmuxv1connect.RegisterUserCRDTHandler(connectServer, svc)
 	mux := http.NewServeMux()
-	mux.Handle(path, handler)
+	mountConnect(mux, connectServer)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 
-	client := leapmuxv1connect.NewUserCRDTClient(srv.Client(), srv.URL)
+	client := leapmuxv1connect.NewUserCRDTClient(connect.NewClient(connecthttp.NewTransport(srv.Client(), srv.URL, connecthttp.WithReadMaxBytes(0))))
 
 	// Comfortably under the cap: accepted, and the handler sees the real batch.
 	_, err := client.SubmitOps(context.Background(),
-		connect.NewRequest(submitOpsOfSize(maxConnectRequestBytes/2)))
+		submitOpsOfSize(maxConnectRequestBytes/2))
 	require.NoError(t, err, "a legitimate bulk submit must still be accepted")
 	require.Equal(t, 1, svc.submits)
 	require.Equal(t, 1, svc.lastBatches, "the under-cap request must arrive intact")
 
 	// Comfortably over it: refused, and application code is never reached.
 	_, err = client.SubmitOps(context.Background(),
-		connect.NewRequest(submitOpsOfSize(maxConnectRequestBytes+(1<<20))))
+		submitOpsOfSize(maxConnectRequestBytes+(1<<20)))
 	require.Error(t, err, "an over-cap request must be refused, not buffered whole")
 	assert.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(err),
 		"connect reports an over-limit body as resource_exhausted")

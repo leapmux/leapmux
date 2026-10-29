@@ -10,7 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -186,7 +187,6 @@ func setupAdminUserTestUnelevated(t *testing.T) *adminUserEnv {
 
 	mux := http.NewServeMux()
 	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, TokenValidator: tv})
-	opts := connect.WithInterceptors(interceptor)
 	// The REAL lifecycle effects, not nil: every revoking verb on this
 	// service owes an in-process teardown after its commit, and a nil
 	// collaborator makes that obligation untestable (each effect method is
@@ -195,10 +195,11 @@ func setupAdminUserTestUnelevated(t *testing.T) *adminUserEnv {
 	revocations := &recordingCredentialCloser{}
 	lifecycle := auth.NewCredentialLifecycleEffects(contexts, revocations, nil)
 	sender := &mailSenderDouble{}
-	path, handler := leapmuxv1connect.NewAdminUserServiceHandler(service.NewAdminUserService(service.AdminUserServiceDeps{
+	connectServer := connect.NewServer(interceptor, service.NewElevationResponseInterceptor())
+	leapmuxv1connect.RegisterAdminUserServiceHandler(connectServer, service.NewAdminUserService(service.AdminUserServiceDeps{
 		Store: st, Validator: tv, Lifecycle: lifecycle, Mail: sender,
-	}), opts)
-	mux.Handle(path, handler)
+	}))
+	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 
 	server := httptest.NewUnstartedServer(mux)
 	server.EnableHTTP2 = true
@@ -206,7 +207,7 @@ func setupAdminUserTestUnelevated(t *testing.T) *adminUserEnv {
 	t.Cleanup(server.Close)
 
 	return &adminUserEnv{
-		client:      leapmuxv1connect.NewAdminUserServiceClient(server.Client(), server.URL, connect.WithGRPC()),
+		client:      leapmuxv1connect.NewAdminUserServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC()))),
 		st:          st,
 		token:       session,
 		adminID:     admin.ID,
@@ -255,43 +256,43 @@ func TestAdminUserService_GetUser_Selector(t *testing.T) {
 	env := setupAdminUserTest(t)
 	ctx := context.Background()
 
-	_, err := env.client.GetUser(ctx, authedReq(&leapmuxv1.GetUserRequest{}, env.token))
+	_, err := env.client.GetUser(authedReq(ctx, &leapmuxv1.GetUserRequest{}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "id or username is required")
 
-	_, err = env.client.GetUser(ctx, authedReq(&leapmuxv1.GetUserRequest{
+	_, err = env.client.GetUser(authedReq(ctx, &leapmuxv1.GetUserRequest{
 		Id: env.adminID, Username: "admin",
 	}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "mutually exclusive")
 
-	_, err = env.client.GetUser(ctx, authedReq(&leapmuxv1.GetUserRequest{Id: "missing"}, env.token))
+	_, err = env.client.GetUser(authedReq(ctx, &leapmuxv1.GetUserRequest{Id: "missing"}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
 
-	_, err = env.client.GetUser(ctx, authedReq(&leapmuxv1.GetUserRequest{Username: "nobody"}, env.token))
+	_, err = env.client.GetUser(authedReq(ctx, &leapmuxv1.GetUserRequest{Username: "nobody"}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
 
-	resp, err := env.client.GetUser(ctx, authedReq(&leapmuxv1.GetUserRequest{Username: "admin"}, env.token))
+	resp, err := env.client.GetUser(authedReq(ctx, &leapmuxv1.GetUserRequest{Username: "admin"}, env.token))
 	require.NoError(t, err)
-	assert.Equal(t, env.adminID, resp.Msg.GetUser().GetId())
-	assert.True(t, resp.Msg.GetUser().GetIsAdmin())
+	assert.Equal(t, env.adminID, resp.GetUser().GetId())
+	assert.True(t, resp.GetUser().GetIsAdmin())
 }
 
 func TestAdminUserService_CreateUser_RefusalsAndHappyPath(t *testing.T) {
 	env := setupAdminUserTest(t)
 	ctx := context.Background()
 
-	_, err := env.client.CreateUser(ctx, authedReq(&leapmuxv1.CreateUserRequest{
+	_, err := env.client.CreateUser(authedReq(ctx, &leapmuxv1.CreateUserRequest{
 		Password: "password1",
 	}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 
-	_, err = env.client.CreateUser(ctx, authedReq(&leapmuxv1.CreateUserRequest{
+	_, err = env.client.CreateUser(authedReq(ctx, &leapmuxv1.CreateUserRequest{
 		Username: "solo",
 		Password: "password1",
 	}, env.token))
@@ -299,7 +300,7 @@ func TestAdminUserService_CreateUser_RefusalsAndHappyPath(t *testing.T) {
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "reserved")
 
-	_, err = env.client.CreateUser(ctx, authedReq(&leapmuxv1.CreateUserRequest{
+	_, err = env.client.CreateUser(authedReq(ctx, &leapmuxv1.CreateUserRequest{
 		Username: "bob",
 		Password: "short",
 	}, env.token))
@@ -307,19 +308,19 @@ func TestAdminUserService_CreateUser_RefusalsAndHappyPath(t *testing.T) {
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "at least")
 
-	resp, err := env.client.CreateUser(ctx, authedReq(&leapmuxv1.CreateUserRequest{
+	resp, err := env.client.CreateUser(authedReq(ctx, &leapmuxv1.CreateUserRequest{
 		Username:    "bob",
 		Password:    "password1",
 		DisplayName: "Bob",
 		IsAdmin:     true,
 	}, env.token))
 	require.NoError(t, err)
-	require.NotNil(t, resp.Msg.GetUser())
-	assert.Equal(t, "bob", resp.Msg.GetUser().GetUsername())
-	assert.True(t, resp.Msg.GetUser().GetIsAdmin())
-	assert.NotContains(t, resp.Msg.String(), "password1")
+	require.NotNil(t, resp.GetUser())
+	assert.Equal(t, "bob", resp.GetUser().GetUsername())
+	assert.True(t, resp.GetUser().GetIsAdmin())
+	assert.NotContains(t, resp.String(), "password1")
 
-	_, err = env.client.CreateUser(ctx, authedReq(&leapmuxv1.CreateUserRequest{
+	_, err = env.client.CreateUser(authedReq(ctx, &leapmuxv1.CreateUserRequest{
 		Username: "bob",
 		Password: "password1",
 	}, env.token))
@@ -331,12 +332,12 @@ func TestAdminUserService_DeleteUser_ForceAndCredentialRevocation(t *testing.T) 
 	env := setupAdminUserTest(t)
 	ctx := context.Background()
 
-	created, err := env.client.CreateUser(ctx, authedReq(&leapmuxv1.CreateUserRequest{
+	created, err := env.client.CreateUser(authedReq(ctx, &leapmuxv1.CreateUserRequest{
 		Username: "carol",
 		Password: "password1",
 	}, env.token))
 	require.NoError(t, err)
-	carolID := created.Msg.GetUser().GetId()
+	carolID := created.GetUser().GetId()
 
 	worker := storetest.SeedWorker(t, env.st, carolID)
 	tokenID := id.Generate()
@@ -351,14 +352,14 @@ func TestAdminUserService_DeleteUser_ForceAndCredentialRevocation(t *testing.T) 
 	_, _, _, err = auth.Login(ctx, env.st, "carol", "password1", auth.DefaultSessionDuration)
 	require.NoError(t, err)
 
-	_, err = env.client.DeleteUser(ctx, authedReq(&leapmuxv1.DeleteUserRequest{
+	_, err = env.client.DeleteUser(authedReq(ctx, &leapmuxv1.DeleteUserRequest{
 		Username: "admin",
 	}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "force")
 
-	_, err = env.client.DeleteUser(ctx, authedReq(&leapmuxv1.DeleteUserRequest{
+	_, err = env.client.DeleteUser(authedReq(ctx, &leapmuxv1.DeleteUserRequest{
 		Id: carolID,
 	}, env.token))
 	require.NoError(t, err)
@@ -386,7 +387,7 @@ func TestAdminUserService_DeleteUser_ForceAndCredentialRevocation(t *testing.T) 
 	// Deleting the last remaining admin currently succeeds: there is no
 	// last-admin guard on this RPC. Pin that so a later guard is a
 	// deliberate change, not a silent one.
-	_, err = env.client.DeleteUser(ctx, authedReq(&leapmuxv1.DeleteUserRequest{
+	_, err = env.client.DeleteUser(authedReq(ctx, &leapmuxv1.DeleteUserRequest{
 		Username: "admin",
 		Force:    true,
 	}, env.token))
@@ -397,61 +398,61 @@ func TestAdminUserService_IssueAndRevokeAPIToken(t *testing.T) {
 	env := setupAdminUserTest(t)
 	ctx := context.Background()
 
-	_, err := env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
+	_, err := env.client.IssueAPIToken(authedReq(ctx, &leapmuxv1.IssueAPITokenRequest{
 		InstallationName: "cli",
 	}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "id or username is required")
 
-	_, err = env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
+	_, err = env.client.IssueAPIToken(authedReq(ctx, &leapmuxv1.IssueAPITokenRequest{
 		UserId: env.adminID,
 	}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "installation_name is required")
 
-	_, err = env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
+	_, err = env.client.IssueAPIToken(authedReq(ctx, &leapmuxv1.IssueAPITokenRequest{
 		UserId:           "missing",
 		InstallationName: "cli",
 	}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
 
-	issued, err := env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
+	issued, err := env.client.IssueAPIToken(authedReq(ctx, &leapmuxv1.IssueAPITokenRequest{
 		UserId:           env.adminID,
 		InstallationName: "cli",
 	}, env.token))
 	require.NoError(t, err)
-	assert.NotEmpty(t, issued.Msg.GetTokenId())
-	assert.NotEmpty(t, issued.Msg.GetAccessToken())
-	assert.NotEmpty(t, issued.Msg.GetRefreshToken())
+	assert.NotEmpty(t, issued.GetTokenId())
+	assert.NotEmpty(t, issued.GetAccessToken())
+	assert.NotEmpty(t, issued.GetRefreshToken())
 
-	_, err = env.client.RevokeAPIToken(ctx, authedReq(&leapmuxv1.RevokeAPITokenRequest{
-		Id: issued.Msg.GetTokenId(),
+	_, err = env.client.RevokeAPIToken(authedReq(ctx, &leapmuxv1.RevokeAPITokenRequest{
+		Id: issued.GetTokenId(),
 	}, env.token))
 	require.NoError(t, err)
 
-	_, err = env.client.RevokeAPIToken(ctx, authedReq(&leapmuxv1.RevokeAPITokenRequest{
-		Id: issued.Msg.GetTokenId(),
+	_, err = env.client.RevokeAPIToken(authedReq(ctx, &leapmuxv1.RevokeAPITokenRequest{
+		Id: issued.GetTokenId(),
 	}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeNotFound, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "already revoked")
 
-	_, err = env.client.RevokeAPIToken(ctx, authedReq(&leapmuxv1.RevokeAPITokenRequest{}, env.token))
+	_, err = env.client.RevokeAPIToken(authedReq(ctx, &leapmuxv1.RevokeAPITokenRequest{}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 
 	// ttl <= 0 uses the default access-token lifetime rather than minting
 	// an immediately-expired bearer.
-	issuedDefault, err := env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
+	issuedDefault, err := env.client.IssueAPIToken(authedReq(ctx, &leapmuxv1.IssueAPITokenRequest{
 		UserId:           env.adminID,
 		InstallationName: "default-ttl",
 		TtlSeconds:       0,
 	}, env.token))
 	require.NoError(t, err)
-	assert.NotEmpty(t, issuedDefault.Msg.GetAccessToken())
+	assert.NotEmpty(t, issuedDefault.GetAccessToken())
 }
 
 // TestAdminUserService_UpdateUser_EmailRules covers the two rules the RPC
@@ -467,7 +468,7 @@ func TestAdminUserService_UpdateUser_EmailRules(t *testing.T) {
 	ctx := context.Background()
 
 	create := func(username, email string) {
-		_, err := env.client.CreateUser(ctx, authedReq(&leapmuxv1.CreateUserRequest{
+		_, err := env.client.CreateUser(authedReq(ctx, &leapmuxv1.CreateUserRequest{
 			Username: username, Password: "password123", Email: email,
 		}, env.token))
 		require.NoError(t, err)
@@ -476,15 +477,15 @@ func TestAdminUserService_UpdateUser_EmailRules(t *testing.T) {
 	create("bob", "bob@example.com")
 
 	// Re-setting the address she already holds is a no-op, not a conflict.
-	resp, err := env.client.UpdateUser(ctx, authedReq(&leapmuxv1.UpdateUserRequest{
+	resp, err := env.client.UpdateUser(authedReq(ctx, &leapmuxv1.UpdateUserRequest{
 		Username: "alice", Email: ptr("alice@example.com"),
 	}, env.token))
 	require.NoError(t, err, "a user's own address must not collide with herself")
-	assert.Equal(t, "alice@example.com", resp.Msg.GetUser().GetEmail())
+	assert.Equal(t, "alice@example.com", resp.GetUser().GetEmail())
 
 	// Another user's address IS a conflict, and the message identifies the
 	// email.
-	_, err = env.client.UpdateUser(ctx, authedReq(&leapmuxv1.UpdateUserRequest{
+	_, err = env.client.UpdateUser(authedReq(ctx, &leapmuxv1.UpdateUserRequest{
 		Username: "alice", Email: ptr("bob@example.com"),
 	}, env.token))
 	require.Error(t, err)
@@ -492,15 +493,15 @@ func TestAdminUserService_UpdateUser_EmailRules(t *testing.T) {
 		"the refusal must name the EMAIL, not the username")
 
 	// The other editable fields still apply.
-	resp, err = env.client.UpdateUser(ctx, authedReq(&leapmuxv1.UpdateUserRequest{
+	resp, err = env.client.UpdateUser(authedReq(ctx, &leapmuxv1.UpdateUserRequest{
 		Username: "alice", DisplayName: ptr("Alice A"), EmailVerified: ptrBool(true),
 	}, env.token))
 	require.NoError(t, err)
-	assert.Equal(t, "Alice A", resp.Msg.GetUser().GetDisplayName())
-	assert.True(t, resp.Msg.GetUser().GetEmailVerified())
+	assert.Equal(t, "Alice A", resp.GetUser().GetDisplayName())
+	assert.True(t, resp.GetUser().GetEmailVerified())
 
 	// A request that specifies no field changes nothing and says so.
-	_, err = env.client.UpdateUser(ctx, authedReq(&leapmuxv1.UpdateUserRequest{
+	_, err = env.client.UpdateUser(authedReq(ctx, &leapmuxv1.UpdateUserRequest{
 		Username: "alice",
 	}, env.token))
 	require.Error(t, err)
@@ -542,15 +543,16 @@ func setupAdminUserTestWithSettingsUnelevated(t *testing.T) *adminUserEnv {
 	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, TokenValidator: tv})
 	t.Cleanup(contexts.Stop)
 	adminSvc := service.NewAdminUserService(service.AdminUserServiceDeps{Store: st, Settings: set, Validator: tv, Lifecycle: auth.NewCredentialLifecycleEffects(contexts, nil, nil)})
-	path, handler := leapmuxv1connect.NewAdminUserServiceHandler(adminSvc, connect.WithInterceptors(interceptor))
-	mux.Handle(path, handler)
+	connectServer := connect.NewServer(interceptor)
+	leapmuxv1connect.RegisterAdminUserServiceHandler(connectServer, adminSvc)
+	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 	server := httptest.NewUnstartedServer(mux)
 	server.EnableHTTP2 = true
 	server.StartTLS()
 	t.Cleanup(server.Close)
 
 	return &adminUserEnv{
-		client:    leapmuxv1connect.NewAdminUserServiceClient(server.Client(), server.URL, connect.WithGRPC()),
+		client:    leapmuxv1connect.NewAdminUserServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC()))),
 		st:        st,
 		token:     session,
 		adminID:   admin.ID,
@@ -563,7 +565,7 @@ func TestAdminUserService_CreateUserRequiresEmailWhenVerificationRequired(t *tes
 	client, session := env.client, env.token
 
 	// No email, not verified: refused.
-	_, err := client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
+	_, err := client.CreateUser(authedReq(context.Background(), &leapmuxv1.CreateUserRequest{
 		Username: "nou-email", Password: "password123",
 	}, session))
 	require.Error(t, err)
@@ -571,18 +573,18 @@ func TestAdminUserService_CreateUserRequiresEmailWhenVerificationRequired(t *tes
 	assert.Contains(t, err.Error(), "email is required")
 
 	// Explicitly verified without an email: allowed.
-	resp, err := client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
+	resp, err := client.CreateUser(authedReq(context.Background(), &leapmuxv1.CreateUserRequest{
 		Username: "trusted", Password: "password123", EmailVerified: true,
 	}, session))
 	require.NoError(t, err)
-	assert.True(t, resp.Msg.GetUser().GetEmailVerified())
+	assert.True(t, resp.GetUser().GetEmailVerified())
 
 	// Email present: allowed and lands unverified, as the caller stated.
-	resp, err = client.CreateUser(context.Background(), authedReq(&leapmuxv1.CreateUserRequest{
+	resp, err = client.CreateUser(authedReq(context.Background(), &leapmuxv1.CreateUserRequest{
 		Username: "withmail", Password: "password123", Email: "withmail@example.com",
 	}, session))
 	require.NoError(t, err)
-	assert.False(t, resp.Msg.GetUser().GetEmailVerified())
+	assert.False(t, resp.GetUser().GetEmailVerified())
 }
 
 // TestAdminUserService_LoweringEmailVerifiedIsAllowedForAdmins pins the
@@ -599,17 +601,17 @@ func TestAdminUserService_LoweringEmailVerifiedIsAllowedForAdmins(t *testing.T) 
 
 	// A genuinely confirmed administrator, so the lowering is a real
 	// reduction and the fence has something to do.
-	created, err := env.client.CreateUser(ctx, authedReq(&leapmuxv1.CreateUserRequest{
+	created, err := env.client.CreateUser(authedReq(ctx, &leapmuxv1.CreateUserRequest{
 		Username: "verifiedadmin", Password: "password123",
 		Email: "verifiedadmin@example.com", EmailVerified: true, IsAdmin: true,
 	}, env.token))
 	require.NoError(t, err)
-	target := created.Msg.GetUser().GetId()
+	target := created.GetUser().GetId()
 	before, err := env.st.Users().GetByID(ctx, target)
 	require.NoError(t, err)
 	require.True(t, before.EmailVerified)
 
-	_, err = env.client.UpdateUser(ctx, authedReq(&leapmuxv1.UpdateUserRequest{
+	_, err = env.client.UpdateUser(authedReq(ctx, &leapmuxv1.UpdateUserRequest{
 		Id:            target,
 		EmailVerified: proto.Bool(false),
 	}, env.token))
@@ -633,16 +635,16 @@ func TestAdminUserService_LoweringWithAnAddressChangeStaysFenced(t *testing.T) {
 	env := setupAdminUserTest(t)
 	ctx := context.Background()
 
-	created, err := env.client.CreateUser(ctx, authedReq(&leapmuxv1.CreateUserRequest{
+	created, err := env.client.CreateUser(authedReq(ctx, &leapmuxv1.CreateUserRequest{
 		Username: "paired", Password: "password123",
 		Email: "paired@example.com", EmailVerified: true,
 	}, env.token))
 	require.NoError(t, err)
-	target := created.Msg.GetUser().GetId()
+	target := created.GetUser().GetId()
 	before, err := env.st.Users().GetByID(ctx, target)
 	require.NoError(t, err)
 
-	_, err = env.client.UpdateUser(ctx, authedReq(&leapmuxv1.UpdateUserRequest{
+	_, err = env.client.UpdateUser(authedReq(ctx, &leapmuxv1.UpdateUserRequest{
 		Id:            target,
 		Email:         proto.String("moved@example.com"),
 		EmailVerified: proto.Bool(false),
@@ -670,11 +672,11 @@ func TestAdminUserService_SetUserAdmin_FencesADemotedUser(t *testing.T) {
 	env := setupAdminUserTest(t)
 	ctx := context.Background()
 
-	created, err := env.client.CreateUser(ctx, authedReq(&leapmuxv1.CreateUserRequest{
+	created, err := env.client.CreateUser(authedReq(ctx, &leapmuxv1.CreateUserRequest{
 		Username: "mallory", Password: "password123",
 	}, env.token))
 	require.NoError(t, err)
-	target := created.Msg.GetUser().GetId()
+	target := created.GetUser().GetId()
 
 	generation := func() int64 {
 		u, err := env.st.Users().GetByID(ctx, target)
@@ -684,19 +686,19 @@ func TestAdminUserService_SetUserAdmin_FencesADemotedUser(t *testing.T) {
 	before := generation()
 
 	// A GRANT does not fence: nothing the user holds becomes unsafe.
-	granted, err := env.client.SetUserAdmin(ctx, authedReq(&leapmuxv1.SetUserAdminRequest{
+	granted, err := env.client.SetUserAdmin(authedReq(ctx, &leapmuxv1.SetUserAdminRequest{
 		Username: "mallory", IsAdmin: true,
 	}, env.token))
 	require.NoError(t, err)
-	assert.True(t, granted.Msg.GetUser().GetIsAdmin())
+	assert.True(t, granted.GetUser().GetIsAdmin())
 	assert.Equal(t, before, generation(), "a grant must not revoke the user's own credentials")
 
 	// A REVOKE fences every credential minted while the user was an admin.
-	revoked, err := env.client.SetUserAdmin(ctx, authedReq(&leapmuxv1.SetUserAdminRequest{
+	revoked, err := env.client.SetUserAdmin(authedReq(ctx, &leapmuxv1.SetUserAdminRequest{
 		Username: "mallory", IsAdmin: false,
 	}, env.token))
 	require.NoError(t, err)
-	assert.False(t, revoked.Msg.GetUser().GetIsAdmin())
+	assert.False(t, revoked.GetUser().GetIsAdmin())
 	assert.Greater(t, generation(), before,
 		"a demotion must bump auth_generation so admin-era sessions and tokens die")
 }
@@ -712,14 +714,14 @@ func TestAdminUserService_SetUserAdmin_LeavesEmailVerificationAlone(t *testing.T
 	env := setupAdminUserTest(t)
 	ctx := context.Background()
 
-	created, err := env.client.CreateUser(ctx, authedReq(&leapmuxv1.CreateUserRequest{
+	created, err := env.client.CreateUser(authedReq(ctx, &leapmuxv1.CreateUserRequest{
 		Username: "confirmed", Password: "password123",
 		Email: "confirmed@example.com", EmailVerified: true,
 	}, env.token))
 	require.NoError(t, err)
-	target := created.Msg.GetUser().GetId()
+	target := created.GetUser().GetId()
 
-	_, err = env.client.SetUserAdmin(ctx, authedReq(&leapmuxv1.SetUserAdminRequest{
+	_, err = env.client.SetUserAdmin(authedReq(ctx, &leapmuxv1.SetUserAdminRequest{
 		Username: "confirmed", IsAdmin: true,
 	}, env.token))
 	require.NoError(t, err)
@@ -727,7 +729,7 @@ func TestAdminUserService_SetUserAdmin_LeavesEmailVerificationAlone(t *testing.T
 	require.NoError(t, err)
 	assert.True(t, row.EmailVerified, "a confirmed address stays confirmed")
 
-	_, err = env.client.SetUserAdmin(ctx, authedReq(&leapmuxv1.SetUserAdminRequest{
+	_, err = env.client.SetUserAdmin(authedReq(ctx, &leapmuxv1.SetUserAdminRequest{
 		Username: "confirmed", IsAdmin: false,
 	}, env.token))
 	require.NoError(t, err)
@@ -743,17 +745,17 @@ func TestAdminUserService_SetUserAdmin_DemotionKeepsAConfirmedAddress(t *testing
 	env := setupAdminUserTest(t)
 	ctx := context.Background()
 
-	created, err := env.client.CreateUser(ctx, authedReq(&leapmuxv1.CreateUserRequest{
+	created, err := env.client.CreateUser(authedReq(ctx, &leapmuxv1.CreateUserRequest{
 		Username: "hasaddress", Password: "password123", Email: "real@example.com",
 	}, env.token))
 	require.NoError(t, err)
-	target := created.Msg.GetUser().GetId()
+	target := created.GetUser().GetId()
 	require.NoError(t, env.st.Users().UpdateEmail(ctx, store.UpdateUserEmailParams{
 		ID: target, Email: "real@example.com", EmailVerified: true,
 	}))
 
 	for _, isAdmin := range []bool{true, false} {
-		_, err = env.client.SetUserAdmin(ctx, authedReq(&leapmuxv1.SetUserAdminRequest{
+		_, err = env.client.SetUserAdmin(authedReq(ctx, &leapmuxv1.SetUserAdminRequest{
 			Username: "hasaddress", IsAdmin: isAdmin,
 		}, env.token))
 		require.NoError(t, err)
@@ -774,26 +776,26 @@ func TestAdminUserService_TokenListings(t *testing.T) {
 	env := setupAdminUserTest(t)
 	ctx := context.Background()
 
-	created, err := env.client.CreateUser(ctx, authedReq(&leapmuxv1.CreateUserRequest{
+	created, err := env.client.CreateUser(authedReq(ctx, &leapmuxv1.CreateUserRequest{
 		Username: "alice", Password: "password123",
 	}, env.token))
 	require.NoError(t, err)
-	alice := created.Msg.GetUser().GetId()
+	alice := created.GetUser().GetId()
 
 	issue := func(userID, name string) string {
-		resp, err := env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
+		resp, err := env.client.IssueAPIToken(authedReq(ctx, &leapmuxv1.IssueAPITokenRequest{
 			UserId: userID, ClientId: oauthapp.ControlCLIClientID, InstallationName: name, Scopes: []string{"account:read", "account:write", "agent:read", "agent:write", "file:read", "git:read", "git:write", "terminal:read", "terminal:write", "tunnel:open", "worker:admin", "worker:read", "workspace:read", "workspace:write"}, TtlSeconds: 3600,
 		}, env.token))
 		require.NoError(t, err)
-		return resp.Msg.GetTokenId()
+		return resp.GetTokenId()
 	}
 	aliceToken := issue(alice, "alice-laptop")
 	issue(env.adminID, "admin-laptop")
 
 	list := func(req *leapmuxv1.ListAPITokensRequest) []*leapmuxv1.AdminAPIToken {
-		resp, err := env.client.ListAPITokens(ctx, authedReq(req, env.token))
+		resp, err := env.client.ListAPITokens(authedReq(ctx, req, env.token))
 		require.NoError(t, err)
-		return resp.Msg.GetTokens()
+		return resp.GetTokens()
 	}
 
 	// An OMITTED limit must return rows. The proto default is 0, and the
@@ -809,7 +811,7 @@ func TestAdminUserService_TokenListings(t *testing.T) {
 	assert.False(t, scoped[0].GetOwnerDeleted())
 
 	// The listing hides revoked tokens by default and shows them for forensics.
-	_, err = env.client.RevokeAPIToken(ctx, authedReq(&leapmuxv1.RevokeAPITokenRequest{Id: aliceToken}, env.token))
+	_, err = env.client.RevokeAPIToken(authedReq(ctx, &leapmuxv1.RevokeAPITokenRequest{Id: aliceToken}, env.token))
 	require.NoError(t, err)
 	assert.Empty(t, list(&leapmuxv1.ListAPITokensRequest{UserId: alice}),
 		"a revoked token is hidden unless asked for")
@@ -821,14 +823,14 @@ func TestAdminUserService_TokenListings(t *testing.T) {
 	// id filter exists for: an operator finds a deleted account's live
 	// credentials and revokes them. Resolving the id among live users only
 	// would answer "not found" and hide them.
-	_, err = env.client.DeleteUser(ctx, authedReq(&leapmuxv1.DeleteUserRequest{Id: alice}, env.token))
+	_, err = env.client.DeleteUser(authedReq(ctx, &leapmuxv1.DeleteUserRequest{Id: alice}, env.token))
 	require.NoError(t, err)
 	afterDelete := list(&leapmuxv1.ListAPITokensRequest{UserId: alice, IncludeRevoked: true})
 	require.Len(t, afterDelete, 1, "a soft-deleted owner's tokens must stay reachable by id")
 	assert.True(t, afterDelete[0].GetOwnerDeleted(), "and the row must say the owner is gone")
 
 	// A malformed cursor is the caller's to fix, not a hub fault.
-	_, err = env.client.ListAPITokens(ctx, authedReq(&leapmuxv1.ListAPITokensRequest{
+	_, err = env.client.ListAPITokens(authedReq(ctx, &leapmuxv1.ListAPITokensRequest{
 		Cursor: "not-a-cursor",
 	}, env.token))
 	require.Error(t, err)
@@ -843,12 +845,12 @@ func TestAdminUserService_ListSessions_OmittedLimitReturnsRows(t *testing.T) {
 	env := setupAdminUserTest(t)
 	ctx := context.Background()
 
-	resp, err := env.client.ListSessions(ctx, authedReq(&leapmuxv1.ListSessionsRequest{}, env.token))
+	resp, err := env.client.ListSessions(authedReq(ctx, &leapmuxv1.ListSessionsRequest{}, env.token))
 	require.NoError(t, err)
-	assert.NotEmpty(t, resp.Msg.GetSessions(),
+	assert.NotEmpty(t, resp.GetSessions(),
 		"the admin's own login session must appear without an explicit limit")
 
-	_, err = env.client.ListSessions(ctx, authedReq(&leapmuxv1.ListSessionsRequest{
+	_, err = env.client.ListSessions(authedReq(ctx, &leapmuxv1.ListSessionsRequest{
 		Cursor: "not-a-cursor",
 	}, env.token))
 	require.Error(t, err)
@@ -868,17 +870,17 @@ func TestAdminUserService_LoweringEmailVerifiedAlwaysFences(t *testing.T) {
 	generationAfter := func(t *testing.T, req *leapmuxv1.UpdateUserRequest) (int64, int64) {
 		t.Helper()
 		env := setupAdminUserTest(t)
-		created, err := env.client.CreateUser(ctx, authedReq(&leapmuxv1.CreateUserRequest{
+		created, err := env.client.CreateUser(authedReq(ctx, &leapmuxv1.CreateUserRequest{
 			Username: "fenced", Password: "userpass123", Email: "fenced@example.com", EmailVerified: true,
 		}, env.token))
 		require.NoError(t, err)
-		before, err := env.st.Users().GetByID(ctx, created.Msg.GetUser().GetId())
+		before, err := env.st.Users().GetByID(ctx, created.GetUser().GetId())
 		require.NoError(t, err)
 
-		req.Id = created.Msg.GetUser().GetId()
-		_, err = env.client.UpdateUser(ctx, authedReq(req, env.token))
+		req.Id = created.GetUser().GetId()
+		_, err = env.client.UpdateUser(authedReq(ctx, req, env.token))
 		require.NoError(t, err)
-		after, err := env.st.Users().GetByID(ctx, created.Msg.GetUser().GetId())
+		after, err := env.st.Users().GetByID(ctx, created.GetUser().GetId())
 		require.NoError(t, err)
 		return before.AuthGeneration, after.AuthGeneration
 	}
@@ -906,7 +908,7 @@ func TestAdminUserService_SetUserAdminRefusesSelfDemotion(t *testing.T) {
 	env := setupAdminUserTest(t)
 	ctx := context.Background()
 
-	_, err := env.client.SetUserAdmin(ctx, authedReq(&leapmuxv1.SetUserAdminRequest{
+	_, err := env.client.SetUserAdmin(authedReq(ctx, &leapmuxv1.SetUserAdminRequest{
 		Id: env.adminID, IsAdmin: false,
 	}, env.token))
 	require.Error(t, err)
@@ -918,7 +920,7 @@ func TestAdminUserService_SetUserAdminRefusesSelfDemotion(t *testing.T) {
 	assert.True(t, still.IsAdmin, "the refused call must not demote")
 
 	// force states the intent, and the demotion goes through.
-	_, err = env.client.SetUserAdmin(ctx, authedReq(&leapmuxv1.SetUserAdminRequest{
+	_, err = env.client.SetUserAdmin(authedReq(ctx, &leapmuxv1.SetUserAdminRequest{
 		Id: env.adminID, IsAdmin: false, Force: true,
 	}, env.token))
 	require.NoError(t, err)
@@ -934,13 +936,13 @@ func TestAdminUserService_SetUserAdminAllowsDemotingSomeoneElse(t *testing.T) {
 	env := setupAdminUserTest(t)
 	ctx := context.Background()
 
-	other, err := env.client.CreateUser(ctx, authedReq(&leapmuxv1.CreateUserRequest{
+	other, err := env.client.CreateUser(authedReq(ctx, &leapmuxv1.CreateUserRequest{
 		Username: "second", Password: "userpass123", IsAdmin: true,
 	}, env.token))
 	require.NoError(t, err)
 
-	_, err = env.client.SetUserAdmin(ctx, authedReq(&leapmuxv1.SetUserAdminRequest{
-		Id: other.Msg.GetUser().GetId(), IsAdmin: false,
+	_, err = env.client.SetUserAdmin(authedReq(ctx, &leapmuxv1.SetUserAdminRequest{
+		Id: other.GetUser().GetId(), IsAdmin: false,
 	}, env.token))
 	require.NoError(t, err)
 }
@@ -955,7 +957,7 @@ func TestAdminUserService_IssueAPITokenTTLCeiling(t *testing.T) {
 	ctx := context.Background()
 
 	// At the ceiling: accepted.
-	_, err := env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
+	_, err := env.client.IssueAPIToken(authedReq(ctx, &leapmuxv1.IssueAPITokenRequest{
 		UserId: env.adminID, InstallationName: "cli", TtlSeconds: service.MaxAPITokenTTLSeconds,
 	}, env.token))
 	require.NoError(t, err)
@@ -965,7 +967,7 @@ func TestAdminUserService_IssueAPITokenTTLCeiling(t *testing.T) {
 		20000000000, // the value that wrapped the multiply
 		-1,
 	} {
-		_, err := env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
+		_, err := env.client.IssueAPIToken(authedReq(ctx, &leapmuxv1.IssueAPITokenRequest{
 			UserId: env.adminID, InstallationName: "cli", TtlSeconds: secs,
 		}, env.token))
 		require.Errorf(t, err, "ttl_seconds %d must be refused", secs)
@@ -982,13 +984,13 @@ func TestAdminUserService_IssueAPITokenTakesTheSharedSelector(t *testing.T) {
 	env := setupAdminUserTest(t)
 	ctx := context.Background()
 
-	got, err := env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
+	got, err := env.client.IssueAPIToken(authedReq(ctx, &leapmuxv1.IssueAPITokenRequest{
 		Username: "admin", InstallationName: "cli",
 	}, env.token))
 	require.NoError(t, err)
-	assert.NotEmpty(t, got.Msg.GetTokenId())
+	assert.NotEmpty(t, got.GetTokenId())
 
-	_, err = env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
+	_, err = env.client.IssueAPIToken(authedReq(ctx, &leapmuxv1.IssueAPITokenRequest{
 		UserId: env.adminID, Username: "admin", InstallationName: "cli",
 	}, env.token))
 	require.Error(t, err)
@@ -1012,14 +1014,13 @@ func TestAdminUserService_IssueAPITokenNeedsAnElevatedSession(t *testing.T) {
 	env := setupAdminUserTestUnelevated(t)
 	ctx := context.Background()
 
-	_, err := env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
+	callCtx, info := connect.NewClientContext(ctx)
+	_, err := env.client.IssueAPIToken(authedReq(callCtx, &leapmuxv1.IssueAPITokenRequest{
 		Username: "admin", InstallationName: "stolen-laptop", Scopes: []string{"admin:read", "admin:users", "admin:settings", "admin:workers"}, TtlSeconds: service.MaxAPITokenTTLSeconds,
 	}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
-	var connectErr *connect.Error
-	require.ErrorAs(t, err, &connectErr)
-	assert.Equal(t, "1", connectErr.Meta().Get(service.ElevationRequiredHeader),
+	assert.Equal(t, "1", info.ResponseHeader().Get(service.ElevationRequiredHeader),
 		"the refusal must be the one a step-up prompt can clear")
 
 	// Nothing was minted.
@@ -1034,11 +1035,11 @@ func TestAdminUserService_IssueAPITokenNeedsAnElevatedSession(t *testing.T) {
 	// row after a refused request would be invisible until that entry
 	// expired, which is the cache's job to solve and not this test's.
 	elevated := setupAdminUserTest(t)
-	got, err := elevated.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
+	got, err := elevated.client.IssueAPIToken(authedReq(ctx, &leapmuxv1.IssueAPITokenRequest{
 		Username: "admin", InstallationName: "stolen-laptop", Scopes: []string{"admin:read", "admin:users", "admin:settings", "admin:workers"}, TtlSeconds: service.MaxAPITokenTTLSeconds,
 	}, elevated.token))
 	require.NoError(t, err)
-	assert.NotEmpty(t, got.Msg.GetTokenId())
+	assert.NotEmpty(t, got.GetTokenId())
 }
 
 // A ttl_seconds picks WHICH KIND of credential this verb mints, and the two
@@ -1056,13 +1057,13 @@ func TestAdminUserService_IssueAPITokenTTLPicksTheCredentialKind(t *testing.T) {
 	t.Run("no ttl mints the renewing kind", func(t *testing.T) {
 		env := setupAdminUserTest(t)
 
-		got, err := env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
+		got, err := env.client.IssueAPIToken(authedReq(ctx, &leapmuxv1.IssueAPITokenRequest{
 			Username: "admin", InstallationName: "ci-bot",
 		}, env.token))
 		require.NoError(t, err)
-		assert.NotEmpty(t, got.Msg.GetRefreshToken(), "the ordinary credential renews itself")
+		assert.NotEmpty(t, got.GetRefreshToken(), "the ordinary credential renews itself")
 
-		row, err := env.st.APITokens().GetByID(ctx, got.Msg.GetTokenId())
+		row, err := env.st.APITokens().GetByID(ctx, got.GetTokenId())
 		require.NoError(t, err)
 		require.NotNil(t, row.ExpiresAt)
 		assert.WithinDuration(t, time.Now().UTC().Add(auth.AccessTokenTTL), *row.ExpiresAt, time.Minute)
@@ -1073,14 +1074,14 @@ func TestAdminUserService_IssueAPITokenTTLPicksTheCredentialKind(t *testing.T) {
 		env := setupAdminUserTest(t)
 
 		const year = int64(365 * 24 * 60 * 60)
-		got, err := env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
+		got, err := env.client.IssueAPIToken(authedReq(ctx, &leapmuxv1.IssueAPITokenRequest{
 			Username: "admin", InstallationName: "service-account", TtlSeconds: year,
 		}, env.token))
 		require.NoError(t, err)
-		assert.Empty(t, got.Msg.GetRefreshToken(),
+		assert.Empty(t, got.GetRefreshToken(),
 			"a fixed lifetime cannot survive a rotation, so there is nothing to rotate with")
 
-		row, err := env.st.APITokens().GetByID(ctx, got.Msg.GetTokenId())
+		row, err := env.st.APITokens().GetByID(ctx, got.GetTokenId())
 		require.NoError(t, err)
 		require.NotNil(t, row.ExpiresAt)
 		assert.WithinDuration(t, time.Now().UTC().Add(time.Duration(year)*time.Second), *row.ExpiresAt, time.Minute,
@@ -1100,7 +1101,7 @@ func TestAdminUserService_IssueAPITokenNotifiesTheOwner(t *testing.T) {
 	ctx := context.Background()
 	env := setupAdminUserTest(t)
 
-	_, err := env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
+	_, err := env.client.IssueAPIToken(authedReq(ctx, &leapmuxv1.IssueAPITokenRequest{
 		Username: "admin", InstallationName: "ci-bot", Scopes: []string{"admin:read", "admin:users", "admin:settings", "admin:workers"},
 	}, env.token))
 	require.NoError(t, err)
@@ -1151,36 +1152,36 @@ func TestAdminUserService_IssueAPITokenAdmitsAnElevatedBearer(t *testing.T) {
 		}))
 		return tokenID, auth.FormatBearer(auth.BearerKindAPI, tokenID, secret)
 	}
-	issueAs := func(bearer string) (*connect.Response[leapmuxv1.IssueAPITokenResponse], error) {
-		req := connect.NewRequest(&leapmuxv1.IssueAPITokenRequest{
+	issueAs := func(bearer string) (*connect.CallInfo, *leapmuxv1.IssueAPITokenResponse, error) {
+		req := &leapmuxv1.IssueAPITokenRequest{
 			Username: "admin", InstallationName: "ci-bot",
-		})
-		req.Header().Set("Authorization", "Bearer "+bearer)
-		return env.client.IssueAPIToken(ctx, req)
+		}
+		ctx, info := connect.NewClientContext(ctx)
+		info.RequestHeader().Set("Authorization", "Bearer "+bearer)
+		resp, err := env.client.IssueAPIToken(ctx, req)
+		return info, resp, err
 	}
 
 	// Unelevated, so the pass below measures the elevation and not the
 	// absence of a gate. The refusal is MARKED: the CLI runs the step-up leg
 	// and retries rather than reporting an error the user cannot clear.
 	_, unverified := mint("operator-laptop")
-	_, err := issueAs(unverified)
+	info, _, err := issueAs(unverified)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
-	var connectErr *connect.Error
-	require.ErrorAs(t, err, &connectErr)
-	assert.Equal(t, "1", connectErr.Meta().Get(service.ElevationRequiredHeader))
+	assert.Equal(t, "1", info.ResponseHeader().Get(service.ElevationRequiredHeader))
 
 	actorID, verified := mint("operator-laptop-verified")
 	hubtestutil.ElevateAPIToken(t, env.st, actorID, env.adminID)
 
-	got, err := issueAs(verified)
+	_, got, err := issueAs(verified)
 	require.NoError(t, err, "a credential that proved a factor mints as a session does")
-	assert.NotEmpty(t, got.Msg.GetTokenId())
+	assert.NotEmpty(t, got.GetTokenId())
 
 	// The credential-epoch half of the pre-mint re-read still applies to a
 	// bearer: it has no session row, but it has an owner whose credentials
 	// can be revoked wholesale.
-	assert.NotEmpty(t, got.Msg.GetAccessToken())
+	assert.NotEmpty(t, got.GetAccessToken())
 }
 
 // The pre-mint authority re-read, on both of its refusal branches.
@@ -1203,14 +1204,14 @@ func TestAdminUserService_IssueAPITokenRefusesWithdrawnAuthority(t *testing.T) {
 		// this cookie. Without it Revoke leaves no row, the interceptor
 		// refuses the request itself, and the case passes with the handler's
 		// re-read deleted -- it would measure the interceptor instead.
-		_, err := env.client.GetUser(ctx, authedReq(&leapmuxv1.GetUserRequest{Id: env.adminID}, env.token))
+		_, err := env.client.GetUser(authedReq(ctx, &leapmuxv1.GetUserRequest{Id: env.adminID}, env.token))
 		require.NoError(t, err)
 
 		revoked, err := env.st.Sessions().Revoke(ctx, env.token)
 		require.NoError(t, err)
 		require.EqualValues(t, 1, revoked)
 
-		_, err = env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
+		_, err = env.client.IssueAPIToken(authedReq(ctx, &leapmuxv1.IssueAPITokenRequest{
 			Username: "admin", InstallationName: "ci-bot",
 		}, env.token))
 		require.Error(t, err, "a mint must not land on a session an administrator took away")
@@ -1232,7 +1233,7 @@ func TestAdminUserService_IssueAPITokenRefusesWithdrawnAuthority(t *testing.T) {
 		// The same priming read, for the same reason: the interceptor must
 		// serve the cached UserInfo, or the request never reaches the guard
 		// this case is about.
-		_, err := env.client.GetUser(ctx, authedReq(&leapmuxv1.GetUserRequest{Id: env.adminID}, env.token))
+		_, err := env.client.GetUser(authedReq(ctx, &leapmuxv1.GetUserRequest{Id: env.adminID}, env.token))
 		require.NoError(t, err)
 
 		deleted, err := env.st.Sessions().Delete(ctx, env.token)
@@ -1244,7 +1245,7 @@ func TestAdminUserService_IssueAPITokenRefusesWithdrawnAuthority(t *testing.T) {
 		// plain Delete writes no session_revoked event, so the guard must
 		// ADMIT the mint: rolling back a change the owner legitimately
 		// started was a real regression once already.
-		_, err = env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
+		_, err = env.client.IssueAPIToken(authedReq(ctx, &leapmuxv1.IssueAPITokenRequest{
 			Username: "admin", InstallationName: "ci-bot",
 		}, env.token))
 		require.NoError(t, err, "the owner's own sign-out must not refuse the change they started")
@@ -1262,27 +1263,27 @@ func TestAdminUserService_IssueAPITokenRefusesWithdrawnAuthority(t *testing.T) {
 func TestAdminUserService_DurableAuthorityVerbsNeedAnElevatedSession(t *testing.T) {
 	ctx := context.Background()
 
-	for name, call := range map[string]func(*adminUserEnv, string) error{
-		"CreateUser": func(env *adminUserEnv, token string) error {
-			_, err := env.client.CreateUser(ctx, authedReq(&leapmuxv1.CreateUserRequest{
+	for name, call := range map[string]func(context.Context, *adminUserEnv, string) error{
+		"CreateUser": func(ctx context.Context, env *adminUserEnv, token string) error {
+			_, err := env.client.CreateUser(authedReq(ctx, &leapmuxv1.CreateUserRequest{
 				Username: "planted", Password: "password123", IsAdmin: true,
 			}, token))
 			return err
 		},
-		"SetUserAdmin": func(env *adminUserEnv, token string) error {
-			_, err := env.client.SetUserAdmin(ctx, authedReq(&leapmuxv1.SetUserAdminRequest{
+		"SetUserAdmin": func(ctx context.Context, env *adminUserEnv, token string) error {
+			_, err := env.client.SetUserAdmin(authedReq(ctx, &leapmuxv1.SetUserAdminRequest{
 				Id: env.adminID, IsAdmin: true,
 			}, token))
 			return err
 		},
-		"ResetPassword": func(env *adminUserEnv, token string) error {
-			_, err := env.client.ResetPassword(ctx, authedReq(&leapmuxv1.ResetPasswordRequest{
+		"ResetPassword": func(ctx context.Context, env *adminUserEnv, token string) error {
+			_, err := env.client.ResetPassword(authedReq(ctx, &leapmuxv1.ResetPasswordRequest{
 				Id: env.adminID, Password: "brand-new-adminpass",
 			}, token))
 			return err
 		},
-		"IssueAPIToken": func(env *adminUserEnv, token string) error {
-			_, err := env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
+		"IssueAPIToken": func(ctx context.Context, env *adminUserEnv, token string) error {
+			_, err := env.client.IssueAPIToken(authedReq(ctx, &leapmuxv1.IssueAPITokenRequest{
 				Username: "admin", InstallationName: "ci-bot",
 			}, token))
 			return err
@@ -1290,18 +1291,17 @@ func TestAdminUserService_DurableAuthorityVerbsNeedAnElevatedSession(t *testing.
 	} {
 		t.Run(name+" refuses an un-elevated session", func(t *testing.T) {
 			env := setupAdminUserTestUnelevated(t)
-			err := call(env, env.token)
+			callCtx, info := connect.NewClientContext(ctx)
+			err := call(callCtx, env, env.token)
 			require.Error(t, err)
 			assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
-			var connectErr *connect.Error
-			require.ErrorAs(t, err, &connectErr)
-			assert.Equal(t, "1", connectErr.Meta().Get(service.ElevationRequiredHeader),
+			assert.Equal(t, "1", info.ResponseHeader().Get(service.ElevationRequiredHeader),
 				"the refusal must be the one a step-up prompt can clear")
 		})
 
 		t.Run(name+" admits an elevated session", func(t *testing.T) {
 			env := setupAdminUserTest(t)
-			assert.NoError(t, call(env, env.token))
+			assert.NoError(t, call(ctx, env, env.token))
 		})
 	}
 
@@ -1310,21 +1310,21 @@ func TestAdminUserService_DurableAuthorityVerbsNeedAnElevatedSession(t *testing.
 	// keyboard, so a prompt would ask for a factor and refuse the retry for
 	// the same reason. IssueAPIToken is the documented exception; the mint's
 	// own clamp is what contains it.
-	for name, call := range map[string]func(*adminUserEnv, string) error{
-		"CreateUser": func(env *adminUserEnv, bearer string) error {
-			_, err := env.client.CreateUser(ctx, adminBearerReq(&leapmuxv1.CreateUserRequest{
+	for name, call := range map[string]func(context.Context, *adminUserEnv, string) error{
+		"CreateUser": func(ctx context.Context, env *adminUserEnv, bearer string) error {
+			_, err := env.client.CreateUser(adminBearerReq(ctx, &leapmuxv1.CreateUserRequest{
 				Username: "planted-by-bearer", Password: "password123", IsAdmin: true,
 			}, bearer))
 			return err
 		},
-		"SetUserAdmin": func(env *adminUserEnv, bearer string) error {
-			_, err := env.client.SetUserAdmin(ctx, adminBearerReq(&leapmuxv1.SetUserAdminRequest{
+		"SetUserAdmin": func(ctx context.Context, env *adminUserEnv, bearer string) error {
+			_, err := env.client.SetUserAdmin(adminBearerReq(ctx, &leapmuxv1.SetUserAdminRequest{
 				Id: env.adminID, IsAdmin: true,
 			}, bearer))
 			return err
 		},
-		"ResetPassword": func(env *adminUserEnv, bearer string) error {
-			_, err := env.client.ResetPassword(ctx, adminBearerReq(&leapmuxv1.ResetPasswordRequest{
+		"ResetPassword": func(ctx context.Context, env *adminUserEnv, bearer string) error {
+			_, err := env.client.ResetPassword(adminBearerReq(ctx, &leapmuxv1.ResetPasswordRequest{
 				Id: env.adminID, Password: "brand-new-adminpass",
 			}, bearer))
 			return err
@@ -1332,16 +1332,15 @@ func TestAdminUserService_DurableAuthorityVerbsNeedAnElevatedSession(t *testing.
 	} {
 		t.Run(name+" refuses a bearer", func(t *testing.T) {
 			env := setupAdminUserTest(t)
-			issued, err := env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
+			issued, err := env.client.IssueAPIToken(authedReq(ctx, &leapmuxv1.IssueAPITokenRequest{
 				UserId: env.adminID, InstallationName: "admin-cli", Scopes: []string{"admin:read", "admin:users", "admin:settings", "admin:workers"},
 			}, env.token))
 			require.NoError(t, err)
 
-			err = call(env, issued.Msg.GetAccessToken())
+			callCtx, info := connect.NewClientContext(ctx)
+			err = call(callCtx, env, issued.GetAccessToken())
 			require.Error(t, err, "a bearer must not create durable new authority")
-			var connectErr *connect.Error
-			require.ErrorAs(t, err, &connectErr)
-			assert.Empty(t, connectErr.Meta().Get(service.ElevationRequiredHeader),
+			assert.Empty(t, info.ResponseHeader().Get(service.ElevationRequiredHeader),
 				"a bearer can never elevate, so the refusal must not offer a prompt")
 		})
 	}
@@ -1363,15 +1362,15 @@ func TestAdminUserService_CredentialGuardedVerbsNeedAProvenFactor(t *testing.T) 
 	ctx := context.Background()
 
 	// The verbs that take requireElevatedActor: an elevated bearer passes.
-	for name, call := range map[string]func(*adminUserEnv, requestAuth) error{
-		"DeleteUser": func(env *adminUserEnv, authorize requestAuth) error {
-			_, err := env.client.DeleteUser(ctx, authorized(&leapmuxv1.DeleteUserRequest{
+	for name, call := range map[string]func(context.Context, *adminUserEnv, requestAuth) error{
+		"DeleteUser": func(ctx context.Context, env *adminUserEnv, authorize requestAuth) error {
+			_, err := env.client.DeleteUser(authorized(ctx, &leapmuxv1.DeleteUserRequest{
 				Id: env.adminID, Force: true,
 			}, authorize))
 			return err
 		},
-		"UpdateUser display name": func(env *adminUserEnv, authorize requestAuth) error {
-			_, err := env.client.UpdateUser(ctx, authorized(&leapmuxv1.UpdateUserRequest{
+		"UpdateUser display name": func(ctx context.Context, env *adminUserEnv, authorize requestAuth) error {
+			_, err := env.client.UpdateUser(authorized(ctx, &leapmuxv1.UpdateUserRequest{
 				Id: env.adminID, DisplayName: proto.String("Renamed"),
 			}, authorize))
 			return err
@@ -1379,18 +1378,17 @@ func TestAdminUserService_CredentialGuardedVerbsNeedAProvenFactor(t *testing.T) 
 	} {
 		t.Run(name+" refuses an un-elevated session", func(t *testing.T) {
 			env := setupAdminUserTestUnelevated(t)
-			err := call(env, cookieAuth(env.token))
+			callCtx, info := connect.NewClientContext(ctx)
+			err := call(callCtx, env, cookieAuth(env.token))
 			require.Error(t, err)
 			assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
-			var connectErr *connect.Error
-			require.ErrorAs(t, err, &connectErr)
-			assert.Equal(t, "1", connectErr.Meta().Get(service.ElevationRequiredHeader),
+			assert.Equal(t, "1", info.ResponseHeader().Get(service.ElevationRequiredHeader),
 				"the refusal must be the one a step-up prompt can clear")
 		})
 
 		t.Run(name+" admits an elevated session", func(t *testing.T) {
 			env := setupAdminUserTest(t)
-			assert.NoError(t, call(env, cookieAuth(env.token)))
+			assert.NoError(t, call(ctx, env, cookieAuth(env.token)))
 		})
 
 		t.Run(name+" admits an elevated bearer", func(t *testing.T) {
@@ -1399,13 +1397,13 @@ func TestAdminUserService_CredentialGuardedVerbsNeedAProvenFactor(t *testing.T) 
 			// creates a new way INTO an account, so the strict session rule
 			// would cost the CLI for no gain.
 			env := setupAdminUserTest(t)
-			issued, err := env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
+			issued, err := env.client.IssueAPIToken(authedReq(ctx, &leapmuxv1.IssueAPITokenRequest{
 				UserId: env.adminID, InstallationName: "admin-cli", Scopes: []string{"admin:read", "admin:users", "admin:settings", "admin:workers"},
 			}, env.token))
 			require.NoError(t, err)
-			hubtestutil.ElevateAPIToken(t, env.st, issued.Msg.GetTokenId(), env.adminID)
+			hubtestutil.ElevateAPIToken(t, env.st, issued.GetTokenId(), env.adminID)
 
-			assert.NoError(t, call(env, bearerAuth(issued.Msg.GetAccessToken())))
+			assert.NoError(t, call(ctx, env, bearerAuth(issued.GetAccessToken())))
 		})
 	}
 
@@ -1413,8 +1411,8 @@ func TestAdminUserService_CredentialGuardedVerbsNeedAProvenFactor(t *testing.T) 
 	// address is a recovery identity. A bearer is refused with no marker: it
 	// has no row to stamp and nobody at a keyboard, so a prompt would collect a
 	// factor and refuse the retry for the same reason.
-	updateEmail := func(env *adminUserEnv, authorize requestAuth) error {
-		_, err := env.client.UpdateUser(ctx, authorized(&leapmuxv1.UpdateUserRequest{
+	updateEmail := func(ctx context.Context, env *adminUserEnv, authorize requestAuth) error {
+		_, err := env.client.UpdateUser(authorized(ctx, &leapmuxv1.UpdateUserRequest{
 			Id: env.adminID, Email: proto.String("moved@example.test"), EmailVerified: proto.Bool(true),
 		}, authorize))
 		return err
@@ -1422,7 +1420,7 @@ func TestAdminUserService_CredentialGuardedVerbsNeedAProvenFactor(t *testing.T) 
 
 	t.Run("UpdateUser email refuses an un-elevated session", func(t *testing.T) {
 		env := setupAdminUserTestUnelevated(t)
-		err := updateEmail(env, cookieAuth(env.token))
+		err := updateEmail(ctx, env, cookieAuth(env.token))
 		require.Error(t, err)
 		assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 
@@ -1434,22 +1432,21 @@ func TestAdminUserService_CredentialGuardedVerbsNeedAProvenFactor(t *testing.T) 
 
 	t.Run("UpdateUser email admits an elevated session", func(t *testing.T) {
 		env := setupAdminUserTest(t)
-		assert.NoError(t, updateEmail(env, cookieAuth(env.token)))
+		assert.NoError(t, updateEmail(ctx, env, cookieAuth(env.token)))
 	})
 
 	t.Run("UpdateUser email refuses a bearer", func(t *testing.T) {
 		env := setupAdminUserTest(t)
-		issued, err := env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
+		issued, err := env.client.IssueAPIToken(authedReq(ctx, &leapmuxv1.IssueAPITokenRequest{
 			UserId: env.adminID, InstallationName: "admin-cli", Scopes: []string{"admin:read", "admin:users", "admin:settings", "admin:workers"},
 		}, env.token))
 		require.NoError(t, err)
-		hubtestutil.ElevateAPIToken(t, env.st, issued.Msg.GetTokenId(), env.adminID)
+		hubtestutil.ElevateAPIToken(t, env.st, issued.GetTokenId(), env.adminID)
 
-		err = updateEmail(env, bearerAuth(issued.Msg.GetAccessToken()))
+		callCtx, info := connect.NewClientContext(ctx)
+		err = updateEmail(callCtx, env, bearerAuth(issued.GetAccessToken()))
 		require.Error(t, err, "a bearer must not move a recovery identity")
-		var connectErr *connect.Error
-		require.ErrorAs(t, err, &connectErr)
-		assert.Empty(t, connectErr.Meta().Get(service.ElevationRequiredHeader),
+		assert.Empty(t, info.ResponseHeader().Get(service.ElevationRequiredHeader),
 			"a bearer can never elevate, so the refusal must not offer a prompt")
 	})
 }
@@ -1466,7 +1463,7 @@ func TestAdminUserService_IssueAPITokenClampsABearerMintedCredential(t *testing.
 	ctx := context.Background()
 	env := setupAdminUserTest(t)
 
-	parent, err := env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
+	parent, err := env.client.IssueAPIToken(authedReq(ctx, &leapmuxv1.IssueAPITokenRequest{
 		UserId: env.adminID, InstallationName: "admin-cli", Scopes: []string{"admin:read", "admin:users", "admin:settings", "admin:workers"},
 	}, env.token))
 	require.NoError(t, err)
@@ -1475,18 +1472,18 @@ func TestAdminUserService_IssueAPITokenClampsABearerMintedCredential(t *testing.
 	// is elevated BEFORE its first request, because a credential that already
 	// authenticated is cached with the deadline it had then (see
 	// testutil.ElevateAPIToken).
-	hubtestutil.ElevateAPIToken(t, env.st, parent.Msg.GetTokenId(), env.adminID)
+	hubtestutil.ElevateAPIToken(t, env.st, parent.GetTokenId(), env.adminID)
 
-	child, err := env.client.IssueAPIToken(ctx, adminBearerReq(&leapmuxv1.IssueAPITokenRequest{
+	child, err := env.client.IssueAPIToken(adminBearerReq(ctx, &leapmuxv1.IssueAPITokenRequest{
 		Username: "admin", InstallationName: "self-issued", Scopes: []string{"admin:read", "admin:users", "admin:settings", "admin:workers"},
-	}, parent.Msg.GetAccessToken()))
+	}, parent.GetAccessToken()))
 	require.NoError(t, err, "the documented headless path still works")
-	assert.Empty(t, child.Msg.GetRefreshToken(),
+	assert.Empty(t, child.GetRefreshToken(),
 		"a bearer-minted credential does not rotate; a rotation would un-clamp its ceiling")
 
-	parentRow, err := env.st.APITokens().GetByID(ctx, parent.Msg.GetTokenId())
+	parentRow, err := env.st.APITokens().GetByID(ctx, parent.GetTokenId())
 	require.NoError(t, err)
-	childRow, err := env.st.APITokens().GetByID(ctx, child.Msg.GetTokenId())
+	childRow, err := env.st.APITokens().GetByID(ctx, child.GetTokenId())
 	require.NoError(t, err)
 	require.NotNil(t, childRow.ExpiresAt)
 	assert.Nil(t, childRow.RefreshExpiresAt)
@@ -1505,7 +1502,7 @@ func TestAdminUserService_CreateUserConflictIdentifiesOnlyTheSuppliedField(t *te
 	env := setupAdminUserTest(t)
 	ctx := context.Background()
 
-	_, err := env.client.CreateUser(ctx, authedReq(&leapmuxv1.CreateUserRequest{
+	_, err := env.client.CreateUser(authedReq(ctx, &leapmuxv1.CreateUserRequest{
 		Username: "admin", Password: "userpass123",
 	}, env.token))
 	require.Error(t, err)
@@ -1570,11 +1567,11 @@ func setupResetPasswordTest(t *testing.T) *resetPasswordEnv {
 
 	const username = "carol"
 	const oldPassword = "password1"
-	created, err := env.client.CreateUser(ctx, authedReq(&leapmuxv1.CreateUserRequest{
+	created, err := env.client.CreateUser(authedReq(ctx, &leapmuxv1.CreateUserRequest{
 		Username: username, Password: oldPassword,
 	}, env.token))
 	require.NoError(t, err)
-	userID := created.Msg.GetUser().GetId()
+	userID := created.GetUser().GetId()
 
 	session, _, _, err := auth.Login(ctx, env.st, username, oldPassword, auth.DefaultSessionDuration)
 	require.NoError(t, err)
@@ -1625,21 +1622,21 @@ func TestAdminUserService_ResetPassword_Selector(t *testing.T) {
 	env := setupResetPasswordTest(t)
 	ctx := context.Background()
 
-	_, err := env.client.ResetPassword(ctx, authedReq(&leapmuxv1.ResetPasswordRequest{
+	_, err := env.client.ResetPassword(authedReq(ctx, &leapmuxv1.ResetPasswordRequest{
 		Password: "newpassword1",
 	}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "id or username is required")
 
-	_, err = env.client.ResetPassword(ctx, authedReq(&leapmuxv1.ResetPasswordRequest{
+	_, err = env.client.ResetPassword(authedReq(ctx, &leapmuxv1.ResetPasswordRequest{
 		Id: env.userID, Username: env.username, Password: "newpassword1",
 	}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "mutually exclusive")
 
-	_, err = env.client.ResetPassword(ctx, authedReq(&leapmuxv1.ResetPasswordRequest{
+	_, err = env.client.ResetPassword(authedReq(ctx, &leapmuxv1.ResetPasswordRequest{
 		Username: "nobody", Password: "newpassword1",
 	}, env.token))
 	require.Error(t, err)
@@ -1656,25 +1653,25 @@ func TestAdminUserService_ResetPassword_ByIDAndByUsername(t *testing.T) {
 	env := setupResetPasswordTest(t)
 	ctx := context.Background()
 
-	byID, err := env.client.ResetPassword(ctx, authedReq(&leapmuxv1.ResetPasswordRequest{
+	byID, err := env.client.ResetPassword(authedReq(ctx, &leapmuxv1.ResetPasswordRequest{
 		Id: env.userID, Password: "by-id-password",
 	}, env.token))
 	require.NoError(t, err)
 	// The response echoes the subject back whichever handle the caller sent,
 	// so a caller holding only one of the two learns the other.
-	assert.Equal(t, env.userID, byID.Msg.GetUserId())
-	assert.Equal(t, env.username, byID.Msg.GetUsername())
+	assert.Equal(t, env.userID, byID.GetUserId())
+	assert.Equal(t, env.username, byID.GetUsername())
 
 	_, _, _, err = auth.Login(ctx, env.st, env.username, env.oldPassword, auth.DefaultSessionDuration)
 	assert.Error(t, err, "the old password must stop working")
 	_, _, _, err = auth.Login(ctx, env.st, env.username, "by-id-password", auth.DefaultSessionDuration)
 	require.NoError(t, err, "the new password must work")
 
-	byUsername, err := env.client.ResetPassword(ctx, authedReq(&leapmuxv1.ResetPasswordRequest{
+	byUsername, err := env.client.ResetPassword(authedReq(ctx, &leapmuxv1.ResetPasswordRequest{
 		Username: env.username, Password: "by-username-password",
 	}, env.token))
 	require.NoError(t, err)
-	assert.Equal(t, env.userID, byUsername.Msg.GetUserId())
+	assert.Equal(t, env.userID, byUsername.GetUserId())
 
 	_, _, _, err = auth.Login(ctx, env.st, env.username, "by-id-password", auth.DefaultSessionDuration)
 	assert.Error(t, err, "the previous password must stop working too")
@@ -1696,7 +1693,7 @@ func TestAdminUserService_ResetPassword_RefusesAPasswordThePolicyRefuses(t *test
 		"non-ASCII": "pässwörd-that-is-long-enough",
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := env.client.ResetPassword(ctx, authedReq(&leapmuxv1.ResetPasswordRequest{
+			_, err := env.client.ResetPassword(authedReq(ctx, &leapmuxv1.ResetPasswordRequest{
 				Id: env.userID, Password: password,
 			}, env.token))
 			require.Error(t, err)
@@ -1724,12 +1721,12 @@ func TestAdminUserService_ResetPassword_TearsDownEveryCredential(t *testing.T) {
 	env := setupResetPasswordTest(t)
 	ctx := context.Background()
 
-	resp, err := env.client.ResetPassword(ctx, authedReq(&leapmuxv1.ResetPasswordRequest{
+	resp, err := env.client.ResetPassword(authedReq(ctx, &leapmuxv1.ResetPasswordRequest{
 		Id: env.userID, Password: "brand-new-password",
 	}, env.token))
 	require.NoError(t, err)
-	assert.Equal(t, int64(1), resp.Msg.GetApiTokensRevoked())
-	assert.Equal(t, int64(1), resp.Msg.GetDelegationTokensRevoked())
+	assert.Equal(t, int64(1), resp.GetApiTokensRevoked())
+	assert.Equal(t, int64(1), resp.GetDelegationTokensRevoked())
 
 	sessions, err := env.st.Sessions().ListByUserID(ctx, store.ListUserSessionsParams{
 		UserID:     userid.MustNew(env.userID),
@@ -1785,11 +1782,11 @@ func TestAdminUserService_ResetPassword_SetsAPasswordForAnOAuthOnlyUser(t *testi
 	})
 	require.NoError(t, err)
 
-	resp, err := env.client.ResetPassword(ctx, authedReq(&leapmuxv1.ResetPasswordRequest{
+	resp, err := env.client.ResetPassword(authedReq(ctx, &leapmuxv1.ResetPasswordRequest{
 		Username: "dave", Password: "first-password",
 	}, env.token))
 	require.NoError(t, err)
-	assert.Equal(t, oauthUser.ID, resp.Msg.GetUserId())
+	assert.Equal(t, oauthUser.ID, resp.GetUserId())
 
 	updated, err := env.st.Users().GetByID(ctx, oauthUser.ID)
 	require.NoError(t, err)
@@ -1816,13 +1813,13 @@ func TestAdminUserService_ResetPassword_SelfResetEndsTheActingSession(t *testing
 	ctx := context.Background()
 
 	// Warm the interceptor's session cache with the acting cookie.
-	_, err := env.client.GetUser(ctx, authedReq(&leapmuxv1.GetUserRequest{Id: env.adminID}, env.token))
+	_, err := env.client.GetUser(authedReq(ctx, &leapmuxv1.GetUserRequest{Id: env.adminID}, env.token))
 	require.NoError(t, err)
 
 	before, err := env.st.Users().GetByID(ctx, env.adminID)
 	require.NoError(t, err)
 
-	_, err = env.client.ResetPassword(ctx, authedReq(&leapmuxv1.ResetPasswordRequest{
+	_, err = env.client.ResetPassword(authedReq(ctx, &leapmuxv1.ResetPasswordRequest{
 		Id: env.adminID, Password: "brand-new-adminpass",
 	}, env.token))
 	require.NoError(t, err)
@@ -1847,7 +1844,7 @@ func TestAdminUserService_ResetPassword_SelfResetEndsTheActingSession(t *testing
 	require.NoError(t, err)
 	assert.Empty(t, sessions.Rows, "the caller's own session row is deleted too")
 
-	_, err = env.client.GetUser(ctx, authedReq(&leapmuxv1.GetUserRequest{Id: env.adminID}, env.token))
+	_, err = env.client.GetUser(authedReq(ctx, &leapmuxv1.GetUserRequest{Id: env.adminID}, env.token))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err),
 		"the cookie that made the call stops authenticating at once")
@@ -1873,29 +1870,29 @@ func TestAdminUserService_ResetPassword_KillsTheAccountsAPITokens(t *testing.T) 
 
 	// AdminScope, because the bearer must reach an Admin* procedure at all:
 	// an ordinary CLI credential is refused there even for an administrator.
-	issued, err := env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
+	issued, err := env.client.IssueAPIToken(authedReq(ctx, &leapmuxv1.IssueAPITokenRequest{
 		UserId: env.adminID, InstallationName: "admin-cli", Scopes: []string{"admin:read", "admin:users", "admin:settings", "admin:workers"},
 	}, env.token))
 	require.NoError(t, err)
-	bearer := issued.Msg.GetAccessToken()
+	bearer := issued.GetAccessToken()
 
 	// The bearer reaches the service -- so the refusal below is this verb's
 	// own rule and not the admin gate answering first.
-	_, err = env.client.GetUser(ctx, adminBearerReq(&leapmuxv1.GetUserRequest{Id: env.adminID}, bearer))
+	_, err = env.client.GetUser(adminBearerReq(ctx, &leapmuxv1.GetUserRequest{Id: env.adminID}, bearer))
 	require.NoError(t, err)
 
-	_, err = env.client.ResetPassword(ctx, adminBearerReq(&leapmuxv1.ResetPasswordRequest{
+	_, err = env.client.ResetPassword(adminBearerReq(ctx, &leapmuxv1.ResetPasswordRequest{
 		Id: env.adminID, Password: "brand-new-adminpass",
 	}, bearer))
 	require.Error(t, err, "a bearer must not set a password it does not know")
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 
 	// From the elevated session it lands, and it takes the bearer with it.
-	resp, err := env.client.ResetPassword(ctx, authedReq(&leapmuxv1.ResetPasswordRequest{
+	resp, err := env.client.ResetPassword(authedReq(ctx, &leapmuxv1.ResetPasswordRequest{
 		Id: env.adminID, Password: "brand-new-adminpass",
 	}, env.token))
 	require.NoError(t, err)
-	assert.Equal(t, int64(1), resp.Msg.GetApiTokensRevoked(),
+	assert.Equal(t, int64(1), resp.GetApiTokensRevoked(),
 		"the account's token is counted among the revoked, not exempted from them")
 
 	tokens, err := env.st.APITokens().ListAll(ctx, store.ListAllAPITokensParams{
@@ -1905,10 +1902,10 @@ func TestAdminUserService_ResetPassword_KillsTheAccountsAPITokens(t *testing.T) 
 	})
 	require.NoError(t, err)
 	require.Len(t, tokens.Rows, 1)
-	assert.Equal(t, issued.Msg.GetTokenId(), tokens.Rows[0].ID)
+	assert.Equal(t, issued.GetTokenId(), tokens.Rows[0].ID)
 	assert.NotNil(t, tokens.Rows[0].RevokedAt, "the bearer that made the call is revoked")
 
-	_, err = env.client.GetUser(ctx, adminBearerReq(&leapmuxv1.GetUserRequest{Id: env.adminID}, bearer))
+	_, err = env.client.GetUser(adminBearerReq(ctx, &leapmuxv1.GetUserRequest{Id: env.adminID}, bearer))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err),
 		"the bearer that made the call stops authenticating at once")
@@ -1920,22 +1917,22 @@ func TestAdminUserService_SetUserAdmin_DoesNotMarkEmailVerified(t *testing.T) {
 	env := setupAdminUserTest(t)
 	ctx := context.Background()
 
-	created, err := env.client.CreateUser(ctx, authedReq(&leapmuxv1.CreateUserRequest{
+	created, err := env.client.CreateUser(authedReq(ctx, &leapmuxv1.CreateUserRequest{
 		Username: "promotee", Password: "password123", DisplayName: "Promotee",
 		Email: "promotee@example.com", EmailVerified: false,
 	}, env.token))
 	require.NoError(t, err)
-	assert.False(t, created.Msg.GetUser().GetEmailVerified())
+	assert.False(t, created.GetUser().GetEmailVerified())
 
-	resp, err := env.client.SetUserAdmin(ctx, authedReq(&leapmuxv1.SetUserAdminRequest{
-		Id: created.Msg.GetUser().GetId(), IsAdmin: true,
+	resp, err := env.client.SetUserAdmin(authedReq(ctx, &leapmuxv1.SetUserAdminRequest{
+		Id: created.GetUser().GetId(), IsAdmin: true,
 	}, env.token))
 	require.NoError(t, err)
-	assert.True(t, resp.Msg.GetUser().GetIsAdmin())
-	assert.False(t, resp.Msg.GetUser().GetEmailVerified(),
+	assert.True(t, resp.GetUser().GetIsAdmin())
+	assert.False(t, resp.GetUser().GetEmailVerified(),
 		"nobody confirmed the address, so the promotion must not claim they did")
 
-	row, err := env.st.Users().GetByID(ctx, created.Msg.GetUser().GetId())
+	row, err := env.st.Users().GetByID(ctx, created.GetUser().GetId())
 	require.NoError(t, err)
 	assert.False(t, row.EmailVerified)
 	// The new administrator can still use the hub.
@@ -1948,21 +1945,21 @@ func TestAdminUserService_CreateUser_AdminDoesNotForceEmailVerified(t *testing.T
 	env := setupAdminUserTest(t)
 	ctx := context.Background()
 
-	resp, err := env.client.CreateUser(ctx, authedReq(&leapmuxv1.CreateUserRequest{
+	resp, err := env.client.CreateUser(authedReq(ctx, &leapmuxv1.CreateUserRequest{
 		Username: "newadmin", Password: "password123", DisplayName: "New Admin",
 		Email: "newadmin@example.com", EmailVerified: false, IsAdmin: true,
 	}, env.token))
 	require.NoError(t, err)
-	assert.True(t, resp.Msg.GetUser().GetIsAdmin())
-	assert.False(t, resp.Msg.GetUser().GetEmailVerified())
+	assert.True(t, resp.GetUser().GetIsAdmin())
+	assert.False(t, resp.GetUser().GetEmailVerified())
 
 	// An operator who really confirmed it says so, and that lands too.
-	confirmed, err := env.client.CreateUser(ctx, authedReq(&leapmuxv1.CreateUserRequest{
+	confirmed, err := env.client.CreateUser(authedReq(ctx, &leapmuxv1.CreateUserRequest{
 		Username: "knownadmin", Password: "password123", DisplayName: "Known Admin",
 		Email: "knownadmin@example.com", EmailVerified: true, IsAdmin: true,
 	}, env.token))
 	require.NoError(t, err)
-	assert.True(t, confirmed.Msg.GetUser().GetEmailVerified())
+	assert.True(t, confirmed.GetUser().GetEmailVerified())
 }
 
 func TestAdminUserService_ResetPassword_DeletesPasskeys(t *testing.T) {
@@ -1976,7 +1973,7 @@ func TestAdminUserService_ResetPassword_DeletesPasskeys(t *testing.T) {
 		FriendlyName: "Phone", KeyVersion: 1, CreatedAt: time.Now().UTC(),
 	}))
 
-	_, err := env.client.ResetPassword(ctx, authedReq(&leapmuxv1.ResetPasswordRequest{
+	_, err := env.client.ResetPassword(authedReq(ctx, &leapmuxv1.ResetPasswordRequest{
 		Id: env.userID, Password: "brand-new-password",
 	}, env.token))
 	require.NoError(t, err)
@@ -1998,17 +1995,17 @@ func TestAdminUserService_AddressChangeLowersEmailVerified(t *testing.T) {
 	ctx := context.Background()
 	env := setupAdminUserTest(t)
 
-	created, err := env.client.CreateUser(ctx, authedReq(&leapmuxv1.CreateUserRequest{
+	created, err := env.client.CreateUser(authedReq(ctx, &leapmuxv1.CreateUserRequest{
 		Username: "mover", Password: "userpass123", Email: "mover@example.com", EmailVerified: true,
 	}, env.token))
 	require.NoError(t, err)
-	userID := created.Msg.GetUser().GetId()
+	userID := created.GetUser().GetId()
 
 	before, err := env.st.Users().GetByID(ctx, userID)
 	require.NoError(t, err)
 	require.True(t, before.EmailVerified)
 
-	_, err = env.client.UpdateUser(ctx, authedReq(&leapmuxv1.UpdateUserRequest{
+	_, err = env.client.UpdateUser(authedReq(ctx, &leapmuxv1.UpdateUserRequest{
 		Id:    userID,
 		Email: proto.String("moved@example.com"),
 	}, env.token))
@@ -2030,13 +2027,13 @@ func TestAdminUserService_AddressChangeKeepsAnExplicitVerification(t *testing.T)
 	ctx := context.Background()
 	env := setupAdminUserTest(t)
 
-	created, err := env.client.CreateUser(ctx, authedReq(&leapmuxv1.CreateUserRequest{
+	created, err := env.client.CreateUser(authedReq(ctx, &leapmuxv1.CreateUserRequest{
 		Username: "explicit", Password: "userpass123", Email: "explicit@example.com", EmailVerified: true,
 	}, env.token))
 	require.NoError(t, err)
-	userID := created.Msg.GetUser().GetId()
+	userID := created.GetUser().GetId()
 
-	_, err = env.client.UpdateUser(ctx, authedReq(&leapmuxv1.UpdateUserRequest{
+	_, err = env.client.UpdateUser(authedReq(ctx, &leapmuxv1.UpdateUserRequest{
 		Id:            userID,
 		Email:         proto.String("confirmed@example.com"),
 		EmailVerified: proto.Bool(true),
@@ -2066,17 +2063,17 @@ func TestAdminUserService_AdminAddressChangeIsUnverified(t *testing.T) {
 	ctx := context.Background()
 	env := setupAdminUserTest(t)
 
-	created, err := env.client.CreateUser(ctx, authedReq(&leapmuxv1.CreateUserRequest{
+	created, err := env.client.CreateUser(authedReq(ctx, &leapmuxv1.CreateUserRequest{
 		Username: "otheradmin", Password: "userpass123", Email: "otheradmin@example.com",
 		IsAdmin: true, EmailVerified: true,
 	}, env.token))
 	require.NoError(t, err)
-	userID := created.Msg.GetUser().GetId()
+	userID := created.GetUser().GetId()
 	before, err := env.st.Users().GetByID(ctx, userID)
 	require.NoError(t, err)
 	require.True(t, before.EmailVerified, "precondition: the original address was confirmed")
 
-	_, err = env.client.UpdateUser(ctx, authedReq(&leapmuxv1.UpdateUserRequest{
+	_, err = env.client.UpdateUser(authedReq(ctx, &leapmuxv1.UpdateUserRequest{
 		Id:    userID,
 		Email: proto.String("newadmin@example.com"),
 	}, env.token))
@@ -2103,13 +2100,13 @@ func TestAdminUserService_ClearingEmailKeepsVerified(t *testing.T) {
 	ctx := context.Background()
 	env := setupAdminUserTest(t)
 
-	created, err := env.client.CreateUser(ctx, authedReq(&leapmuxv1.CreateUserRequest{
+	created, err := env.client.CreateUser(authedReq(ctx, &leapmuxv1.CreateUserRequest{
 		Username: "clearer", Password: "userpass123", Email: "clearer@example.com", EmailVerified: true,
 	}, env.token))
 	require.NoError(t, err)
-	userID := created.Msg.GetUser().GetId()
+	userID := created.GetUser().GetId()
 
-	_, err = env.client.UpdateUser(ctx, authedReq(&leapmuxv1.UpdateUserRequest{
+	_, err = env.client.UpdateUser(authedReq(ctx, &leapmuxv1.UpdateUserRequest{
 		Id:    userID,
 		Email: proto.String(""),
 	}, env.token))
@@ -2130,13 +2127,13 @@ func TestAdminUserService_RewritingTheSameAddressKeepsVerified(t *testing.T) {
 	ctx := context.Background()
 	env := setupAdminUserTest(t)
 
-	created, err := env.client.CreateUser(ctx, authedReq(&leapmuxv1.CreateUserRequest{
+	created, err := env.client.CreateUser(authedReq(ctx, &leapmuxv1.CreateUserRequest{
 		Username: "samesame", Password: "userpass123", Email: "samesame@example.com", EmailVerified: true,
 	}, env.token))
 	require.NoError(t, err)
-	userID := created.Msg.GetUser().GetId()
+	userID := created.GetUser().GetId()
 
-	_, err = env.client.UpdateUser(ctx, authedReq(&leapmuxv1.UpdateUserRequest{
+	_, err = env.client.UpdateUser(authedReq(ctx, &leapmuxv1.UpdateUserRequest{
 		Id:    userID,
 		Email: proto.String("SameSame@Example.com"),
 	}, env.token))
@@ -2163,18 +2160,18 @@ func TestAdminUserService_SettingAFirstEmailIsUnverified(t *testing.T) {
 	ctx := context.Background()
 	env := setupAdminUserTest(t)
 
-	created, err := env.client.CreateUser(ctx, authedReq(&leapmuxv1.CreateUserRequest{
+	created, err := env.client.CreateUser(authedReq(ctx, &leapmuxv1.CreateUserRequest{
 		Username: "noemail", Password: "userpass123", EmailVerified: true,
 	}, env.token))
 	require.NoError(t, err)
-	userID := created.Msg.GetUser().GetId()
+	userID := created.GetUser().GetId()
 
 	before, err := env.st.Users().GetByID(ctx, userID)
 	require.NoError(t, err)
 	require.Empty(t, before.Email)
 	require.True(t, before.EmailVerified, "precondition: the flag is raised before the address arrives")
 
-	_, err = env.client.UpdateUser(ctx, authedReq(&leapmuxv1.UpdateUserRequest{
+	_, err = env.client.UpdateUser(authedReq(ctx, &leapmuxv1.UpdateUserRequest{
 		Id:    userID,
 		Email: proto.String("first@example.com"),
 	}, env.token))
@@ -2203,13 +2200,13 @@ func TestAdminUserService_ClearingEmailAndLoweringVerifiedTogetherIsRefused(t *t
 	ctx := context.Background()
 	env := setupAdminUserTestWithSettings(t)
 
-	created, err := env.client.CreateUser(ctx, authedReq(&leapmuxv1.CreateUserRequest{
+	created, err := env.client.CreateUser(authedReq(ctx, &leapmuxv1.CreateUserRequest{
 		Username: "stranded", Password: "userpass123", Email: "stranded@example.com", EmailVerified: true,
 	}, env.token))
 	require.NoError(t, err)
-	userID := created.Msg.GetUser().GetId()
+	userID := created.GetUser().GetId()
 
-	_, err = env.client.UpdateUser(ctx, authedReq(&leapmuxv1.UpdateUserRequest{
+	_, err = env.client.UpdateUser(authedReq(ctx, &leapmuxv1.UpdateUserRequest{
 		Id:            userID,
 		Email:         proto.String(""),
 		EmailVerified: proto.Bool(false),
@@ -2226,17 +2223,17 @@ func TestAdminUserService_ClearingEmailAndLoweringVerifiedTogetherIsRefused(t *t
 	// The two exclusions still pass. Clearing alone keeps the flag, so the
 	// account can still sign in; and lowering alone leaves an address for a
 	// code to reach.
-	_, err = env.client.UpdateUser(ctx, authedReq(&leapmuxv1.UpdateUserRequest{
+	_, err = env.client.UpdateUser(authedReq(ctx, &leapmuxv1.UpdateUserRequest{
 		Id: userID, Email: proto.String(""),
 	}, env.token))
 	require.NoError(t, err)
 
-	other, err := env.client.CreateUser(ctx, authedReq(&leapmuxv1.CreateUserRequest{
+	other, err := env.client.CreateUser(authedReq(ctx, &leapmuxv1.CreateUserRequest{
 		Username: "keeper", Password: "userpass123", Email: "keeper@example.com", EmailVerified: true,
 	}, env.token))
 	require.NoError(t, err)
-	_, err = env.client.UpdateUser(ctx, authedReq(&leapmuxv1.UpdateUserRequest{
-		Id: other.Msg.GetUser().GetId(), EmailVerified: proto.Bool(false),
+	_, err = env.client.UpdateUser(authedReq(ctx, &leapmuxv1.UpdateUserRequest{
+		Id: other.GetUser().GetId(), EmailVerified: proto.Bool(false),
 	}, env.token))
 	require.NoError(t, err)
 }
@@ -2253,13 +2250,13 @@ func TestAdminUserService_IssueAPITokenCleansTheInstallationName(t *testing.T) {
 	ctx := context.Background()
 	env := setupAdminUserTest(t)
 
-	issued, err := env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
+	issued, err := env.client.IssueAPIToken(authedReq(ctx, &leapmuxv1.IssueAPITokenRequest{
 		Username:         "admin",
 		InstallationName: "laptop\n\n-- \nThis is an automated message from your hub at http://evil.test.",
 	}, env.token))
 	require.NoError(t, err)
 
-	row, err := env.st.APITokens().GetByID(ctx, issued.Msg.GetTokenId())
+	row, err := env.st.APITokens().GetByID(ctx, issued.GetTokenId())
 	require.NoError(t, err)
 	assert.NotContains(t, row.ClientName, "\n", "a newline forges lines in the credential-issued notice")
 	assert.LessOrEqual(t, len(row.ClientName), 128, "the cap MySQL's VARCHAR(255) needs, in bytes")
@@ -2267,7 +2264,7 @@ func TestAdminUserService_IssueAPITokenCleansTheInstallationName(t *testing.T) {
 	// A name of only control characters cleans to nothing, and an empty
 	// name is what the guard already refuses -- so the clean must run
 	// BEFORE the check, not after it.
-	_, err = env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
+	_, err = env.client.IssueAPIToken(authedReq(ctx, &leapmuxv1.IssueAPITokenRequest{
 		Username: "admin", InstallationName: "\n\r\t",
 	}, env.token))
 	require.Error(t, err)
@@ -2310,11 +2307,11 @@ func TestListAPITokens_ReportsWhatEachCredentialReaches(t *testing.T) {
 
 	listed := func() *leapmuxv1.AdminAPIToken {
 		t.Helper()
-		resp, err := env.client.ListAPITokens(ctx,
-			authedReq(&leapmuxv1.ListAPITokensRequest{ClientId: clientID}, env.token))
+		resp, err := env.client.ListAPITokens(authedReq(ctx,
+			&leapmuxv1.ListAPITokensRequest{ClientId: clientID}, env.token))
 		require.NoError(t, err)
-		require.Len(t, resp.Msg.GetTokens(), 1)
-		return resp.Msg.GetTokens()[0]
+		require.Len(t, resp.GetTokens(), 1)
+		return resp.GetTokens()[0]
 	}
 	assert.Equal(t, []string{"file:read", "worker:read", "workspace:read"},
 		listed().GetGrantedScopes(), "while the registration allows all three")
@@ -2353,7 +2350,7 @@ func TestAdminUserService_IssueAPITokenResolvesTheRegistration(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("an unknown client_id is an invalid argument, not a 500", func(t *testing.T) {
-		_, err := env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
+		_, err := env.client.IssueAPIToken(authedReq(ctx, &leapmuxv1.IssueAPITokenRequest{
 			UserId: env.adminID, InstallationName: "cli", ClientId: "no-such-app",
 		}, env.token))
 		require.Error(t, err)
@@ -2375,7 +2372,7 @@ func TestAdminUserService_IssueAPITokenResolvesTheRegistration(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		_, err = env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
+		_, err = env.client.IssueAPIToken(authedReq(ctx, &leapmuxv1.IssueAPITokenRequest{
 			UserId: env.adminID, InstallationName: "cli", ClientId: clientID,
 		}, env.token))
 		require.Error(t, err)
@@ -2391,7 +2388,7 @@ func TestAdminUserService_IssueAPITokenResolvesTheRegistration(t *testing.T) {
 		})
 		require.NoError(t, createErr)
 
-		_, err := env.client.IssueAPIToken(ctx, authedReq(&leapmuxv1.IssueAPITokenRequest{
+		_, err := env.client.IssueAPIToken(authedReq(ctx, &leapmuxv1.IssueAPITokenRequest{
 			// The default grant is everything except admin -- far past a
 			// workspace:read registration.
 			UserId: env.adminID, InstallationName: "cli", ClientId: clientID,

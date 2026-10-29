@@ -6,7 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/descope/virtualwebauthn"
 	"github.com/stretchr/testify/require"
 
@@ -98,7 +99,6 @@ func setupEmptyPasskeyAuthTestServer(t *testing.T, seed authTestSeed, mailSender
 	mux := http.NewServeMux()
 	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
 	t.Cleanup(sc.Stop)
-	opts := connect.WithInterceptors(interceptor)
 
 	if mailSender == nil {
 		mailSender = mail.NewStubSender()
@@ -112,67 +112,69 @@ func setupEmptyPasskeyAuthTestServer(t *testing.T, seed authTestSeed, mailSender
 		Renderer:  mail.Renderer{},
 		Keystore:  ks,
 	})
-	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
-	mux.Handle(path, handler)
+	connectServer := connect.NewServer(interceptor)
+	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authSvc)
+	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
 	return passkeyAuthTestEnv{
-		client: leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL),
+		client: leapmuxv1connect.NewAuthServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0)))),
 		store:  st,
 	}
 }
 
-// beginPasskeySignUpRequest builds the Begin request with the browser origin
-// the ceremony needs. Separate from beginPasskeySignUp so a test that expects
-// a REFUSAL can send the same request and read the error, rather than
-// re-spelling the header a helper already owns.
-func beginPasskeySignUpRequest(username, email string) *connect.Request[leapmuxv1.BeginPasskeySignUpRequest] {
-	req := connect.NewRequest(&leapmuxv1.BeginPasskeySignUpRequest{
+// passkeyCtx returns a context carrying the browser origin the passkey
+// ceremonies need. Connect v2 carries request headers on the call context,
+// not on the message.
+func passkeyCtx(ctx context.Context) context.Context {
+	ctx, info := connect.NewClientContext(ctx)
+	info.RequestHeader().Set("Origin", passkeyTestOrigin)
+	return ctx
+}
+
+// beginPasskeySignUpRequest builds the Begin request. Separate from
+// beginPasskeySignUp so a test that expects a REFUSAL can send the same
+// request and read the error, rather than re-spelling the request a helper
+// already owns. The caller sends it through passkeyCtx.
+func beginPasskeySignUpRequest(username, email string) *leapmuxv1.BeginPasskeySignUpRequest {
+	return &leapmuxv1.BeginPasskeySignUpRequest{
 		Username:    username,
 		DisplayName: username,
 		Email:       email,
-	})
-	req.Header().Set("Origin", passkeyTestOrigin)
-	return req
+	}
 }
 
 func beginPasskeySignUp(t *testing.T, client leapmuxv1connect.AuthServiceClient, username, email string) *leapmuxv1.BeginPasskeySignUpResponse {
 	t.Helper()
-	resp, err := client.BeginPasskeySignUp(context.Background(), beginPasskeySignUpRequest(username, email))
+	resp, err := client.BeginPasskeySignUp(passkeyCtx(context.Background()), beginPasskeySignUpRequest(username, email))
 	require.NoError(t, err)
-	return resp.Msg
+	return resp
 }
 
 // finishPasskeySignUp completes the registration ceremony. It returns the
 // response and the error, like finishPasskeyLogin, because several callers
 // assert on a refusal at this leg.
-func finishPasskeySignUp(t *testing.T, client leapmuxv1connect.AuthServiceClient, sessionID, credentialJSON string) (*connect.Response[leapmuxv1.FinishPasskeySignUpResponse], error) {
+func finishPasskeySignUp(t *testing.T, client leapmuxv1connect.AuthServiceClient, sessionID, credentialJSON string) (*leapmuxv1.FinishPasskeySignUpResponse, error) {
 	t.Helper()
-	req := connect.NewRequest(&leapmuxv1.FinishPasskeySignUpRequest{
+	return client.FinishPasskeySignUp(passkeyCtx(context.Background()), &leapmuxv1.FinishPasskeySignUpRequest{
 		SessionId:      sessionID,
 		CredentialJson: credentialJSON,
 	})
-	req.Header().Set("Origin", passkeyTestOrigin)
-	return client.FinishPasskeySignUp(context.Background(), req)
 }
 
 func beginPasskeyLogin(t *testing.T, client leapmuxv1connect.AuthServiceClient, username string) *leapmuxv1.BeginPasskeyLoginResponse {
 	t.Helper()
-	req := connect.NewRequest(&leapmuxv1.BeginPasskeyLoginRequest{Username: username})
-	req.Header().Set("Origin", passkeyTestOrigin)
-	resp, err := client.BeginPasskeyLogin(context.Background(), req)
+	resp, err := client.BeginPasskeyLogin(passkeyCtx(context.Background()), &leapmuxv1.BeginPasskeyLoginRequest{Username: username})
 	require.NoError(t, err)
-	return resp.Msg
+	return resp
 }
 
-func finishPasskeyLogin(t *testing.T, client leapmuxv1connect.AuthServiceClient, sessionID, credentialJSON string) (*connect.Response[leapmuxv1.FinishPasskeyLoginResponse], error) {
+func finishPasskeyLogin(t *testing.T, client leapmuxv1connect.AuthServiceClient, sessionID, credentialJSON string) (*leapmuxv1.FinishPasskeyLoginResponse, error) {
 	t.Helper()
-	req := connect.NewRequest(&leapmuxv1.FinishPasskeyLoginRequest{
+	return client.FinishPasskeyLogin(passkeyCtx(context.Background()), &leapmuxv1.FinishPasskeyLoginRequest{
 		SessionId:      sessionID,
 		CredentialJson: credentialJSON,
 	})
-	req.Header().Set("Origin", passkeyTestOrigin)
-	return client.FinishPasskeyLogin(context.Background(), req)
 }

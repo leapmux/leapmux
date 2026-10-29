@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	"github.com/leapmux/leapmux/channelwire"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -44,9 +44,15 @@ const workerUnreachableMetaKey = "leapmux-worker-unreachable"
 
 // errWorkerUnreachable builds the Hub's worker-offline verdict, tagged so a client
 // may trust it as a statement about the worker.
-func errWorkerUnreachable(err error) error {
-	cErr := connect.NewError(connect.CodeUnavailable, err)
-	cErr.Meta().Set(workerUnreachableMetaKey, "1")
+//
+// ctx supplies the response header the tag rides: connect v2 carries no metadata
+// on an error, and the transport writes this header when it writes the error
+// status.
+func errWorkerUnreachable(ctx context.Context, err error) error {
+	cErr := wrappedConnectError(connect.CodeUnavailable, err)
+	if info, ok := connect.CallInfoForServerContext(ctx); ok {
+		info.ResponseHeader().Set(workerUnreachableMetaKey, "1")
+	}
 	return cErr
 }
 
@@ -92,16 +98,16 @@ func NewChannelService(
 // live encryption mode a client needs to start a Noise_NK handshake.
 func (s *ChannelService) GetWorkerHandshakeParams(
 	ctx context.Context,
-	req *connect.Request[leapmuxv1.GetWorkerHandshakeParamsRequest],
-) (*connect.Response[leapmuxv1.GetWorkerHandshakeParamsResponse], error) {
+	req *leapmuxv1.GetWorkerHandshakeParamsRequest,
+) (*leapmuxv1.GetWorkerHandshakeParamsResponse, error) {
 	user, err := s.requireCurrentAuth(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	workerID := req.Msg.GetWorkerId()
+	workerID := req.GetWorkerId()
 	if workerID == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("worker_id is required"))
+		return nil, connect.Errorf(connect.CodeInvalidArgument, "worker_id is required")
 	}
 
 	conn, err := s.requireOnlineWorker(ctx, user, workerID)
@@ -112,13 +118,13 @@ func (s *ChannelService) GetWorkerHandshakeParams(
 	keys, err := s.store.Workers().GetPublicKey(ctx, workerID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
-			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("worker not found"))
+			return nil, connect.Errorf(connect.CodeNotFound, "worker not found")
 		}
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, wrappedConnectError(connect.CodeInternal, err)
 	}
 
 	if len(keys.PublicKey) == 0 {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("worker has no public key"))
+		return nil, connect.Errorf(connect.CodeFailedPrecondition, "worker has no public key")
 	}
 
 	encMode := conn.EncryptionMode()
@@ -126,26 +132,26 @@ func (s *ChannelService) GetWorkerHandshakeParams(
 		encMode = leapmuxv1.EncryptionMode_ENCRYPTION_MODE_POST_QUANTUM
 	}
 
-	return connect.NewResponse(&leapmuxv1.GetWorkerHandshakeParamsResponse{
+	return &leapmuxv1.GetWorkerHandshakeParamsResponse{
 		PublicKey:       keys.PublicKey,
 		MlkemPublicKey:  keys.MlkemPublicKey,
 		SlhdsaPublicKey: keys.SlhdsaPublicKey,
 		EncryptionMode:  encMode,
-	}), nil
+	}, nil
 }
 
 func (s *ChannelService) OpenChannel(
 	ctx context.Context,
-	req *connect.Request[leapmuxv1.OpenChannelRequest],
-) (*connect.Response[leapmuxv1.OpenChannelResponse], error) {
+	req *leapmuxv1.OpenChannelRequest,
+) (*leapmuxv1.OpenChannelResponse, error) {
 	user, err := s.requireCurrentAuth(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	workerID := req.Msg.GetWorkerId()
+	workerID := req.GetWorkerId()
 	if workerID == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("worker_id is required"))
+		return nil, connect.Errorf(connect.CodeInvalidArgument, "worker_id is required")
 	}
 
 	// Verify access (and delegation scope) and fetch the live connection in one
@@ -162,7 +168,7 @@ func (s *ChannelService) OpenChannel(
 	// (CloseChannelsByBearer / CloseChannelsByUserRevocation) can find every
 	// channel an `lmx_…` token authorized.
 	if !s.channelMgr.RegisterWithAuthInfo(channelID, workerID, user.ID.String(), channelAuthInfo(user), nil) {
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("channel id collision"))
+		return nil, connect.Errorf(connect.CodeInternal, "channel id collision")
 	}
 	openAttempted := false
 	registrationCommitted := false
@@ -216,7 +222,7 @@ func (s *ChannelService) OpenChannel(
 						// sending this opens no channel at all rather than
 						// silently promoting a narrow app to full authority.
 						GrantedScopes:    authscope.ScopesToWire(user.Scopes),
-						HandshakePayload: req.Msg.GetHandshakePayload(),
+						HandshakePayload: req.GetHandshakePayload(),
 						MaxMessageSize:   uint64(s.channelMgr.MaxMessageSize()),
 					},
 				},
@@ -226,7 +232,7 @@ func (s *ChannelService) OpenChannel(
 			}
 			openResp = resp.GetChannelOpenResp()
 			if openResp == nil {
-				openReject = connect.NewError(connect.CodeInternal, fmt.Errorf("unexpected response from worker"))
+				openReject = connect.Errorf(connect.CodeInternal, "unexpected response from worker")
 				return nil
 			}
 			// Fail closed on structured reject: ErrorCode alone (empty Error) must
@@ -237,24 +243,24 @@ func (s *ChannelService) OpenChannel(
 					msg = openResp.GetErrorCode().String()
 				}
 				code := channelwire.ConnectCodeFromChannelOpenError(openResp.GetErrorCode())
-				openReject = connect.NewError(code, fmt.Errorf("worker rejected channel: %s", msg))
+				openReject = connect.Errorf(code, "worker rejected channel: %s", msg)
 				return nil
 			}
 			var adoptErr error
 			effectiveMax, adoptErr = channelwire.AdoptWireMaxMessageSize(openResp.GetMaxMessageSize())
 			if adoptErr != nil {
 				if openResp.GetMaxMessageSize() == 0 {
-					openReject = connect.NewError(connect.CodeInternal, fmt.Errorf(
-						"worker echoed no max_message_size (0); upgrade the worker or check Hub↔Worker version skew"))
+					openReject = connect.Errorf(connect.CodeInternal,
+						"worker echoed no max_message_size (0); upgrade the worker or check Hub↔Worker version skew")
 				} else {
-					openReject = connect.NewError(connect.CodeInternal, fmt.Errorf("worker echoed invalid max_message_size: %w", adoptErr))
+					openReject = wrappedConnectError(connect.CodeInternal, fmt.Errorf("worker echoed invalid max_message_size: %w", adoptErr))
 				}
 				return nil
 			}
 			hubMax := s.channelMgr.MaxMessageSize()
 			if effectiveMax > hubMax {
-				openReject = connect.NewError(connect.CodeInternal, fmt.Errorf(
-					"worker echoed max_message_size %d above hub max %d", effectiveMax, hubMax))
+				openReject = connect.Errorf(connect.CodeInternal,
+					"worker echoed max_message_size %d above hub max %d", effectiveMax, hubMax)
 				return nil
 			}
 			s.channelMgr.SetChannelMaxMessageSize(channelID, effectiveMax)
@@ -265,13 +271,13 @@ func (s *ChannelService) OpenChannel(
 		if currentErr := s.validateCurrentAuth(user); currentErr != nil {
 			return nil, currentErr
 		}
-		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("channel closed before open attempt"))
+		return nil, connect.Errorf(connect.CodeUnavailable, "channel closed before open attempt")
 	}
 	if err != nil {
 		if connect.CodeOf(err) == connect.CodeUnauthenticated {
 			return nil, err
 		}
-		return nil, errWorkerUnreachable(fmt.Errorf("worker handshake failed: %w", err))
+		return nil, errWorkerUnreachable(ctx, fmt.Errorf("worker handshake failed: %w", err))
 	}
 	if openReject != nil {
 		return nil, openReject
@@ -301,16 +307,16 @@ func (s *ChannelService) OpenChannel(
 		if currentErr := s.validateCurrentAuth(user); currentErr != nil {
 			return nil, currentErr
 		}
-		return nil, connect.NewError(connect.CodeUnavailable, fmt.Errorf("channel closed before expiry scheduling completed"))
+		return nil, connect.Errorf(connect.CodeUnavailable, "channel closed before expiry scheduling completed")
 	}
 	registrationCommitted = true
 
-	return connect.NewResponse(&leapmuxv1.OpenChannelResponse{
+	return &leapmuxv1.OpenChannelResponse{
 		ChannelId:        channelID,
 		HandshakePayload: openResp.GetHandshakePayload(),
 		UserId:           user.ID.String(),
 		MaxMessageSize:   uint64(effectiveMax),
-	}), nil
+	}, nil
 }
 
 func (s *ChannelService) requireCurrentAuth(ctx context.Context) (*auth.UserInfo, error) {
@@ -329,10 +335,10 @@ func (s *ChannelService) validateCurrentAuth(user *auth.UserInfo) error {
 	// not only the credential generation -- so it is called inline here rather
 	// than behind a generation-specific name.
 	if !s.authFreshness.IsAuthContextCurrent(user) {
-		return connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("authentication was revoked"))
+		return connect.Errorf(connect.CodeUnauthenticated, "authentication was revoked")
 	}
 	if !user.CredentialCurrent(time.Now()) {
-		return connect.NewError(connect.CodeUnauthenticated, fmt.Errorf("authentication expired"))
+		return connect.Errorf(connect.CodeUnauthenticated, "authentication expired")
 	}
 	return nil
 }
@@ -351,21 +357,21 @@ func (s *ChannelService) ensureRegisteredChannelStillAuthorized(
 	if err := s.validateCurrentAuth(user); err != nil {
 		return err
 	}
-	return connect.NewError(connect.CodeUnavailable, fmt.Errorf("channel closed before open completed"))
+	return connect.Errorf(connect.CodeUnavailable, "channel closed before open completed")
 }
 
 func (s *ChannelService) CloseChannel(
 	ctx context.Context,
-	req *connect.Request[leapmuxv1.CloseChannelRequest],
-) (*connect.Response[leapmuxv1.CloseChannelResponse], error) {
+	req *leapmuxv1.CloseChannelRequest,
+) (*leapmuxv1.CloseChannelResponse, error) {
 	user, err := s.requireCurrentAuth(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	channelID := req.Msg.GetChannelId()
+	channelID := req.GetChannelId()
 	if channelID == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("channel_id is required"))
+		return nil, connect.Errorf(connect.CodeInvalidArgument, "channel_id is required")
 	}
 
 	// Verify the channel exists, belongs to this user, and is inside the
@@ -375,12 +381,12 @@ func (s *ChannelService) CloseChannel(
 		return userCanUseChannel(user, info.AuthInfo, info.UserID)
 	})
 	if len(closed) == 0 {
-		return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("channel not found"))
+		return nil, connect.Errorf(connect.CodeNotFound, "channel not found")
 	}
 
 	s.notifyWorkersClosed(closed)
 
-	return connect.NewResponse(&leapmuxv1.CloseChannelResponse{}), nil
+	return &leapmuxv1.CloseChannelResponse{}, nil
 }
 
 // CloseChannelsByBearer force-closes every open channel that was
@@ -474,7 +480,7 @@ func (s *ChannelService) requireOnlineWorker(ctx context.Context, user *auth.Use
 		return nil, err
 	}
 	if conn == nil {
-		return nil, errWorkerUnreachable(errors.New("worker is offline"))
+		return nil, errWorkerUnreachable(ctx, errors.New("worker is offline"))
 	}
 	return conn, nil
 }

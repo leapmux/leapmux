@@ -3,7 +3,7 @@ package captcha
 import (
 	"context"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	contracts "github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -92,7 +92,7 @@ func IsProtected(procedure string) bool {
 	return ok
 }
 
-// NewInterceptor returns a unary interceptor enforcing captcha + honeypot
+// NewInterceptor returns a server interceptor enforcing captcha + honeypot
 // verification on the protected procedures. It must run BEFORE the auth
 // interceptor's handler pass-through reaches the expensive handler logic.
 // Its order relative to the auth interceptor still does not change WHICH
@@ -101,43 +101,66 @@ func IsProtected(procedure string) bool {
 // first (backend/hub/server.go's chain order) an unauthenticated caller
 // costs a session-gate lookup before the captcha denial instead of paying
 // the captcha charge up front.
-func NewInterceptor(m *Manager) connect.UnaryInterceptorFunc {
-	return func(next connect.UnaryFunc) connect.UnaryFunc {
-		return func(ctx context.Context, req connect.AnyRequest) (connect.AnyResponse, error) {
-			proc, ok := protectedProcedures[req.Spec().Procedure]
+//
+// Connect v2 hands a server interceptor no request message: the generated
+// handler pulls it off the stream, so the gate rides on Receive and runs
+// after the message is decoded but before any handler body. Every
+// protected procedure is unary, so that is exactly one gate per call.
+func NewInterceptor(m *Manager) connect.ServerInterceptor {
+	return func(next connect.ServerFunc) connect.ServerFunc {
+		return func(ctx context.Context, spec connect.Spec, stream connect.ServerStream) error {
+			proc, ok := protectedProcedures[spec.Procedure]
 			if !ok {
-				return next(ctx, req)
+				return next(ctx, spec, stream)
 			}
-
-			msg, ok := req.Any().(captchaRequest)
-			if !ok {
-				// Every protected request type implements captchaRequest
-				// (the compile-time guards above); this branch is unreachable
-				// but must not panic if a future procedure puts a foreign
-				// request type into the map.
-				return nil, connect.NewError(connect.CodePermissionDenied, ErrVerificationFailed)
-			}
-			// The honeypot check runs regardless of captcha enablement: it
-			// costs the server one string comparison, catches naive bots
-			// even on hubs with captcha disabled, and must not disappear
-			// the moment an admin runs `captcha disable`. The frontend
-			// renders the honeypot input independently of the captcha
-			// widget for the same reason.
-			if msg.GetHoneypot() != "" {
-				m.NoteHoneypotDenial(ctx)
-				return nil, connect.NewError(connect.CodePermissionDenied, ErrVerificationFailed)
-			}
-			// Verify alone decides: it no-ops when verification is
-			// disabled and denies closed on a resolve failure, exactly as
-			// an Enabled pre-check would — without resolving the config a
-			// second time per protected request.
-			if err := m.Verify(ctx, proc.action, msg.GetCaptchaPayload()); err != nil {
-				// Uniform denial: the manager already recorded the
-				// outcome (passed/failed/replayed) under the selected
-				// provider's metric label; clients see only this error.
-				return nil, connect.NewError(connect.CodePermissionDenied, ErrVerificationFailed)
-			}
-			return next(ctx, req)
+			return next(ctx, spec, &captchaVerificationStream{ServerStream: stream, ctx: ctx, proc: proc, manager: m})
 		}
 	}
+}
+
+// captchaVerificationStream applies the captcha and honeypot gate to each request
+// message it hands the handler, denying by failing the Receive that
+// produced it. Failing Receive rather than the whole call keeps the
+// denial on the same path the generated handler already reports a
+// malformed request on.
+type captchaVerificationStream struct {
+	connect.ServerStream
+	ctx     context.Context
+	proc    protectedProcedure
+	manager *Manager
+}
+
+func (s *captchaVerificationStream) Receive(msg any) error {
+	if err := s.ServerStream.Receive(msg); err != nil {
+		return err
+	}
+	req, ok := msg.(captchaRequest)
+	if !ok {
+		// Every protected request type implements captchaRequest
+		// (the compile-time guards above); this branch is unreachable
+		// but must not panic if a future procedure puts a foreign
+		// request type into the map.
+		return connect.NewError(connect.CodePermissionDenied, ErrVerificationFailed.Error()).WithCause(ErrVerificationFailed)
+	}
+	// The honeypot check runs regardless of captcha enablement: it
+	// costs the server one string comparison, catches naive bots
+	// even on hubs with captcha disabled, and must not disappear
+	// the moment an admin runs `captcha disable`. The frontend
+	// renders the honeypot input independently of the captcha
+	// widget for the same reason.
+	if req.GetHoneypot() != "" {
+		s.manager.NoteHoneypotDenial(s.ctx)
+		return connect.NewError(connect.CodePermissionDenied, ErrVerificationFailed.Error()).WithCause(ErrVerificationFailed)
+	}
+	// Verify alone decides: it no-ops when verification is
+	// disabled and denies closed on a resolve failure, exactly as
+	// an Enabled pre-check would — without resolving the config a
+	// second time per protected request.
+	if err := s.manager.Verify(s.ctx, s.proc.action, req.GetCaptchaPayload()); err != nil {
+		// Uniform denial: the manager already recorded the
+		// outcome (passed/failed/replayed) under the selected
+		// provider's metric label; clients see only this error.
+		return connect.NewError(connect.CodePermissionDenied, ErrVerificationFailed.Error()).WithCause(ErrVerificationFailed)
+	}
+	return nil
 }

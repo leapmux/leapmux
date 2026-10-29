@@ -17,10 +17,11 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/leapmux/leapmux/hubtransport/hubtransporttest"
 	"github.com/leapmux/leapmux/internal/hub/oauthapp"
 
-	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -887,8 +888,9 @@ func TestRunAuthCredentials_ListsTheAccountCredentials(t *testing.T) {
 	// shape are exercised rather than a hand-written JSON body the proto
 	// client would refuse.
 	mux := http.NewServeMux()
-	path, handler := leapmuxv1connect.NewUserServiceHandler(&stubMyTokensService{})
-	mux.Handle(path, handler)
+	connectServer := connect.NewServer()
+	leapmuxv1connect.RegisterUserServiceHandler(connectServer, &stubMyTokensService{})
+	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 	srv := hubtransporttest.NewServer(t, mux)
 	defer srv.Close()
 
@@ -927,17 +929,17 @@ type stubMyTokensService struct {
 
 func (s *stubMyTokensService) ListMyAPITokens(
 	_ context.Context,
-	req *connect.Request[leapmuxv1.ListMyAPITokensRequest],
-) (*connect.Response[leapmuxv1.ListMyAPITokensResponse], error) {
+	req *leapmuxv1.ListMyAPITokensRequest,
+) (*leapmuxv1.ListMyAPITokensResponse, error) {
 	s.mu.Lock()
-	s.limits = append(s.limits, req.Msg.GetLimit())
+	s.limits = append(s.limits, req.GetLimit())
 	s.mu.Unlock()
-	return connect.NewResponse(&leapmuxv1.ListMyAPITokensResponse{
+	return &leapmuxv1.ListMyAPITokensResponse{
 		Tokens: []*leapmuxv1.MyAPIToken{
 			{Id: "tok-1", ClientId: oauthapp.ControlCLIClientID, InstallationName: "alice@laptop", GrantedScopes: []string{"account:read", "account:write", "agent:read", "agent:write", "file:read", "git:read", "git:write", "terminal:read", "terminal:write", "tunnel:open", "worker:admin", "worker:read", "workspace:read", "workspace:write"}, Current: true},
 			{Id: "tok-2", ClientId: oauthapp.ControlCLIClientID, InstallationName: "ci"},
 		},
-	}), nil
+	}, nil
 }
 
 func (s *stubMyTokensService) requestedLimits() []int64 {
@@ -955,8 +957,9 @@ func (s *stubMyTokensService) requestedLimits() []int64 {
 func TestRunAuthCredentials_AsksForTheHubsMaximumPage(t *testing.T) {
 	stub := &stubMyTokensService{}
 	mux := http.NewServeMux()
-	path, handler := leapmuxv1connect.NewUserServiceHandler(stub)
-	mux.Handle(path, handler)
+	connectServer := connect.NewServer()
+	leapmuxv1connect.RegisterUserServiceHandler(connectServer, stub)
+	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 	srv := hubtransporttest.NewServer(t, mux)
 	t.Cleanup(srv.Close)
 

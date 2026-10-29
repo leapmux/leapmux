@@ -9,7 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/metrics"
@@ -88,7 +88,7 @@ type ReachAuthorizer interface {
 // errors.Is still matches on identity, so callers testing for the sentinel are
 // unaffected.
 var ErrReachDenied = connect.NewError(connect.CodePermissionDenied,
-	errors.New("workermgr: worker reach is not authorized on this registry"))
+	"workermgr: worker reach is not authorized on this registry")
 
 // denyAllReach refuses every user-directed reach.
 type denyAllReach struct{}
@@ -643,7 +643,7 @@ func (m *Manager) connsLocked() []*Conn {
 // One residual remains: a handler parked inside its OWN drain write is still
 // freed only by server.Close() after the drain deadline. connWriteTimeout
 // bounds the queue (give up, discard, fence) but cannot unpark the handler --
-// connect.BidiStream.Send has no context and bottoms out in
+// connect.ServerStream.Send has no context and bottoms out in
 // http.ResponseWriter.Write; cancelling connCtx does not interrupt an
 // in-flight HTTP/2 DATA write blocked on peer flow control. Spawning a
 // second Write against ctx.Done would race the transport. The cross-sender

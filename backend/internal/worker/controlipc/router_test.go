@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -353,7 +353,7 @@ func TestRouter_CallInner_PreservesUpstreamCode(t *testing.T) {
 		{"denied", connect.CodePermissionDenied},
 	} {
 		t.Run("hub namespace: "+tc.name, func(t *testing.T) {
-			hub := &fakeHubClient{respErr: connect.NewError(tc.code, errors.New("upstream"))}
+			hub := &fakeHubClient{respErr: connect.NewError(tc.code, "upstream")}
 			r := &controlipc.Router{
 				UserID: userid.MustNew("user-1"),
 				Hub:    hub,
@@ -367,7 +367,7 @@ func TestRouter_CallInner_PreservesUpstreamCode(t *testing.T) {
 		})
 
 		t.Run("cross-worker namespace: "+tc.name, func(t *testing.T) {
-			cw := &fakeCrossWorker{respErr: connect.NewError(tc.code, errors.New("upstream"))}
+			cw := &fakeCrossWorker{respErr: connect.NewError(tc.code, "upstream")}
 			r := &controlipc.Router{
 				UserID:      userid.MustNew("user-1"),
 				WorkerID:    "wkr-self",

@@ -6,7 +6,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -26,17 +27,15 @@ func setupShutdownTestServer(t *testing.T, shutdownCh chan struct{}) leapmuxv1co
 	hubtestutil.CreateTestAdmin(t, st)
 
 	mux := http.NewServeMux()
-	interceptors := connect.WithInterceptors(
-		auth.NewShutdownInterceptor(shutdownCh),
-	)
+	connectServer := connect.NewServer(auth.NewShutdownInterceptor(shutdownCh))
 	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, &config.Config{}, servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(nil, nil, nil)))
-	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, interceptors)
-	mux.Handle(path, handler)
+	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authSvc)
+	connecthttp.Mount(mux, connectServer)
 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	return leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL)
+	return leapmuxv1connect.NewAuthServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0))))
 }
 
 func TestShutdownInterceptor_AllowsBeforeShutdown(t *testing.T) {
@@ -44,9 +43,9 @@ func TestShutdownInterceptor_AllowsBeforeShutdown(t *testing.T) {
 	client := setupShutdownTestServer(t, shutdownCh)
 
 	// Before shutdown, RPCs should succeed normally.
-	resp, err := client.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
+	resp, err := client.GetSystemInfo(context.Background(), &leapmuxv1.GetSystemInfoRequest{})
 	require.NoError(t, err)
-	assert.NotNil(t, resp.Msg)
+	assert.NotNil(t, resp)
 }
 
 func TestShutdownInterceptor_RejectsAfterShutdown(t *testing.T) {
@@ -57,7 +56,7 @@ func TestShutdownInterceptor_RejectsAfterShutdown(t *testing.T) {
 	close(shutdownCh)
 
 	// After shutdown, RPCs should be rejected with CodeUnavailable.
-	_, err := client.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
+	_, err := client.GetSystemInfo(context.Background(), &leapmuxv1.GetSystemInfoRequest{})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnavailable, connect.CodeOf(err))
 }
@@ -67,14 +66,14 @@ func TestShutdownInterceptor_TransitionDuringOperation(t *testing.T) {
 	client := setupShutdownTestServer(t, shutdownCh)
 
 	// First call succeeds.
-	_, err := client.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
+	_, err := client.GetSystemInfo(context.Background(), &leapmuxv1.GetSystemInfoRequest{})
 	require.NoError(t, err)
 
 	// Trigger shutdown.
 	close(shutdownCh)
 
 	// Subsequent call is rejected.
-	_, err = client.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
+	_, err = client.GetSystemInfo(context.Background(), &leapmuxv1.GetSystemInfoRequest{})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnavailable, connect.CodeOf(err))
 }

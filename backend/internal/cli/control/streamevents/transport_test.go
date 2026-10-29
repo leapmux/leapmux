@@ -3,12 +3,14 @@ package streamevents
 import (
 	"context"
 	"log/slog"
+	"net/http"
 	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -314,8 +316,8 @@ type replayIdentityIPCHandler struct {
 	responsePayload []byte
 }
 
-func (handler *replayIdentityIPCHandler) StreamInner(ctx context.Context, request *connect.Request[leapmuxv1.StreamInnerRequest], stream *connect.ServerStream[leapmuxv1.StreamInnerEnvelope]) error {
-	handler.opening <- proto.Clone(request.Msg).(*leapmuxv1.StreamInnerRequest)
+func (handler *replayIdentityIPCHandler) StreamInner(ctx context.Context, request *leapmuxv1.StreamInnerRequest, stream leapmuxv1connect.ControlIPCServiceStreamInnerServerStream) error {
+	handler.opening <- proto.Clone(request).(*leapmuxv1.StreamInnerRequest)
 	payload := handler.responsePayload
 	if payload == nil {
 		var err error
@@ -375,10 +377,13 @@ func TestReplayOriginBothTransportsPreserveReceivedBytes(t *testing.T) {
 	})
 	t.Run("local IPC", func(t *testing.T) {
 		handler := &replayIdentityIPCHandler{opening: make(chan *leapmuxv1.StreamInnerRequest, 1), update: make(chan *leapmuxv1.UpdateStreamRequest, 1), responsePayload: payload}
-		_, serve := leapmuxv1connect.NewControlIPCServiceHandler(handler)
-		server := httptest.NewServer(serve)
+		connectServer := connect.NewServer()
+		leapmuxv1connect.RegisterControlIPCServiceHandler(connectServer, handler)
+		mux := http.NewServeMux()
+		connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
+		server := httptest.NewServer(mux)
 		t.Cleanup(server.Close)
-		client := leapmuxv1connect.NewControlIPCServiceClient(server.Client(), server.URL)
+		client := leapmuxv1connect.NewControlIPCServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0))))
 		frames := make(chan *leapmuxv1.WatchEventsResponse, 1)
 		handle, err := NewLocalIPCTransport(client, "worker", nil).OpenWatchEvents(t.Context(), request, func(frame *leapmuxv1.WatchEventsResponse) { frames <- frame })
 		require.NoError(t, err)
@@ -393,13 +398,122 @@ func TestReplayOriginBothTransportsPreserveReceivedBytes(t *testing.T) {
 	})
 }
 
-func (handler *replayIdentityIPCHandler) UpdateStream(_ context.Context, request *connect.Request[leapmuxv1.UpdateStreamRequest]) (*connect.Response[leapmuxv1.UpdateStreamResponse], error) {
-	handler.update <- proto.Clone(request.Msg).(*leapmuxv1.UpdateStreamRequest)
-	return connect.NewResponse(&leapmuxv1.UpdateStreamResponse{}), nil
+func (handler *replayIdentityIPCHandler) UpdateStream(_ context.Context, request *leapmuxv1.UpdateStreamRequest) (*leapmuxv1.UpdateStreamResponse, error) {
+	handler.update <- proto.Clone(request).(*leapmuxv1.UpdateStreamRequest)
+	return &leapmuxv1.UpdateStreamResponse{}, nil
 }
 
-func (*replayIdentityIPCHandler) Cancel(context.Context, *connect.Request[leapmuxv1.CancelRequest]) (*connect.Response[leapmuxv1.CancelResponse], error) {
-	return connect.NewResponse(&leapmuxv1.CancelResponse{}), nil
+func (*replayIdentityIPCHandler) Cancel(context.Context, *leapmuxv1.CancelRequest) (*leapmuxv1.CancelResponse, error) {
+	return &leapmuxv1.CancelResponse{}, nil
+}
+
+type endingIPCHandler struct {
+	leapmuxv1connect.UnimplementedControlIPCServiceHandler
+	finish        chan struct{}
+	result        error
+	cancelStarted chan struct{}
+	cancelReply   chan struct{}
+}
+
+func (h *endingIPCHandler) StreamInner(ctx context.Context, _ *leapmuxv1.StreamInnerRequest, stream leapmuxv1connect.ControlIPCServiceStreamInnerServerStream) error {
+	payload, err := proto.Marshal(&leapmuxv1.WatchEventsResponse{Event: &leapmuxv1.WatchEventsResponse_UpdateAck{UpdateAck: &leapmuxv1.WatchUpdateAck{UpdateId: 1}}})
+	if err != nil {
+		return err
+	}
+	if err := stream.Send(&leapmuxv1.StreamInnerEnvelope{Payload: payload}); err != nil {
+		return err
+	}
+	select {
+	case <-h.finish:
+		return h.result
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func (h *endingIPCHandler) Cancel(ctx context.Context, _ *leapmuxv1.CancelRequest) (*leapmuxv1.CancelResponse, error) {
+	close(h.finish)
+	close(h.cancelStarted)
+	select {
+	case <-h.cancelReply:
+		return &leapmuxv1.CancelResponse{}, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func TestLocalIPCTransport_DistinguishesCancellationFromTransportFailure(t *testing.T) {
+	for _, mode := range []string{"parent cancellation", "explicit cancellation", "remote failure"} {
+		t.Run(mode, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+			defer cancel()
+			parent, cancelParent := context.WithCancel(ctx)
+			defer cancelParent()
+			handler := &endingIPCHandler{
+				finish: make(chan struct{}), cancelStarted: make(chan struct{}), cancelReply: make(chan struct{}),
+				result: connect.NewError(connect.CodeCanceled, "remote subscription canceled"),
+			}
+			if mode == "remote failure" {
+				handler.result = connect.NewError(connect.CodeUnavailable, "worker disconnected")
+			}
+			server := connect.NewServer()
+			leapmuxv1connect.RegisterControlIPCServiceHandler(server, handler)
+			mux := http.NewServeMux()
+			connecthttp.Mount(mux, server)
+			httpServer := httptest.NewServer(mux)
+			t.Cleanup(httpServer.Close)
+			var replyOnce sync.Once
+			releaseReply := func() { replyOnce.Do(func() { close(handler.cancelReply) }) }
+			t.Cleanup(releaseReply)
+			client := leapmuxv1connect.NewControlIPCServiceClient(connect.NewClient(connecthttp.NewTransport(httpServer.Client(), httpServer.URL)))
+			logs := &capturingHandler{}
+			frame := make(chan struct{}, 1)
+			handle, err := NewLocalIPCTransport(client, "worker", slog.New(logs)).OpenWatchEvents(parent, &leapmuxv1.WatchEventsRequest{}, func(*leapmuxv1.WatchEventsResponse) { frame <- struct{}{} })
+			require.NoError(t, err)
+			select {
+			case <-frame:
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			cancelDone := make(chan struct{})
+			switch mode {
+			case "parent cancellation":
+				cancelParent()
+			case "explicit cancellation":
+				go func() { handle.Cancel(); close(cancelDone) }()
+				select {
+				case <-handler.cancelStarted:
+				case <-ctx.Done():
+					t.Fatal(ctx.Err())
+				}
+			case "remote failure":
+				close(handler.finish)
+			}
+			select {
+			case <-handle.Done():
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			}
+			logs.mu.Lock()
+			records := append([]slog.Record(nil), logs.records...)
+			logs.mu.Unlock()
+			if mode == "remote failure" {
+				require.Len(t, records, 1)
+				assert.Equal(t, slog.LevelError, records[0].Level)
+				assert.Equal(t, "streamevents: subscription ended with a transport error", records[0].Message)
+			} else {
+				assert.Empty(t, records, "intentional cancellation must not report a transport failure")
+			}
+			releaseReply()
+			if mode == "explicit cancellation" {
+				select {
+				case <-cancelDone:
+				case <-ctx.Done():
+					t.Fatal(ctx.Err())
+				}
+			}
+		})
+	}
 }
 
 func TestSubscriptionReplayIdentityBothTransportsPreserveActualRequestBytes(t *testing.T) {
@@ -432,10 +546,13 @@ func TestSubscriptionReplayIdentityBothTransportsPreserveActualRequestBytes(t *t
 	})
 	t.Run("local IPC", func(t *testing.T) {
 		handler := &replayIdentityIPCHandler{opening: make(chan *leapmuxv1.StreamInnerRequest, 1), update: make(chan *leapmuxv1.UpdateStreamRequest, 1)}
-		_, serve := leapmuxv1connect.NewControlIPCServiceHandler(handler)
-		server := httptest.NewServer(serve)
+		connectServer := connect.NewServer()
+		leapmuxv1connect.RegisterControlIPCServiceHandler(connectServer, handler)
+		mux := http.NewServeMux()
+		connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
+		server := httptest.NewServer(mux)
 		t.Cleanup(server.Close)
-		client := leapmuxv1connect.NewControlIPCServiceClient(server.Client(), server.URL)
+		client := leapmuxv1connect.NewControlIPCServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0))))
 		handle, err := NewLocalIPCTransport(client, "worker", nil).OpenWatchEvents(t.Context(), request, func(*leapmuxv1.WatchEventsResponse) {})
 		require.NoError(t, err)
 		t.Cleanup(func() { handle.Cancel(); <-handle.Done() })

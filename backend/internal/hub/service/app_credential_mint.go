@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 
 	"github.com/leapmux/leapmux/internal/hub/auth"
 	"github.com/leapmux/leapmux/internal/hub/mail"
@@ -100,7 +100,7 @@ func (m mintAuthority) assert(now time.Time) error {
 		return assertElevatedActor(m.actor, now)
 	default:
 		return connect.NewError(connect.CodeInternal,
-			errors.New("refusing to mint a credential that states no authority"))
+			"refusing to mint a credential that states no authority")
 	}
 }
 
@@ -135,7 +135,7 @@ func (m mintAuthority) clamp(spec apiTokenMint, now time.Time) (apiTokenMint, er
 	}
 	if remaining <= 0 {
 		return apiTokenMint{}, connect.NewError(connect.CodeFailedPrecondition,
-			errors.New("this credential reached its maximum lifetime; it cannot issue another"))
+			"this credential reached its maximum lifetime; it cannot issue another")
 	}
 	spec.Rotating = false
 	if spec.AccessTTL <= 0 || spec.AccessTTL > remaining {

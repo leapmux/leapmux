@@ -8,7 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
@@ -43,7 +44,7 @@ type appEnv struct {
 	// cache already answered for mounts elevationProbe behind that interceptor
 	// and asks it again.
 	contexts    *auth.AuthContextRegistry
-	interceptor connect.Interceptor
+	interceptor connect.ServerInterceptor
 	probeClient leapmuxv1connect.WorkspaceServiceClient
 	adminID     string
 	admin       string
@@ -90,10 +91,10 @@ func setupAppService(t *testing.T) *appEnv {
 	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, TokenValidator: tv})
 	closer := &recordingCredentialCloser{}
 	lifecycle := auth.NewCredentialLifecycleEffects(contexts, closer, nil)
-	path, handler := leapmuxv1connect.NewAppServiceHandler(
-		service.NewAppService(st, servicetest.NewSettingsManager(t, st, nil), tv, lifecycle),
-		connect.WithInterceptors(interceptor))
-	mux.Handle(path, handler)
+	connectServer := connect.NewServer(interceptor)
+	leapmuxv1connect.RegisterAppServiceHandler(connectServer,
+		service.NewAppService(st, servicetest.NewSettingsManager(t, st, nil), tv, lifecycle))
+	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 
 	server := httptest.NewUnstartedServer(mux)
 	server.EnableHTTP2 = true
@@ -101,7 +102,7 @@ func setupAppService(t *testing.T) *appEnv {
 	t.Cleanup(server.Close)
 
 	return &appEnv{
-		client:      leapmuxv1connect.NewAppServiceClient(server.Client(), server.URL, connect.WithGRPC()),
+		client:      leapmuxv1connect.NewAppServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC()))),
 		store:       st,
 		validator:   tv,
 		closer:      closer,
@@ -127,9 +128,9 @@ func (e *appEnv) registerApp(t *testing.T, session, name string, mutate func(*le
 	if mutate != nil {
 		mutate(msg)
 	}
-	resp, err := e.client.RegisterApp(context.Background(), authedReq(msg, session))
+	resp, err := e.client.RegisterApp(authedReq(context.Background(), msg, session))
 	require.NoError(t, err)
-	return resp.Msg
+	return resp
 }
 
 // The visibility rule, on both of the questions it answers.
@@ -146,20 +147,20 @@ func TestAppService_PrivateAppIsInvisibleToEverybodyElse(t *testing.T) {
 	mine := env.registerApp(t, env.user, "my-app", nil)
 
 	// The owner sees it.
-	listed, err := env.client.ListApps(ctx, authedReq(&leapmuxv1.ListAppsRequest{}, env.user))
+	listed, err := env.client.ListApps(authedReq(ctx, &leapmuxv1.ListAppsRequest{}, env.user))
 	require.NoError(t, err)
-	require.Len(t, listed.Msg.GetApps(), 1)
-	assert.Equal(t, mine.GetApp().GetClientId(), listed.Msg.GetApps()[0].GetClientId())
+	require.Len(t, listed.GetApps(), 1)
+	assert.Equal(t, mine.GetApp().GetClientId(), listed.GetApps()[0].GetClientId())
 
 	// A SECOND ordinary account does not, and cannot address it by id either.
 	otherID, otherSession := env.newPlainUser(t, "second")
 	require.NotEqual(t, env.userID, otherID)
 
-	theirs, err := env.client.ListApps(ctx, authedReq(&leapmuxv1.ListAppsRequest{}, otherSession))
+	theirs, err := env.client.ListApps(authedReq(ctx, &leapmuxv1.ListAppsRequest{}, otherSession))
 	require.NoError(t, err)
-	assert.Empty(t, theirs.Msg.GetApps(), "another account's private app must not appear")
+	assert.Empty(t, theirs.GetApps(), "another account's private app must not appear")
 
-	_, err = env.client.UpdateApp(ctx, authedReq(&leapmuxv1.UpdateAppRequest{
+	_, err = env.client.UpdateApp(authedReq(ctx, &leapmuxv1.UpdateAppRequest{
 		ClientId: mine.GetApp().GetClientId(), ClientName: ptr("stolen"),
 	}, otherSession))
 	require.Error(t, err)
@@ -182,7 +183,7 @@ func TestAppService_HubWideAppNeedsAnAdministrator(t *testing.T) {
 	env := setupAppService(t)
 	ctx := context.Background()
 
-	_, err := env.client.RegisterApp(ctx, authedReq(&leapmuxv1.RegisterAppRequest{
+	_, err := env.client.RegisterApp(authedReq(ctx, &leapmuxv1.RegisterAppRequest{
 		ClientName:   "hub-app",
 		RedirectUris: []string{"https://app.example.com/callback"},
 		Scopes:       []leapmuxv1.Scope{leapmuxv1.Scope_SCOPE_WORKSPACE_READ},
@@ -202,7 +203,7 @@ func TestAppService_HubWideAppNeedsAnAdministrator(t *testing.T) {
 	assert.Equal(t, store.OAuthClientSourceAdmin, row.RegistrationSource)
 
 	// An ordinary account may authorize it but not edit it.
-	_, err = env.client.UpdateApp(ctx, authedReq(&leapmuxv1.UpdateAppRequest{
+	_, err = env.client.UpdateApp(authedReq(ctx, &leapmuxv1.UpdateAppRequest{
 		ClientId: hubWide.GetApp().GetClientId(), ClientName: ptr("stolen"),
 	}, env.user))
 	require.Error(t, err)
@@ -224,15 +225,15 @@ func TestAppService_ReachFilterNarrowsTheListing(t *testing.T) {
 		m.Visibility = leapmuxv1.AppVisibility_APP_VISIBILITY_HUB_WIDE
 	})
 
-	ids := func(resp *connect.Response[leapmuxv1.ListAppsResponse]) map[string]bool {
+	ids := func(resp *leapmuxv1.ListAppsResponse) map[string]bool {
 		out := map[string]bool{}
-		for _, a := range resp.Msg.GetApps() {
+		for _, a := range resp.GetApps() {
 			out[a.GetClientId()] = true
 		}
 		return out
 	}
 
-	catalogue, err := env.client.ListApps(ctx, authedReq(&leapmuxv1.ListAppsRequest{
+	catalogue, err := env.client.ListApps(authedReq(ctx, &leapmuxv1.ListAppsRequest{
 		Visibility: leapmuxv1.AppVisibility_APP_VISIBILITY_HUB_WIDE,
 	}, env.admin))
 	require.NoError(t, err)
@@ -241,7 +242,7 @@ func TestAppService_ReachFilterNarrowsTheListing(t *testing.T) {
 	assert.False(t, ids(catalogue)[mine.GetApp().GetClientId()],
 		"an administrator's own private registration must not ride along")
 
-	private, err := env.client.ListApps(ctx, authedReq(&leapmuxv1.ListAppsRequest{
+	private, err := env.client.ListApps(authedReq(ctx, &leapmuxv1.ListAppsRequest{
 		Visibility: leapmuxv1.AppVisibility_APP_VISIBILITY_PRIVATE,
 	}, env.admin))
 	require.NoError(t, err)
@@ -249,7 +250,7 @@ func TestAppService_ReachFilterNarrowsTheListing(t *testing.T) {
 	assert.False(t, ids(private)[shared.GetApp().GetClientId()],
 		"the private listing is the caller's own registrations alone")
 
-	_, err = env.client.ListApps(ctx, authedReq(&leapmuxv1.ListAppsRequest{
+	_, err = env.client.ListApps(authedReq(ctx, &leapmuxv1.ListAppsRequest{
 		Visibility: leapmuxv1.AppVisibility_APP_VISIBILITY_HUB_WIDE,
 	}, env.user))
 	require.Error(t, err)
@@ -269,7 +270,7 @@ func TestAppService_NonAdministratorCannotRegisterAnAdminCeiling(t *testing.T) {
 	env := setupAppService(t)
 	ctx := context.Background()
 
-	_, err := env.client.RegisterApp(ctx, authedReq(&leapmuxv1.RegisterAppRequest{
+	_, err := env.client.RegisterApp(authedReq(ctx, &leapmuxv1.RegisterAppRequest{
 		ClientName:   "escalate",
 		RedirectUris: []string{"https://app.example.com/callback"},
 		Scopes: []leapmuxv1.Scope{
@@ -283,7 +284,7 @@ func TestAppService_NonAdministratorCannotRegisterAnAdminCeiling(t *testing.T) {
 	// The same rule on the EDIT path, which is the one a registration could
 	// otherwise walk around: register something ordinary, then widen it.
 	app := env.registerApp(t, env.user, "ordinary", nil)
-	_, err = env.client.UpdateApp(ctx, authedReq(&leapmuxv1.UpdateAppRequest{
+	_, err = env.client.UpdateApp(authedReq(ctx, &leapmuxv1.UpdateAppRequest{
 		ClientId:      app.GetApp().GetClientId(),
 		ReplaceScopes: true,
 		Scopes:        []leapmuxv1.Scope{leapmuxv1.Scope_SCOPE_ADMIN_SETTINGS},
@@ -334,10 +335,10 @@ func TestAppService_ClientSecretCrossesOnce(t *testing.T) {
 	assert.NotContains(t, string(row.SecretHash), secret, "the plaintext must not be stored")
 
 	// No later read returns it.
-	listed, err := env.client.ListApps(ctx, authedReq(&leapmuxv1.ListAppsRequest{}, env.user))
+	listed, err := env.client.ListApps(authedReq(ctx, &leapmuxv1.ListAppsRequest{}, env.user))
 	require.NoError(t, err)
-	require.NotEmpty(t, listed.Msg.GetApps())
-	for _, app := range listed.Msg.GetApps() {
+	require.NotEmpty(t, listed.GetApps())
+	for _, app := range listed.GetApps() {
 		assertNoSecretField(t, app.ProtoReflect(), secret)
 	}
 }
@@ -376,19 +377,19 @@ func TestAppService_BuiltInRegistrationTakesOnlyItsElevationSetting(t *testing.T
 		call func() error
 	}{
 		{"update", func() error {
-			_, err := env.client.UpdateApp(ctx, authedReq(&leapmuxv1.UpdateAppRequest{
+			_, err := env.client.UpdateApp(authedReq(ctx, &leapmuxv1.UpdateAppRequest{
 				ClientId: oauthapp.ControlCLIClientID, ClientName: ptr("renamed"),
 			}, env.admin))
 			return err
 		}},
 		{"revoke", func() error {
-			_, err := env.client.RevokeApp(ctx, authedReq(&leapmuxv1.RevokeAppRequest{
+			_, err := env.client.RevokeApp(authedReq(ctx, &leapmuxv1.RevokeAppRequest{
 				ClientId: oauthapp.ControlCLIClientID,
 			}, env.admin))
 			return err
 		}},
 		{"delete", func() error {
-			_, err := env.client.DeleteApp(ctx, authedReq(&leapmuxv1.DeleteAppRequest{
+			_, err := env.client.DeleteApp(authedReq(ctx, &leapmuxv1.DeleteAppRequest{
 				ClientId: oauthapp.ControlCLIClientID,
 			}, env.admin))
 			return err
@@ -409,7 +410,7 @@ func TestAppService_BuiltInRegistrationTakesOnlyItsElevationSetting(t *testing.T
 	require.True(t, row.ElevationAllowed, "the seeded row ships with elevation on")
 
 	// And the exception works, in both directions.
-	_, err = env.client.SetAppElevationAllowed(ctx, authedReq(&leapmuxv1.SetAppElevationAllowedRequest{
+	_, err = env.client.SetAppElevationAllowed(authedReq(ctx, &leapmuxv1.SetAppElevationAllowedRequest{
 		ClientId: oauthapp.ControlCLIClientID, Allowed: false,
 	}, env.admin))
 	require.NoError(t, err)
@@ -417,7 +418,7 @@ func TestAppService_BuiltInRegistrationTakesOnlyItsElevationSetting(t *testing.T
 	require.NoError(t, err)
 	assert.False(t, row.ElevationAllowed, "an operator can take the step-up leg away from the CLI")
 
-	_, err = env.client.SetAppElevationAllowed(ctx, authedReq(&leapmuxv1.SetAppElevationAllowedRequest{
+	_, err = env.client.SetAppElevationAllowed(authedReq(ctx, &leapmuxv1.SetAppElevationAllowedRequest{
 		ClientId: oauthapp.ControlCLIClientID, Allowed: true,
 	}, env.admin))
 	require.NoError(t, err)
@@ -455,9 +456,9 @@ func TestAppService_RevokeCascadesToEveryAccountsCredentials(t *testing.T) {
 		tokens[owner] = tokenID
 	}
 
-	resp, err := env.client.RevokeApp(ctx, authedReq(&leapmuxv1.RevokeAppRequest{ClientId: clientID}, env.admin))
+	resp, err := env.client.RevokeApp(authedReq(ctx, &leapmuxv1.RevokeAppRequest{ClientId: clientID}, env.admin))
 	require.NoError(t, err)
-	assert.EqualValues(t, 2, resp.Msg.GetRevokedCredentialCount(),
+	assert.EqualValues(t, 2, resp.GetRevokedCredentialCount(),
 		"the cascade reaches every account, not only the caller's")
 
 	for owner, tokenID := range tokens {
@@ -508,7 +509,7 @@ func TestAppService_DeleteIsRefusedWhileACredentialLives(t *testing.T) {
 		InstallationName: "laptop", GrantedScopes: "workspace:read", SecretHash: []byte("hash"),
 	}))
 
-	_, err := env.client.DeleteApp(ctx, authedReq(&leapmuxv1.DeleteAppRequest{ClientId: clientID}, env.user))
+	_, err := env.client.DeleteApp(authedReq(ctx, &leapmuxv1.DeleteAppRequest{ClientId: clientID}, env.user))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "1 credential(s), 1 of them live")
@@ -522,7 +523,7 @@ func TestAppService_DeleteIsRefusedWhileACredentialLives(t *testing.T) {
 	// would leave that history naming nothing.
 	_, err = env.store.APITokens().Revoke(ctx, tokenID)
 	require.NoError(t, err)
-	_, err = env.client.DeleteApp(ctx, authedReq(&leapmuxv1.DeleteAppRequest{ClientId: clientID}, env.user))
+	_, err = env.client.DeleteApp(authedReq(ctx, &leapmuxv1.DeleteAppRequest{ClientId: clientID}, env.user))
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "1 credential(s), 0 of them live",
 		"the two counts must be distinguishable, because they call for different actions")
@@ -530,7 +531,7 @@ func TestAppService_DeleteIsRefusedWhileACredentialLives(t *testing.T) {
 	// An app that never held one deletes cleanly, so the refusal is a real
 	// precondition rather than a verb that never works.
 	fresh := env.registerApp(t, env.user, "never-used", nil)
-	_, err = env.client.DeleteApp(ctx, authedReq(&leapmuxv1.DeleteAppRequest{
+	_, err = env.client.DeleteApp(authedReq(ctx, &leapmuxv1.DeleteAppRequest{
 		ClientId: fresh.GetApp().GetClientId(),
 	}, env.user))
 	require.NoError(t, err)
@@ -553,18 +554,18 @@ func TestAppService_OnlyAnAdministratorVouches(t *testing.T) {
 
 	// The OWNER cannot vouch for their own app, which is the whole point: a
 	// vouch that the registrant could write would say nothing.
-	_, err := env.client.VerifyApp(ctx, authedReq(&leapmuxv1.VerifyAppRequest{
+	_, err := env.client.VerifyApp(authedReq(ctx, &leapmuxv1.VerifyAppRequest{
 		ClientId: clientID, Verified: true,
 	}, env.user))
 	require.Error(t, err)
 	assert.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 
-	verified, err := env.client.VerifyApp(ctx, authedReq(&leapmuxv1.VerifyAppRequest{
+	verified, err := env.client.VerifyApp(authedReq(ctx, &leapmuxv1.VerifyAppRequest{
 		ClientId: clientID, Verified: true,
 	}, env.admin))
 	require.NoError(t, err)
-	require.NotNil(t, verified.Msg.GetApp().VerifiedAt)
-	assert.Equal(t, "admin", verified.Msg.GetApp().GetVerifiedByUsername())
+	require.NotNil(t, verified.GetApp().VerifiedAt)
+	assert.Equal(t, "admin", verified.GetApp().GetVerifiedByUsername())
 
 	// Both columns move together, which is what the half-vouch CHECK enforces.
 	row, err := env.store.OAuthClients().Get(ctx, clientID)
@@ -573,11 +574,11 @@ func TestAppService_OnlyAnAdministratorVouches(t *testing.T) {
 	assert.Equal(t, env.adminID, row.VerifiedBy)
 
 	// And a withdrawal clears both.
-	withdrawn, err := env.client.VerifyApp(ctx, authedReq(&leapmuxv1.VerifyAppRequest{
+	withdrawn, err := env.client.VerifyApp(authedReq(ctx, &leapmuxv1.VerifyAppRequest{
 		ClientId: clientID, Verified: false,
 	}, env.admin))
 	require.NoError(t, err)
-	assert.Nil(t, withdrawn.Msg.GetApp().VerifiedAt)
+	assert.Nil(t, withdrawn.GetApp().VerifiedAt)
 	row, err = env.store.OAuthClients().Get(ctx, clientID)
 	require.NoError(t, err)
 	assert.Nil(t, row.VerifiedAt)
@@ -600,24 +601,24 @@ func TestAppService_UpdateLeavesAbsentFieldsAlone(t *testing.T) {
 	})
 	clientID := app.GetApp().GetClientId()
 
-	updated, err := env.client.UpdateApp(ctx, authedReq(&leapmuxv1.UpdateAppRequest{
+	updated, err := env.client.UpdateApp(authedReq(ctx, &leapmuxv1.UpdateAppRequest{
 		ClientId: clientID, ClientName: ptr("renamed"),
 	}, env.user))
 	require.NoError(t, err)
-	assert.Equal(t, "renamed", updated.Msg.GetApp().GetClientName())
-	assert.Equal(t, "https://example.com", updated.Msg.GetApp().GetClientUri(), "an absent field is untouched")
-	assert.Len(t, updated.Msg.GetApp().GetRedirectUris(), 2, "an absent repeated field is untouched")
+	assert.Equal(t, "renamed", updated.GetApp().GetClientName())
+	assert.Equal(t, "https://example.com", updated.GetApp().GetClientUri(), "an absent field is untouched")
+	assert.Len(t, updated.GetApp().GetRedirectUris(), 2, "an absent repeated field is untouched")
 
 	// A repeated field cannot distinguish empty from absent, so the flag is
 	// what says "I mean to replace it".
-	replaced, err := env.client.UpdateApp(ctx, authedReq(&leapmuxv1.UpdateAppRequest{
+	replaced, err := env.client.UpdateApp(authedReq(ctx, &leapmuxv1.UpdateAppRequest{
 		ClientId:            clientID,
 		ReplaceRedirectUris: true,
 		RedirectUris:        []string{"https://app.example.com/only"},
 	}, env.user))
 	require.NoError(t, err)
-	assert.Equal(t, []string{"https://app.example.com/only"}, replaced.Msg.GetApp().GetRedirectUris())
-	assert.Equal(t, "renamed", replaced.Msg.GetApp().GetClientName(), "the earlier rename survives")
+	assert.Equal(t, []string{"https://app.example.com/only"}, replaced.GetApp().GetRedirectUris())
+	assert.Equal(t, "renamed", replaced.GetApp().GetClientName(), "the earlier rename survives")
 }
 
 // An app that can redirect needs somewhere to redirect TO, and the check runs
@@ -632,7 +633,7 @@ func TestAppService_AuthorizationCodeNeedsARedirectAddress(t *testing.T) {
 	env := setupAppService(t)
 	ctx := context.Background()
 
-	_, err := env.client.RegisterApp(ctx, authedReq(&leapmuxv1.RegisterAppRequest{
+	_, err := env.client.RegisterApp(authedReq(ctx, &leapmuxv1.RegisterAppRequest{
 		ClientName: "no-address",
 		Scopes:     []leapmuxv1.Scope{leapmuxv1.Scope_SCOPE_WORKSPACE_READ},
 		GrantTypes: []string{"authorization_code"},
@@ -641,7 +642,7 @@ func TestAppService_AuthorizationCodeNeedsARedirectAddress(t *testing.T) {
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 
 	app := env.registerApp(t, env.user, "has-address", nil)
-	_, err = env.client.UpdateApp(ctx, authedReq(&leapmuxv1.UpdateAppRequest{
+	_, err = env.client.UpdateApp(authedReq(ctx, &leapmuxv1.UpdateAppRequest{
 		ClientId:            app.GetApp().GetClientId(),
 		ReplaceRedirectUris: true,
 		RedirectUris:        nil,
@@ -672,7 +673,7 @@ func TestAppService_RegistrationMustNameItsPermissions(t *testing.T) {
 		"the zero value":   {leapmuxv1.Scope_SCOPE_UNSPECIFIED},
 	} {
 		t.Run(name+" is refused", func(t *testing.T) {
-			_, err := env.client.RegisterApp(ctx, authedReq(&leapmuxv1.RegisterAppRequest{
+			_, err := env.client.RegisterApp(authedReq(ctx, &leapmuxv1.RegisterAppRequest{
 				ClientName:   "asks-badly",
 				RedirectUris: []string{"https://app.example.com/callback"},
 				Scopes:       scopes,
@@ -745,7 +746,7 @@ func TestAppService_WritesNeedAProvenFactor(t *testing.T) {
 
 	refused := map[string]func() error{
 		"RegisterApp": func() error {
-			_, err := env.client.RegisterApp(ctx, authedReq(&leapmuxv1.RegisterAppRequest{
+			_, err := env.client.RegisterApp(authedReq(ctx, &leapmuxv1.RegisterAppRequest{
 				ClientName:   "second-app",
 				RedirectUris: []string{"https://app.example.com/callback"},
 				Scopes:       []leapmuxv1.Scope{leapmuxv1.Scope_SCOPE_WORKSPACE_READ},
@@ -755,20 +756,20 @@ func TestAppService_WritesNeedAProvenFactor(t *testing.T) {
 			return err
 		},
 		"UpdateApp": func() error {
-			_, err := env.client.UpdateApp(ctx, authedReq(&leapmuxv1.UpdateAppRequest{
+			_, err := env.client.UpdateApp(authedReq(ctx, &leapmuxv1.UpdateAppRequest{
 				ClientId: clientID, ReplaceRedirectUris: true,
 				RedirectUris: []string{"https://attacker.example.com/callback"},
 			}, plain))
 			return err
 		},
 		"SetAppElevationAllowed": func() error {
-			_, err := env.client.SetAppElevationAllowed(ctx, authedReq(&leapmuxv1.SetAppElevationAllowedRequest{
+			_, err := env.client.SetAppElevationAllowed(authedReq(ctx, &leapmuxv1.SetAppElevationAllowedRequest{
 				ClientId: clientID, Allowed: true,
 			}, plain))
 			return err
 		},
 		"VerifyApp": func() error {
-			_, err := env.client.VerifyApp(ctx, authedReq(&leapmuxv1.VerifyAppRequest{
+			_, err := env.client.VerifyApp(authedReq(ctx, &leapmuxv1.VerifyAppRequest{
 				ClientId: clientID, Verified: true,
 			}, plain))
 			return err
@@ -792,68 +793,73 @@ func TestAppService_WritesNeedAProvenFactor(t *testing.T) {
 	assert.Nil(t, row.VerifiedAt)
 
 	t.Run("ListApps is admitted", func(t *testing.T) {
-		_, err := env.client.ListApps(ctx, authedReq(&leapmuxv1.ListAppsRequest{}, plain))
+		_, err := env.client.ListApps(authedReq(ctx, &leapmuxv1.ListAppsRequest{}, plain))
 		assert.NoError(t, err, "a read must not demand a factor")
 	})
 	t.Run("RevokeApp is admitted", func(t *testing.T) {
-		_, err := env.client.RevokeApp(ctx, authedReq(&leapmuxv1.RevokeAppRequest{ClientId: clientID}, plain))
+		_, err := env.client.RevokeApp(authedReq(ctx, &leapmuxv1.RevokeAppRequest{ClientId: clientID}, plain))
 		assert.NoError(t, err, "retiring an app only reduces access; a delay is the attacker's gain")
 	})
 	t.Run("DeleteApp is admitted", func(t *testing.T) {
-		_, err := env.client.DeleteApp(ctx, authedReq(&leapmuxv1.DeleteAppRequest{ClientId: clientID}, plain))
+		_, err := env.client.DeleteApp(authedReq(ctx, &leapmuxv1.DeleteAppRequest{ClientId: clientID}, plain))
 		assert.NoError(t, err, "the registration holds no credential, so this removes an empty record")
 	})
 }
 
-// elevationProbe mounts a bare unary handler behind the SAME auth interceptor
-// the AppService runs under, and answers whether the calling credential carries
-// a live elevation window.
+// elevationProbe serves a stub WorkspaceService behind the SAME auth
+// interceptor the AppService runs under, and answers whether the calling
+// credential carries a live elevation window.
 //
 // It exists because the validation cache is not observable from outside
 // internal/hub/auth: the only honest way to ask "does the next request still
 // see the window" is to make one. The procedure is a real classified path so
 // the scope rung admits a workspace:read credential; the handler itself is a
 // stub, because what is under test is everything BEFORE it.
-func (e *appEnv) elevationProbe(t *testing.T, interceptor connect.Interceptor) string {
+func (e *appEnv) elevationProbe(t *testing.T, interceptor connect.ServerInterceptor) string {
 	t.Helper()
 	mux := http.NewServeMux()
-	mux.Handle(leapmuxv1connect.WorkspaceServiceListWorkspacesProcedure, connect.NewUnaryHandler(
-		leapmuxv1connect.WorkspaceServiceListWorkspacesProcedure,
-		func(ctx context.Context, _ *connect.Request[leapmuxv1.ListWorkspacesRequest],
-		) (*connect.Response[leapmuxv1.ListWorkspacesResponse], error) {
-			user, err := auth.MustGetUser(ctx)
-			if err != nil {
-				return nil, err
-			}
-			// The workspace id field carries the answer, so the probe needs no
-			// message of its own.
-			marker := "not-elevated"
-			if user.Elevated(time.Now().UTC()) {
-				marker = "elevated"
-			}
-			return connect.NewResponse(&leapmuxv1.ListWorkspacesResponse{
-				Workspaces: []*leapmuxv1.Workspace{{Id: marker}},
-			}), nil
-		},
-		connect.WithInterceptors(interceptor)))
+	connectServer := connect.NewServer(interceptor)
+	leapmuxv1connect.RegisterWorkspaceServiceHandler(connectServer, elevationProbeService{})
+	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 	server := httptest.NewUnstartedServer(mux)
 	server.EnableHTTP2 = true
 	server.StartTLS()
 	t.Cleanup(server.Close)
-	e.probeClient = leapmuxv1connect.NewWorkspaceServiceClient(server.Client(), server.URL, connect.WithGRPC())
+	e.probeClient = leapmuxv1connect.NewWorkspaceServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
 	return server.URL
+}
+
+// elevationProbeService answers ListWorkspaces only: the workspace id field
+// carries the answer, so the probe needs no message of its own. Every other
+// procedure is unimplemented.
+type elevationProbeService struct {
+	leapmuxv1connect.UnimplementedWorkspaceServiceHandler
+}
+
+func (elevationProbeService) ListWorkspaces(ctx context.Context, _ *leapmuxv1.ListWorkspacesRequest) (*leapmuxv1.ListWorkspacesResponse, error) {
+	user, err := auth.MustGetUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+	marker := "not-elevated"
+	if user.Elevated(time.Now().UTC()) {
+		marker = "elevated"
+	}
+	return &leapmuxv1.ListWorkspacesResponse{
+		Workspaces: []*leapmuxv1.Workspace{{Id: marker}},
+	}, nil
 }
 
 // probeElevation asks the probe whether this bearer is elevated RIGHT NOW,
 // through the interceptor's cached validation path.
 func (e *appEnv) probeElevation(t *testing.T, bearer string) string {
 	t.Helper()
-	req := connect.NewRequest(&leapmuxv1.ListWorkspacesRequest{})
-	req.Header().Set("Authorization", "Bearer "+bearer)
-	resp, err := e.probeClient.ListWorkspaces(context.Background(), req)
+	ctx, info := connect.NewClientContext(context.Background())
+	info.RequestHeader().Set("Authorization", "Bearer "+bearer)
+	resp, err := e.probeClient.ListWorkspaces(ctx, &leapmuxv1.ListWorkspacesRequest{})
 	require.NoError(t, err)
-	require.Len(t, resp.Msg.GetWorkspaces(), 1)
-	return resp.Msg.GetWorkspaces()[0].GetId()
+	require.Len(t, resp.GetWorkspaces(), 1)
+	return resp.GetWorkspaces()[0].GetId()
 }
 
 // TestAppService_TurningElevationOffDropsTheCachedWindow drives the whole
@@ -878,7 +884,7 @@ func TestAppService_TurningElevationOffDropsTheCachedWindow(t *testing.T) {
 
 	app := env.registerApp(t, env.admin, "elevating-app", nil)
 	clientID := app.GetApp().GetClientId()
-	_, err := env.client.SetAppElevationAllowed(ctx, authedReq(&leapmuxv1.SetAppElevationAllowedRequest{
+	_, err := env.client.SetAppElevationAllowed(authedReq(ctx, &leapmuxv1.SetAppElevationAllowedRequest{
 		ClientId: clientID, Allowed: true,
 	}, env.admin))
 	require.NoError(t, err)
@@ -906,7 +912,7 @@ func TestAppService_TurningElevationOffDropsTheCachedWindow(t *testing.T) {
 		"the window is live before the flag changes")
 
 	// The owner takes the right away, through the surface a person uses.
-	_, err = env.client.SetAppElevationAllowed(ctx, authedReq(&leapmuxv1.SetAppElevationAllowedRequest{
+	_, err = env.client.SetAppElevationAllowed(authedReq(ctx, &leapmuxv1.SetAppElevationAllowedRequest{
 		ClientId: clientID, Allowed: false,
 	}, env.admin))
 	require.NoError(t, err)
@@ -960,7 +966,7 @@ func TestAppService_NarrowingTheCeilingTearsDownOnlyWhatLostSomething(t *testing
 	losing := env.mintCredentialFor(t, clientID, "laptop", "workspace:read file:read worker:read")
 	keeping := env.mintCredentialFor(t, clientID, "desktop", "workspace:read")
 
-	_, err := env.client.UpdateApp(ctx, authedReq(&leapmuxv1.UpdateAppRequest{
+	_, err := env.client.UpdateApp(authedReq(ctx, &leapmuxv1.UpdateAppRequest{
 		ClientId: clientID, ReplaceScopes: true,
 		Scopes: []leapmuxv1.Scope{leapmuxv1.Scope_SCOPE_WORKSPACE_READ},
 	}, env.admin))
@@ -998,7 +1004,7 @@ func TestAppService_WideningTheCeilingClosesNothing(t *testing.T) {
 	clientID := app.GetApp().GetClientId()
 	env.mintCredentialFor(t, clientID, "laptop", "workspace:read")
 
-	_, err := env.client.UpdateApp(ctx, authedReq(&leapmuxv1.UpdateAppRequest{
+	_, err := env.client.UpdateApp(authedReq(ctx, &leapmuxv1.UpdateAppRequest{
 		ClientId: clientID, ReplaceScopes: true,
 		Scopes: []leapmuxv1.Scope{
 			leapmuxv1.Scope_SCOPE_WORKSPACE_READ,
@@ -1026,7 +1032,7 @@ func TestAppService_AnEditThatLeavesTheCeilingAloneClosesNothing(t *testing.T) {
 	clientID := app.GetApp().GetClientId()
 	env.mintCredentialFor(t, clientID, "laptop", "workspace:read")
 
-	_, err := env.client.UpdateApp(ctx, authedReq(&leapmuxv1.UpdateAppRequest{
+	_, err := env.client.UpdateApp(authedReq(ctx, &leapmuxv1.UpdateAppRequest{
 		ClientId: clientID, ClientName: ptr("a new name"),
 	}, env.admin))
 	require.NoError(t, err)
@@ -1069,7 +1075,7 @@ func TestAppService_ANarrowingSucceedsWhenTheOLDCeilingIsUnreadable(t *testing.T
 
 	// The repair: an administrator replaces the drifted ceiling with a legible
 	// one.
-	_, err = env.client.UpdateApp(ctx, authedReq(&leapmuxv1.UpdateAppRequest{
+	_, err = env.client.UpdateApp(authedReq(ctx, &leapmuxv1.UpdateAppRequest{
 		ClientId: clientID, ReplaceScopes: true,
 		Scopes: []leapmuxv1.Scope{leapmuxv1.Scope_SCOPE_WORKSPACE_READ},
 	}, env.admin))
@@ -1111,7 +1117,7 @@ func TestAppService_UpdateClosesTheCeiling(t *testing.T) {
 	require.NoError(t, err)
 	assert.Contains(t, row.Scopes, "terminal:read", "registration closes the ceiling")
 
-	_, err = env.client.UpdateApp(ctx, authedReq(&leapmuxv1.UpdateAppRequest{
+	_, err = env.client.UpdateApp(authedReq(ctx, &leapmuxv1.UpdateAppRequest{
 		ClientId:      app.GetApp().GetClientId(),
 		ReplaceScopes: true,
 		// terminal:write ALONE, the exact list the pre-filled checkboxes send
@@ -1152,11 +1158,11 @@ func TestAppService_IncludeRevokedListsRetiredRegistrations(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, int64(1), rows, "the retirement must land")
 
-	plain, err := env.client.ListApps(ctx, authedReq(&leapmuxv1.ListAppsRequest{}, env.admin))
+	plain, err := env.client.ListApps(authedReq(ctx, &leapmuxv1.ListAppsRequest{}, env.admin))
 	require.NoError(t, err)
-	ids := func(resp *connect.Response[leapmuxv1.ListAppsResponse]) map[string]bool {
+	ids := func(resp *leapmuxv1.ListAppsResponse) map[string]bool {
 		out := map[string]bool{}
-		for _, a := range resp.Msg.GetApps() {
+		for _, a := range resp.GetApps() {
 			out[a.GetClientId()] = true
 		}
 		return out
@@ -1164,13 +1170,13 @@ func TestAppService_IncludeRevokedListsRetiredRegistrations(t *testing.T) {
 	assert.False(t, ids(plain)[retired.GetApp().GetClientId()], "the default listing stays live-only")
 	assert.True(t, ids(plain)[live.GetApp().GetClientId()])
 
-	widened, err := env.client.ListApps(ctx, authedReq(&leapmuxv1.ListAppsRequest{
+	widened, err := env.client.ListApps(authedReq(ctx, &leapmuxv1.ListAppsRequest{
 		IncludeRevoked: true,
 	}, env.admin))
 	require.NoError(t, err)
 	assert.True(t, ids(widened)[retired.GetApp().GetClientId()],
 		"the widened listing surfaces the retired registration")
-	for _, a := range widened.Msg.GetApps() {
+	for _, a := range widened.GetApps() {
 		if a.GetClientId() == retired.GetApp().GetClientId() {
 			assert.NotNil(t, a.GetRevokedAt(), "the row reports its retirement")
 		}
@@ -1192,7 +1198,7 @@ func TestAppService_UpdateValidatesTheIconBeforeAnyWriteLands(t *testing.T) {
 	app := env.registerApp(t, env.admin, "icon-order", nil)
 	clientID := app.GetApp().GetClientId()
 
-	_, err := env.client.UpdateApp(ctx, authedReq(&leapmuxv1.UpdateAppRequest{
+	_, err := env.client.UpdateApp(authedReq(ctx, &leapmuxv1.UpdateAppRequest{
 		ClientId:    clientID,
 		ClientName:  proto.String("renamed-mid-flight"),
 		ReplaceIcon: true,
@@ -1226,10 +1232,10 @@ func TestAppService_VouchOnARetiredAppAnswersNotFound(t *testing.T) {
 
 	// The OWNER retires their own registration; the ADMINISTRATOR's vouch then
 	// meets the retired row.
-	_, err := env.client.RevokeApp(ctx, authedReq(&leapmuxv1.RevokeAppRequest{ClientId: clientID}, env.user))
+	_, err := env.client.RevokeApp(authedReq(ctx, &leapmuxv1.RevokeAppRequest{ClientId: clientID}, env.user))
 	require.NoError(t, err)
 
-	_, err = env.client.VerifyApp(ctx, authedReq(&leapmuxv1.VerifyAppRequest{
+	_, err = env.client.VerifyApp(authedReq(ctx, &leapmuxv1.VerifyAppRequest{
 		ClientId: clientID, Verified: true,
 	}, env.admin))
 	require.Error(t, err)
@@ -1259,7 +1265,7 @@ func TestAppService_NoOpElevationToggleKeepsTheCachedWindow(t *testing.T) {
 
 	app := env.registerApp(t, env.admin, "steady-app", nil)
 	clientID := app.GetApp().GetClientId()
-	_, err := env.client.SetAppElevationAllowed(ctx, authedReq(&leapmuxv1.SetAppElevationAllowedRequest{
+	_, err := env.client.SetAppElevationAllowed(authedReq(ctx, &leapmuxv1.SetAppElevationAllowedRequest{
 		ClientId: clientID, Allowed: true,
 	}, env.admin))
 	require.NoError(t, err)
@@ -1297,7 +1303,7 @@ func TestAppService_NoOpElevationToggleKeepsTheCachedWindow(t *testing.T) {
 
 	// The NO-OP: the request carries the value the row already holds, so the
 	// handler must treat the flag as unmoved and keep the cache.
-	_, err = env.client.SetAppElevationAllowed(ctx, authedReq(&leapmuxv1.SetAppElevationAllowedRequest{
+	_, err = env.client.SetAppElevationAllowed(authedReq(ctx, &leapmuxv1.SetAppElevationAllowedRequest{
 		ClientId: clientID, Allowed: false,
 	}, env.admin))
 	require.NoError(t, err)

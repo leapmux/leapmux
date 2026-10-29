@@ -12,7 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/leapmux/leapmux/channelwire"
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/generated/proto/leapmux/v1/leapmuxv1connect"
@@ -72,12 +73,14 @@ const handlerGrace = 5 * time.Second
 const httpDrainTimeout = 10 * time.Second
 
 // maxConnectRequestBytes limits every inbound message on the hub's Connect
-// surface. Per MESSAGE, not per stream -- see connect.WithReadMaxBytes, which
-// also documents that "both clients and handlers default to allowing any request
-// size". Without it the hub buffers an authenticated SubmitOps body whole before
-// the handler ever sees it, and then applies it on that user's SINGLE-WRITER
-// manager goroutine, so one oversized batch serializes every other tab's submits behind
-// its own unmarshal + validate.
+// surface. Per MESSAGE, not per stream -- see connecthttp.WithReadMaxBytes.
+// The budget is stated here rather than inherited, because connect v2's
+// own default is 4 MiB per message where v1 allowed any size: leaving it to
+// the default would move this number silently on a library upgrade. Without
+// a cap the hub buffers an authenticated SubmitOps body whole before the
+// handler ever sees it, and then applies it on that user's SINGLE-WRITER
+// manager goroutine, so one oversized batch serializes every other tab's
+// submits behind its own unmarshal + validate.
 //
 // Sized from crdt.MaxResumeDeltaBytes, the budget a resume may read back out of
 // the journal, rather than from a round number: a batch bigger than that is one
@@ -87,21 +90,23 @@ const httpDrainTimeout = 10 * time.Second
 // tab inventory (identity fields only) and a relayed ChannelMessage, itself
 // chunk-capped at contracts.MaxCiphertextForChunk (64 KiB).
 //
-// READS only; this option set deliberately caps no response (no
-// WithSendMaxBytes), because GetMaterialized legitimately returns a multi-MB snapshot for a large
+// READS only; mountConnect deliberately caps no response (no
+// connecthttp.WithSendMaxBytes), because GetMaterialized legitimately returns a multi-MB snapshot for a large
 // account.
+//
+// A constant rather than a setting. There is no operator-facing knob for it,
+// and max_message_size is a different layer and must not be reused: see
+// https://github.com/leapmux/leapmux/issues/554
 const maxConnectRequestBytes = crdt.MaxResumeDeltaBytes
 
-// connectOptions is the option set EVERY Connect handler on the hub mux is
-// registered with. A function rather than an inline literal so the request-size
-// cap is reachable from a test without standing up a whole Server (NewServer
-// needs a live store, listeners and a keystore), and so a future handler cannot
-// be mounted with a hand-rolled option list that quietly omits the cap.
-func connectOptions(interceptors ...connect.Interceptor) connect.Option {
-	return connect.WithOptions(
-		connect.WithInterceptors(interceptors...),
-		connect.WithReadMaxBytes(maxConnectRequestBytes),
-	)
+// mountConnect mounts the hub's Connect services on mux with the
+// request-size cap applied.
+//
+// It is the one place that applies the cap. Production and the test use
+// this helper, so the test verifies the effective cap through the same mount.
+// The test documents why the current library default masks an omitted option.
+func mountConnect(mux connecthttp.ServeMux, server *connect.Server) {
+	connecthttp.Mount(mux, server, connecthttp.WithReadMaxBytes(maxConnectRequestBytes))
 }
 
 // logQueueMemoryBudgets writes the startup account of outbound queue memory:
@@ -153,7 +158,7 @@ func logQueueMemoryBudgets(logger *slog.Logger, basis memlimit.Basis, budgets ..
 //
 // A function rather than an inline branch so all three branches are reachable
 // from a test without standing up a whole Server, which needs a live store,
-// listeners and a keystore. connectOptions above exists for the same reason.
+// listeners and a keystore.
 //
 // The three branches, in the order this function tests them:
 //
@@ -513,19 +518,25 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// until the day the cap was supposed to hold and did not.
 	slog.Info("per-user connection limit",
 		"max_connections_per_user", startupLimits.MaxConnectionsPerUser, "unlimited", startupLimits.MaxConnectionsPerUser == 0)
-	connectOpts := connectOptions(
+	// The ONE Connect server every procedure on the hub mux registers on.
+	// One interceptor chain, built here, and one request-size cap, applied
+	// once at the connecthttp.Mount call below. Both are structural: no
+	// handler can be mounted with a hand-rolled option list that quietly
+	// omits the cap, because there is no per-handler option list to write.
+	connectServer := connect.NewServer(
 		auth.NewShutdownInterceptor(shutdownCh),
 		metrics.NewInterceptor(),
 		auth.NewTimeoutInterceptor(apiTimeout),
 		authInterceptor,
 		// AFTER the auth interceptor, because it reports state that belongs to
 		// the credential that one resolved. It installs the holder
-		// slideElevation writes into, and copies the new deadline onto the
-		// response, so a client learns that its own restricted action moved the
-		// window. Without it the client's mirror is early by up to
+		// slideElevation writes into, copies the new deadline onto the
+		// response so a client learns that its own restricted action moved
+		// the window, and marks a refusal whose remedy is a proven factor.
+		// Without it the client's deadline mirror is early by up to
 		// auth.ElevationWindow for the whole window, because a slide
 		// deliberately emits no event.
-		service.NewElevationSlideInterceptor(),
+		service.NewElevationResponseInterceptor(),
 		captcha.NewInterceptor(captchaMgr),
 		ratelimit.NewInterceptor(rateLimitMgr),
 	)
@@ -620,8 +631,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 				"max_workers_per_user", l.MaxWorkersPerUser)
 		}
 	})
-	connectorPath, connectorHandler := leapmuxv1connect.NewWorkerConnectorServiceHandler(connectorSvc, connectOpts)
-	mux.Handle(connectorPath, connectorHandler)
+	leapmuxv1connect.RegisterWorkerConnectorServiceHandler(connectServer, connectorSvc)
 	// One delegation-scope cache shared by SubmitOps (resolve) and worker
 	// deregistration (evict); see auth.DelegationScopeCache.
 	scopeCache := auth.NewDelegationScopeCache(st)
@@ -631,21 +641,18 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// scope, and leaves its owner's client informed.
 	workerEffects := service.NewWorkerDeregisterEffects(scopeCache, notifierSvc, broadcaster)
 	mgmtSvc := service.NewWorkerManagementService(st, wMgr, broadcaster, notifierSvc, mailSender, mailRenderer, setMgr, scopeCache)
-	mgmtPath, mgmtHandler := leapmuxv1connect.NewWorkerManagementServiceHandler(mgmtSvc, connectOpts)
-	mux.Handle(mgmtPath, mgmtHandler)
+	leapmuxv1connect.RegisterWorkerManagementServiceHandler(connectServer, mgmtSvc)
 
 	channelSvc := service.NewChannelService(st, wMgr, cMgr, pendingReqs, authContexts)
 	lifecycle := auth.NewCredentialLifecycleEffects(authContexts, channelSvc, cMgr)
-	channelPath, channelHandler := leapmuxv1connect.NewChannelServiceHandler(channelSvc, connectOpts)
-	mux.Handle(channelPath, channelHandler)
+	leapmuxv1connect.RegisterChannelServiceHandler(connectServer, channelSvc)
 
 	authSvc := service.NewAuthService(service.AuthServiceDeps{
 		Store: st, Config: cfg, Settings: setMgr, Lifecycle: lifecycle, Keystore: ks,
 		Mail: mailSender, Renderer: mailRenderer, Captcha: captchaMgr,
 		Listen: listenReports, SoloGate: authContexts.SoloGate(),
 	})
-	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(authSvc, connectOpts)
-	mux.Handle(authPath, authHandler)
+	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authSvc)
 
 	// WebSocket endpoint for encrypted channel relay (Frontend <-> Worker).
 	// The cookie-name policy resolves per connection, so a secure_cookies
@@ -693,8 +700,7 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// shared lifecycle, whose RevokeUserPreservingSession hard-closes every
 	// channel a user owns alongside the delegation-token revocation.
 	userSvc := service.NewUserService(st, cfg, setMgr, lifecycle, mailSender, mailRenderer, ks)
-	userPath, userHandler := leapmuxv1connect.NewUserServiceHandler(userSvc, connectOpts)
-	mux.Handle(userPath, userHandler)
+	leapmuxv1connect.RegisterUserServiceHandler(connectServer, userSvc)
 
 	// The admin services: the authenticated, online surface of hub
 	// administration, restricted to admin users by the auth interceptor's
@@ -758,12 +764,10 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	adminNetworkSvc := service.NewAdminNetworkService(service.AdminNetworkServiceDeps{
 		Config: cfg, Settings: setMgr, SoloGate: authContexts.SoloGate(), Listen: listenReports,
 	})
-	adminNetworkPath, adminNetworkHandler := leapmuxv1connect.NewAdminNetworkServiceHandler(adminNetworkSvc, connectOpts)
-	mux.Handle(adminNetworkPath, adminNetworkHandler)
+	leapmuxv1connect.RegisterAdminNetworkServiceHandler(connectServer, adminNetworkSvc)
 
 	adminSettingsSvc := service.NewAdminSettingsService(setMgr, cfg, st)
-	adminSettingsPath, adminSettingsHandler := leapmuxv1connect.NewAdminSettingsServiceHandler(adminSettingsSvc, connectOpts)
-	mux.Handle(adminSettingsPath, adminSettingsHandler)
+	leapmuxv1connect.RegisterAdminSettingsServiceHandler(connectServer, adminSettingsSvc)
 
 	adminUserSvc := service.NewAdminUserService(service.AdminUserServiceDeps{
 		Store:         st,
@@ -774,16 +778,13 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 		Mail:          mailSender,
 		Renderer:      mailRenderer,
 	})
-	adminUserPath, adminUserHandler := leapmuxv1connect.NewAdminUserServiceHandler(adminUserSvc, connectOpts)
-	mux.Handle(adminUserPath, adminUserHandler)
+	leapmuxv1connect.RegisterAdminUserServiceHandler(connectServer, adminUserSvc)
 
 	adminWorkerSvc := service.NewAdminWorkerService(st, workerEffects)
-	adminWorkerPath, adminWorkerHandler := leapmuxv1connect.NewAdminWorkerServiceHandler(adminWorkerSvc, connectOpts)
-	mux.Handle(adminWorkerPath, adminWorkerHandler)
+	leapmuxv1connect.RegisterAdminWorkerServiceHandler(connectServer, adminWorkerSvc)
 
 	adminIdPSvc := service.NewAdminIdPService(st, ks, idpHandler)
-	adminIdPPath, adminIdPHandler := leapmuxv1connect.NewAdminIdPServiceHandler(adminIdPSvc, connectOpts)
-	mux.Handle(adminIdPPath, adminIdPHandler)
+	leapmuxv1connect.RegisterAdminIdPServiceHandler(connectServer, adminIdPSvc)
 
 	// AppService is the app REGISTRATION surface, and it is deliberately NOT an
 	// admin service: an ordinary user registers apps for themself through it,
@@ -791,20 +792,16 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	// The two verbs that do need an administrator (a hub-wide registration and
 	// a vouch) say so in their own handlers.
 	appSvc := service.NewAppService(st, setMgr, tokenValidator, lifecycle)
-	appPath, appHandler := leapmuxv1connect.NewAppServiceHandler(appSvc, connectOpts)
-	mux.Handle(appPath, appHandler)
+	leapmuxv1connect.RegisterAppServiceHandler(connectServer, appSvc)
 
 	sectionSvc := service.NewSectionService(st)
-	sectionPath, sectionHandler := leapmuxv1connect.NewSectionServiceHandler(sectionSvc, connectOpts)
-	mux.Handle(sectionPath, sectionHandler)
+	leapmuxv1connect.RegisterSectionServiceHandler(connectServer, sectionSvc)
 
 	workspaceSvc := service.NewWorkspaceService(st, crdtRegistry, reconcileNudger)
-	workspacePath, workspaceHandler := leapmuxv1connect.NewWorkspaceServiceHandler(workspaceSvc, connectOpts)
-	mux.Handle(workspacePath, workspaceHandler)
+	leapmuxv1connect.RegisterWorkspaceServiceHandler(connectServer, workspaceSvc)
 
 	crdtSvc := service.NewCRDTService(st, crdtRegistry, slog.Default(), scopeCache)
-	crdtPath, crdtHandler := leapmuxv1connect.NewUserCRDTHandler(crdtSvc, connectOpts)
-	mux.Handle(crdtPath, crdtHandler)
+	leapmuxv1connect.RegisterUserCRDTHandler(connectServer, crdtSvc)
 
 	// WebSocket endpoint for the CRDT event stream. Frontend opens a
 	// single `/ws/userevents?workspace_ids=...` connection per session
@@ -819,8 +816,14 @@ func NewServer(cfg *config.Config, opts ...ServerOption) (*Server, error) {
 	mux.Handle(contracts.WSRouteUserEvents, userEventsHandler)
 
 	reconcilerSvc := service.NewWorkerReconcilerService(st)
-	reconcilerPath, reconcilerHandler := leapmuxv1connect.NewWorkerReconcilerServiceHandler(reconcilerSvc, connectOpts)
-	mux.Handle(reconcilerPath, reconcilerHandler)
+	leapmuxv1connect.RegisterWorkerReconcilerServiceHandler(connectServer, reconcilerSvc)
+
+	// Every registered Connect procedure, mounted once, with the shared
+	// request-size cap of maxConnectRequestBytes applied to all of them.
+	// Register must run first: Mount installs one route per registered
+	// procedure, plus a per-service subtree, and leaves unknown services to
+	// fall through to the catch-all below.
+	mountConnect(mux, connectServer)
 
 	// Prometheus metrics endpoint.
 	mux.Handle("/metrics", promhttp.Handler())

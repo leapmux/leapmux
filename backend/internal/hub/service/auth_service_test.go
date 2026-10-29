@@ -12,7 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -55,19 +56,19 @@ func setupAuthTestServerBase(t *testing.T, cfg *config.Config, seed authTestSeed
 	mux := http.NewServeMux()
 	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
 	t.Cleanup(sc.Stop)
-	opts := connect.WithInterceptors(interceptor)
 	var closer auth.CredentialChannelCloser
 	if len(closers) > 0 {
 		closer = closers[0]
 	}
 	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, cfg, set, auth.NewCredentialLifecycleEffects(sc, closer, nil)))
-	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
-	mux.Handle(path, handler)
+	connectServer := connect.NewServer(interceptor)
+	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authSvc)
+	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	client := leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL)
+	client := leapmuxv1connect.NewAuthServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0))))
 	return client, st, set
 }
 
@@ -115,17 +116,18 @@ func TestAuthService_LoginSuccess(t *testing.T) {
 
 	client, _, _ := setupAuthTestServer(t, testConfig(), nil)
 
-	resp, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
+	ctx, callInfo := connect.NewClientContext(context.Background())
+	resp, err := client.Login(ctx, &leapmuxv1.LoginRequest{
 		Username: "admin",
 		Password: "admin123",
-	}))
+	})
 	require.NoError(t, err)
 
-	assert.Equal(t, "admin", resp.Msg.GetUser().GetUsername())
-	assert.True(t, resp.Msg.GetUser().GetIsAdmin())
+	assert.Equal(t, "admin", resp.GetUser().GetUsername())
+	assert.True(t, resp.GetUser().GetIsAdmin())
 
 	// Verify Set-Cookie header is present with session cookie.
-	setCookie := resp.Header().Get("Set-Cookie")
+	setCookie := callInfo.ResponseHeader().Get("Set-Cookie")
 	assert.NotEmpty(t, setCookie)
 	assert.Contains(t, setCookie, auth.CookieName+"=")
 	assert.Contains(t, setCookie, "HttpOnly")
@@ -136,10 +138,10 @@ func TestAuthService_LoginInvalidPassword(t *testing.T) {
 
 	client, _, _ := setupAuthTestServer(t, testConfig(), nil)
 
-	_, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
+	_, err := client.Login(context.Background(), &leapmuxv1.LoginRequest{
 		Username: "admin",
 		Password: "wrongpwd",
-	}))
+	})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
@@ -148,16 +150,16 @@ func TestAuthService_SetInitialSoloPasswordCreatesElevatedSession(t *testing.T) 
 	client, st, _ := setupAuthTestServerBase(t, &config.Config{SoloMode: true}, nil)
 	require.NoError(t, bootstrap.Run(context.Background(), st, true))
 
-	request := connect.NewRequest(&leapmuxv1.SetInitialSoloPasswordRequest{
+	callCtx, callInfo := connect.NewClientContext(context.Background())
+	callInfo.RequestHeader().Set("User-Agent", "setup-test")
+	response, err := client.SetInitialSoloPassword(callCtx, &leapmuxv1.SetInitialSoloPasswordRequest{
 		Password: "correct-horse-battery-staple",
 	})
-	request.Header().Set("User-Agent", "setup-test")
-	response, err := client.SetInitialSoloPassword(context.Background(), request)
 	require.NoError(t, err)
-	assert.Equal(t, usernames.Solo, response.Msg.GetUser().GetUsername())
-	assert.True(t, response.Msg.GetUser().GetPasswordSet())
+	assert.Equal(t, usernames.Solo, response.GetUser().GetUsername())
+	assert.True(t, response.GetUser().GetPasswordSet())
 
-	sessionID := sessionFromCookie(t, response.Header().Get("Set-Cookie"))
+	sessionID := sessionFromCookie(t, callInfo.ResponseHeader().Get("Set-Cookie"))
 	info, err := auth.ValidateToken(context.Background(), st, sessionID)
 	require.NoError(t, err)
 	assert.True(t, info.Elevated(time.Now()))
@@ -167,7 +169,7 @@ func TestAuthService_SetInitialSoloPasswordCreatesElevatedSession(t *testing.T) 
 	// client that had to recover it from a following GetCurrentUser would show
 	// the operator an un-elevated session, and prompt for the password they
 	// just chose, whenever that call failed transiently.
-	reported := response.Msg.GetElevationExpiresAt()
+	reported := response.GetElevationExpiresAt()
 	require.NotNil(t, reported, "the reply must carry the elevation it granted")
 	assert.WithinDuration(t, time.Now().Add(auth.ElevationWindow), reported.AsTime(), time.Minute)
 	assert.True(t, info.Elevated(reported.AsTime().Add(-time.Second)),
@@ -182,8 +184,7 @@ func TestAuthService_SetInitialSoloPasswordCreatesElevatedSession(t *testing.T) 
 	require.NoError(t, err)
 	assert.True(t, matched)
 
-	_, err = client.SetInitialSoloPassword(context.Background(), connect.NewRequest(
-		&leapmuxv1.SetInitialSoloPasswordRequest{Password: "another-correct-password"}))
+	_, err = client.SetInitialSoloPassword(context.Background(), &leapmuxv1.SetInitialSoloPasswordRequest{Password: "another-correct-password"})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 }
@@ -191,8 +192,7 @@ func TestAuthService_SetInitialSoloPasswordCreatesElevatedSession(t *testing.T) 
 func TestAuthService_SetInitialSoloPasswordRefusesOtherModes(t *testing.T) {
 	t.Parallel()
 	client, _, _ := setupAuthTestServer(t, testConfig(), nil)
-	_, err := client.SetInitialSoloPassword(context.Background(), connect.NewRequest(
-		&leapmuxv1.SetInitialSoloPasswordRequest{Password: "correct-horse-battery-staple"}))
+	_, err := client.SetInitialSoloPassword(context.Background(), &leapmuxv1.SetInitialSoloPasswordRequest{Password: "correct-horse-battery-staple"})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 }
@@ -201,15 +201,14 @@ func TestAuthService_SetInitialSoloPasswordRejectsAnEmptyPasswordWithoutClaiming
 	client, st, _ := setupAuthTestServerBase(t, &config.Config{SoloMode: true}, nil)
 	require.NoError(t, bootstrap.Run(context.Background(), st, true))
 
-	_, err := client.SetInitialSoloPassword(context.Background(), connect.NewRequest(
-		&leapmuxv1.SetInitialSoloPasswordRequest{}))
+	_, err := client.SetInitialSoloPassword(context.Background(), &leapmuxv1.SetInitialSoloPasswordRequest{})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 
-	response, err := client.SetInitialSoloPassword(context.Background(), connect.NewRequest(
-		&leapmuxv1.SetInitialSoloPasswordRequest{Password: "correct-horse-battery-staple"}))
+	callCtx, callInfo := connect.NewClientContext(context.Background())
+	_, err = client.SetInitialSoloPassword(callCtx, &leapmuxv1.SetInitialSoloPasswordRequest{Password: "correct-horse-battery-staple"})
 	require.NoError(t, err)
-	assert.NotEmpty(t, sessionFromCookie(t, response.Header().Get("Set-Cookie")))
+	assert.NotEmpty(t, sessionFromCookie(t, callInfo.ResponseHeader().Get("Set-Cookie")))
 }
 
 func TestAuthService_ConcurrentInitialSoloPasswordHasOneWinner(t *testing.T) {
@@ -218,8 +217,8 @@ func TestAuthService_ConcurrentInitialSoloPasswordHasOneWinner(t *testing.T) {
 
 	const callers = 6
 	type result struct {
-		response *connect.Response[leapmuxv1.SetInitialSoloPasswordResponse]
-		err      error
+		info *connect.CallInfo
+		err  error
 	}
 	results := make(chan result, callers)
 	var start sync.WaitGroup
@@ -230,9 +229,11 @@ func TestAuthService_ConcurrentInitialSoloPasswordHasOneWinner(t *testing.T) {
 		go func() {
 			defer workers.Done()
 			start.Wait()
-			response, err := client.SetInitialSoloPassword(context.Background(), connect.NewRequest(
-				&leapmuxv1.SetInitialSoloPasswordRequest{Password: fmt.Sprintf("correct-password-%d", index)}))
-			results <- result{response: response, err: err}
+			// Concurrent calls need a separate CallInfo each: one shared
+			// handle would race its response metadata.
+			ctx, info := connect.NewClientContext(context.Background())
+			_, err := client.SetInitialSoloPassword(ctx, &leapmuxv1.SetInitialSoloPasswordRequest{Password: fmt.Sprintf("correct-password-%d", index)})
+			results <- result{info: info, err: err}
 		}()
 	}
 	start.Done()
@@ -246,7 +247,7 @@ func TestAuthService_ConcurrentInitialSoloPasswordHasOneWinner(t *testing.T) {
 			continue
 		}
 		winners++
-		sessionID := sessionFromCookie(t, result.response.Header().Get("Set-Cookie"))
+		sessionID := sessionFromCookie(t, result.info.ResponseHeader().Get("Set-Cookie"))
 		info, err := auth.ValidateToken(context.Background(), st, sessionID)
 		require.NoError(t, err)
 		assert.True(t, info.Elevated(time.Now()))
@@ -260,19 +261,20 @@ func TestAuthService_GetCurrentUser(t *testing.T) {
 	client, _, _ := setupAuthTestServer(t, testConfig(), nil)
 
 	// Login first.
-	loginResp, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
+	loginCtx, loginInfo := connect.NewClientContext(context.Background())
+	_, err := client.Login(loginCtx, &leapmuxv1.LoginRequest{
 		Username: "admin",
 		Password: "admin123",
-	}))
+	})
 	require.NoError(t, err)
 
 	// Get current user with token.
-	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
-	req.Header().Set("Cookie", auth.CookieName+"="+sessionFromCookie(t, loginResp.Header().Get("Set-Cookie")))
+	ctx, info := connect.NewClientContext(context.Background())
+	info.RequestHeader().Set("Cookie", auth.CookieName+"="+sessionFromCookie(t, loginInfo.ResponseHeader().Get("Set-Cookie")))
 
-	resp, err := client.GetCurrentUser(context.Background(), req)
+	resp, err := client.GetCurrentUser(ctx, &leapmuxv1.GetCurrentUserRequest{})
 	require.NoError(t, err)
-	assert.Equal(t, "admin", resp.Msg.GetUser().GetUsername())
+	assert.Equal(t, "admin", resp.GetUser().GetUsername())
 }
 
 // TestAuthService_GetCurrentUser_ReportsTheProviderOptionForAPasswordAccount is
@@ -290,11 +292,12 @@ func TestAuthService_GetCurrentUser_ReportsTheProviderOptionForAPasswordAccount(
 	ctx := context.Background()
 	client, st, _ := setupAuthTestServer(t, testConfig(), nil)
 
-	loginResp, err := client.Login(ctx, connect.NewRequest(&leapmuxv1.LoginRequest{
+	loginCtx, loginInfo := connect.NewClientContext(ctx)
+	loginResp, err := client.Login(loginCtx, &leapmuxv1.LoginRequest{
 		Username: "admin", Password: "admin123",
-	}))
+	})
 	require.NoError(t, err)
-	userID := loginResp.Msg.GetUser().GetId()
+	userID := loginResp.GetUser().GetId()
 
 	for _, p := range []struct {
 		id           string
@@ -312,15 +315,16 @@ func TestAuthService_GetCurrentUser_ReportsTheProviderOptionForAPasswordAccount(
 		}))
 	}
 
-	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
-	req.Header().Set("Cookie", auth.CookieName+"="+sessionFromCookie(t, loginResp.Header().Get("Set-Cookie")))
+	req := &leapmuxv1.GetCurrentUserRequest{}
+	ctx, info := connect.NewClientContext(ctx)
+	info.RequestHeader().Set("Cookie", auth.CookieName+"="+sessionFromCookie(t, loginInfo.ResponseHeader().Get("Set-Cookie")))
 	resp, err := client.GetCurrentUser(ctx, req)
 	require.NoError(t, err)
 
-	assert.False(t, resp.Msg.GetUser().GetMayElevateThroughAProvider(),
+	assert.False(t, resp.GetUser().GetMayElevateThroughAProvider(),
 		"a password account elevates with the password, never with a provider")
 	ids := []string{}
-	for _, p := range resp.Msg.GetUser().GetOauthProviders() {
+	for _, p := range resp.GetUser().GetOauthProviders() {
 		ids = append(ids, p.GetId())
 		assert.Truef(t, p.GetEnabled(), "%s is an enabled provider", p.GetId())
 	}
@@ -374,15 +378,16 @@ func TestAuthService_GetCurrentUser_ReportsTheProviderOption(t *testing.T) {
 		}))
 	}
 
-	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
-	req.Header().Set("Cookie", auth.CookieName+"="+sessionID)
+	req := &leapmuxv1.GetCurrentUserRequest{}
+	ctx, info := connect.NewClientContext(ctx)
+	info.RequestHeader().Set("Cookie", auth.CookieName+"="+sessionID)
 	resp, err := client.GetCurrentUser(ctx, req)
 	require.NoError(t, err)
 
-	assert.True(t, resp.Msg.GetUser().GetMayElevateThroughAProvider(),
+	assert.True(t, resp.GetUser().GetMayElevateThroughAProvider(),
 		"an account with no other factor elevates through any linked provider")
 	ids := []string{}
-	for _, p := range resp.Msg.GetUser().GetOauthProviders() {
+	for _, p := range resp.GetUser().GetOauthProviders() {
 		ids = append(ids, p.GetId())
 	}
 	assert.ElementsMatch(t, []string{"gh", "okta"}, ids)
@@ -459,11 +464,11 @@ func TestAuthService_GetCurrentUser_DoesNotDeriveTheProviderOptionFromAFailedCou
 		Credential: auth.SessionCredential(sessionID),
 	})
 
-	resp, err := svc.GetCurrentUser(acting, connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{}))
+	resp, err := svc.GetCurrentUser(acting, &leapmuxv1.GetCurrentUserRequest{})
 	require.NoError(t, err, "a page load must survive a transient read of a list most accounts have no row in")
-	assert.False(t, resp.Msg.GetUser().GetMayElevateThroughAProvider(),
+	assert.False(t, resp.GetUser().GetMayElevateThroughAProvider(),
 		"an unread count must not report an option the OAuth legs would refuse")
-	assert.EqualValues(t, 0, resp.Msg.GetUser().GetPasskeyCount(),
+	assert.EqualValues(t, 0, resp.GetUser().GetPasskeyCount(),
 		"the DISPLAYED number still degrades to zero")
 }
 
@@ -498,12 +503,13 @@ func TestAuthService_GetCurrentUser_ReportsADisabledLinkAsDisabled(t *testing.T)
 		UserID: userid.MustNew(userID), ProviderID: "gh", ProviderSubject: "sub-gh",
 	}))
 
-	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
-	req.Header().Set("Cookie", auth.CookieName+"="+sessionID)
+	req := &leapmuxv1.GetCurrentUserRequest{}
+	ctx, info := connect.NewClientContext(ctx)
+	info.RequestHeader().Set("Cookie", auth.CookieName+"="+sessionID)
 	resp, err := client.GetCurrentUser(ctx, req)
 	require.NoError(t, err)
 
-	links := resp.Msg.GetUser().GetOauthProviders()
+	links := resp.GetUser().GetOauthProviders()
 	require.Len(t, links, 1, "the link must stay visible so the owner can detach it")
 	assert.Equal(t, "gh", links[0].GetId())
 	assert.False(t, links[0].GetEnabled(), "the screen that offers step-up options filters on this")
@@ -527,21 +533,23 @@ func TestAuthService_GetCurrentUser_CarriesTheVerificationCooldown(t *testing.T)
 		enableSignup(t, set)
 	})
 
-	signUp, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+	signUpCtx, signUpInfo := connect.NewClientContext(context.Background())
+	signUp, err := client.SignUp(signUpCtx, &leapmuxv1.SignUpRequest{
 		Username: "pending", Password: "strongpass1", DisplayName: "Pending",
 		Email: "pending@example.test",
-	}))
+	})
 	require.NoError(t, err)
-	require.True(t, signUp.Msg.GetEmailVerification().GetVerificationRequired())
-	seeded := signUp.Msg.GetEmailVerification().GetNextResendAvailableAt()
+	require.True(t, signUp.GetEmailVerification().GetVerificationRequired())
+	seeded := signUp.GetEmailVerification().GetNextResendAvailableAt()
 	require.NotNil(t, seeded, "sign-up hands out the first cooldown")
 
-	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
-	req.Header().Set("Cookie", auth.CookieName+"="+sessionFromCookie(t, signUp.Header().Get("Set-Cookie")))
-	resp, err := client.GetCurrentUser(context.Background(), req)
+	req := &leapmuxv1.GetCurrentUserRequest{}
+	ctx, info := connect.NewClientContext(context.Background())
+	info.RequestHeader().Set("Cookie", auth.CookieName+"="+sessionFromCookie(t, signUpInfo.ResponseHeader().Get("Set-Cookie")))
+	resp, err := client.GetCurrentUser(ctx, req)
 	require.NoError(t, err)
 
-	status := resp.Msg.GetEmailVerification()
+	status := resp.GetEmailVerification()
 	require.NotNil(t, status, "the bootstrap response must carry the status")
 	assert.True(t, status.GetVerificationRequired())
 	require.NotNil(t, status.GetNextResendAvailableAt(),
@@ -551,7 +559,7 @@ func TestAuthService_GetCurrentUser_CarriesTheVerificationCooldown(t *testing.T)
 	// Reporting, not sending: the call does not touch the pending code.
 	before, err := st.Users().GetByUsername(context.Background(), "pending")
 	require.NoError(t, err)
-	_, err = client.GetCurrentUser(context.Background(), req)
+	_, err = client.GetCurrentUser(ctx, req)
 	require.NoError(t, err)
 	after, err := st.Users().GetByUsername(context.Background(), "pending")
 	require.NoError(t, err)
@@ -564,7 +572,7 @@ func TestAuthService_GetCurrentUser_NoToken(t *testing.T) {
 
 	client, _, _ := setupAuthTestServer(t, testConfig(), nil)
 
-	_, err := client.GetCurrentUser(context.Background(), connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{}))
+	_, err := client.GetCurrentUser(context.Background(), &leapmuxv1.GetCurrentUserRequest{})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
@@ -574,10 +582,10 @@ func TestAuthService_Login_EmptyUsername(t *testing.T) {
 
 	client, _, _ := setupAuthTestServer(t, testConfig(), nil)
 
-	_, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
+	_, err := client.Login(context.Background(), &leapmuxv1.LoginRequest{
 		Username: "",
 		Password: "admin123",
-	}))
+	})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
@@ -587,10 +595,10 @@ func TestAuthService_Login_EmptyPassword(t *testing.T) {
 
 	client, _, _ := setupAuthTestServer(t, testConfig(), nil)
 
-	_, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
+	_, err := client.Login(context.Background(), &leapmuxv1.LoginRequest{
 		Username: "admin",
 		Password: "",
-	}))
+	})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
@@ -600,19 +608,20 @@ func TestAuthService_SignUp_WhenEnabled(t *testing.T) {
 
 	client, _, _ := setupAuthTestServer(t, testConfig(), enableSignup)
 
-	resp, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+	callCtx, callInfo := connect.NewClientContext(context.Background())
+	resp, err := client.SignUp(callCtx, &leapmuxv1.SignUpRequest{
 		Username:    "newuser",
 		Password:    "newpass123",
 		DisplayName: "New User",
 		Email:       "new@example.com",
-	}))
+	})
 	require.NoError(t, err)
 	// The Set-Cookie check above replaces the token assertion.
-	assert.Equal(t, "newuser", resp.Msg.GetUser().GetUsername())
-	assert.Equal(t, "New User", resp.Msg.GetUser().GetDisplayName())
+	assert.Equal(t, "newuser", resp.GetUser().GetUsername())
+	assert.Equal(t, "New User", resp.GetUser().GetDisplayName())
 
 	// Verify Set-Cookie header is present.
-	setCookie := resp.Header().Get("Set-Cookie")
+	setCookie := callInfo.ResponseHeader().Get("Set-Cookie")
 	assert.Contains(t, setCookie, auth.CookieName+"=")
 	assert.Contains(t, setCookie, "HttpOnly")
 }
@@ -627,7 +636,7 @@ func TestAuthService_SessionMintPathsUseConfiguredDuration(t *testing.T) {
 	t.Parallel()
 
 	const configured = 90 * time.Minute
-	signUp := func(t *testing.T, seed authTestSeed, username string) (*connect.Response[leapmuxv1.SignUpResponse], store.Store, string) {
+	signUp := func(t *testing.T, seed authTestSeed, username string) (*leapmuxv1.SignUpResponse, store.Store, string) {
 		t.Helper()
 		client, st, _ := setupAuthTestServer(t, testConfig(), func(t *testing.T, s *settings.Manager) {
 			if seed != nil {
@@ -635,14 +644,15 @@ func TestAuthService_SessionMintPathsUseConfiguredDuration(t *testing.T) {
 			}
 			setSessionDuration(t, s, configured)
 		})
-		resp, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+		callCtx, callInfo := connect.NewClientContext(context.Background())
+		resp, err := client.SignUp(callCtx, &leapmuxv1.SignUpRequest{
 			Username:    username,
 			Password:    "newpass123",
 			DisplayName: "New User",
 			Email:       username + "@example.com",
-		}))
+		})
 		require.NoError(t, err)
-		return resp, st, sessionFromCookie(t, resp.Header().Get("Set-Cookie"))
+		return resp, st, sessionFromCookie(t, callInfo.ResponseHeader().Get("Set-Cookie"))
 	}
 
 	assertExpiry := func(t *testing.T, st store.Store, sessionID string, before time.Time) {
@@ -656,7 +666,7 @@ func TestAuthService_SessionMintPathsUseConfiguredDuration(t *testing.T) {
 		t.Parallel()
 		before := time.Now()
 		resp, st, sessionID := signUp(t, enableSignup, "newuser")
-		require.False(t, resp.Msg.GetEmailVerification().GetVerificationRequired(), "control: this is the plain branch")
+		require.False(t, resp.GetEmailVerification().GetVerificationRequired(), "control: this is the plain branch")
 		assertExpiry(t, st, sessionID, before)
 	})
 
@@ -669,7 +679,7 @@ func TestAuthService_SessionMintPathsUseConfiguredDuration(t *testing.T) {
 		}, "unverified")
 		// Without this the subtest would silently repeat the branch above, and
 		// the second CreateSession call site would go unexercised.
-		require.True(t, resp.Msg.GetEmailVerification().GetVerificationRequired(), "this must take the verification branch")
+		require.True(t, resp.GetEmailVerification().GetVerificationRequired(), "this must take the verification branch")
 		assertExpiry(t, st, sessionID, before)
 	})
 
@@ -679,12 +689,13 @@ func TestAuthService_SessionMintPathsUseConfiguredDuration(t *testing.T) {
 		setSessionDuration(t, set, configured)
 
 		before := time.Now()
-		resp, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
+		callCtx, callInfo := connect.NewClientContext(context.Background())
+		_, err := client.Login(callCtx, &leapmuxv1.LoginRequest{
 			Username: hubtestutil.TestAdminUsername,
 			Password: hubtestutil.TestAdminPassword,
-		}))
+		})
 		require.NoError(t, err)
-		assertExpiry(t, st, sessionFromCookie(t, resp.Header().Get("Set-Cookie")), before)
+		assertExpiry(t, st, sessionFromCookie(t, callInfo.ResponseHeader().Get("Set-Cookie")), before)
 	})
 }
 
@@ -694,10 +705,10 @@ func TestAuthService_SignUp_WhenDisabled(t *testing.T) {
 	client, _, _ := setupAuthTestServer(t, testConfig(), nil)
 
 	// Signup is disabled by default.
-	_, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+	_, err := client.SignUp(context.Background(), &leapmuxv1.SignUpRequest{
 		Username: "newuser",
 		Password: "newpass123",
-	}))
+	})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 }
@@ -708,17 +719,17 @@ func TestAuthService_SignUp_DuplicateUsername(t *testing.T) {
 	client, _, _ := setupAuthTestServer(t, testConfig(), enableSignup)
 
 	// First signup should succeed.
-	_, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+	_, err := client.SignUp(context.Background(), &leapmuxv1.SignUpRequest{
 		Username: "dupuser",
 		Password: "pass1234",
-	}))
+	})
 	require.NoError(t, err)
 
 	// Second signup with the same username should fail.
-	_, err = client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+	_, err = client.SignUp(context.Background(), &leapmuxv1.SignUpRequest{
 		Username: "dupuser",
 		Password: "pass4567",
-	}))
+	})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeAlreadyExists, connect.CodeOf(err))
 }
@@ -734,27 +745,28 @@ func TestAuthService_ChangePassword_NeedsElevatedSession(t *testing.T) {
 	client, st, set := setupAuthTestServer(t, testConfig(), nil)
 
 	// Login to get a token.
-	loginResp, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
+	loginCtx, loginInfo := connect.NewClientContext(context.Background())
+	_, err := client.Login(loginCtx, &leapmuxv1.LoginRequest{
 		Username: "admin",
 		Password: "admin123",
-	}))
+	})
 	require.NoError(t, err)
-	token := sessionFromCookie(t, loginResp.Header().Get("Set-Cookie"))
+	token := sessionFromCookie(t, loginInfo.ResponseHeader().Get("Set-Cookie"))
 
 	// Set up a UserService client using the same queries and auth interceptor.
 	mux := http.NewServeMux()
 	interceptor, _ := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
-	opts := connect.WithInterceptors(interceptor)
 	userSvc := service.NewUserService(st, testConfig(), set, auth.NewCredentialLifecycleEffects(nil, nil, nil), mail.NewStubSender(), mail.Renderer{}, nil)
-	path, handler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
-	mux.Handle(path, handler)
+	connectServer := connect.NewServer(interceptor)
+	leapmuxv1connect.RegisterUserServiceHandler(connectServer, userSvc)
+	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	userClient := leapmuxv1connect.NewUserServiceClient(server.Client(), server.URL)
+	userClient := leapmuxv1connect.NewUserServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0))))
 
-	req := connect.NewRequest(&leapmuxv1.ChangePasswordRequest{NewPassword: "newpass123"})
-	req.Header().Set("Cookie", auth.CookieName+"="+token)
-	_, err = userClient.ChangePassword(context.Background(), req)
+	callCtx, callInfo := connect.NewClientContext(context.Background())
+	callInfo.RequestHeader().Set("Cookie", auth.CookieName+"="+token)
+	_, err = userClient.ChangePassword(callCtx, &leapmuxv1.ChangePasswordRequest{NewPassword: "newpass123"})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 
@@ -783,12 +795,12 @@ func TestSignUp_DuplicateEmail_Rejected(t *testing.T) {
 	require.NoError(t, err)
 
 	// Try to sign up with the same email.
-	_, err = client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+	_, err = client.SignUp(context.Background(), &leapmuxv1.SignUpRequest{
 		Username:    "newuser",
 		Password:    "newpass123",
 		DisplayName: "New User",
 		Email:       "taken@example.com",
-	}))
+	})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeAlreadyExists, connect.CodeOf(err))
 }
@@ -887,12 +899,12 @@ func TestSignUp_DirectEmail_ClearsCompetingPendingEmails(t *testing.T) {
 	require.NoError(t, err)
 
 	// User B signs up with email = "race@example.com" directly (verification off).
-	_, err = client.SignUp(ctx, connect.NewRequest(&leapmuxv1.SignUpRequest{
+	_, err = client.SignUp(ctx, &leapmuxv1.SignUpRequest{
 		Username:    "winner",
 		Password:    "pass1234",
 		DisplayName: "Winner",
 		Email:       "race@example.com",
-	}))
+	})
 	require.NoError(t, err)
 
 	// User A's pending_email should be cleared.
@@ -907,24 +919,24 @@ func TestSignUp_EmptyEmail_AllowedMultiple(t *testing.T) {
 	client, _, _ := setupAuthTestServer(t, testConfig(), enableSignup)
 
 	// First signup with empty email should succeed.
-	resp1, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+	resp1, err := client.SignUp(context.Background(), &leapmuxv1.SignUpRequest{
 		Username:    "emptyemail1",
 		Password:    "pass1234",
 		DisplayName: "User 1",
 		Email:       "",
-	}))
+	})
 	require.NoError(t, err)
-	assert.Equal(t, "emptyemail1", resp1.Msg.GetUser().GetUsername())
+	assert.Equal(t, "emptyemail1", resp1.GetUser().GetUsername())
 
 	// Second signup with empty email should also succeed.
-	resp2, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+	resp2, err := client.SignUp(context.Background(), &leapmuxv1.SignUpRequest{
 		Username:    "emptyemail2",
 		Password:    "pass4567",
 		DisplayName: "User 2",
 		Email:       "",
-	}))
+	})
 	require.NoError(t, err)
-	assert.Equal(t, "emptyemail2", resp2.Msg.GetUser().GetUsername())
+	assert.Equal(t, "emptyemail2", resp2.GetUser().GetUsername())
 }
 
 // setupEmailVerificationTestServer creates a test server with both
@@ -954,7 +966,6 @@ func setupEmailVerificationTestServer(t *testing.T, emailVerificationRequired bo
 
 	mux := http.NewServeMux()
 	interceptor, contexts := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st, Policy: servicetest.AuthPolicy(set)})
-	opts := connect.WithInterceptors(interceptor)
 
 	// The registry the interceptor caches into, wired into the lifecycle
 	// effects exactly as the hub wires it. A nil registry drops
@@ -964,18 +975,18 @@ func setupEmailVerificationTestServer(t *testing.T, emailVerificationRequired bo
 	lifecycle := auth.NewCredentialLifecycleEffects(contexts, nil, nil)
 
 	userSvc := service.NewUserService(st, testConfig(), set, lifecycle, mail.NewStubSender(), mail.Renderer{}, nil)
-	userPath, userHandler := leapmuxv1connect.NewUserServiceHandler(userSvc, opts)
-	mux.Handle(userPath, userHandler)
+	connectServer := connect.NewServer(interceptor, service.NewElevationResponseInterceptor())
+	leapmuxv1connect.RegisterUserServiceHandler(connectServer, userSvc)
 
 	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, testConfig(), set, lifecycle))
-	authPath, authHandler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
-	mux.Handle(authPath, authHandler)
+	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authSvc)
+	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	userClient := leapmuxv1connect.NewUserServiceClient(server.Client(), server.URL)
-	authClient := leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL)
+	userClient := leapmuxv1connect.NewUserServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0))))
+	authClient := leapmuxv1connect.NewAuthServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0))))
 	return userClient, authClient, st
 }
 
@@ -1002,7 +1013,7 @@ func TestEmailVerificationRule_UnverifiedBlocked(t *testing.T) {
 	require.NoError(t, err)
 
 	// Try UpdateProfile — the verification restriction must block it.
-	_, err = userClient.UpdateProfile(context.Background(), authedReq(&leapmuxv1.UpdateProfileRequest{
+	_, err = userClient.UpdateProfile(authedReq(context.Background(), &leapmuxv1.UpdateProfileRequest{
 		Username:    "unverified",
 		DisplayName: "Updated",
 	}, token))
@@ -1021,7 +1032,7 @@ func TestEmailVerificationRule_AdminExempt(t *testing.T) {
 	require.NoError(t, err)
 
 	// Admin should be able to call UpdateProfile even with email_verified=0.
-	_, err = userClient.UpdateProfile(context.Background(), authedReq(&leapmuxv1.UpdateProfileRequest{
+	_, err = userClient.UpdateProfile(authedReq(context.Background(), &leapmuxv1.UpdateProfileRequest{
 		Username:    "admin",
 		DisplayName: "Admin Updated",
 	}, adminToken))
@@ -1052,7 +1063,7 @@ func TestEmailVerificationRule_ConfigOff_NotBlocked(t *testing.T) {
 
 	// Unverified user should be able to call UpdateProfile when the restriction
 	// is off.
-	_, err = userClient.UpdateProfile(context.Background(), authedReq(&leapmuxv1.UpdateProfileRequest{
+	_, err = userClient.UpdateProfile(authedReq(context.Background(), &leapmuxv1.UpdateProfileRequest{
 		Username:    "nogate",
 		DisplayName: "Updated",
 	}, token))
@@ -1069,19 +1080,20 @@ func TestSignUp_VerificationRequired_EmailInPendingColumn(t *testing.T) {
 		enableEmailVerification(t, set)
 	})
 
-	resp, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+	callCtx, callInfo := connect.NewClientContext(context.Background())
+	resp, err := client.SignUp(callCtx, &leapmuxv1.SignUpRequest{
 		Username:    "verifyuser",
 		Password:    "password123",
 		DisplayName: "Verify User",
 		Email:       "verify@example.com",
-	}))
+	})
 	require.NoError(t, err)
 
 	// The response should indicate verification was required and that
 	// the (stub) email send succeeded.
-	assert.True(t, resp.Msg.GetEmailVerification().GetVerificationRequired())
-	assert.True(t, resp.Msg.GetEmailVerification().GetVerificationEmailSent())
-	assert.Equal(t, "verifyuser", resp.Msg.GetUser().GetUsername())
+	assert.True(t, resp.GetEmailVerification().GetVerificationRequired())
+	assert.True(t, resp.GetEmailVerification().GetVerificationEmailSent())
+	assert.Equal(t, "verifyuser", resp.GetUser().GetUsername())
 
 	// Email stays in the pending column until the user submits the code.
 	// No more stub auto-verify: a real (stub-logged) email was dispatched
@@ -1095,7 +1107,7 @@ func TestSignUp_VerificationRequired_EmailInPendingColumn(t *testing.T) {
 
 	// Signup must issue a session even when verification is required —
 	// otherwise the user can't authenticate to the verify endpoint.
-	assert.Contains(t, resp.Header().Get("Set-Cookie"), auth.CookieName+"=")
+	assert.Contains(t, callInfo.ResponseHeader().Get("Set-Cookie"), auth.CookieName+"=")
 }
 
 func TestSignUp_FailClosedWhenVerificationEmailFails(t *testing.T) {
@@ -1109,7 +1121,6 @@ func TestSignUp_FailClosedWhenVerificationEmailFails(t *testing.T) {
 	mux := http.NewServeMux()
 	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
 	t.Cleanup(sc.Stop)
-	opts := connect.WithInterceptors(interceptor)
 	authSvc := service.NewAuthService(service.AuthServiceDeps{
 		Store:     st,
 		Config:    testConfig(),
@@ -1118,19 +1129,20 @@ func TestSignUp_FailClosedWhenVerificationEmailFails(t *testing.T) {
 		Mail:      &mailSenderDouble{err: errors.New("smtp down")},
 		Renderer:  mail.Renderer{},
 	})
-	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
-	mux.Handle(path, handler)
+	connectServer := connect.NewServer(interceptor)
+	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authSvc)
+	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	client := leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL)
+	client := leapmuxv1connect.NewAuthServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0))))
 	hubtestutil.CreateTestAdmin(t, st)
 
-	_, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+	_, err := client.SignUp(context.Background(), &leapmuxv1.SignUpRequest{
 		Username:    "failclosed",
 		Password:    "password123",
 		DisplayName: "Fail Closed",
 		Email:       "failclosed@example.com",
-	}))
+	})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnavailable, connect.CodeOf(err))
 
@@ -1161,11 +1173,12 @@ func TestEmailVerificationRule_LogoutAllowed(t *testing.T) {
 	require.NoError(t, err)
 
 	// Logout should be allowed for unverified users.
-	logoutResp, err := authClient.Logout(context.Background(), authedReq(&leapmuxv1.LogoutRequest{}, token))
+	callCtx, callInfo := connect.NewClientContext(context.Background())
+	_, err = authClient.Logout(authedReq(callCtx, &leapmuxv1.LogoutRequest{}, token))
 	require.NoError(t, err)
 
 	// Verify the cookie is cleared.
-	logoutCookie := logoutResp.Header().Get("Set-Cookie")
+	logoutCookie := callInfo.ResponseHeader().Get("Set-Cookie")
 	assert.Contains(t, logoutCookie, "Max-Age=0")
 }
 
@@ -1194,7 +1207,7 @@ func TestEmailVerificationRule_RequestEmailChangeAllowed(t *testing.T) {
 	// RequestEmailChange should be allowed for unverified users
 	// (it should not return PermissionDenied from the verification
 	// interceptor).
-	_, err = userClient.RequestEmailChange(context.Background(), authedReq(&leapmuxv1.RequestEmailChangeRequest{
+	_, err = userClient.RequestEmailChange(authedReq(context.Background(), &leapmuxv1.RequestEmailChangeRequest{
 		NewEmail: "newemail@example.com",
 	}, token))
 	// The RPC may succeed or fail for business logic reasons, but should NOT
@@ -1213,30 +1226,31 @@ func TestAuthService_Logout(t *testing.T) {
 	hubtestutil.CreateTestAdmin(t, st)
 
 	// Login.
-	loginResp, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
+	loginCtx, loginInfo := connect.NewClientContext(context.Background())
+	_, err := client.Login(loginCtx, &leapmuxv1.LoginRequest{
 		Username: "admin",
 		Password: "admin123",
-	}))
+	})
 	require.NoError(t, err)
 
-	token := sessionFromCookie(t, loginResp.Header().Get("Set-Cookie"))
+	token := sessionFromCookie(t, loginInfo.ResponseHeader().Get("Set-Cookie"))
 
 	// Logout.
-	logoutReq := connect.NewRequest(&leapmuxv1.LogoutRequest{})
-	logoutReq.Header().Set("Cookie", auth.CookieName+"="+token)
-	logoutResp, err := client.Logout(context.Background(), logoutReq)
+	logoutCtx, logoutInfo := connect.NewClientContext(context.Background())
+	logoutInfo.RequestHeader().Set("Cookie", auth.CookieName+"="+token)
+	_, err = client.Logout(logoutCtx, &leapmuxv1.LogoutRequest{})
 	require.NoError(t, err)
 
 	// Verify logout response clears the cookie.
-	logoutCookie := logoutResp.Header().Get("Set-Cookie")
+	logoutCookie := logoutInfo.ResponseHeader().Get("Set-Cookie")
 	assert.Contains(t, logoutCookie, auth.CookieName+"=")
 	assert.Contains(t, logoutCookie, "Max-Age=0")
 	assert.Equal(t, []string{token}, closer.sessionIDs)
 
 	// Token should be invalidated.
-	getUserReq := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
-	getUserReq.Header().Set("Cookie", auth.CookieName+"="+token)
-	_, err = client.GetCurrentUser(context.Background(), getUserReq)
+	getUserCtx, getUserInfo := connect.NewClientContext(context.Background())
+	getUserInfo.RequestHeader().Set("Cookie", auth.CookieName+"="+token)
+	_, err = client.GetCurrentUser(getUserCtx, &leapmuxv1.GetCurrentUserRequest{})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeUnauthenticated, connect.CodeOf(err))
 }
@@ -1273,33 +1287,34 @@ func TestAuthService_LogoutDeleteFailureReturnsInternal(t *testing.T) {
 	mux := http.NewServeMux()
 	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: wrapped})
 	t.Cleanup(sc.Stop)
-	opts := connect.WithInterceptors(interceptor)
 	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(wrapped, testConfig(), servicetest.NewSettingsManager(t, wrapped, nil), auth.NewCredentialLifecycleEffects(sc, nil, nil)))
-	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
-	mux.Handle(path, handler)
+	connectServer := connect.NewServer(interceptor)
+	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authSvc)
+	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	client := leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL)
+	client := leapmuxv1connect.NewAuthServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0))))
 
-	loginResp, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
+	loginCtx, loginInfo := connect.NewClientContext(context.Background())
+	_, err := client.Login(loginCtx, &leapmuxv1.LoginRequest{
 		Username: "admin",
 		Password: "admin123",
-	}))
+	})
 	require.NoError(t, err)
-	token := sessionFromCookie(t, loginResp.Header().Get("Set-Cookie"))
+	token := sessionFromCookie(t, loginInfo.ResponseHeader().Get("Set-Cookie"))
 
-	logoutReq := connect.NewRequest(&leapmuxv1.LogoutRequest{})
-	logoutReq.Header().Set("Cookie", auth.CookieName+"="+token)
-	_, err = client.Logout(context.Background(), logoutReq)
+	logoutCtx, logoutInfo := connect.NewClientContext(context.Background())
+	logoutInfo.RequestHeader().Set("Cookie", auth.CookieName+"="+token)
+	_, err = client.Logout(logoutCtx, &leapmuxv1.LogoutRequest{})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInternal, connect.CodeOf(err))
-	assert.Contains(t, err.(*connect.Error).Meta().Get("Set-Cookie"), "Max-Age=0",
+	assert.Contains(t, logoutInfo.ResponseHeader().Get("Set-Cookie"), "Max-Age=0",
 		"failed server-side revocation must still clear the browser's HttpOnly cookie")
 
-	getUserReq := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
-	getUserReq.Header().Set("Cookie", auth.CookieName+"="+token)
-	_, err = client.GetCurrentUser(context.Background(), getUserReq)
+	getUserCtx, getUserInfo := connect.NewClientContext(context.Background())
+	getUserInfo.RequestHeader().Set("Cookie", auth.CookieName+"="+token)
+	_, err = client.GetCurrentUser(getUserCtx, &leapmuxv1.GetCurrentUserRequest{})
 	require.NoError(t, err, "failed logout must not report success while leaving deletion unapplied")
 }
 
@@ -1311,15 +1326,16 @@ func TestSetupSignUp_CreatesAdminWithVerifiedEmail(t *testing.T) {
 	// Signup disabled, but no users exist — setup mode should apply.
 	client, st, _ := setupEmptyAuthTestServer(t, testConfig(), nil)
 
-	resp, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+	callCtx, callInfo := connect.NewClientContext(context.Background())
+	resp, err := client.SignUp(callCtx, &leapmuxv1.SignUpRequest{
 		Username:    "myadmin",
 		Password:    "strongpass1",
 		DisplayName: "My Admin",
 		Email:       "admin@example.com",
-	}))
+	})
 	require.NoError(t, err)
 
-	user := resp.Msg.GetUser()
+	user := resp.GetUser()
 	assert.Equal(t, "myadmin", user.GetUsername())
 	assert.True(t, user.GetIsAdmin())
 	assert.Equal(t, "admin@example.com", user.GetEmail())
@@ -1329,7 +1345,7 @@ func TestSetupSignUp_CreatesAdminWithVerifiedEmail(t *testing.T) {
 	assert.False(t, user.GetEmailVerified())
 
 	// Session cookie should be set.
-	setCookie := resp.Header().Get("Set-Cookie")
+	setCookie := callInfo.ResponseHeader().Get("Set-Cookie")
 	assert.Contains(t, setCookie, auth.CookieName+"=")
 
 	// Verify in DB.
@@ -1347,15 +1363,15 @@ func TestSetupSignUp_EmptyEmail(t *testing.T) {
 
 	client, st, _ := setupEmptyAuthTestServer(t, testConfig(), nil)
 
-	resp, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+	resp, err := client.SignUp(context.Background(), &leapmuxv1.SignUpRequest{
 		Username:    "myadmin",
 		Password:    "strongpass1",
 		DisplayName: "My Admin",
 		Email:       "",
-	}))
+	})
 	require.NoError(t, err)
 
-	user := resp.Msg.GetUser()
+	user := resp.GetUser()
 	assert.True(t, user.GetIsAdmin())
 	assert.Empty(t, user.GetEmail())
 	// With no address at all there is nothing anybody could have confirmed,
@@ -1376,22 +1392,22 @@ func TestSetupSignUp_GetSystemInfoReturnsSetupRequired(t *testing.T) {
 	client, _, _ := setupEmptyAuthTestServer(t, testConfig(), nil)
 
 	// Before setup: setup_required should be true.
-	infoResp, err := client.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
+	infoResp, err := client.GetSystemInfo(context.Background(), &leapmuxv1.GetSystemInfoRequest{})
 	require.NoError(t, err)
-	assert.True(t, infoResp.Msg.GetSetupRequired())
+	assert.True(t, infoResp.GetSetupRequired())
 
 	// Perform setup.
-	_, err = client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+	_, err = client.SignUp(context.Background(), &leapmuxv1.SignUpRequest{
 		Username:    "myadmin",
 		Password:    "strongpass1",
 		DisplayName: "My Admin",
-	}))
+	})
 	require.NoError(t, err)
 
 	// After setup: setup_required should be false.
-	infoResp, err = client.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
+	infoResp, err = client.GetSystemInfo(context.Background(), &leapmuxv1.GetSystemInfoRequest{})
 	require.NoError(t, err)
-	assert.False(t, infoResp.Msg.GetSetupRequired())
+	assert.False(t, infoResp.GetSetupRequired())
 }
 
 func TestSetupSignUp_RejectedWhenUsersExist(t *testing.T) {
@@ -1400,11 +1416,11 @@ func TestSetupSignUp_RejectedWhenUsersExist(t *testing.T) {
 	// Signup disabled, admin user already exists.
 	client, _, _ := setupAuthTestServer(t, testConfig(), nil)
 
-	_, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+	_, err := client.SignUp(context.Background(), &leapmuxv1.SignUpRequest{
 		Username:    "newuser",
 		Password:    "strongpass1",
 		DisplayName: "New User",
-	}))
+	})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 }
@@ -1427,21 +1443,21 @@ func TestSetupSignUp_RejectedInSoloMode(t *testing.T) {
 	mux := http.NewServeMux()
 	interceptor, sc := hubtestutil.NewAuthInterceptor(t, auth.InterceptorOptions{Store: st})
 	t.Cleanup(sc.Stop)
-	opts := connect.WithInterceptors(interceptor)
 	authSvc := service.NewAuthService(servicetest.AuthServiceDeps(st, cfg, servicetest.NewSettingsManager(t, st, nil), auth.NewCredentialLifecycleEffects(sc, nil, nil)))
-	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, opts)
-	mux.Handle(path, handler)
+	connectServer := connect.NewServer(interceptor)
+	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authSvc)
+	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
 
-	client := leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL)
+	client := leapmuxv1connect.NewAuthServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0))))
 
-	_, err = client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+	_, err = client.SignUp(context.Background(), &leapmuxv1.SignUpRequest{
 		Username:    "myadmin",
 		Password:    "strongpass1",
 		DisplayName: "My Admin",
-	}))
+	})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 }
@@ -1452,15 +1468,15 @@ func TestSetupSignUp_NormalSignupStillCreatesNonAdmin(t *testing.T) {
 	// Signup enabled + users already exist = normal non-admin signup.
 	client, st, _ := setupAuthTestServer(t, testConfig(), enableSignup)
 
-	resp, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+	resp, err := client.SignUp(context.Background(), &leapmuxv1.SignUpRequest{
 		Username:    "regularuser",
 		Password:    "strongpass1",
 		DisplayName: "Regular User",
 		Email:       "regular@example.com",
-	}))
+	})
 	require.NoError(t, err)
 
-	user := resp.Msg.GetUser()
+	user := resp.GetUser()
 	assert.False(t, user.GetIsAdmin())
 
 	dbUser, err := st.Users().GetByUsername(context.Background(), "regularuser")
@@ -1474,15 +1490,15 @@ func TestSetupSignUp_WithSignupEnabled(t *testing.T) {
 	// Signup enabled + no users = setup mode should still create admin.
 	client, st, _ := setupEmptyAuthTestServer(t, testConfig(), enableSignup)
 
-	resp, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+	resp, err := client.SignUp(context.Background(), &leapmuxv1.SignUpRequest{
 		Username:    "myadmin",
 		Password:    "strongpass1",
 		DisplayName: "My Admin",
 		Email:       "admin@example.com",
-	}))
+	})
 	require.NoError(t, err)
 
-	user := resp.Msg.GetUser()
+	user := resp.GetUser()
 	assert.True(t, user.GetIsAdmin(), "first user should be admin even when signup is enabled")
 	// Unconfirmed, like every other setup-mode address; the login gate is
 	// what keeps the administrator in.
@@ -1500,19 +1516,19 @@ func TestSetupSignUp_RaceCondition(t *testing.T) {
 	client, _, _ := setupEmptyAuthTestServer(t, testConfig(), nil)
 
 	// First signup should succeed.
-	_, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+	_, err := client.SignUp(context.Background(), &leapmuxv1.SignUpRequest{
 		Username:    "admin1",
 		Password:    "strongpass1",
 		DisplayName: "Admin 1",
-	}))
+	})
 	require.NoError(t, err)
 
 	// Second signup should fail (users now exist, signup disabled).
-	_, err = client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+	_, err = client.SignUp(context.Background(), &leapmuxv1.SignUpRequest{
 		Username:    "admin2",
 		Password:    "strongpass2",
 		DisplayName: "Admin 2",
-	}))
+	})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 }
@@ -1535,11 +1551,11 @@ func TestSetupSignUp_ValidatesInputs(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+			_, err := client.SignUp(context.Background(), &leapmuxv1.SignUpRequest{
 				Username: tt.username,
 				Password: tt.password,
 				Email:    tt.email,
-			}))
+			})
 			require.Error(t, err)
 			assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 		})
@@ -1554,9 +1570,9 @@ func TestGetSystemInfo_DevModeReportsSetupRequired(t *testing.T) {
 
 	client, _, _ := setupEmptyAuthTestServer(t, cfg, nil)
 
-	resp, err := client.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
+	resp, err := client.GetSystemInfo(context.Background(), &leapmuxv1.GetSystemInfoRequest{})
 	require.NoError(t, err)
-	assert.True(t, resp.Msg.GetSetupRequired(), "dev mode with empty DB should require setup")
+	assert.True(t, resp.GetSetupRequired(), "dev mode with empty DB should require setup")
 }
 
 func TestGetSystemInfo_WorkerHubURL(t *testing.T) {
@@ -1570,9 +1586,9 @@ func TestGetSystemInfo_WorkerHubURL(t *testing.T) {
 			require.NoError(t, settings.KeyPublicURL.Set(context.Background(), set, "https://hub.example.com"))
 		})
 
-		resp, err := client.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
+		resp, err := client.GetSystemInfo(context.Background(), &leapmuxv1.GetSystemInfoRequest{})
 		require.NoError(t, err)
-		assert.Equal(t, "https://hub.example.com", resp.Msg.GetWorkerHubUrl())
+		assert.Equal(t, "https://hub.example.com", resp.GetWorkerHubUrl())
 	})
 
 	t.Run("a local-only bind set and no PublicURL falls back to the local socket", func(t *testing.T) {
@@ -1584,9 +1600,9 @@ func TestGetSystemInfo_WorkerHubURL(t *testing.T) {
 
 		client, _, _ := setupEmptyAuthTestServer(t, cfg, nil)
 
-		resp, err := client.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
+		resp, err := client.GetSystemInfo(context.Background(), &leapmuxv1.GetSystemInfoRequest{})
 		require.NoError(t, err)
-		assert.Equal(t, local, resp.Msg.GetWorkerHubUrl())
+		assert.Equal(t, local, resp.GetWorkerHubUrl())
 	})
 
 	t.Run("a TCP bind set and no PublicURL leaves WorkerHubUrl empty", func(t *testing.T) {
@@ -1596,9 +1612,9 @@ func TestGetSystemInfo_WorkerHubURL(t *testing.T) {
 
 		client, _, _ := setupEmptyAuthTestServer(t, cfg, nil)
 
-		resp, err := client.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
+		resp, err := client.GetSystemInfo(context.Background(), &leapmuxv1.GetSystemInfoRequest{})
 		require.NoError(t, err)
-		assert.Empty(t, resp.Msg.GetWorkerHubUrl())
+		assert.Empty(t, resp.GetWorkerHubUrl())
 	})
 }
 
@@ -1618,9 +1634,9 @@ func TestGetSystemInfo_EmailEnabled(t *testing.T) {
 
 	t.Run("false when the SMTP block is empty", func(t *testing.T) {
 		client, _, _ := setupEmptyAuthTestServer(t, testConfig(), nil)
-		resp, err := client.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
+		resp, err := client.GetSystemInfo(context.Background(), &leapmuxv1.GetSystemInfoRequest{})
 		require.NoError(t, err)
-		assert.False(t, resp.Msg.GetEmailEnabled())
+		assert.False(t, resp.GetEmailEnabled())
 	})
 
 	t.Run("false when only the host is staged", func(t *testing.T) {
@@ -1629,16 +1645,16 @@ func TestGetSystemInfo_EmailEnabled(t *testing.T) {
 			require.NoError(t, set.Update(context.Background(), settings.KeySMTP,
 				json.RawMessage(`{"host":"smtp.example.test"}`)))
 		})
-		resp, err := client.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
+		resp, err := client.GetSystemInfo(context.Background(), &leapmuxv1.GetSystemInfoRequest{})
 		require.NoError(t, err)
-		assert.False(t, resp.Msg.GetEmailEnabled(), "a relay with no from address cannot send")
+		assert.False(t, resp.GetEmailEnabled(), "a relay with no from address cannot send")
 	})
 
 	t.Run("true when the host and the from address are both set", func(t *testing.T) {
 		client, _, _ := setupEmptyAuthTestServer(t, testConfig(), seedSMTP)
-		resp, err := client.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
+		resp, err := client.GetSystemInfo(context.Background(), &leapmuxv1.GetSystemInfoRequest{})
 		require.NoError(t, err)
-		assert.True(t, resp.Msg.GetEmailEnabled())
+		assert.True(t, resp.GetEmailEnabled())
 	})
 }
 
@@ -1649,11 +1665,11 @@ func TestSignUp_RejectsSoloAlways(t *testing.T) {
 		client, _, _ := setupEmptyAuthTestServer(t, testConfig(), nil)
 
 		for _, input := range []string{"solo", "SOLO", "  solo  "} {
-			_, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+			_, err := client.SignUp(context.Background(), &leapmuxv1.SignUpRequest{
 				Username:    input,
 				Password:    "strongpass1",
 				DisplayName: "First",
-			}))
+			})
 			require.Errorf(t, err, "setup mode must reject %q", input)
 			assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 		}
@@ -1663,11 +1679,11 @@ func TestSignUp_RejectsSoloAlways(t *testing.T) {
 		client, _, _ := setupAuthTestServer(t, testConfig(), enableSignup)
 
 		for _, input := range []string{"solo", "SOLO"} {
-			_, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+			_, err := client.SignUp(context.Background(), &leapmuxv1.SignUpRequest{
 				Username:    input,
 				Password:    "strongpass1",
 				DisplayName: "Someone",
-			}))
+			})
 			require.Errorf(t, err, "public signup must reject %q", input)
 			assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 		}
@@ -1679,14 +1695,14 @@ func TestSignUp_AllowsAdminInSetupMode(t *testing.T) {
 
 	client, _, _ := setupEmptyAuthTestServer(t, testConfig(), nil)
 
-	resp, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+	resp, err := client.SignUp(context.Background(), &leapmuxv1.SignUpRequest{
 		Username:    "admin",
 		Password:    "strongpass1",
 		DisplayName: "First Admin",
-	}))
+	})
 	require.NoError(t, err)
-	assert.Equal(t, "admin", resp.Msg.GetUser().GetUsername())
-	assert.True(t, resp.Msg.GetUser().GetIsAdmin())
+	assert.Equal(t, "admin", resp.GetUser().GetUsername())
+	assert.True(t, resp.GetUser().GetIsAdmin())
 }
 
 // The other half of the setup exemption, and the half that matters for
@@ -1698,11 +1714,11 @@ func TestSignUp_RejectsSoloInSetupMode(t *testing.T) {
 
 	client, _, _ := setupEmptyAuthTestServer(t, testConfig(), nil)
 
-	_, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+	_, err := client.SignUp(context.Background(), &leapmuxv1.SignUpRequest{
 		Username:    usernames.Solo,
 		Password:    "strongpass1",
 		DisplayName: "Not The Solo User",
-	}))
+	})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "reserved username")
@@ -1714,11 +1730,11 @@ func TestSignUp_RejectsAdminInPublicSignup(t *testing.T) {
 	// A seeded user exists, so isSetupMode=false and the public reservation applies.
 	client, _, _ := setupAuthTestServer(t, testConfig(), enableSignup)
 
-	_, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+	_, err := client.SignUp(context.Background(), &leapmuxv1.SignUpRequest{
 		Username:    "admin",
 		Password:    "strongpass1",
 		DisplayName: "Squatter",
-	}))
+	})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 }
@@ -1729,12 +1745,12 @@ func TestSignUp_RequiresEmailWhenSMTPConfigured(t *testing.T) {
 	client, _, set := setupAuthTestServer(t, testConfig(), enableSignup)
 	enableEmailVerification(t, set)
 
-	_, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+	_, err := client.SignUp(context.Background(), &leapmuxv1.SignUpRequest{
 		Username:    "noemail",
 		Password:    "password123",
 		DisplayName: "No Email",
 		Email:       "",
-	}))
+	})
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "email is required")
@@ -1745,15 +1761,16 @@ func TestSignUp_SMTPOff_StoresUnverifiedEmail(t *testing.T) {
 
 	client, st, _ := setupAuthTestServer(t, testConfig(), enableSignup)
 
-	resp, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+	callCtx, callInfo := connect.NewClientContext(context.Background())
+	resp, err := client.SignUp(callCtx, &leapmuxv1.SignUpRequest{
 		Username:    "smtpoff",
 		Password:    "password123",
 		DisplayName: "SMTP Off",
 		Email:       "smtpoff@example.com",
-	}))
+	})
 	require.NoError(t, err)
-	assert.False(t, resp.Msg.GetEmailVerification().GetVerificationRequired())
-	assert.NotEmpty(t, resp.Header().Get("Set-Cookie"))
+	assert.False(t, resp.GetEmailVerification().GetVerificationRequired())
+	assert.NotEmpty(t, callInfo.ResponseHeader().Get("Set-Cookie"))
 
 	user, err := st.Users().GetByUsername(context.Background(), "smtpoff")
 	require.NoError(t, err)
@@ -1768,27 +1785,27 @@ func TestLogin_ReturnsVerificationFlagsWhenVerificationRequired(t *testing.T) {
 	client, st, set := setupAuthTestServer(t, testConfig(), enableSignup)
 	enableEmailVerification(t, set)
 
-	_, err := client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+	_, err := client.SignUp(context.Background(), &leapmuxv1.SignUpRequest{
 		Username:    "gateduser",
 		Password:    "password123",
 		DisplayName: "Guarded",
 		Email:       "gated@example.com",
-	}))
+	})
 	require.NoError(t, err)
 
 	user, err := st.Users().GetByUsername(context.Background(), "gateduser")
 	require.NoError(t, err)
 	assert.False(t, user.EmailVerified)
 
-	loginResp, err := client.Login(context.Background(), connect.NewRequest(&leapmuxv1.LoginRequest{
+	loginResp, err := client.Login(context.Background(), &leapmuxv1.LoginRequest{
 		Username: "gateduser",
 		Password: "password123",
-	}))
+	})
 	require.NoError(t, err)
-	assert.True(t, loginResp.Msg.GetEmailVerification().GetVerificationRequired())
+	assert.True(t, loginResp.GetEmailVerification().GetVerificationRequired())
 	// Signup already issued pending_email; login surfaces cooldown without resending.
-	assert.False(t, loginResp.Msg.GetEmailVerification().GetVerificationEmailSent())
-	require.NotNil(t, loginResp.Msg.GetEmailVerification().GetNextResendAvailableAt())
+	assert.False(t, loginResp.GetEmailVerification().GetVerificationEmailSent())
+	require.NotNil(t, loginResp.GetEmailVerification().GetNextResendAvailableAt())
 }
 
 func TestFinishPasskeySignUp_FailClosedWhenVerificationEmailFails(t *testing.T) {
@@ -1826,7 +1843,7 @@ func TestFinishPasskeyLogin_ReturnsVerificationFlagsWhenVerificationRequired(t *
 	require.NoError(t, err)
 	signUpResp, err := finishPasskeySignUp(t, env.client, begin.GetSessionId(), credentialJSON)
 	require.NoError(t, err)
-	assert.True(t, signUpResp.Msg.GetEmailVerification().GetVerificationRequired())
+	assert.True(t, signUpResp.GetEmailVerification().GetVerificationRequired())
 
 	user, err := env.store.Users().GetByUsername(context.Background(), "pkgated")
 	require.NoError(t, err)
@@ -1837,9 +1854,9 @@ func TestFinishPasskeyLogin_ReturnsVerificationFlagsWhenVerificationRequired(t *
 	require.NoError(t, err)
 	loginResp, err := finishPasskeyLogin(t, env.client, loginBegin.GetSessionId(), assertionJSON)
 	require.NoError(t, err)
-	assert.True(t, loginResp.Msg.GetEmailVerification().GetVerificationRequired())
-	assert.False(t, loginResp.Msg.GetEmailVerification().GetVerificationEmailSent())
-	require.NotNil(t, loginResp.Msg.GetEmailVerification().GetNextResendAvailableAt())
+	assert.True(t, loginResp.GetEmailVerification().GetVerificationRequired())
+	assert.False(t, loginResp.GetEmailVerification().GetVerificationEmailSent())
+	require.NotNil(t, loginResp.GetEmailVerification().GetNextResendAvailableAt())
 }
 
 func TestBeginPasskeySignUp_RequiresEmailWhenSMTPConfigured(t *testing.T) {
@@ -1868,19 +1885,21 @@ func TestBeginPasskeySignUp_RequiresEmailWhenSMTPConfigured(t *testing.T) {
 		Renderer:  mail.Renderer{},
 		Keystore:  ks,
 	})
-	path, handler := leapmuxv1connect.NewAuthServiceHandler(authSvc, connect.WithInterceptors(interceptor))
-	mux.Handle(path, handler)
+	connectServer := connect.NewServer(interceptor)
+	leapmuxv1connect.RegisterAuthServiceHandler(connectServer, authSvc)
+	connecthttp.Mount(mux, connectServer, connecthttp.WithReadMaxBytes(0))
 	server := httptest.NewServer(mux)
 	t.Cleanup(server.Close)
-	client := leapmuxv1connect.NewAuthServiceClient(server.Client(), server.URL)
+	client := leapmuxv1connect.NewAuthServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithReadMaxBytes(0))))
 
-	req := connect.NewRequest(&leapmuxv1.BeginPasskeySignUpRequest{
+	req := &leapmuxv1.BeginPasskeySignUpRequest{
 		Username:    "nopkemail",
 		DisplayName: "No Email",
 		Email:       "",
-	})
-	req.Header().Set("Origin", "https://localhost")
-	_, err = client.BeginPasskeySignUp(context.Background(), req)
+	}
+	ctx, info := connect.NewClientContext(context.Background())
+	info.RequestHeader().Set("Origin", "https://localhost")
+	_, err = client.BeginPasskeySignUp(ctx, req)
 	require.Error(t, err)
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 	assert.Contains(t, err.Error(), "email is required")
@@ -1896,9 +1915,9 @@ func TestPasskeySignUp_SetupModeCreatesFirstAdmin(t *testing.T) {
 
 	env := setupEmptyPasskeyAuthTestServer(t, nil, nil)
 
-	infoResp, err := env.client.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
+	infoResp, err := env.client.GetSystemInfo(context.Background(), &leapmuxv1.GetSystemInfoRequest{})
 	require.NoError(t, err)
-	require.True(t, infoResp.Msg.GetSetupRequired())
+	require.True(t, infoResp.GetSetupRequired())
 
 	// `admin` is the conventional first-administrator name, and it is
 	// squat-protected everywhere else. Claiming it here proves the setup
@@ -1910,9 +1929,9 @@ func TestPasskeySignUp_SetupModeCreatesFirstAdmin(t *testing.T) {
 
 	signUpResp, err := finishPasskeySignUp(t, env.client, begin.GetSessionId(), credentialJSON)
 	require.NoError(t, err)
-	assert.True(t, signUpResp.Msg.GetUser().GetIsAdmin())
-	assert.Equal(t, int32(1), signUpResp.Msg.GetUser().GetPasskeyCount())
-	assert.False(t, signUpResp.Msg.GetEmailVerification().GetVerificationRequired())
+	assert.True(t, signUpResp.GetUser().GetIsAdmin())
+	assert.Equal(t, int32(1), signUpResp.GetUser().GetPasskeyCount())
+	assert.False(t, signUpResp.GetEmailVerification().GetVerificationRequired())
 
 	dbUser, err := env.store.Users().GetByUsername(context.Background(), usernames.Admin)
 	require.NoError(t, err)
@@ -1923,9 +1942,9 @@ func TestPasskeySignUp_SetupModeCreatesFirstAdmin(t *testing.T) {
 	assert.False(t, dbUser.FirstCredentialExempt)
 
 	// Setup is over, so the hub withdraws /setup.
-	infoResp, err = env.client.GetSystemInfo(context.Background(), connect.NewRequest(&leapmuxv1.GetSystemInfoRequest{}))
+	infoResp, err = env.client.GetSystemInfo(context.Background(), &leapmuxv1.GetSystemInfoRequest{})
 	require.NoError(t, err)
-	assert.False(t, infoResp.Msg.GetSetupRequired())
+	assert.False(t, infoResp.GetSetupRequired())
 
 	// And the credential works: the account can sign back in with it.
 	loginBegin := beginPasskeyLogin(t, env.client, usernames.Admin)
@@ -1933,7 +1952,7 @@ func TestPasskeySignUp_SetupModeCreatesFirstAdmin(t *testing.T) {
 	require.NoError(t, err)
 	loginResp, err := finishPasskeyLogin(t, env.client, loginBegin.GetSessionId(), assertionJSON)
 	require.NoError(t, err)
-	assert.Equal(t, usernames.Admin, loginResp.Msg.GetUser().GetUsername())
+	assert.Equal(t, usernames.Admin, loginResp.GetUser().GetUsername())
 }
 
 // An administrator never waits behind a pending verification row, so their
@@ -1953,7 +1972,7 @@ func TestFinishPasskeySignUp_SetupModePromotesEmailPastVerification(t *testing.T
 
 	signUpResp, err := finishPasskeySignUp(t, env.client, begin.GetSessionId(), credentialJSON)
 	require.NoError(t, err)
-	assert.False(t, signUpResp.Msg.GetEmailVerification().GetVerificationRequired())
+	assert.False(t, signUpResp.GetEmailVerification().GetVerificationRequired())
 
 	dbUser, err := env.store.Users().GetByUsername(context.Background(), "pksetupmail")
 	require.NoError(t, err)
@@ -2072,23 +2091,21 @@ func TestBeginPasskeyLogin_UnknownAndNoPasskeysShareError(t *testing.T) {
 
 	env := setupPasskeyAuthTestServer(t, enableSignup, nil)
 
-	unknownReq := connect.NewRequest(&leapmuxv1.BeginPasskeyLoginRequest{Username: "nobody"})
-	unknownReq.Header().Set("Origin", passkeyTestOrigin)
-	_, errUnknown := env.client.BeginPasskeyLogin(context.Background(), unknownReq)
+	unknownReq := &leapmuxv1.BeginPasskeyLoginRequest{Username: "nobody"}
+	_, errUnknown := env.client.BeginPasskeyLogin(passkeyCtx(context.Background()), unknownReq)
 	require.Error(t, errUnknown)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(errUnknown))
 
-	_, err := env.client.SignUp(context.Background(), connect.NewRequest(&leapmuxv1.SignUpRequest{
+	_, err := env.client.SignUp(context.Background(), &leapmuxv1.SignUpRequest{
 		Username:    "nopasskeys",
 		Password:    "password123",
 		DisplayName: "No Keys",
 		Email:       "nopasskeys@example.com",
-	}))
+	})
 	require.NoError(t, err)
 
-	noneReq := connect.NewRequest(&leapmuxv1.BeginPasskeyLoginRequest{Username: "nopasskeys"})
-	noneReq.Header().Set("Origin", passkeyTestOrigin)
-	_, errNone := env.client.BeginPasskeyLogin(context.Background(), noneReq)
+	noneReq := &leapmuxv1.BeginPasskeyLoginRequest{Username: "nopasskeys"}
+	_, errNone := env.client.BeginPasskeyLogin(passkeyCtx(context.Background()), noneReq)
 	require.Error(t, errNone)
 	assert.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(errNone))
 	assert.Equal(t, errUnknown.Error(), errNone.Error())
@@ -2138,11 +2155,12 @@ func TestAuthService_GetCurrentUser_MarksADisabledLinkedProvider(t *testing.T) {
 	ctx := context.Background()
 	client, st, _ := setupAuthTestServer(t, testConfig(), nil)
 
-	loginResp, err := client.Login(ctx, connect.NewRequest(&leapmuxv1.LoginRequest{
+	loginCtx, loginInfo := connect.NewClientContext(ctx)
+	loginResp, err := client.Login(loginCtx, &leapmuxv1.LoginRequest{
 		Username: "admin", Password: "admin123",
-	}))
+	})
 	require.NoError(t, err)
-	userID := loginResp.Msg.GetUser().GetId()
+	userID := loginResp.GetUser().GetId()
 
 	for _, p := range []struct {
 		id      string
@@ -2160,13 +2178,14 @@ func TestAuthService_GetCurrentUser_MarksADisabledLinkedProvider(t *testing.T) {
 		}))
 	}
 
-	req := connect.NewRequest(&leapmuxv1.GetCurrentUserRequest{})
-	req.Header().Set("Cookie", auth.CookieName+"="+sessionFromCookie(t, loginResp.Header().Get("Set-Cookie")))
+	req := &leapmuxv1.GetCurrentUserRequest{}
+	ctx, info := connect.NewClientContext(ctx)
+	info.RequestHeader().Set("Cookie", auth.CookieName+"="+sessionFromCookie(t, loginInfo.ResponseHeader().Get("Set-Cookie")))
 	resp, err := client.GetCurrentUser(ctx, req)
 	require.NoError(t, err)
 
 	enabledByID := map[string]bool{}
-	for _, p := range resp.Msg.GetUser().GetOauthProviders() {
+	for _, p := range resp.GetUser().GetOauthProviders() {
 		enabledByID[p.GetId()] = p.GetEnabled()
 	}
 	assert.Equal(t, map[string]bool{"live": true, "dead": false}, enabledByID,
@@ -2213,20 +2232,19 @@ func TestEmailVerificationRule_MistypedAddressRecoversThroughElevation(t *testin
 	// Rung one: the email gate admits the change, and the elevation gate
 	// refuses it. The refusal must be the one a step-up prompt can clear --
 	// PermissionDenied here would mean the allowlist dropped the procedure.
-	_, err = userClient.RequestEmailChange(ctx, authedReq(&leapmuxv1.RequestEmailChangeRequest{
+	callCtx, callInfo := connect.NewClientContext(ctx)
+	_, err = userClient.RequestEmailChange(authedReq(callCtx, &leapmuxv1.RequestEmailChangeRequest{
 		NewEmail: "mistyped@example.com",
 	}, token))
 	require.Error(t, err)
 	require.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err),
 		"an unverified account must reach the elevation gate, not the email gate")
-	var connectErr *connect.Error
-	require.ErrorAs(t, err, &connectErr)
-	assert.Equal(t, "1", connectErr.Meta().Get(service.ElevationRequiredHeader))
+	assert.Equal(t, "1", callInfo.ResponseHeader().Get(service.ElevationRequiredHeader))
 
 	// Rung two: the elevation itself. This is the procedure the allowlist
 	// used to refuse, and its refusal was PermissionDenied from the email
 	// gate -- a remedy the user could not act on.
-	_, err = userClient.ElevateSession(ctx, authedReq(&leapmuxv1.ElevateSessionRequest{
+	_, err = userClient.ElevateSession(authedReq(ctx, &leapmuxv1.ElevateSessionRequest{
 		CurrentPassword: "testpass",
 	}, token))
 	require.NoError(t, err, "an unverified user must be able to prove the factor their remedy needs")
@@ -2234,7 +2252,7 @@ func TestEmailVerificationRule_MistypedAddressRecoversThroughElevation(t *testin
 	// Rung three: the change lands. The corrected address goes to
 	// pending_email, because the hub verifies it before it becomes the
 	// account's own.
-	_, err = userClient.RequestEmailChange(ctx, authedReq(&leapmuxv1.RequestEmailChangeRequest{
+	_, err = userClient.RequestEmailChange(authedReq(ctx, &leapmuxv1.RequestEmailChangeRequest{
 		NewEmail: "mistyped@example.com",
 	}, token))
 	require.NoError(t, err)

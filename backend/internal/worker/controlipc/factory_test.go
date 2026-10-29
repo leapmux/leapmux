@@ -10,7 +10,8 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -317,11 +318,11 @@ func dialAndWhoami(t *testing.T, envs []string) *leapmuxv1.WhoamiResponse {
 
 	httpClient, baseURL := ipcClient(t, sock)
 	httpClient.Transport = &authHeaderInjector{token: token, base: httpClient.Transport}
-	client := leapmuxv1connect.NewControlIPCServiceClient(httpClient, baseURL, connect.WithGRPC())
+	client := leapmuxv1connect.NewControlIPCServiceClient(connect.NewClient(connecthttp.NewTransport(httpClient, baseURL, connecthttp.WithReadMaxBytes(0), connecthttp.WithGRPC())))
 
-	resp, err := client.Whoami(context.Background(), connect.NewRequest(&leapmuxv1.WhoamiRequest{}))
+	resp, err := client.Whoami(context.Background(), &leapmuxv1.WhoamiRequest{})
 	require.NoError(t, err)
-	return resp.Msg
+	return resp
 }
 
 // authHeaderInjector mirrors the production CLI's
