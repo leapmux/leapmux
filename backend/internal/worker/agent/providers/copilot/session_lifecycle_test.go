@@ -25,7 +25,7 @@ import (
 
 func TestNativeCopilotLateSendRejectionKeepsTheNewTurnActive(t *testing.T) {
 	agenttest.InstallFakeCLI(t, agenttest.FakeCLI{
-		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection", ForwardArgs: true,
+		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection",
 		WantEnv: "LEAPMUX_TEST_COPILOT_NATIVE", Env: []string{"LEAPMUX_TEST_COPILOT_LATE_SEND_ERROR=1"},
 	})
 	sink := &agenttest.Sink{}
@@ -59,7 +59,7 @@ func TestNativeCopilotInputRejectionRespectsNewNativeActivity(t *testing.T) {
 	for _, mode := range []string{"before-activity", "after-new-turn"} {
 		t.Run(mode, func(t *testing.T) {
 			agenttest.InstallFakeCLI(t, agenttest.FakeCLI{
-				Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection", ForwardArgs: true,
+				Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection",
 				WantEnv: "LEAPMUX_TEST_COPILOT_NATIVE",
 				Env:     []string{"LEAPMUX_TEST_COPILOT_REJECT_INPUT=" + mode},
 			})
@@ -78,7 +78,7 @@ func TestNativeCopilotInputRejectionRespectsNewNativeActivity(t *testing.T) {
 func TestNativeCopilotSessionLifecycle(t *testing.T) {
 	requestsPath := filepath.Join(t.TempDir(), "requests.jsonl")
 	agenttest.InstallFakeCLI(t, agenttest.FakeCLI{
-		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection", ForwardArgs: true,
+		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection",
 		WantEnv: "LEAPMUX_TEST_COPILOT_NATIVE",
 		Env:     []string{"LEAPMUX_TEST_COPILOT_SESSION_REQUESTS=" + requestsPath},
 	})
@@ -147,7 +147,7 @@ func TestNativeCopilotSessionLifecycle(t *testing.T) {
 func TestNativeCopilotSteerSendsImmediateMode(t *testing.T) {
 	requestsPath := filepath.Join(t.TempDir(), "requests.jsonl")
 	agenttest.InstallFakeCLI(t, agenttest.FakeCLI{
-		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection", ForwardArgs: true,
+		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection",
 		WantEnv: "LEAPMUX_TEST_COPILOT_NATIVE",
 		Env:     []string{"LEAPMUX_TEST_COPILOT_SESSION_REQUESTS=" + requestsPath},
 	})
@@ -219,7 +219,7 @@ func TestNativeCopilotAsksForAssistedApprovalWhenItOpensASession(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			requestsPath := filepath.Join(t.TempDir(), "requests.jsonl")
 			agenttest.InstallFakeCLI(t, agenttest.FakeCLI{
-				Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection", ForwardArgs: true,
+				Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection",
 				WantEnv: "LEAPMUX_TEST_COPILOT_NATIVE",
 				Env:     []string{"LEAPMUX_TEST_COPILOT_REQUIRE_APPROVAL_FLAG=1", "LEAPMUX_TEST_COPILOT_SESSION_REQUESTS=" + requestsPath},
 			})
@@ -260,7 +260,7 @@ func TestNativeCopilotAsksForAssistedApprovalWhenItOpensASession(t *testing.T) {
 func TestNativeCopilotKeepsAssistedApprovalAfterAContextClear(t *testing.T) {
 	requestsPath := filepath.Join(t.TempDir(), "requests.jsonl")
 	agenttest.InstallFakeCLI(t, agenttest.FakeCLI{
-		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection", ForwardArgs: true,
+		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection",
 		WantEnv: "LEAPMUX_TEST_COPILOT_NATIVE",
 		Env:     []string{"LEAPMUX_TEST_COPILOT_REQUIRE_APPROVAL_FLAG=1", "LEAPMUX_TEST_COPILOT_SESSION_REQUESTS=" + requestsPath},
 	})
@@ -324,7 +324,7 @@ func TestNativeCopilotClearContextFailureRestoresThePreviousSession(t *testing.T
 	for _, failure := range []string{"create", "subscription", "restore"} {
 		t.Run(failure, func(t *testing.T) {
 			agenttest.InstallFakeCLI(t, agenttest.FakeCLI{
-				Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection", ForwardArgs: true,
+				Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection",
 				WantEnv: "LEAPMUX_TEST_COPILOT_NATIVE",
 				Env:     []string{"LEAPMUX_TEST_COPILOT_REPLACEMENT_FAILURE=" + failure},
 			})
@@ -357,7 +357,7 @@ func TestNativeCopilotClearContextFailureRestoresThePreviousSession(t *testing.T
 
 func TestCopilotNativeSessionRejectsAnotherIdentity(t *testing.T) {
 	agenttest.InstallFakeCLI(t, agenttest.FakeCLI{
-		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection", ForwardArgs: true,
+		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection",
 		WantEnv: "LEAPMUX_TEST_COPILOT_NATIVE",
 		Env:     []string{"LEAPMUX_TEST_COPILOT_SESSION_RETURN_ID=another-session"},
 	})
@@ -384,7 +384,7 @@ func TestCopilotNativeSessionReportsReasoningSummaryOptionFailure(t *testing.T) 
 	}{{name: "create"}, {name: "resume", resume: true}} {
 		t.Run(tc.name, func(t *testing.T) {
 			agenttest.InstallFakeCLI(t, agenttest.FakeCLI{
-				Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection", ForwardArgs: true,
+				Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection",
 				WantEnv: "LEAPMUX_TEST_COPILOT_NATIVE",
 				Env:     []string{"LEAPMUX_TEST_COPILOT_REJECT_REASONING_SUMMARIES=1"},
 			})
@@ -404,7 +404,7 @@ func TestCopilotNativeSessionReportsReasoningSummaryOptionFailure(t *testing.T) 
 func TestCopilotNativeSessionRequestsReasoningSummaryOnCreateAndResume(t *testing.T) {
 	requestsPath := filepath.Join(t.TempDir(), "requests.jsonl")
 	agenttest.InstallFakeCLI(t, agenttest.FakeCLI{
-		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection", ForwardArgs: true,
+		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection",
 		WantEnv: "LEAPMUX_TEST_COPILOT_NATIVE",
 		Env:     []string{"LEAPMUX_TEST_COPILOT_SESSION_REQUESTS=" + requestsPath},
 	})
@@ -441,7 +441,7 @@ func TestCopilotUsesNativeSessionProtocol(t *testing.T) {
 	requestsPath := filepath.Join(t.TempDir(), "requests.jsonl")
 	argsPath := filepath.Join(t.TempDir(), "args")
 	agenttest.InstallFakeCLI(t, agenttest.FakeCLI{
-		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection", ForwardArgs: true,
+		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection",
 		WantEnv: "LEAPMUX_TEST_COPILOT_NATIVE", ArgsFile: argsPath,
 		Env: []string{"LEAPMUX_TEST_COPILOT_SESSION_REQUESTS=" + requestsPath},
 	})
@@ -517,7 +517,7 @@ func installCopilotThatRefusesAMode(t *testing.T, mode string, fromOpen int, env
 	t.Helper()
 	requestsPath := filepath.Join(t.TempDir(), "requests.jsonl")
 	agenttest.InstallFakeCLI(t, agenttest.FakeCLI{
-		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection", ForwardArgs: true,
+		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection",
 		WantEnv: "LEAPMUX_TEST_COPILOT_NATIVE",
 		Env: append([]string{
 			"LEAPMUX_TEST_COPILOT_SESSION_REQUESTS=" + requestsPath,

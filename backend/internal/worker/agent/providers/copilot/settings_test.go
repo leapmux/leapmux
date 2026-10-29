@@ -19,7 +19,7 @@ import (
 
 func TestNativeCopilotRejectsAnUnavailableModel(t *testing.T) {
 	agenttest.InstallFakeCLI(t, agenttest.FakeCLI{
-		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection", ForwardArgs: true,
+		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection",
 		WantEnv: "LEAPMUX_TEST_COPILOT_NATIVE",
 	})
 	provider, err := startNativeCopilot(t.Context(), agent.Options{
@@ -45,7 +45,7 @@ func TestNativeCopilotRejectsAnUnavailableModel(t *testing.T) {
 func TestNativeCopilotEffortAutoSendsNoEffort(t *testing.T) {
 	requestsPath := filepath.Join(t.TempDir(), "requests.jsonl")
 	agenttest.InstallFakeCLI(t, agenttest.FakeCLI{
-		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection", ForwardArgs: true,
+		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection",
 		WantEnv: "LEAPMUX_TEST_COPILOT_NATIVE",
 		Env:     []string{"LEAPMUX_TEST_COPILOT_SESSION_REQUESTS=" + requestsPath},
 	})
@@ -88,7 +88,7 @@ func TestNativeCopilotEffortAutoSendsNoEffort(t *testing.T) {
 func TestNativeCopilotModelSwitchSetsTheKeptEffortOnTheNewModel(t *testing.T) {
 	requestsPath := filepath.Join(t.TempDir(), "requests.jsonl")
 	agenttest.InstallFakeCLI(t, agenttest.FakeCLI{
-		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection", ForwardArgs: true,
+		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection",
 		WantEnv: "LEAPMUX_TEST_COPILOT_NATIVE",
 		Env: []string{
 			"LEAPMUX_TEST_COPILOT_SESSION_REQUESTS=" + requestsPath,
@@ -137,7 +137,7 @@ func TestNativeCopilotModelSwitchSetsTheKeptEffortOnTheNewModel(t *testing.T) {
 func startFleetCopilot(t *testing.T, options optionmap.Map) (agent.Agent, error) {
 	t.Helper()
 	agenttest.InstallFakeCLI(t, agenttest.FakeCLI{
-		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection", ForwardArgs: true,
+		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection",
 		WantEnv: "LEAPMUX_TEST_COPILOT_NATIVE",
 	})
 	provider, err := startNativeCopilot(t.Context(), agent.Options{

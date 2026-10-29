@@ -22,7 +22,7 @@ import (
 func startNativeCopilotForGoal(t *testing.T, env ...string) (*Agent, *agenttest.Sink) {
 	t.Helper()
 	agenttest.InstallFakeCLI(t, agenttest.FakeCLI{
-		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection", ForwardArgs: true,
+		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection",
 		WantEnv: "LEAPMUX_TEST_COPILOT_NATIVE", Env: env,
 	})
 	sink := &agenttest.Sink{}

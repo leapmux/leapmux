@@ -66,7 +66,7 @@ Every provider is first-class: you get a consistent core experience — chat, st
 | DeepSeek Harness | `dsh` |
 | Gemini CLI | `gemini` |
 
-GitHub Copilot requires Copilot CLI 1.0.103 or later on the Worker.
+Install the latest GitHub Copilot CLI on the Worker.
 
 Each provider exposes its own settings: models and permission modes, plus effort/reasoning levels where the CLI supports them. You change them mid-session from the composer's status-bar chips or its **[+]** menu. A new agent starts on the provider's defaults. For how to open an agent, chat, answer permission prompts, switch models, and resume a session, see [Coding Agents](/docs/using/coding-agents/).
 

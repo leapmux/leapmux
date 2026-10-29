@@ -21,7 +21,7 @@ import (
 func TestCopilotManualCompactionUsesNativeSessionRPC(t *testing.T) {
 	requestsPath := filepath.Join(t.TempDir(), "requests.jsonl")
 	agenttest.InstallFakeCLI(t, agenttest.FakeCLI{
-		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection", ForwardArgs: true,
+		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection",
 		WantEnv: "LEAPMUX_TEST_COPILOT_NATIVE",
 		Env:     []string{"LEAPMUX_TEST_COPILOT_SESSION_REQUESTS=" + requestsPath},
 	})
@@ -74,7 +74,7 @@ func TestCopilotManualCompactionRefusesBusyAndUnavailableSessions(t *testing.T) 
 
 func TestCopilotManualCompactionDoesNotOfferSteering(t *testing.T) {
 	agenttest.InstallFakeCLI(t, agenttest.FakeCLI{
-		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection", ForwardArgs: true,
+		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection",
 		WantEnv: "LEAPMUX_TEST_COPILOT_NATIVE",
 		Env:     []string{"LEAPMUX_TEST_COPILOT_COMPACTION_OUTCOME=pending"},
 	})
@@ -104,7 +104,7 @@ func TestCopilotManualCompactionReportsNativeFailure(t *testing.T) {
 	for _, outcome := range []string{"refused", "invalid-result", "rpc-error"} {
 		t.Run(outcome, func(t *testing.T) {
 			agenttest.InstallFakeCLI(t, agenttest.FakeCLI{
-				Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection", ForwardArgs: true,
+				Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection",
 				WantEnv: "LEAPMUX_TEST_COPILOT_NATIVE",
 				Env:     []string{"LEAPMUX_TEST_COPILOT_COMPACTION_OUTCOME=" + outcome},
 			})

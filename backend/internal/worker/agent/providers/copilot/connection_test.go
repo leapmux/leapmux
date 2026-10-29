@@ -9,7 +9,6 @@ import (
 	"io"
 	"net/textproto"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"slices"
 	"strconv"
@@ -56,8 +55,6 @@ func TestCopilotNativeConnection(t *testing.T) {
 	t.Cleanup(func() { connection.Stop(); _ = connection.Wait() })
 	args, err := os.ReadFile(argsFile)
 	require.NoError(t, err)
-	// The exact server arguments reject the removed `--no-remote` and
-	// `--no-remote-export` flags, the ACP transport, and any incomplete fix.
 	require.Equal(t, "--server --stdio --sync-session=off", strings.TrimSpace(string(args)))
 	result, err := connection.SendRequest("probe.echo", json.RawMessage(`{"text":"한글"}`), time.Second)
 	require.NoError(t, err)
@@ -81,7 +78,7 @@ func TestCopilotNativeConnection(t *testing.T) {
 
 func TestCopilotNativeConnectionRejectsAnUnknownProtocol(t *testing.T) {
 	agenttest.InstallFakeCLI(t, agenttest.FakeCLI{
-		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection", ForwardArgs: true,
+		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection",
 		WantEnv: "LEAPMUX_TEST_COPILOT_NATIVE", Env: []string{"LEAPMUX_TEST_COPILOT_PROTOCOL=99"},
 	})
 	_, err := startCopilotConnectionForTest(t, agent.Options{
@@ -98,13 +95,6 @@ func TestHelperCopilotNativeConnection(t *testing.T) {
 	if slices.Contains(os.Args, "--no-remote") {
 		_, _ = fmt.Fprintln(os.Stderr, "error: --no-remote was removed. Use /remote off in a session; manage incoming connections in /environments.")
 		os.Exit(1)
-	}
-	args := os.Args
-	if i := slices.Index(args, "--"); i >= 0 {
-		args = args[i+1:]
-	}
-	if slices.Contains(args, "--version") {
-		os.Exit(runFakeCopilotVersion())
 	}
 	reader := bufio.NewReader(os.Stdin)
 	headers := textproto.NewReader(reader)
@@ -460,56 +450,6 @@ func TestHelperCopilotNativeConnection(t *testing.T) {
 	os.Exit(0)
 }
 
-// fakeHeldPipeWriters keeps the write end of the pipe that the hanging version
-// scenario blocks on. A package variable keeps it reachable, so the read can
-// never end early through a closed file.
-var fakeHeldPipeWriters []*os.File
-
-// runFakeCopilotVersion answers `copilot --version` as the scenario states.
-func runFakeCopilotVersion() int {
-	switch os.Getenv("LEAPMUX_TEST_COPILOT_VERSION_SCENARIO") {
-	case "fails":
-		fmt.Fprintln(os.Stderr, "copilot: the installation is broken\nsecond line")
-		return 1
-	case "hangs":
-		// The fake never answers. It blocks reading a pipe that nothing writes to,
-		// so only the probe's kill ends this wait. The started file, when the test
-		// sets one, tells the test that the probe's process runs.
-		blocked, hold, err := os.Pipe()
-		if err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return 1
-		}
-		fakeHeldPipeWriters = append(fakeHeldPipeWriters, hold)
-		if started := os.Getenv("LEAPMUX_TEST_COPILOT_VERSION_STARTED_FILE"); started != "" {
-			if err := os.WriteFile(started, nil, 0o600); err != nil {
-				fmt.Fprintln(os.Stderr, err)
-				return 1
-			}
-		}
-		_, _ = io.Copy(io.Discard, blocked)
-	case "leaves-child":
-		// A process that inherits stdout and outlives this one, as a background
-		// job of the login shell's profile does.
-		child := exec.Command("sleep", "3600")
-		child.Stdout, child.Stderr = os.Stdout, os.Stderr
-		if err := child.Start(); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return 1
-		}
-		if err := os.WriteFile(os.Getenv("LEAPMUX_TEST_COPILOT_CHILD_PID_FILE"), []byte(strconv.Itoa(child.Process.Pid)), 0o600); err != nil {
-			fmt.Fprintln(os.Stderr, err)
-			return 1
-		}
-	}
-	version := os.Getenv("LEAPMUX_TEST_COPILOT_VERSION")
-	if version == "" {
-		version = "GitHub Copilot CLI 1.0.103."
-	}
-	fmt.Println(version)
-	return 0
-}
-
 // fakeCopilotObjective is the autopilot objective the fake runtime stores.
 type fakeCopilotObjective struct {
 	objective string
@@ -561,7 +501,7 @@ func invokeFakeCopilotCommand(t *testing.T, params json.RawMessage, goal *fakeCo
 // reach a field the caller has not assigned yet.
 func TestCopilotNativeConnectionDeliversNothingBeforeItsReaderStarts(t *testing.T) {
 	agenttest.InstallFakeCLI(t, agenttest.FakeCLI{
-		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection", ForwardArgs: true,
+		Binary: "copilot", HelperRun: "TestHelperCopilotNativeConnection",
 		WantEnv: "LEAPMUX_TEST_COPILOT_NATIVE",
 	})
 	opts := agent.Options{

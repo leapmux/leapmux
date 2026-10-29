@@ -224,6 +224,9 @@ var copilotKnownEvents = func() map[string]struct{} {
 // A session can run for hours. Keep only recent reasoning IDs for duplicate checks.
 const maxCopilotReasoningIDs = 256
 
+// copilotLiveOutputLimit caps the live shell text retained for one running call.
+const copilotLiveOutputLimit = 8192
+
 // copilotMethodIsTelemetry reports whether a method describes the RUNTIME rather
 // than the work.
 //
@@ -276,6 +279,14 @@ type copilotOpenTool struct {
 	// sawOutput records that this call already produced real output, so a later
 	// progress SENTENCE does not replace it. See reportNativeToolOutput.
 	sawOutput bool
+	// shellOutput owns append-only chunks separately from replacement snapshots.
+	shellOutput *copilotShellOutput
+}
+
+type copilotShellOutput struct {
+	tail      string
+	sequence  int64
+	truncated bool
 }
 
 // copilotToolStart is the part of `tool.execution_start` that LeapMux reads.
@@ -416,19 +427,17 @@ func (a *Agent) handleNativeEvent(raw []byte, event copilotEvent) {
 		a.refreshNativeSettingsInBackground()
 	case contracts.CopilotEventSessionAutopilotObjectiveChanged:
 		a.refreshNativeGoalInBackground()
-	case contracts.CopilotEventToolProgress, contracts.CopilotEventToolPartialResult,
-		contracts.CopilotEventToolShellOutput:
-		// The only text a running call reports. It was dropped UNREAD before, so the
-		// row stayed blank for the whole call.
+	case contracts.CopilotEventToolShellOutput:
+		a.reportNativeShellOutput(sink, event.Data)
+		return
+	case contracts.CopilotEventToolProgress, contracts.CopilotEventToolPartialResult:
+		// Snapshots and progress sentences also feed the running row.
 		//
 		// The drop is LeapMux's own decision rather than the runtime's `ephemeral`
 		// mark: the frame carries a window on output the finished row states in
 		// full, so a transcript row for one would repeat the result in pieces. The
 		// mark is set today, and a build that stopped setting it would otherwise
 		// write a row per progress tick.
-		//
-		// `tool.shell_output` is the shape Copilot CLI 1.0.103 streams a running
-		// shell call in: one chunk of `text` per stream and sequence.
 		a.reportNativeToolOutput(sink, event.Data)
 		return
 	}
@@ -446,9 +455,8 @@ func (a *Agent) handleNativeEvent(raw []byte, event copilotEvent) {
 
 // reportNativeToolOutput carries the live text of a running call to its own row.
 //
-// partialOutput contains new tool output, and so does the `text` of one
-// `tool.shell_output` chunk. progressMessage contains a runtime status sentence.
-// None of these fields is cumulative.
+// partialOutput replaces the previous snapshot of the running shell's output.
+// progressMessage contains a runtime status sentence.
 // The runtime can interleave both fields. Once output arrives, it takes priority over status sentences.
 // Before any output arrives, the row shows the status sentence.
 //
@@ -458,17 +466,18 @@ func (a *Agent) reportNativeToolOutput(sink agent.ProviderServices, data json.Ra
 		ToolCallID      string `json:"toolCallId"`
 		ProgressMessage string `json:"progressMessage"`
 		PartialOutput   string `json:"partialOutput"`
-		Text            string `json:"text"`
 	}
 	if err := json.Unmarshal(data, &frame); err != nil || frame.ToolCallID == "" {
 		return
 	}
-	if frame.PartialOutput == "" {
-		frame.PartialOutput = frame.Text
-	}
 	tool := a.openTools[frame.ToolCallID]
 	if frame.PartialOutput != "" {
 		if tool != nil {
+			// The shell stream and the snapshot can describe the same bytes.
+			// Once streaming starts, its sequence owns the live output.
+			if tool.shellOutput != nil {
+				return
+			}
 			tool.sawOutput = true
 		}
 		// A partial output is a WINDOW on more by definition.
@@ -482,6 +491,47 @@ func (a *Agent) reportNativeToolOutput(sink agent.ProviderServices, data json.Ra
 	}
 	// A whole sentence the runtime wrote, so it states no loss.
 	sink.ReportProgress(agent.OutputTailProgress(frame.ToolCallID, frame.ProgressMessage, false))
+}
+
+// reportNativeShellOutput joins the chunks of one call across all output streams.
+// The publication sequence rejects repeated chunks and identifies missing output.
+// The caller holds outputMu, which guards each open tool and its retained tail.
+func (a *Agent) reportNativeShellOutput(sink agent.ProviderServices, data json.RawMessage) {
+	var frame struct {
+		ToolCallID string `json:"toolCallId"`
+		Text       string `json:"text"`
+		Sequence   *int64 `json:"sequence"`
+	}
+	if err := json.Unmarshal(data, &frame); err != nil || frame.ToolCallID == "" || frame.Sequence == nil || *frame.Sequence < 0 {
+		return
+	}
+	tool := a.openTools[frame.ToolCallID]
+	if tool == nil {
+		// Without a start, no call owns retained state. Its one chunk still
+		// reaches the row, but earlier output may be missing.
+		if frame.Text != "" {
+			tail, _ := agent.ClipTailBytes(frame.Text, copilotLiveOutputLimit)
+			sink.ReportProgress(agent.OutputTailProgress(frame.ToolCallID, tail, true))
+		}
+		return
+	}
+	if tool.shellOutput == nil {
+		tool.shellOutput = &copilotShellOutput{sequence: -1}
+	}
+	output := tool.shellOutput
+	if *frame.Sequence <= output.sequence {
+		return
+	}
+	output.truncated = output.truncated || output.sequence != *frame.Sequence-1
+	output.sequence = *frame.Sequence
+	if frame.Text == "" {
+		return
+	}
+	var clipped bool
+	output.tail, clipped = agent.ClipTailBytes(output.tail+frame.Text, copilotLiveOutputLimit)
+	output.truncated = output.truncated || clipped
+	tool.sawOutput = true
+	a.sinkFor(tool.child).ReportProgress(agent.OutputTailProgress(frame.ToolCallID, output.tail, output.truncated))
 }
 
 // copilotTurnWasAborted reports whether the reader stopped the turn that is ending.
