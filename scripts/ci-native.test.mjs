@@ -198,9 +198,8 @@ describe('native CI validation', () => {
     // The stop step runs last and after a failure, so it prints the log of every job that GitHub keeps.
     expect(stop).toBe(steps.length - 1)
     // The repository variable CI_RESOURCE_MONITOR switches the monitor on.
-    // TEMPORARY(monitor-trial): the pull request forces the monitor on.
-    expect(steps[start].if).toBe(true)
-    expect(steps[stop].if).toBe('always()')
+    expect(steps[start].if).toBe('vars.CI_RESOURCE_MONITOR == \'true\'')
+    expect(steps[stop].if).toBe('always() && vars.CI_RESOURCE_MONITOR == \'true\'')
     for (const index of [start, stop]) {
       expect(steps[index].shell).toBe(name === 'windows'
         ? 'pwsh'
