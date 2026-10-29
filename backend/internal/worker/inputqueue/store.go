@@ -400,24 +400,26 @@ func (s *Store) changeOwnedEdit(ctx context.Context, agentID, inputID, clientID,
 	return commitSnapshot(ctx, tx, agentID, s.now())
 }
 
-func (s *Store) Delete(ctx context.Context, agentID, inputID string) (Snapshot, error) {
+// Delete removes one item that no dispatch holds, and returns the item as it
+// was stored.
+func (s *Store) Delete(ctx context.Context, agentID, inputID string) (Snapshot, StoredItem, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return Snapshot{}, err
+		return Snapshot{}, StoredItem{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
 	item, _, found, err := getItem(ctx, tx, agentID, inputID, false)
 	if err != nil {
-		return Snapshot{}, err
+		return Snapshot{}, StoredItem{}, err
 	}
 	if !found {
-		return Snapshot{}, ErrNotFound
+		return Snapshot{}, StoredItem{}, ErrNotFound
 	}
 	if lockedInputState(item.State) {
-		return Snapshot{}, ErrConflict
+		return Snapshot{}, StoredItem{}, ErrConflict
 	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM agent_input_queue_items WHERE agent_id = ? AND id = ?`, agentID, inputID); err != nil {
-		return Snapshot{}, err
+		return Snapshot{}, StoredItem{}, err
 	}
 	// Deleting a server-error retry ends its cycle by hand, so the backoff it
 	// accumulated resets with it, unless a pending retry of the kind remains:
@@ -426,21 +428,25 @@ func (s *Store) Delete(ctx context.Context, agentID, inputID string) (Snapshot, 
 	if item.Kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR {
 		pendingID, err := queuedAutoRetryID(ctx, tx, agentID, item.Kind)
 		if err != nil {
-			return Snapshot{}, err
+			return Snapshot{}, StoredItem{}, err
 		}
 		if pendingID == "" {
 			if _, err := resetServerErrorDelay(ctx, tx, agentID); err != nil {
-				return Snapshot{}, err
+				return Snapshot{}, StoredItem{}, err
 			}
 		}
 	}
 	if err := compactOrder(ctx, tx, agentID); err != nil {
-		return Snapshot{}, err
+		return Snapshot{}, StoredItem{}, err
 	}
 	if err := bumpRevision(ctx, tx, agentID); err != nil {
-		return Snapshot{}, err
+		return Snapshot{}, StoredItem{}, err
 	}
-	return commitSnapshot(ctx, tx, agentID, s.now())
+	snapshot, err := commitSnapshot(ctx, tx, agentID, s.now())
+	if err != nil {
+		return Snapshot{}, StoredItem{}, err
+	}
+	return snapshot, item, nil
 }
 
 // Move reorders one item inside its reorder group. The destination must share
@@ -1200,7 +1206,7 @@ func insertInputTranscript(ctx context.Context, tx *sql.Tx, item StoredItem, att
 		return AcceptedTranscript{}, err
 	}
 	return AcceptedTranscript{
-		ID: item.ID, AgentID: item.AgentID, Seq: seq,
+		ID: item.ID, AgentID: item.AgentID, Kind: item.Kind, Seq: seq,
 		Content: compressed, ContentCompression: compression,
 		SupplementalContent: supplementalContent, SupplementalContentCompression: supplementalCompression,
 		AgentProvider: provider, MarkType: mark, SpanLines: spanLines,
@@ -1765,20 +1771,21 @@ func (s *Store) MatureScheduled(ctx context.Context, agentID string, expected ti
 // retry cycle takes a fresh ID; rescheduling the pending item of the kind
 // retains its ID and its raw queue position. Validation, queue-full, and
 // database failures leave the previous durable item untouched, because the
-// transaction rolls back.
-func (s *Store) scheduleAutoRetry(ctx context.Context, agentID string, schedule agent.AutoRetrySchedule) (Snapshot, error) {
+// transaction rolls back. The result states whether the schedule created the
+// row or moved it, for the log.
+func (s *Store) scheduleAutoRetry(ctx context.Context, agentID string, schedule agent.AutoRetrySchedule) (Snapshot, scheduledAutoRetry, error) {
 	if !validateIdentity(agentID) {
-		return Snapshot{}, fmt.Errorf("%w: agent ID is required", ErrInvalidInput)
+		return Snapshot{}, scheduledAutoRetry{}, fmt.Errorf("%w: agent ID is required", ErrInvalidInput)
 	}
 	if !IsAutoRetryKind(schedule.Kind) {
-		return Snapshot{}, fmt.Errorf("%w: not an automatic-retry kind", ErrInvalidInput)
+		return Snapshot{}, scheduledAutoRetry{}, fmt.Errorf("%w: not an automatic-retry kind", ErrInvalidInput)
 	}
 	if err := validateSchedule(schedule.Kind, schedule.SourcePayload, nil); err != nil {
-		return Snapshot{}, err
+		return Snapshot{}, scheduledAutoRetry{}, err
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return Snapshot{}, err
+		return Snapshot{}, scheduledAutoRetry{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
 	now := s.now()
@@ -1787,13 +1794,13 @@ func (s *Store) scheduleAutoRetry(ctx context.Context, agentID string, schedule 
 	// precedes ensureState, whose state row carries a foreign key to agents.
 	var open int
 	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM agents WHERE id = ? AND closed_at IS NULL AND workspace_archived = 0`, agentID).Scan(&open); err != nil {
-		return Snapshot{}, err
+		return Snapshot{}, scheduledAutoRetry{}, err
 	}
 	if open == 0 {
-		return Snapshot{}, fmt.Errorf("%w: agent is closed or archived", ErrConflict)
+		return Snapshot{}, scheduledAutoRetry{}, fmt.Errorf("%w: agent is closed or archived", ErrConflict)
 	}
 	if err := ensureState(ctx, tx, agentID); err != nil {
-		return Snapshot{}, err
+		return Snapshot{}, scheduledAutoRetry{}, err
 	}
 	var dueAt time.Time
 	var retryText string
@@ -1804,36 +1811,47 @@ func (s *Store) scheduleAutoRetry(ctx context.Context, agentID string, schedule 
 		retryText = autoRetryServerErrorText
 		delay, err := readServerErrorDelay(ctx, tx, agentID)
 		if err != nil {
-			return Snapshot{}, err
+			return Snapshot{}, scheduledAutoRetry{}, err
 		}
 		var nextDelay time.Duration
 		dueAt, nextDelay = serverErrorDeadline(delay, now)
 		if err := writeServerErrorDelay(ctx, tx, agentID, nextDelay); err != nil {
-			return Snapshot{}, err
+			return Snapshot{}, scheduledAutoRetry{}, err
 		}
 	}
 
-	existingID, err := queuedAutoRetryID(ctx, tx, agentID, schedule.Kind)
+	existing, found, err := queuedAutoRetry(ctx, tx, agentID, schedule.Kind)
 	if err != nil {
-		return Snapshot{}, err
+		return Snapshot{}, scheduledAutoRetry{}, err
 	}
-	if existingID == "" {
+	scheduled := scheduledAutoRetry{row: autoRetryRow{
+		id: existing.id, kind: schedule.Kind, state: leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, scheduledAt: &dueAt,
+	}}
+	if !found {
+		scheduled.row.id = id.Generate()
 		if err := insertQueuedItem(ctx, tx, NewItem{
-			ID: id.Generate(), AgentID: agentID, Kind: schedule.Kind, Text: retryText,
+			ID: scheduled.row.id, AgentID: agentID, Kind: schedule.Kind, Text: retryText,
 			ScheduledAt: &dueAt, SourcePayload: schedule.SourcePayload,
 		}); err != nil {
-			return Snapshot{}, err
+			return Snapshot{}, scheduledAutoRetry{}, err
 		}
-	} else if _, err := tx.ExecContext(ctx, `
+	} else {
+		scheduled.rescheduled, scheduled.previousScheduledAt = true, existing.scheduledAt
+		if _, err := tx.ExecContext(ctx, `
 		UPDATE agent_input_queue_items
 		SET scheduled_at = ?, source_payload = ?, updated_at = ? WHERE agent_id = ? AND id = ?`,
-		sqltime.SQLiteNullTimeOf(dueAt), ptrconv.OrEmpty(schedule.SourcePayload), nowText(), agentID, existingID); err != nil {
-		return Snapshot{}, err
+			sqltime.SQLiteNullTimeOf(dueAt), ptrconv.OrEmpty(schedule.SourcePayload), nowText(), agentID, existing.id); err != nil {
+			return Snapshot{}, scheduledAutoRetry{}, err
+		}
 	}
 	if err := bumpRevision(ctx, tx, agentID); err != nil {
-		return Snapshot{}, err
+		return Snapshot{}, scheduledAutoRetry{}, err
 	}
-	return commitSnapshot(ctx, tx, agentID, now)
+	snapshot, err := commitSnapshot(ctx, tx, agentID, now)
+	if err != nil {
+		return Snapshot{}, scheduledAutoRetry{}, err
+	}
+	return snapshot, scheduled, nil
 }
 
 // cancelAutoRetries deletes the pending queue item of each given retry kind,
@@ -1845,15 +1863,15 @@ func (s *Store) scheduleAutoRetry(ctx context.Context, agentID string, schedule 
 //
 // Most calls have nothing to do: every turn end of every provider cancels.
 // Such a call reads once, opens no write transaction, and returns an empty
-// snapshot with false. The Boolean reports whether a row left the queue; the
-// backoff is not part of the snapshot.
-func (s *Store) cancelAutoRetries(ctx context.Context, agentID string, kinds ...leapmuxv1.AgentInputKind) (Snapshot, bool, error) {
+// snapshot and no rows. The rows are those that left the queue, ordered by
+// order_index, for the log; the backoff is not part of the snapshot.
+func (s *Store) cancelAutoRetries(ctx context.Context, agentID string, kinds ...leapmuxv1.AgentInputKind) (Snapshot, []autoRetryRow, error) {
 	if len(kinds) == 0 {
-		return Snapshot{}, false, nil
+		return Snapshot{}, nil, nil
 	}
 	for _, kind := range kinds {
 		if !IsAutoRetryKind(kind) {
-			return Snapshot{}, false, fmt.Errorf("%w: not an automatic-retry kind", ErrInvalidInput)
+			return Snapshot{}, nil, fmt.Errorf("%w: not an automatic-retry kind", ErrInvalidInput)
 		}
 	}
 	resetBackoff := slices.Contains(kinds, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR)
@@ -1868,40 +1886,70 @@ func (s *Store) cancelAutoRetries(ctx context.Context, agentID string, kinds ...
 			OR (? AND EXISTS(SELECT 1 FROM agent_input_queue_state WHERE agent_id = ? AND auto_retry_server_error_delay_ms <> ?))`,
 		append(append([]any{agentID, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED}, kindArgs...),
 			resetBackoff, agentID, autoRetryInitialDelay.Milliseconds())...).Scan(&work); err != nil {
-		return Snapshot{}, false, err
+		return Snapshot{}, nil, err
 	}
 	if !work {
-		return Snapshot{}, false, nil
+		return Snapshot{}, nil, nil
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return Snapshot{}, false, err
+		return Snapshot{}, nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
-	result, err := tx.ExecContext(ctx, `DELETE FROM agent_input_queue_items WHERE agent_id = ? AND state = ? AND kind IN (`+kindList+`)`,
-		append([]any{agentID, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED}, kindArgs...)...)
+	// The transaction holds the write lock from its BEGIN, so the rows read
+	// here are the rows deleted below, and the log states exactly those.
+	removed, err := queuedAutoRetries(ctx, tx, agentID, kindList, kindArgs)
 	if err != nil {
-		return Snapshot{}, false, err
+		return Snapshot{}, nil, err
 	}
-	deleted, err := result.RowsAffected()
-	if err != nil {
-		return Snapshot{}, false, err
+	for _, row := range removed {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM agent_input_queue_items WHERE agent_id = ? AND id = ?`, agentID, row.id); err != nil {
+			return Snapshot{}, nil, err
+		}
 	}
 	if resetBackoff {
 		if _, err := resetServerErrorDelay(ctx, tx, agentID); err != nil {
-			return Snapshot{}, false, err
+			return Snapshot{}, nil, err
 		}
 	}
-	if deleted > 0 {
+	if len(removed) > 0 {
 		if err := compactOrder(ctx, tx, agentID); err != nil {
-			return Snapshot{}, false, err
+			return Snapshot{}, nil, err
 		}
 		if err := bumpRevision(ctx, tx, agentID); err != nil {
-			return Snapshot{}, false, err
+			return Snapshot{}, nil, err
 		}
 	}
 	snapshot, err := commitSnapshot(ctx, tx, agentID, s.now())
-	return snapshot, deleted > 0, err
+	if err != nil {
+		return Snapshot{}, nil, err
+	}
+	return snapshot, removed, nil
+}
+
+// queuedAutoRetries reads the pending (QUEUED) retry of each kind in kindArgs,
+// ordered by order_index. kindList holds one placeholder for each kind.
+func queuedAutoRetries(ctx context.Context, tx db.DBTX, agentID, kindList string, kindArgs []any) ([]autoRetryRow, error) {
+	rows, err := tx.QueryContext(ctx, `
+		SELECT id, kind, scheduled_at FROM agent_input_queue_items
+		WHERE agent_id = ? AND state = ? AND kind IN (`+kindList+`) ORDER BY order_index`,
+		append([]any{agentID, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED}, kindArgs...)...)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = rows.Close() }()
+	var queued []autoRetryRow
+	for rows.Next() {
+		row := autoRetryRow{state: leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED}
+		var kind int32
+		var scheduled sqltime.SQLiteNullTime
+		if err := rows.Scan(&row.id, &kind, &scheduled); err != nil {
+			return nil, err
+		}
+		row.kind, row.scheduledAt = leapmuxv1.AgentInputKind(kind), scheduled.Ptr()
+		queued = append(queued, row)
+	}
+	return queued, rows.Err()
 }
 
 // readServerErrorDelay reads the durable server-error backoff. The caller
@@ -1935,16 +1983,29 @@ func resetServerErrorDelay(ctx context.Context, tx db.DBTX, agentID string) (boo
 	return rows > 0, err
 }
 
-// queuedAutoRetryID returns the ID of the pending (QUEUED) retry of one kind,
-// or "". idx_agent_input_queue_one_auto_retry_kind admits at most one.
-func queuedAutoRetryID(ctx context.Context, tx db.DBTX, agentID string, kind leapmuxv1.AgentInputKind) (string, error) {
-	var id string
-	err := tx.QueryRowContext(ctx, `SELECT id FROM agent_input_queue_items WHERE agent_id = ? AND kind = ? AND state = ?`,
-		agentID, kind, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED).Scan(&id)
+// queuedAutoRetry reads the pending (QUEUED) retry of one kind, and reports
+// whether it exists. idx_agent_input_queue_one_auto_retry_kind admits at most
+// one.
+func queuedAutoRetry(ctx context.Context, tx db.DBTX, agentID string, kind leapmuxv1.AgentInputKind) (autoRetryRow, bool, error) {
+	row := autoRetryRow{kind: kind, state: leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED}
+	var scheduled sqltime.SQLiteNullTime
+	err := tx.QueryRowContext(ctx, `SELECT id, scheduled_at FROM agent_input_queue_items WHERE agent_id = ? AND kind = ? AND state = ?`,
+		agentID, kind, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED).Scan(&row.id, &scheduled)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", nil
+		return autoRetryRow{}, false, nil
 	}
-	return id, err
+	if err != nil {
+		return autoRetryRow{}, false, err
+	}
+	row.scheduledAt = scheduled.Ptr()
+	return row, true, nil
+}
+
+// queuedAutoRetryID returns the ID of the pending (QUEUED) retry of one kind,
+// or "".
+func queuedAutoRetryID(ctx context.Context, tx db.DBTX, agentID string, kind leapmuxv1.AgentInputKind) (string, error) {
+	row, _, err := queuedAutoRetry(ctx, tx, agentID, kind)
+	return row.id, err
 }
 
 // A retry that leaves QUEUED for a dispatch is no longer the pending retry of

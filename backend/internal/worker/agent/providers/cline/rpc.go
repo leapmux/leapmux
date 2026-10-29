@@ -84,6 +84,15 @@ type hubEvent struct {
 	Raw       json.RawMessage `json:"-"`
 }
 
+// publishedAt returns the instant the daemon published the event, or fallback
+// when the event states none.
+func (event hubEvent) publishedAt(fallback time.Time) time.Time {
+	if event.Timestamp <= 0 {
+		return fallback
+	}
+	return time.UnixMilli(event.Timestamp).UTC()
+}
+
 // HubCommandError reports a command that the daemon refused.
 type HubCommandError struct {
 	Command string

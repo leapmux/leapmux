@@ -3,14 +3,18 @@ package kimi
 import (
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/util/optionmap"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit/providerkittest"
 )
 
 // kimiTestManagedModelID is a model that a Kimi Code account supplies.
@@ -268,4 +272,346 @@ func TestKimiUsageRefreshFollowsTheModel(t *testing.T) {
 		waitForKimiUsageRead(t, rig)
 		assert.Len(t, rig.fake.requestsTo("GET "+kimiRouteManagedUsage), 1, "an update that keeps the model reads nothing")
 	})
+}
+
+// --- the pending usage limit (kimiPendingUsageLimit) ---
+
+// kimiFiveHourResetAt is the reset of the 5-hour window in the usage answers
+// below. kimiPlanClockAt pins the clock at the real 5-hour failure, about 90
+// minutes before it.
+var (
+	kimiPlanClockAt     = time.UnixMilli(1792675623669).UTC()
+	kimiFiveHourResetAt = time.Date(2026, 10, 22, 15, 0, 0, 0, time.UTC)
+)
+
+// kimiUsageAnswer is a GET /oauth/usage answer with a 5-hour window at used
+// and the reset of kimiFiveHourResetAt.
+func kimiUsageAnswer(used float64) map[string]any {
+	return map[string]any{"kind": "ok", "quota": map[string]any{"usages": map[string]any{
+		"limit5h":    map[string]any{"usedRatio": used, "resetAt": kimiFiveHourResetAt.Format(time.RFC3339)},
+		"limit7d":    map[string]any{"usedRatio": 0.4, "resetAt": "2026-10-27T00:00:00Z"},
+		"monthTotal": map[string]any{"usedRatio": 0.2, "resetAt": "2026-11-01T00:00:00Z"},
+	}}}
+}
+
+// newKimiPlanRigAt opens a session on the model of the Kimi Code account, with
+// the agent's clock pinned at kimiPlanClockAt, on a server whose plan used up
+// its 5-hour window.
+func newKimiPlanRigAt(t *testing.T) *kimiTestRig {
+	t.Helper()
+	fake, server := newFakeKap(t)
+	fake.models = append(fake.models, kimiTestManagedModel())
+	fake.usage = kimiUsageAnswer(1)
+	a, sink, opts := newConnectedKimiAgent(t, server.URL, agent.Options{Options: options(agent.OptionIDModel, kimiTestManagedModelID)})
+	clock := testutil.NewQuartzMock(t)
+	clock.Set(kimiPlanClockAt).MustWait(testutil.DeadlineContext(t))
+	a.clock = clock
+	require.NoError(t, a.openStartupSession(opts, 30*time.Second))
+	return &kimiTestRig{agent: a, fake: fake, sink: sink}
+}
+
+// kimiUsageGate holds one plan-usage read inside the fake server until the test
+// releases it.
+type kimiUsageGate struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func newKimiUsageGate() *kimiUsageGate {
+	return &kimiUsageGate{entered: make(chan struct{}, 1), release: make(chan struct{})}
+}
+
+// reply is a usage answer that waits at the gate.
+func (g *kimiUsageGate) reply(usage any) fakeKapReply {
+	return fakeKapReply{Data: usage, BeforeReply: func() {
+		g.entered <- struct{}{}
+		<-g.release
+	}}
+}
+
+// waitEntered waits until the gated read reached the fake server.
+func (g *kimiUsageGate) waitEntered(t *testing.T) {
+	t.Helper()
+	select {
+	case <-g.entered:
+	case <-testutil.DeadlineContext(t).Done():
+		t.Fatal("the plan-usage read never reached the server")
+	}
+}
+
+// failFiveHour runs one main turn that ends on the real 5-hour limit.
+func failFiveHour(t *testing.T, rig *kimiTestRig, turnID int) {
+	t.Helper()
+	rig.feed(t, map[string]any{"type": contracts.KimiEventTurnStarted, "turnId": turnID, "origin": map[string]any{"kind": contracts.KimiOriginUser}})
+	failed := kimiFixturePayload(t, kimiTurnEndedFiveHour)
+	failed["turnId"] = turnID
+	rig.feed(t, failed)
+}
+
+// kimiOpsAfterLastTurnEnd returns the retry operations after the last turn-end
+// row of the timeline.
+func kimiOpsAfterLastTurnEnd(t *testing.T, sink *agenttest.ControlSink) []kimiRetryOp {
+	t.Helper()
+	ops := kimiRetryOps(sink.Timeline())
+	for i := len(ops) - 1; i >= 0; i-- {
+		if ops[i].op == "turn_end" {
+			return ops[i+1:]
+		}
+	}
+	t.Fatal("the timeline holds no turn end")
+	return nil
+}
+
+// The plan-usage read states the reset of a usage limit that the event does not.
+func TestKimiUsageLimitTakesTheResetOfTheExhaustedWindow(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		usage fakeKapReply
+		want  []kimiRetryOp
+	}{
+		{
+			"an exhausted window schedules the usage-limit retry at its reset",
+			fakeKapReply{Data: kimiUsageAnswer(1)},
+			[]kimiRetryOp{{op: "schedule_usage_limit", resetAt: kimiFiveHourResetAt}, {op: "cancel_server_error"}},
+		},
+		{
+			"overage reads as an exhausted window",
+			fakeKapReply{Data: kimiUsageAnswer(1.3)},
+			[]kimiRetryOp{{op: "schedule_usage_limit", resetAt: kimiFiveHourResetAt}, {op: "cancel_server_error"}},
+		},
+		{
+			"the latest reset of the exhausted windows wins",
+			fakeKapReply{Data: map[string]any{"kind": "ok", "quota": map[string]any{"usages": map[string]any{
+				"limit5h":    map[string]any{"usedRatio": 1, "resetAt": kimiFiveHourResetAt.Format(time.RFC3339)},
+				"limit7d":    map[string]any{"usedRatio": 1, "resetAt": "2026-10-27T00:00:00Z"},
+				"monthTotal": map[string]any{"usedRatio": 0.9, "resetAt": "2026-11-01T00:00:00Z"},
+			}}}},
+			[]kimiRetryOp{{op: "schedule_usage_limit", resetAt: time.Date(2026, 10, 27, 0, 0, 0, 0, time.UTC)}, {op: "cancel_server_error"}},
+		},
+		{
+			"no exhausted window applies the stored verdict",
+			fakeKapReply{Data: kimiUsageAnswer(0.6)},
+			[]kimiRetryOp{{op: "schedule_server_error"}},
+		},
+		{
+			"an exhausted window with no reset applies the stored verdict",
+			fakeKapReply{Data: map[string]any{"kind": "ok", "quota": map[string]any{"usages": map[string]any{
+				"limit5h": map[string]any{"usedRatio": 1},
+			}}}},
+			[]kimiRetryOp{{op: "schedule_server_error"}},
+		},
+		{
+			"a reset in the past applies the stored verdict",
+			fakeKapReply{Data: map[string]any{"kind": "ok", "quota": map[string]any{"usages": map[string]any{
+				"limit5h": map[string]any{"usedRatio": 1, "resetAt": kimiPlanClockAt.Add(-time.Minute).Format(time.RFC3339)},
+			}}}},
+			[]kimiRetryOp{{op: "schedule_server_error"}},
+		},
+		{
+			"a reset more than 31 days ahead applies the stored verdict",
+			fakeKapReply{Data: map[string]any{"kind": "ok", "quota": map[string]any{"usages": map[string]any{
+				"limit5h": map[string]any{"usedRatio": 1, "resetAt": kimiPlanClockAt.Add(32 * 24 * time.Hour).Format(time.RFC3339)},
+			}}}},
+			[]kimiRetryOp{{op: "schedule_server_error"}},
+		},
+		{
+			"an answer of the error kind applies the stored verdict",
+			fakeKapReply{Data: map[string]any{"kind": "error", "message": "Authorization failed."}},
+			[]kimiRetryOp{{op: "schedule_server_error"}},
+		},
+		{
+			"a failed request applies the stored verdict",
+			fakeKapReply{HTTPStatus: 502, Code: 50201, Msg: "bad gateway"},
+			[]kimiRetryOp{{op: "schedule_server_error"}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rig := newKimiPlanRigAt(t)
+			rig.fake.reply("GET "+kimiRouteManagedUsage, tc.usage)
+			failFiveHour(t, rig, 41)
+			waitForKimiUsageRead(t, rig)
+			assert.Equal(t, tc.want, kimiOpsAfterLastTurnEnd(t, rig.sink))
+			require.Positive(t, rig.sink.AutoScheduleCount())
+			assert.JSONEq(t, kimiTurnEndedFiveHour, string(rig.sink.LastAutoSchedule().SourcePayload), "the retry carries the failed turn's event")
+		})
+	}
+}
+
+// Every verdict but a usage limit with no reset applies at the turn end, with
+// no wait for the read.
+func TestKimiOtherVerdictsOfAPlanModelApplyAtOnce(t *testing.T) {
+	t.Parallel()
+	rig := newKimiPlanRigAt(t)
+	gate := newKimiUsageGate()
+	rig.fake.reply("GET "+kimiRouteManagedUsage, gate.reply(kimiUsageAnswer(1)))
+	rig.feed(t, map[string]any{"type": contracts.KimiEventTurnStarted, "turnId": 0, "origin": map[string]any{"kind": contracts.KimiOriginUser}})
+	rig.feed(t, kimiFixturePayload(t, kimiTurnEndedSuspended))
+	gate.waitEntered(t)
+	assert.Equal(t, []kimiRetryOp{{op: "cancel_usage_limit"}, {op: "cancel_server_error"}}, kimiOpsAfterLastTurnEnd(t, rig.sink),
+		"the billing block applied while the read still runs")
+	close(gate.release)
+	waitForKimiUsageRead(t, rig)
+	assert.Equal(t, []kimiRetryOp{{op: "cancel_usage_limit"}, {op: "cancel_server_error"}}, kimiOpsAfterLastTurnEnd(t, rig.sink),
+		"the read adds nothing")
+}
+
+// A read with no pending usage limit makes no retry call.
+func TestKimiUsageReadWithNoPendingLimitMakesNoRetryCall(t *testing.T) {
+	t.Parallel()
+	rig := newKimiPlanRigAt(t)
+	rig.agent.refreshUsage()
+	assert.Len(t, rig.fake.requestsTo("GET "+kimiRouteManagedUsage), 1)
+	assert.Zero(t, rig.sink.AutoScheduleCount())
+	assert.Zero(t, rig.sink.AutoCancelCount())
+}
+
+// A read that already runs when the turn fails took no record. The repeat that
+// the failure requests takes it, so the verdict reads the second answer.
+func TestKimiUsageLimitWaitsForTheReadAfterARunningOne(t *testing.T) {
+	t.Parallel()
+	rig := newKimiPlanRigAt(t)
+	gate := newKimiUsageGate()
+	rig.fake.reply("GET "+kimiRouteManagedUsage, gate.reply(kimiUsageAnswer(0.5)), fakeKapReply{Data: kimiUsageAnswer(1)})
+	rig.feed(t, map[string]any{"type": contracts.KimiEventTurnStarted, "turnId": 40, "origin": map[string]any{"kind": contracts.KimiOriginUser}})
+	rig.feed(t, map[string]any{"type": contracts.KimiEventTurnEnded, "turnId": 40, "reason": contracts.KimiTurnEndCompleted})
+	gate.waitEntered(t)
+
+	failFiveHour(t, rig, 41)
+	assert.Empty(t, kimiOpsAfterLastTurnEnd(t, rig.sink), "the verdict waits for a read")
+	close(gate.release)
+	waitForKimiUsageRead(t, rig)
+
+	assert.Len(t, rig.fake.requestsTo("GET "+kimiRouteManagedUsage), 2, "the failure asked for one more read")
+	assert.Equal(t, []kimiRetryOp{{op: "schedule_usage_limit", resetAt: kimiFiveHourResetAt}, {op: "cancel_server_error"}},
+		kimiOpsAfterLastTurnEnd(t, rig.sink), "the read that took the record states the reset, not the read that ran before")
+}
+
+// A read that ends after the state of the failed turn changed drops the
+// verdict: the turn that it belongs to no longer runs.
+func TestKimiUsageLimitOfAReplacedTurnIsDropped(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		replace func(t *testing.T, rig *kimiTestRig)
+	}{
+		{"a new main turn starts", func(t *testing.T, rig *kimiTestRig) {
+			rig.feed(t, map[string]any{"type": contracts.KimiEventTurnStarted, "turnId": 42, "origin": map[string]any{"kind": contracts.KimiOriginUser}})
+		}},
+		{"the server moves the model", func(t *testing.T, rig *kimiTestRig) {
+			rig.feed(t, map[string]any{"type": contracts.KimiEventAgentStatusUpdated, "model": "kimi-text"})
+		}},
+		{"the server moves the model away and back", func(t *testing.T, rig *kimiTestRig) {
+			rig.feed(t, map[string]any{"type": contracts.KimiEventAgentStatusUpdated, "model": "kimi-text"})
+			rig.feed(t, map[string]any{"type": contracts.KimiEventAgentStatusUpdated, "model": kimiTestManagedModelID})
+		}},
+		{"the reader changes the model", func(t *testing.T, rig *kimiTestRig) {
+			rig.agent.UpdateSettings(optionmap.Map{agent.OptionIDModel: "kimi-text"})
+		}},
+		{"the reader clears the context", func(t *testing.T, rig *kimiTestRig) {
+			_, err := rig.agent.ClearContext()
+			require.NoError(t, err)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rig := newKimiPlanRigAt(t)
+			gate := newKimiUsageGate()
+			rig.fake.reply("GET "+kimiRouteManagedUsage, gate.reply(kimiUsageAnswer(1)), fakeKapReply{Data: kimiUsageAnswer(1)})
+			failFiveHour(t, rig, 41)
+			gate.waitEntered(t)
+
+			tc.replace(t, rig)
+			close(gate.release)
+			waitForKimiUsageRead(t, rig)
+
+			assert.Zero(t, rig.sink.AutoScheduleCount(), "the replaced turn schedules nothing")
+			assert.Zero(t, rig.sink.AutoCancelCount(), "the replaced turn cancels nothing")
+		})
+	}
+}
+
+// A manual compaction can start while the plan-usage read of a failed turn
+// runs. The compaction's start publishes an active turn, which retires the
+// writer that the stored verdict captured, so the read applies nothing after
+// it, whatever the answer. Only the compaction's own verdict reaches the queue.
+func TestKimiUsageLimitThatSettlesAfterAManualCompactionStartsAppliesNothing(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		usage map[string]any
+	}{
+		{"an answer that states the reset", kimiUsageAnswer(1)},
+		{"an answer that states no reset", kimiUsageAnswer(0.6)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rig := newKimiPlanRigAt(t)
+			gate := newKimiUsageGate()
+			rig.fake.reply("GET "+kimiRouteManagedUsage, gate.reply(tc.usage), fakeKapReply{Data: tc.usage})
+			failFiveHour(t, rig, 41)
+			gate.waitEntered(t)
+
+			rig.feed(t, map[string]any{"type": contracts.KimiEventCompactionStarted, "trigger": "manual"})
+			rig.feed(t, map[string]any{"type": contracts.KimiEventCompactionCompleted})
+			close(gate.release)
+			waitForKimiUsageRead(t, rig)
+
+			ops := providerkittest.TurnEndAndRetryOps(rig.sink.Timeline())
+			require.NotEmpty(t, ops)
+			assert.Equal(t, append([]agenttest.TimelineEntry(nil), kimiCompactionEnd...), ops[len(ops)-1:])
+			assert.Equal(t, []string{"turn_end", "cancel_server_error"}, providerkittest.TurnEndAndRetryOpNames(rig.sink.Timeline()))
+			assert.Zero(t, rig.sink.AutoScheduleCount())
+		})
+	}
+}
+
+// A read that settles before the manual compaction starts applies the stored
+// verdict, and the compaction's end then cancels the server-error retry that
+// the verdict scheduled.
+func TestKimiUsageLimitThatSettlesBeforeAManualCompactionIsCancelledByIt(t *testing.T) {
+	t.Parallel()
+	rig := newKimiPlanRigAt(t)
+	rig.fake.reply("GET "+kimiRouteManagedUsage, fakeKapReply{Data: kimiUsageAnswer(0.6)})
+	failFiveHour(t, rig, 41)
+	waitForKimiUsageRead(t, rig)
+	rig.feed(t, map[string]any{"type": contracts.KimiEventCompactionStarted, "trigger": "manual"})
+	rig.feed(t, map[string]any{"type": contracts.KimiEventCompactionCompleted})
+	want := append(providerkittest.TurnEndThen(providerkit.TurnFailure{Kind: providerkit.TurnFailureTransient}), kimiCompactionEnd...)
+	assert.Equal(t, want, providerkittest.TurnEndAndRetryOps(rig.sink.Timeline()))
+}
+
+// kimiExhaustedResetAt reads the latest reset of a used-up window.
+func TestKimiExhaustedResetAt(t *testing.T) {
+	t.Parallel()
+	ratio := func(value float64) *float64 { return &value }
+	early, late := "2026-10-25T05:00:00Z", "2026-10-30T00:00:00.5Z"
+	for _, tc := range []struct {
+		name   string
+		usages kimiPlanUsages
+		want   time.Time
+	}{
+		{"no window", kimiPlanUsages{}, time.Time{}},
+		{"no used-up window", kimiPlanUsages{Limit5h: &kimiQuotaWindow{UsedRatio: ratio(0.99), ResetAt: early}}, time.Time{}},
+		{"a window with no use", kimiPlanUsages{Limit5h: &kimiQuotaWindow{ResetAt: early}}, time.Time{}},
+		{"a used-up window with a malformed reset", kimiPlanUsages{Limit5h: &kimiQuotaWindow{UsedRatio: ratio(1), ResetAt: "tomorrow"}}, time.Time{}},
+		{"one used-up window", kimiPlanUsages{Limit5h: &kimiQuotaWindow{UsedRatio: ratio(1), ResetAt: early}}, time.Date(2026, 10, 25, 5, 0, 0, 0, time.UTC)},
+		{
+			"the later of two used-up windows",
+			kimiPlanUsages{Limit5h: &kimiQuotaWindow{UsedRatio: ratio(1), ResetAt: early}, Limit7d: &kimiQuotaWindow{UsedRatio: ratio(2), ResetAt: late}},
+			time.Date(2026, 10, 30, 0, 0, 0, 500_000_000, time.UTC),
+		},
+		{
+			"a window below the limit does not count",
+			kimiPlanUsages{Limit5h: &kimiQuotaWindow{UsedRatio: ratio(1), ResetAt: early}, MonthTotal: &kimiQuotaWindow{UsedRatio: ratio(0.5), ResetAt: late}},
+			time.Date(2026, 10, 25, 5, 0, 0, 0, time.UTC),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := kimiExhaustedResetAt(tc.usages)
+			assert.True(t, tc.want.Equal(got), "got %v, want %v", got, tc.want)
+		})
+	}
 }

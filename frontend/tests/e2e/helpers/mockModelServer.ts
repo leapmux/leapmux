@@ -1448,16 +1448,19 @@ function writeModelError(response: ServerResponse, protocol: MockModelProtocol, 
     return
   }
   const delivered = genericModelError(error)
+  const headers: Record<string, string> = {}
+  if (error.retryAfterSeconds !== undefined)
+    headers['retry-after'] = String(error.retryAfterSeconds)
   if (protocol === 'anthropic-messages') {
-    writeJSON(response, error.status, {
+    writeMockJSON(response, error.status, {
       type: 'error',
       error: { type: delivered.code, message: delivered.message },
-    })
+    }, headers)
     return
   }
-  writeJSON(response, error.status, {
+  writeMockJSON(response, error.status, {
     error: { type: delivered.code, code: error.code, message: delivered.message },
-  })
+  }, headers)
 }
 
 /**

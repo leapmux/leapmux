@@ -1240,8 +1240,9 @@ func (a *Agent) handleZCodeCompactionState(notif zcodeStatePatch) {
 	default:
 		return
 	}
-	if notif.Reason != contracts.ZCodeStateReasonCompactStarted {
-		a.finishZCodeCompaction(notif.SessionID)
+	if notif.Reason != contracts.ZCodeStateReasonCompactStarted && a.finishZCodeCompaction(notif.SessionID) {
+		// A compaction never schedules a retry, whatever its outcome.
+		providerkit.ApplyTurnFailure(a.sink, providerkit.CompactionEnd(), nil)
 	}
 }
 

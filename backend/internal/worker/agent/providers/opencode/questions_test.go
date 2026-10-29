@@ -228,6 +228,22 @@ func TestOpenCodeQuestions_WithdrawsOnlyOnce(t *testing.T) {
 // A question raised before LeapMux connected raises no event on the new connection.
 // The pending list is the only thing that carries it, on the first connection as
 // well as after a reconnect.
+// Each connection of the event stream reports itself before its first event,
+// so the family can read what the daemon stated while no connection was open.
+func TestOpenCodeQuestions_ReportsEachConnection(t *testing.T) {
+	t.Parallel()
+	daemon := opencodetest.NewFakeDaemon(t, EventRoute, QuestionRoot)
+	questions := &openCodeQuestions{}
+	questions.Configure(&agenttest.ControlSink{})
+	var connections atomic.Int32
+	questions.connected = func(context.Context) { connections.Add(1) }
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	questions.beginAt(ctx, testutil.NewQuartzMock(t), "agent-1", daemon.Server.URL)
+
+	require.Eventually(t, func() bool { return connections.Load() == 1 }, 3*time.Second, 5*time.Millisecond)
+}
+
 func TestOpenCodeQuestions_PublishesAQuestionRaisedBeforeItConnected(t *testing.T) {
 	t.Parallel()
 	daemon := opencodetest.NewFakeDaemon(t, EventRoute, QuestionRoot)

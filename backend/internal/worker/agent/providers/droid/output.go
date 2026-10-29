@@ -314,6 +314,12 @@ func (a *Agent) onWorkingStateChanged(payload []byte, target droidOutputTarget) 
 		if childSessionID != "" {
 			a.disarmChildTurn(childSessionID)
 		} else {
+			// Droid sends idle after agent_turn_completed, which consumes the
+			// error record. A record that remains belongs to a turn that Droid
+			// will not complete, so no later turn end may read it.
+			a.Mu.Lock()
+			a.pendingTurnError = nil
+			a.Mu.Unlock()
 			a.endTurn()
 		}
 	}
@@ -745,7 +751,8 @@ func (a *Agent) onToolResult(payload []byte, target droidOutputTarget) {
 }
 
 // onAgentTurnCompleted ends the turn. PersistTurnEnd runs before the clear, so
-// the turn's tool count reaches the activity latch first.
+// the turn's tool count reaches the activity latch first. A main turn end then
+// applies its retry verdict. A child turn end applies none.
 func (a *Agent) onAgentTurnCompleted(payload []byte, target droidOutputTarget) {
 	target.state.turnErrorSeen = false
 	if target.childSessionID == "" {
@@ -763,10 +770,25 @@ func (a *Agent) onAgentTurnCompleted(payload []byte, target droidOutputTarget) {
 	a.persistTurnEnd(payload, target)
 	if target.childSessionID != "" {
 		a.closeChildSession(target.childSessionID, status)
-	} else {
-		a.endTurn()
-		a.refreshContextUsage()
+		return
 	}
+	// The ordered sink applies the verdict after the queued turn-end row. The
+	// turn end consumes the error record, so a later turn cannot read it. The
+	// stop note stays until the next turn start clears it: a queued prompt can
+	// start that turn, and the user can stop it, before this completion.
+	a.Mu.Lock()
+	turnError := a.pendingTurnError
+	a.pendingTurnError = nil
+	interrupted := a.interruptRequested
+	a.Mu.Unlock()
+	errorMessage := ""
+	if turnError != nil {
+		errorMessage = turnError.message
+		interrupted = interrupted || turnError.interruptRequested
+	}
+	providerkit.ApplyTurnFailure(target.sink, droidTurnFailure(n.Reason, errorMessage, interrupted, a.agentClock().Now()), payload)
+	a.endTurn()
+	a.refreshContextUsage()
 }
 
 // droidTurnCompletion follows the native child-result classification, including early process exits.
@@ -818,10 +840,26 @@ func (a *Agent) persistTurnEnd(payload []byte, target droidOutputTarget) {
 
 // onError surfaces a CLI error as a notification row and ends the turn when one
 // runs.
+//
+// An error of the running main turn is recorded for the agent_turn_completed
+// that follows it, under the same lock that reads the turn flag. An error with
+// no main turn running belongs to no turn end, and a child's error never
+// decides the main turn.
 func (a *Agent) onError(payload []byte, target droidOutputTarget) {
 	target.state.turnErrorSeen = true
+	mainTurnActive := false
 	if target.childSessionID == "" {
 		a.retryResolution.Reset()
+		var notification struct {
+			Message string `json:"message"`
+		}
+		decoded := json.Unmarshal(payload, &notification) == nil
+		a.Mu.Lock()
+		mainTurnActive = a.turnActive
+		if mainTurnActive && decoded {
+			a.recordTurnErrorLocked(notification.Message)
+		}
+		a.Mu.Unlock()
 	}
 	a.persistRemainingGeneration(target, agent.MessageCompletionError)
 	a.flushPendingToolCalls(target)
@@ -830,10 +868,7 @@ func (a *Agent) onError(payload []byte, target droidOutputTarget) {
 		a.closeChildSession(target.childSessionID, bgtask.StatusFailed)
 		return
 	}
-	a.Mu.Lock()
-	active := a.turnActive
-	a.Mu.Unlock()
-	if active {
+	if mainTurnActive {
 		a.endTurn()
 	}
 }

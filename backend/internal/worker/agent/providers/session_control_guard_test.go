@@ -110,9 +110,12 @@ func TestACPProvidersPublishControlRequestsThroughTheSessionGuard(t *testing.T) 
 	}
 
 	// The base itself publishes through the method, inside the guard. Finding
-	// that call proves that the scan recognizes the method.
+	// that call proves that the scan recognizes the method. The five call sites
+	// are: manual publication, standing approval, unpublished approval, the
+	// AnswerControlRequest hook's unpublished approval, and the hook's
+	// publication with no approval answer.
 	base := calls[modulePath+providerTree+"/acp"]
-	require.Len(t, base, 3, "manual publication, standing approval, and unpublished approval must remain inside the session guard: %v", base)
+	require.Len(t, base, 5, "manual publication, standing approval, unpublished approval, and the two hook-path publications must remain inside the session guard: %v", base)
 	for _, call := range base {
 		assert.Regexp(t, `^PublishSessionControlRequest at `, call)
 	}

@@ -28,10 +28,14 @@ func newACPFollowUpPrompt(sessionID, content string, attachments []*leapmuxv1.At
 	return batch
 }
 
+// handoffQueuedAgentTurn hands the busy state to the agent turn queued behind
+// the turn that just ended, and reports whether one was. When the queued
+// turn's end already arrived, it ends that turn too, with the retry verdict
+// that the end carried.
 func (b *Base) handoffQueuedAgentTurn(sessionID string) bool {
-	end, queued := b.takeQueuedAgentTurn(sessionID)
+	end, verdict, queued := b.takeQueuedAgentTurn(sessionID)
 	if queued && end != nil {
-		b.EndAgentTurn(end)
+		b.EndAgentTurnWithVerdict(end, verdict)
 	}
 	return queued
 }

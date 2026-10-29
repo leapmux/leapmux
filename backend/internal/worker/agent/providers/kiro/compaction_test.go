@@ -9,6 +9,8 @@ import (
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit/providerkittest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -146,4 +148,100 @@ func kiroSessionInfo(t *testing.T, kind string) []byte {
 			},
 		},
 	})
+}
+
+// kiroCompactionCancel is the retry operation of a manual compaction's end,
+// which writes no turn end: one cancel of the server-error retry, with the
+// compaction's reason.
+var kiroCompactionCancel = providerkittest.TurnEndThen(providerkit.CompactionEnd())[1:]
+
+// newKiroCompactionAgent builds a Kiro agent whose peer answers the compaction
+// request with reply once the test calls release, and every other request
+// with {}. Its transcript records the order of every row and retry operation.
+func newKiroCompactionAgent(t *testing.T, reply agenttest.RPCReply) (a *Agent, sink *agenttest.Sink, release func()) {
+	t.Helper()
+	held := make(chan struct{})
+	var once sync.Once
+	release = func() { once.Do(func() { close(held) }) }
+	t.Cleanup(release)
+	a, _, _ = newKiroAgent(t, agent.Options{}, func(request agenttest.RecordedRequest) agenttest.RPCReply {
+		if request.Method != kiroCompactMethod {
+			return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+		}
+		<-held
+		return reply
+	})
+	sink = &agenttest.Sink{}
+	a.SetSinkForTest(agent.NewProviderServices(sink))
+	return a, sink, release
+}
+
+// Every end of a manual compaction ends the turn that it held with one cancel
+// of the server-error retry, which states the compaction's reason, and
+// schedules nothing: a compaction that ends well, one that Kiro refuses, and
+// one whose request fails, even with a temporary model error.
+func TestKiroCompactionEndCancelsWithTheCompactionReason(t *testing.T) {
+	t.Parallel()
+	for name, reply := range map[string]agenttest.RPCReply{
+		"a compaction that ends well":    {Result: json.RawMessage(`{"success":true}`)},
+		"a compaction that Kiro refuses": {Result: json.RawMessage(`{"success":false}`)},
+		"a compaction that fails":        {Error: kiroResponseErrorObject(t, kiroInternalServerResponse)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			a, sink, release := newKiroCompactionAgent(t, reply)
+			require.NoError(t, a.CompactContext())
+			require.True(t, a.PromptActive(), "the compaction holds a turn")
+
+			release()
+			testutil.RequireEventually(t, func() bool { return !a.PromptActive() })
+			assert.Equal(t, kiroCompactionCancel, providerkittest.TurnEndAndRetryOps(sink.Timeline()))
+			assert.Zero(t, sink.AutoScheduleCount())
+		})
+	}
+}
+
+// An interrupt ends the turn that the compaction held, with the compaction's
+// reason. Kiro's late answer then changes nothing, so the turn applies one
+// verdict.
+func TestKiroInterruptedCompactionAppliesOneVerdict(t *testing.T) {
+	t.Parallel()
+	a, sink, release := newKiroCompactionAgent(t, agenttest.RPCReply{Result: json.RawMessage(`{"success":true}`)})
+	require.NoError(t, a.CompactContext())
+
+	require.NoError(t, a.Interrupt(agent.StopContext{}))
+	assert.False(t, a.PromptActive())
+	assert.Equal(t, kiroCompactionCancel, providerkittest.TurnEndAndRetryOps(sink.Timeline()))
+
+	release()
+	_, err := a.SendRequest("test/sync", nil, a.APITimeout())
+	require.NoError(t, err)
+	assert.Equal(t, kiroCompactionCancel, providerkittest.TurnEndAndRetryOps(sink.Timeline()), "the late answer applies no second verdict")
+	assert.Zero(t, sink.AutoScheduleCount())
+}
+
+// A compaction request that Kiro never receives ends the turn that it opened
+// with the compaction's reason.
+func TestKiroCompactionThatFailsToSendCancelsWithTheCompactionReason(t *testing.T) {
+	t.Parallel()
+	a, sink := newKiroRetryAgent(t)
+	a.SetStdinForTest(agenttest.FailingStdin{})
+
+	require.Error(t, a.CompactContext())
+	assert.False(t, a.PromptActive())
+	assert.Equal(t, kiroCompactionCancel, providerkittest.TurnEndAndRetryOps(sink.Timeline()))
+}
+
+// The prompt after a compaction takes its own verdict, so its temporary model
+// error schedules the server-error retry.
+func TestKiroPromptAfterACompactionAppliesItsOwnVerdict(t *testing.T) {
+	t.Parallel()
+	a, sink, release := newKiroCompactionAgent(t, agenttest.RPCReply{Result: json.RawMessage(`{"success":true}`)})
+	require.NoError(t, a.CompactContext())
+	release()
+	testutil.RequireEventually(t, func() bool { return !a.PromptActive() })
+	compactionOps := len(sink.Timeline())
+
+	failKiroPrompt(t, a, kiroProbedDisplayError(t, kiroInternalServerResponse), kiroInternalServerResponse)
+	assert.Equal(t, []string{"leapmux_notification", "turn_end", "schedule_server_error"}, kiroTimelineOps(sink.Timeline()[compactionOps:]))
 }

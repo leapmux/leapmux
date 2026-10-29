@@ -109,13 +109,35 @@ func (a *Agent) userCommand(sessionID, content string) (bool, error) {
 func (a *Agent) compact(sessionID, line string) error {
 	a.Mu.Lock()
 	idle := !a.active
+	if idle {
+		a.compactionTurn = true
+	}
 	a.Mu.Unlock()
 	if !idle {
+		// The command runs inside the running turn, which keeps its own verdict.
 		return a.executeCommand(sessionID, line)
 	}
 	a.setTurnState(true)
-	defer a.setTurnState(false)
+	defer a.endCompactionTurn()
 	return a.executeCommand(sessionID, line)
+}
+
+// endCompactionTurn releases the turn that compact holds. A compaction never
+// retries, so CompactionEnd precedes the release, whatever the command's
+// outcome. A stream failure that ended the turn first has already applied it.
+// dispatchMu orders this end against reportStreamFailure, so exactly one of
+// them applies the verdict.
+func (a *Agent) endCompactionTurn() {
+	a.dispatchMu.Lock()
+	defer a.dispatchMu.Unlock()
+	a.Mu.Lock()
+	owned := a.compactionTurn
+	a.compactionTurn = false
+	a.Mu.Unlock()
+	if owned {
+		providerkit.ApplyTurnFailure(a.sink, providerkit.CompactionEnd(), nil)
+	}
+	a.setTurnState(false)
 }
 
 func (a *Agent) applyProjections(stream *sessionStream, values map[string]json.RawMessage, snapshot bool) error {

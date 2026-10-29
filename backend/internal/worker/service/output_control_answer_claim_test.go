@@ -83,7 +83,7 @@ func TestClaimControlResponseAnswer(t *testing.T) {
 		"a repeat empty-token claim for the same request loses (id-only dedup fallback)")
 
 	// CleanupAgent runs on a transient context reset and does NOT touch the durable claim rows.
-	svc.Output.CleanupAgent("agent-1")
+	svc.Output.CleanupAgent("agent-1", CleanupTabClosed)
 	assert.False(t, claimControlResponseForTest(t, svc.Output, "agent-1", "req-2", "tokA"),
 		"the durable claim survives CleanupAgent (a transient restart), so the duplicate still loses")
 }

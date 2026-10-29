@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -594,7 +595,22 @@ func TestClaudeRateLimitEvent_AllowedCancelsResume(t *testing.T) {
 
 	require.Equal(t, 1, sink.AutoCancelCount())
 	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, sink.LastAutoCancel())
+	assert.Equal(t, `Claude reported status "allowed" for the five_hour usage limit`, sink.LastAutoCancelReason())
 	assert.Equal(t, 0, sink.AutoScheduleCount())
+}
+
+// An event without rateLimitType still cancels, and its reason states the
+// "unknown" type that the session info also shows.
+func TestClaudeRateLimitEvent_AllowedWithoutATypeStatesAnUnknownLimit(t *testing.T) {
+	t.Parallel()
+
+	sink := &outputTestSink{}
+	a := newTestAgent(agent.NewProviderServices(sink))
+
+	a.HandleOutput([]byte(`{"type":"rate_limit_event","rate_limit_info":{"status":"allowed"}}`))
+
+	require.Equal(t, 1, sink.AutoCancelCount())
+	assert.Equal(t, `Claude reported status "allowed" for the unknown usage limit`, sink.LastAutoCancelReason())
 }
 
 // TestClaudeRateLimitEvent_AllowedWarningCancelsResume prevents an incorrect automatic continuation after allowed_warning.
@@ -620,6 +636,7 @@ func TestClaudeRateLimitEvent_AllowedWarningCancelsResume(t *testing.T) {
 	assert.Equal(t, 0, sink.AutoScheduleCount(), "an allowed_warning event must not schedule an automatic retry")
 	require.Equal(t, 1, sink.AutoCancelCount())
 	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, sink.LastAutoCancel())
+	assert.Equal(t, `Claude reported status "allowed_warning" for the seven_day usage limit`, sink.LastAutoCancelReason())
 }
 
 // TestClaudeRateLimitEvent_OverageAbsorbsRejected verifies that an active overage allowance accepts a request despite a rejected base window.
@@ -645,6 +662,8 @@ func TestClaudeRateLimitEvent_OverageAbsorbsRejected(t *testing.T) {
 
 	assert.Equal(t, 0, sink.AutoScheduleCount(), "overage absorbs the rejected base window; no resume")
 	require.Equal(t, 1, sink.AutoCancelCount())
+	assert.Equal(t, `Claude reported overage status "allowed" for the seven_day usage limit`, sink.LastAutoCancelReason(),
+		"the reason states the overage status that lifted the block, not the rejected base status")
 }
 
 // TestClaudeRateLimitEvent_OverageRejectedSchedulesAtOverageReset verifies a block that rejects the overage allowance itself.
@@ -863,6 +882,7 @@ func TestClaudeResult_APIErrorUsesAPIErrorReason(t *testing.T) {
 
 	require.Equal(t, 1, sink.AutoCancelCount())
 	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, sink.LastAutoCancel())
+	assert.Equal(t, providerkit.TurnEndedWithoutRetryableFailure, sink.LastAutoCancelReason())
 }
 
 func TestClaudeResult_IdleTimeoutPrefixSchedulesServerErrorAutoRetry(t *testing.T) {
@@ -973,6 +993,343 @@ func TestClaudeResult_BareOverloadedSchedulesServerErrorAutoRetry(t *testing.T) 
 	assert.Equal(t, "result", source.Type)
 	assert.True(t, source.IsError)
 	assert.Equal(t, "API Error: Overloaded", source.Result)
+}
+
+// --- The automatic-retry verdict of a `result` ---
+
+// claudeTurnEndRow is the timeline entry of the `result` row.
+var claudeTurnEndRow = agenttest.TimelineEntry{Op: "turn_end"}
+
+// claudeServerErrorScheduled is the timeline entry of a scheduled server-error retry.
+var claudeServerErrorScheduled = agenttest.TimelineEntry{
+	Op: "schedule_server_error", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR,
+}
+
+// claudeServerErrorCancelled is the timeline entry of a server-error retry
+// that a turn end without a retryable failure cancels.
+var claudeServerErrorCancelled = agenttest.TimelineEntry{
+	Op: "cancel_server_error", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR,
+	Reason: providerkit.TurnEndedWithoutRetryableFailure,
+}
+
+// A turn that succeeded can end on text that starts like an API error: the
+// model may quote one. Only a `result` that states a failure (`is_error`) can
+// schedule a retry.
+func TestClaudeResult_ASuccessThatQuotesAnAPIErrorCancelsTheServerErrorRetry(t *testing.T) {
+	t.Parallel()
+
+	sink := &outputTestSink{}
+	a := newTestAgent(agent.NewProviderServices(sink))
+
+	a.HandleOutput([]byte(`{"type":"result","subtype":"success","is_error":false,"num_turns":1,"stop_reason":"end_turn","terminal_reason":"completed","api_error_status":null,"result":"API Error: 503 upstream connect error is what the log shows."}`))
+
+	assert.Equal(t, []agenttest.TimelineEntry{claudeTurnEndRow, claudeServerErrorCancelled}, sink.Timeline())
+}
+
+// A turn that the user stopped is never retried, even when the turn ended on a
+// retryable failure before the CLI read the stop.
+func TestClaudeResult_AStoppedTurnCancelsTheServerErrorRetry(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name  string
+		frame string
+	}{
+		{"the stop took effect", claudeResultAbortedStreaming},
+		{"the turn failed on an overload before the CLI read the stop", `{"type":"result","subtype":"success","is_error":true,"duration_ms":52,"num_turns":1,"stop_reason":"stop_sequence","terminal_reason":"api_error","api_error_status":529,"result":"API Error: 529 Overloaded"}`},
+		{"the turn failed on the network, and the frame states no reason", `{"type":"result","subtype":"success","is_error":true,"result":"API Error: Connection lost mid-response. The response above may be incomplete."}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sink := &outputTestSink{}
+			a := newTestAgent(agent.NewProviderServices(sink))
+
+			a.HandleOutput([]byte(`{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"PARTIAL"}]}}`))
+			a.noteInterruptRequested()
+			a.HandleOutput([]byte(tc.frame))
+
+			assert.Equal(t, []agenttest.TimelineEntry{{Op: "message"}, claudeTurnEndRow, claudeServerErrorCancelled}, sink.Timeline())
+		})
+	}
+}
+
+// The network texts are real (R/transcripts-claude.md, Claude Code 2.1.289).
+// The session files store no `result`, so each frame wraps its text in the
+// `result` shape that the probe recorded for an API failure.
+func TestClaudeResult_ANetworkFailureSchedulesAServerErrorRetry(t *testing.T) {
+	t.Parallel()
+
+	for _, text := range []string{
+		"API Error: Connection refused — a firewall or proxy may be blocking it (ECONNREFUSED)",
+		"API Error: Can't reach the API server — check your internet or DNS (ENOTFOUND)",
+		"API Error: Connection lost mid-response. The response above may be incomplete.",
+	} {
+		t.Run(text, func(t *testing.T) {
+			t.Parallel()
+			sink := &outputTestSink{}
+			a := newTestAgent(agent.NewProviderServices(sink))
+
+			frame, err := json.Marshal(map[string]any{
+				"type": "result", "subtype": "success", "is_error": true, "num_turns": 1,
+				"stop_reason": "stop_sequence", "terminal_reason": "api_error", "api_error_status": nil, "result": text,
+			})
+			require.NoError(t, err)
+			a.HandleOutput(frame)
+
+			assert.Equal(t, []agenttest.TimelineEntry{claudeTurnEndRow, claudeServerErrorScheduled}, sink.Timeline())
+			require.Equal(t, 1, sink.AutoScheduleCount())
+			assert.JSONEq(t, string(frame), string(sink.LastAutoSchedule().SourcePayload), "the retry carries the frame that failed")
+		})
+	}
+}
+
+// A 429 that the CLI could not outlast and that states no usage limit
+// schedules a server-error retry (decision 3).
+func TestClaudeResult_APlainRateLimitSchedulesAServerErrorRetry(t *testing.T) {
+	t.Parallel()
+
+	sink := &outputTestSink{}
+	a := newTestAgent(agent.NewProviderServices(sink))
+
+	a.HandleOutput([]byte(`{"type":"result","subtype":"success","is_error":true,"num_turns":1,"stop_reason":"stop_sequence","terminal_reason":"api_error","api_error_status":429,"result":"API Error: 429 {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"Number of concurrent connections has exceeded your rate limit. Please try again later.\"}}"}`))
+
+	assert.Equal(t, []agenttest.TimelineEntry{claudeTurnEndRow, claudeServerErrorScheduled}, sink.Timeline())
+}
+
+// claudeUsageLimitResult is the `result` of the LeapMux database (DB #9 of
+// R/transcripts-codex-leapmuxdb.md, row 2026-10-24T19:55:05Z). The export
+// replaced the objects of `usage`, `modelUsage`, `subagent_stats`, and
+// `model_usage_since_last_result` with a placeholder string, so this copy
+// leaves them out.
+const claudeUsageLimitResult = `{"duration_api_ms": 22161158, "stop_reason": "stop_sequence", "session_id": "de93f3cf-a9f6-4b24-900b-7689ab510577", "total_cost_usd": 308.46059859999974, "permission_denials": [], "terminal_reason": "api_error", "fast_mode_state": "off", "fast_mode_disabled_reason": "sdk_opt_in_required", "origin": {"kind": "task-notification", "producer": "session-task", "runId": "0mvmsqs5t-22f76850"}, "safety_stops": 0, "is_error": true, "num_turns": 41, "subtype": "success", "api_error_status": 429, "api_error_origin": "first_party", "api_error": "usage_limit_reached", "result": "You've hit your session limit · resets 5:10am (Asia/Seoul)", "type": "result", "duration_ms": 826117, "uuid": "279138af-1537-4631-9d11-8d571727aa8f", "queued_turn_count": 0, "result_index": 40}`
+
+// The usage limit itself stays with rate_limit_event, which states its reset.
+// The `result` of that limit is a 429, and it must not also schedule a
+// server-error retry that would hit the same limit again and again.
+func TestClaudeResult_TheUsageLimitResultSchedulesNoServerErrorRetry(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name  string
+		frame string
+	}{
+		{"the database result with the usage-limit code", claudeUsageLimitResult},
+		// The same frame from a CLI that ended the turn at its blocking limit,
+		// with no usage-limit code.
+		{"the blocking limit without the usage-limit code", strings.Replace(
+			strings.Replace(claudeUsageLimitResult, `"api_error": "usage_limit_reached", `, "", 1),
+			`"terminal_reason": "api_error"`, `"terminal_reason": "blocking_limit"`, 1)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sink := &outputTestSink{}
+			a := newTestAgent(agent.NewProviderServices(sink))
+
+			a.HandleOutput([]byte(tc.frame))
+
+			assert.Equal(t, []agenttest.TimelineEntry{claudeTurnEndRow, claudeServerErrorCancelled}, sink.Timeline())
+		})
+	}
+}
+
+// claudeRejectedRateLimitEvent carries the rate_limit_info of DB #8 of
+// R/transcripts-codex-leapmuxdb.md (row 2026-10-28T00:57:33Z).
+const claudeRejectedRateLimitEvent = `{"type":"rate_limit_event","rate_limit_info":{"status": "rejected", "resetsAt": 1793160000, "rateLimitType": "five_hour", "overageStatus": "rejected", "overageDisabledReason": "out_of_credits", "isUsingOverage": false, "unifiedWindows": {"five_hour": {"utilization": 1, "resetsAt": 1793160000, "status": "rejected", "surpassedThreshold": 1}, "seven_day": {"utilization": 0.09, "resetsAt": 1793631600, "status": "allowed"}}}}`
+
+// claudeAllowedRateLimitEvent is the `allowed` event of DB #10 of
+// R/transcripts-codex-leapmuxdb.md.
+const claudeAllowedRateLimitEvent = `{"type": "rate_limit_event", "rate_limit_info": {"status": "allowed", "resetsAt": 1792836600, "rateLimitType": "five_hour", "overageStatus": "rejected", "overageDisabledReason": "out_of_credits", "isUsingOverage": false, "unifiedWindows": {"seven_day": {"utilization": 0.13, "resetsAt": 1793026800, "status": "allowed"}}}, "uuid": "941b1188-5c35-4403-9d6e-29f90ceade42", "session_id": "de93f3cf-a9f6-4b24-900b-7689ab510577"}`
+
+// claudePlainRateLimitResult is a 429 `result` with no usage-limit code, as a
+// CLI before 2.1.302 writes the usage limit.
+const claudePlainRateLimitResult = `{"type":"result","subtype":"success","is_error":true,"num_turns":1,"stop_reason":"stop_sequence","terminal_reason":"api_error","api_error_status":429,"result":"You've hit your session limit · resets 1pm (Asia/Seoul)"}`
+
+var (
+	claudeUsageLimitScheduled = agenttest.TimelineEntry{
+		Op: "schedule_usage_limit", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT,
+		ResetAt: time.Unix(1793160000, 0).UTC(),
+	}
+	claudeUsageLimitLifted = agenttest.TimelineEntry{
+		Op: "cancel_usage_limit", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT,
+		Reason: `Claude reported status "allowed" for the five_hour usage limit`,
+	}
+	claudeNotificationRow = agenttest.TimelineEntry{Op: "notification"}
+)
+
+// A CLI before 2.1.302 writes no usage-limit code, so the rejected event of the
+// turn states that the 429 is the usage limit.
+func TestClaudeResult_ARateLimitAfterARejectedEventSchedulesNoServerErrorRetry(t *testing.T) {
+	t.Parallel()
+
+	sink := &outputTestSink{}
+	a := newTestAgent(agent.NewProviderServices(sink))
+
+	a.HandleOutput([]byte(claudeRejectedRateLimitEvent))
+	a.HandleOutput([]byte(claudePlainRateLimitResult))
+
+	assert.Equal(t, []agenttest.TimelineEntry{
+		claudeNotificationRow, claudeUsageLimitScheduled,
+		claudeTurnEndRow, claudeServerErrorCancelled,
+	}, sink.Timeline())
+}
+
+// The latest rate_limit_event of the turn states the block. A later event that
+// allows the request supersedes an earlier rejection, and the reverse.
+func TestClaudeResult_TheLatestRateLimitEventDecides(t *testing.T) {
+	t.Parallel()
+
+	t.Run("an allowed event after a rejected one makes the 429 a rate limit", func(t *testing.T) {
+		t.Parallel()
+		sink := &outputTestSink{}
+		a := newTestAgent(agent.NewProviderServices(sink))
+
+		a.HandleOutput([]byte(claudeRejectedRateLimitEvent))
+		a.HandleOutput([]byte(claudeAllowedRateLimitEvent))
+		a.HandleOutput([]byte(claudePlainRateLimitResult))
+
+		assert.Equal(t, []agenttest.TimelineEntry{
+			claudeNotificationRow, claudeUsageLimitScheduled,
+			claudeNotificationRow, claudeUsageLimitLifted,
+			claudeTurnEndRow, claudeServerErrorScheduled,
+		}, sink.Timeline())
+	})
+	t.Run("a rejected event after an allowed one makes the 429 the usage limit", func(t *testing.T) {
+		t.Parallel()
+		sink := &outputTestSink{}
+		a := newTestAgent(agent.NewProviderServices(sink))
+
+		a.HandleOutput([]byte(claudeAllowedRateLimitEvent))
+		a.HandleOutput([]byte(claudeRejectedRateLimitEvent))
+		a.HandleOutput([]byte(claudePlainRateLimitResult))
+
+		assert.Equal(t, []agenttest.TimelineEntry{
+			claudeNotificationRow, claudeUsageLimitLifted,
+			claudeNotificationRow, claudeUsageLimitScheduled,
+			claudeTurnEndRow, claudeServerErrorCancelled,
+		}, sink.Timeline())
+	})
+}
+
+// The `result` spends the mark of a rejected event, so the next turn's 429
+// reads as the rate limit that it states.
+func TestClaudeResult_ARejectedEventMarksOnlyItsOwnTurn(t *testing.T) {
+	t.Parallel()
+
+	sink := &outputTestSink{}
+	a := newTestAgent(agent.NewProviderServices(sink))
+
+	a.HandleOutput([]byte(claudeRejectedRateLimitEvent))
+	a.HandleOutput([]byte(claudePlainRateLimitResult))
+	a.HandleOutput([]byte(claudePlainRateLimitResult))
+
+	assert.Equal(t, []agenttest.TimelineEntry{
+		claudeNotificationRow, claudeUsageLimitScheduled,
+		claudeTurnEndRow, claudeServerErrorCancelled,
+		claudeTurnEndRow, claudeServerErrorScheduled,
+	}, sink.Timeline())
+}
+
+// A transient failure retries even when a rejected rate_limit_event marked
+// the turn: the mark qualifies only a 429, and an overload is no usage limit.
+func TestClaudeResult_ATransientFailureRetriesDespiteARejectedEvent(t *testing.T) {
+	t.Parallel()
+
+	sink := &outputTestSink{}
+	a := newTestAgent(agent.NewProviderServices(sink))
+
+	a.HandleOutput([]byte(claudeRejectedRateLimitEvent))
+	a.HandleOutput([]byte(`{"type":"result","subtype":"success","is_error":true,"terminal_reason":"api_error","api_error_status":529,"result":"API Error: 529 Overloaded"}`))
+
+	assert.Equal(t, []agenttest.TimelineEntry{
+		claudeNotificationRow, claudeUsageLimitScheduled,
+		claudeTurnEndRow, claudeServerErrorScheduled,
+	}, sink.Timeline())
+}
+
+// The mark of a rejected event cannot outlive its turn, also when no `result`
+// spends it: the result edge of any turn end clears it.
+func TestClaudeResult_TheResultEdgeClearsTheRejectedMark(t *testing.T) {
+	t.Parallel()
+
+	a := newTestAgent(agent.NewProviderServices(&outputTestSink{}))
+	a.HandleOutput([]byte(claudeRejectedRateLimitEvent))
+	a.recordClaudeResultEdge()
+
+	assert.False(t, a.takeTurnRateLimitRejected())
+}
+
+func TestClaudeResult_A400CancelsTheServerErrorRetry(t *testing.T) {
+	t.Parallel()
+
+	sink := &outputTestSink{}
+	a := newTestAgent(agent.NewProviderServices(sink))
+
+	a.HandleOutput([]byte(claudeResultAPIError))
+
+	assert.Equal(t, []agenttest.TimelineEntry{claudeTurnEndRow, claudeServerErrorCancelled}, sink.Timeline())
+}
+
+// A billing block that the vendor text states cancels both retries: waiting
+// does not lift it.
+func TestClaudeResult_ACreditBlockCancelsBothRetries(t *testing.T) {
+	t.Parallel()
+
+	sink := &outputTestSink{}
+	a := newTestAgent(agent.NewProviderServices(sink))
+
+	a.HandleOutput([]byte(`{"type":"result","subtype":"success","is_error":true,"terminal_reason":"api_error","api_error_status":400,"result":"API Error: 400 {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.\"}}"}`))
+
+	reason := "the vendor reported a billing or plan block, which only a billing or plan change lifts"
+	assert.Equal(t, []agenttest.TimelineEntry{
+		claudeTurnEndRow,
+		{Op: "cancel_usage_limit", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, Reason: reason},
+		{Op: "cancel_server_error", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, Reason: reason},
+	}, sink.Timeline())
+}
+
+// A third-party endpoint states its usage limit in the text. The verdict reads
+// the reset on the agent's clock, so the test pins it at the capture's time.
+func TestClaudeResult_AVendorUsageLimitSchedulesAtItsStatedReset(t *testing.T) {
+	t.Parallel()
+
+	clock := testutil.NewQuartzMock(t)
+	clock.Set(time.Date(2026, 9, 11, 16, 19, 3, 0, time.UTC)).MustWait(testutil.DeadlineContext(t))
+	sink := &outputTestSink{}
+	a := &Agent{
+		Process: providerkit.NewProcessFrom(providerkit.ProcessConfig{AgentID: "test-agent", Clock: clock}),
+		sink:    agent.NewProviderServices(sink),
+	}
+
+	a.HandleOutput([]byte(`{"type":"result","subtype":"success","is_error":true,"terminal_reason":"api_error","api_error_status":429,"result":"API Error: 429 {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"code\":\"1308\",\"message\":\"[1308][Usage limit reached for 5 hour. Your limit will reset at 2026-09-12 00:35:41][20260912001903b4955568412247d7]\"},\"request_id\":\"20260912001903b4955568412247d7\"}"}`))
+
+	assert.Equal(t, []agenttest.TimelineEntry{
+		claudeTurnEndRow,
+		{
+			Op: "schedule_usage_limit", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT,
+			ResetAt: time.Date(2026, 9, 11, 16, 35, 42, 0, time.UTC),
+		},
+		{
+			Op: "cancel_server_error", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR,
+			Reason: "the turn ended on a usage limit that lifts at a stated time",
+		},
+	}, sink.Timeline())
+}
+
+// A subagent's turn end is not a turn end of the session, so it applies no
+// verdict: the root `result` decides.
+func TestClaudeResult_AChildResultAppliesNoVerdict(t *testing.T) {
+	t.Parallel()
+
+	sink := &outputTestSink{}
+	a := newTestAgent(agent.NewProviderServices(sink))
+
+	a.HandleOutput([]byte(`{"type":"system","subtype":"task_started","task_id":"t-fail","tool_use_id":"tu-fail","task_type":"local_agent","description":"child task"}`))
+	a.HandleOutput([]byte(`{"type":"result","parent_tool_use_id":"tu-fail","subtype":"success","is_error":true,"result":"API Error: 529 Overloaded"}`))
+
+	assert.Zero(t, sink.AutoScheduleCount(), "the parent schedules nothing")
+	assert.Zero(t, sink.AutoCancelCount(), "the parent cancels nothing")
+	child := sink.Child("child-of-tu-fail")
+	assert.Equal(t, []agenttest.TimelineEntry{claudeTurnEndRow}, child.Timeline(), "the child records only its turn end")
 }
 
 func TestHandleOutput_MalformedJSON(t *testing.T) {
@@ -1374,51 +1731,250 @@ func TestHandleOutput_NonThinkingSystemMessageStillPersists(t *testing.T) {
 	assert.Equal(t, 0, sink.SessionIDCount(), "only init moves the session")
 }
 
-func TestIsRetryableClaudeResultError(t *testing.T) {
+// TestClaudeTurnFailure_ClassifiesTheResultText reads the `result` text of a
+// failed turn (`is_error: true`) with no other signal. Each transient form
+// schedules a server-error retry, and every other text gives none.
+func TestClaudeTurnFailure_ClassifiesTheResultText(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name  string
-		input string
-		want  bool
+	observedAt := time.Date(2026, 10, 28, 1, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name string
+		text string
+		want providerkit.TurnFailureKind
 	}{
-		{"5xx 500", "API Error: 500 Internal Server Error", true},
-		{"5xx 502", "API Error: 502 Bad Gateway", true},
-		{"5xx 529", "API Error: 529 Overloaded", true},
-		{"5xx 599 bare", "API Error: 599", true},
-		{"5xx alternate punctuation", "API Error - 502 Bad Gateway", true},
-		{"5xx repeated punctuation", "API Error:: 529 Overloaded", true},
-		{"5xx lowercase prefix", "api error: 500 internal server error", true},
-		{"idle timeout exact", "API Error: Stream idle timeout", true},
-		{"idle timeout partial response", "API Error: Stream idle timeout - partial response received", true},
-		{"idle timeout alternate punctuation", "API Error - Stream idle timeout - partial response received", true},
-		{"idle timeout repeated punctuation", "API Error:: Stream idle timeout", true},
-		{"idle timeout lowercase", "api error: stream idle timeout", true},
-		{"overloaded bare", "API Error: Overloaded", true},
-		{"overloaded alternate punctuation", "API Error - Overloaded", true},
-		{"overloaded repeated punctuation", "API Error:: Overloaded", true},
-		{"overloaded trailing text", "API Error: Overloaded - please retry", true},
-		{"overloaded lowercase", "API Error: overloaded", true},
-		{"overloaded uppercase", "API ERROR: OVERLOADED", true},
-		{"non-retryable 4xx", "API Error: 400 Bad Request", false},
-		{"5xx single digit", "API Error: 5", false},
-		{"5xx two digits", "API Error: 50", false},
-		{"5xx four digits", "API Error: 5000", false},
-		{"5xx alphanumeric separator", "API ErrorX 500 Internal Server Error", false},
-		{"5xx alphanumeric suffix", "API Error: 500X", false},
-		{"idle timeout alphanumeric separator", "API ErrorX Stream idle timeout", false},
-		{"idle timeout alphanumeric suffix", "API Error: Stream idle timeoutX", false},
-		{"overloaded alphanumeric separator", "API ErrorX Overloaded", false},
-		{"overloaded alphanumeric suffix", "API Error: OverloadedX", false},
-		{"overloaded without prefix", "Server Overloaded", false},
-		{"empty string", "", false},
-		{"plain text", "done", false},
+		{"a 500", "API Error: 500 Internal Server Error", providerkit.TurnFailureTransient},
+		{"a 502", "API Error: 502 Bad Gateway", providerkit.TurnFailureTransient},
+		{"a 529", "API Error: 529 Overloaded", providerkit.TurnFailureTransient},
+		{"a bare 599", "API Error: 599", providerkit.TurnFailureTransient},
+		{"a 5xx with other punctuation", "API Error - 502 Bad Gateway", providerkit.TurnFailureTransient},
+		{"a 5xx with repeated punctuation", "API Error:: 529 Overloaded", providerkit.TurnFailureTransient},
+		{"a 5xx in lowercase", "api error: 500 internal server error", providerkit.TurnFailureTransient},
+		// Claude Code 2.1.310 appends this advice to a 5xx.
+		{"a 5xx with the advice of 2.1.310", "API Error: 500 Internal server error. This is a server-side issue, usually temporary — try again in a moment.", providerkit.TurnFailureTransient},
+		{"an idle timeout", "API Error: Stream idle timeout", providerkit.TurnFailureTransient},
+		{"an idle timeout with a partial response", "API Error: Stream idle timeout - partial response received", providerkit.TurnFailureTransient},
+		{"an idle timeout with other punctuation", "API Error - Stream idle timeout - partial response received", providerkit.TurnFailureTransient},
+		{"an idle timeout with repeated punctuation", "API Error:: Stream idle timeout", providerkit.TurnFailureTransient},
+		{"an idle timeout in lowercase", "api error: stream idle timeout", providerkit.TurnFailureTransient},
+		{"a bare overload", "API Error: Overloaded", providerkit.TurnFailureTransient},
+		{"an overload with other punctuation", "API Error - Overloaded", providerkit.TurnFailureTransient},
+		{"an overload with repeated punctuation", "API Error:: Overloaded", providerkit.TurnFailureTransient},
+		{"an overload with trailing text", "API Error: Overloaded - please retry", providerkit.TurnFailureTransient},
+		{"an overload in lowercase", "API Error: overloaded", providerkit.TurnFailureTransient},
+		{"an overload in uppercase", "API ERROR: OVERLOADED", providerkit.TurnFailureTransient},
+		{"repeated overloads", "API Error: Repeated 529 Overloaded errors. The API is at capacity — this is usually temporary. Try again in a moment.", providerkit.TurnFailureTransient},
+		// The real texts of R/transcripts-claude.md (Claude Code 2.1.289).
+		{"a refused connection", "API Error: Connection refused — a firewall or proxy may be blocking it (ECONNREFUSED)", providerkit.TurnFailureTransient},
+		{"an unreachable server", "API Error: Can't reach the API server — check your internet or DNS (ENOTFOUND)", providerkit.TurnFailureTransient},
+		{"a connection lost mid-response", "API Error: Connection lost mid-response. The response above may be incomplete.", providerkit.TurnFailureTransient},
+		// The wordings of Claude Code 2.1.310, from its binary.
+		{"an unreachable server with a typographic apostrophe", "API Error: Can’t reach the API server — check your internet or DNS (EAI_AGAIN)", providerkit.TurnFailureTransient},
+		{"a dropped connection", "API Error: Connection dropped (ECONNRESET)", providerkit.TurnFailureTransient},
+		{"a lost connection", "API Error: Connection to the API was lost (ECONNRESET). This is usually temporary — try again.", providerkit.TurnFailureTransient},
+		{"no internet route", "API Error: No internet route — check your connection or VPN (ENETUNREACH)", providerkit.TurnFailureTransient},
+		{"a connection that failed with a code", "API Error: Unable to connect to API (EPROTO)", providerkit.TurnFailureTransient},
+		{"a connection that failed with no code", "API Error: Unable to connect to API. Check your internet connection", providerkit.TurnFailureTransient},
+		{"a connection that failed in a terse form", "API Error: Unable to connect to API", providerkit.TurnFailureTransient},
+		{"a request that timed out", "API Error: Request timed out.", providerkit.TurnFailureTransient},
+		{"a connection lost before a response", "API Error: Connection lost before a response was produced. Try again.", providerkit.TurnFailureTransient},
+		{"a server error mid-response", "API Error: Server error mid-response. The response above may be incomplete.", providerkit.TurnFailureTransient},
+		{"a response that stopped arriving", "API Error: The response stopped arriving. The response above may be incomplete.", providerkit.TurnFailureTransient},
+		{"a response that stalled", "API Error: The response stalled before a response was produced. Try again.", providerkit.TurnFailureTransient},
+		{"a response that never fully arrived", "API Error: Part of the response never arrived and no response was produced. Try again.", providerkit.TurnFailureTransient},
+		{"a malformed stream", "API Error: The response stream was malformed. The response above may be incomplete.", providerkit.TurnFailureTransient},
+		{"a computer that went to sleep", "API Error: Your computer went to sleep mid-response. The response above may be incomplete.", providerkit.TurnFailureTransient},
+		{"a computer that went to sleep before a response", "API Error: Your computer went to sleep before a response was produced. Try again.", providerkit.TurnFailureTransient},
+		// A certificate or proxy problem lasts until somebody changes the setup.
+		{"a certificate problem", "API Error: Unable to connect to API: SSL certificate has expired", providerkit.TurnFailureNotRetryable},
+		{"a proxy that refused the tunnel", "API Error: Couldn't connect through your proxy (ERR_PROXY_TUNNEL) — the proxy refused the tunnel: check its credentials and that it allows this host", providerkit.TurnFailureNotRetryable},
+		{"a 400", "API Error: 400 Bad Request", providerkit.TurnFailureNotRetryable},
+		{"a 400 of the probe", "API Error: 400 NATIVE ERROR MARKER", providerkit.TurnFailureNotRetryable},
+		{"an expired session", "Failed to authenticate: OAuth session expired and could not be refreshed", providerkit.TurnFailureNotRetryable},
+		{"a failed compaction", "Prompt is too long · automatic compaction failed: API Error: 400 probe: invalid request (compact-error400)", providerkit.TurnFailureNotRetryable},
+		{"a single digit after the prefix", "API Error: 5", providerkit.TurnFailureNotRetryable},
+		{"two digits after the prefix", "API Error: 50", providerkit.TurnFailureNotRetryable},
+		{"four digits after the prefix", "API Error: 5000", providerkit.TurnFailureNotRetryable},
+		{"a 5xx after an alphanumeric separator", "API ErrorX 502 Bad Gateway", providerkit.TurnFailureNotRetryable},
+		{"a 5xx with an alphanumeric suffix", "API Error: 500X", providerkit.TurnFailureNotRetryable},
+		{"an idle timeout after an alphanumeric separator", "API ErrorX Stream idle timeout", providerkit.TurnFailureNotRetryable},
+		{"an idle timeout with an alphanumeric suffix", "API Error: Stream idle timeoutX", providerkit.TurnFailureNotRetryable},
+		{"an overload after an alphanumeric separator", "API ErrorX Overloaded", providerkit.TurnFailureNotRetryable},
+		{"an overload with an alphanumeric suffix", "API Error: OverloadedX", providerkit.TurnFailureNotRetryable},
+		{"an overload without the prefix", "Upstream Overloaded", providerkit.TurnFailureNotRetryable},
+		// The vendor parser reads only the body that follows "API Error": any
+		// other text is Claude Code's own.
+		{"the DeepSeek overload after the prefix", "API Error: Server Overloaded", providerkit.TurnFailureTransient},
+		{"the DeepSeek overload without the prefix", "Server Overloaded", providerkit.TurnFailureNotRetryable},
+		{"Claude Code's own extra-usage text is no billing block", "You're out of extra usage · resets 3pm (Asia/Seoul)", providerkit.TurnFailureNotRetryable},
+		{"a lost connection without the prefix", "Connection lost mid-response. The response above may be incomplete.", providerkit.TurnFailureNotRetryable},
+		{"an empty text", "", providerkit.TurnFailureNotRetryable},
+		{"plain text", "done", providerkit.TurnFailureNotRetryable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			env := messageEnvelope{IsError: true, Result: tc.text, TerminalReason: "api_error"}
+			assert.Equal(t, tc.want, claudeTurnFailure(&env, claudeTurnSignals{}, observedAt).Kind)
+		})
 	}
+}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := isRetryableClaudeResultError(tt.input)
-			assert.Equal(t, tt.want, got)
+// TestClaudeTurnFailure_ReadsTheFrameAndTheTurn decodes each frame through the
+// envelope, as the handler does, so a renamed field fails here.
+func TestClaudeTurnFailure_ReadsTheFrameAndTheTurn(t *testing.T) {
+	t.Parallel()
+
+	// The Z.AI capture of R/vendors.md: the Anthropic-compatible endpoint
+	// answered Claude Code with 1308. observedAt is the time of the capture.
+	zaiObservedAt := time.Date(2026, 9, 11, 16, 19, 3, 0, time.UTC)
+	// The stamp reads 2026-09-12 00:35:41 in UTC+8, and the retry waits one
+	// second past it.
+	zaiResetAt := time.Date(2026, 9, 11, 16, 35, 42, 0, time.UTC)
+	observedAt := time.Date(2026, 10, 28, 1, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name       string
+		frame      string
+		signals    claudeTurnSignals
+		observedAt time.Time
+		want       providerkit.TurnFailure
+	}{
+		{
+			name:  "a plain 429 is a rate limit",
+			frame: `{"type":"result","subtype":"success","is_error":true,"terminal_reason":"api_error","api_error_status":429,"result":"API Error: 429 {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"Number of concurrent connections has exceeded your rate limit. Please try again later.\"}}"}`,
+			want:  providerkit.TurnFailure{Kind: providerkit.TurnFailureRateLimited, Cause: "Claude Code reported HTTP 429 after its own retries"},
+		},
+		{
+			name:    "a 429 after a rejected event is the usage limit that the event schedules",
+			frame:   `{"type":"result","subtype":"success","is_error":true,"terminal_reason":"api_error","api_error_status":429,"result":"You've hit your session limit · resets 1pm (Asia/Seoul)"}`,
+			signals: claudeTurnSignals{rateLimitRejected: true},
+			want:    providerkit.TurnFailure{Kind: providerkit.TurnFailureNotRetryable},
+		},
+		{
+			name:  "a 429 with the usage-limit code is the usage limit",
+			frame: `{"type":"result","subtype":"success","is_error":true,"terminal_reason":"api_error","api_error_status":429,"api_error":"usage_limit_reached","result":"You've hit your session limit · resets 5:10am (Asia/Seoul)"}`,
+			want:  providerkit.TurnFailure{Kind: providerkit.TurnFailureNotRetryable},
+		},
+		{
+			name:  "a 429 at the blocking limit is not a rate limit",
+			frame: `{"type":"result","subtype":"success","is_error":true,"terminal_reason":"blocking_limit","api_error_status":429,"result":"You've hit your session limit · resets 5:10am (Asia/Seoul)"}`,
+			want:  providerkit.TurnFailure{Kind: providerkit.TurnFailureNotRetryable},
+		},
+		{
+			name:  "a 400 is not retried",
+			frame: claudeResultAPIError,
+			want:  providerkit.TurnFailure{Kind: providerkit.TurnFailureNotRetryable},
+		},
+		{
+			name:  "a status of null is no status",
+			frame: `{"type":"result","subtype":"success","is_error":true,"terminal_reason":"api_error","api_error_status":null,"result":"API Error: 400 probe"}`,
+			want:  providerkit.TurnFailure{Kind: providerkit.TurnFailureNotRetryable},
+		},
+		{
+			name:  "a 429 of a turn that did not fail is not retried",
+			frame: `{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed","api_error_status":429,"result":"done"}`,
+			want:  providerkit.TurnFailure{Kind: providerkit.TurnFailureNotRetryable},
+		},
+		{
+			name:  "a 5xx text of a turn that did not fail is not retried",
+			frame: `{"type":"result","subtype":"success","is_error":false,"terminal_reason":"completed","result":"API Error: 503 upstream connect error"}`,
+			want:  providerkit.TurnFailure{Kind: providerkit.TurnFailureNotRetryable},
+		},
+		{
+			name:    "a stopped turn is not retried, even on a transient failure",
+			frame:   `{"type":"result","subtype":"success","is_error":true,"terminal_reason":"api_error","api_error_status":529,"result":"API Error: 529 Overloaded"}`,
+			signals: claudeTurnSignals{stopRequested: true},
+			want:    providerkit.TurnFailure{Kind: providerkit.TurnFailureNotRetryable},
+		},
+		{
+			name:    "a stopped turn is not retried, even on a rate limit",
+			frame:   `{"type":"result","subtype":"success","is_error":true,"terminal_reason":"api_error","api_error_status":429,"result":"API Error: 429 rate limited"}`,
+			signals: claudeTurnSignals{stopRequested: true},
+			want:    providerkit.TurnFailure{Kind: providerkit.TurnFailureNotRetryable},
+		},
+		{
+			name:  "a turn that the CLI aborted while it streamed is not retried",
+			frame: `{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"aborted_streaming","result":"API Error: 529 Overloaded"}`,
+			want:  providerkit.TurnFailure{Kind: providerkit.TurnFailureNotRetryable},
+		},
+		{
+			name:  "a turn that the CLI aborted while a tool ran is not retried",
+			frame: `{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"aborted_tools","result":"API Error: 529 Overloaded"}`,
+			want:  providerkit.TurnFailure{Kind: providerkit.TurnFailureNotRetryable},
+		},
+		{
+			name:       "a Z.AI usage limit with a stamp schedules at its reset",
+			frame:      `{"type":"result","subtype":"success","is_error":true,"terminal_reason":"api_error","api_error_status":429,"result":"API Error: 429 {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"code\":\"1308\",\"message\":\"[1308][Usage limit reached for 5 hour. Your limit will reset at 2026-09-12 00:35:41][20260912001903b4955568412247d7]\"},\"request_id\":\"20260912001903b4955568412247d7\"}"}`,
+			observedAt: zaiObservedAt,
+			want: providerkit.TurnFailure{
+				Kind: providerkit.TurnFailureUsageLimited, ResetAt: zaiResetAt,
+				Cause: "Z.AI reported a usage limit that lifts at a stated time",
+			},
+		},
+		{
+			name:       "a Z.AI usage limit outranks a rejected event",
+			frame:      `{"type":"result","subtype":"success","is_error":true,"terminal_reason":"api_error","api_error_status":429,"result":"API Error: 429 {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"code\":\"1308\",\"message\":\"[1308][Usage limit reached for 5 hour. Your limit will reset at 2026-09-12 00:35:41][20260912001903b4955568412247d7]\"},\"request_id\":\"20260912001903b4955568412247d7\"}"}`,
+			signals:    claudeTurnSignals{rateLimitRejected: true},
+			observedAt: zaiObservedAt,
+			want: providerkit.TurnFailure{
+				Kind: providerkit.TurnFailureUsageLimited, ResetAt: zaiResetAt,
+				Cause: "Z.AI reported a usage limit that lifts at a stated time",
+			},
+		},
+		{
+			name:  "an Anthropic credit block cancels both retries",
+			frame: `{"type":"result","subtype":"success","is_error":true,"terminal_reason":"api_error","api_error_status":400,"result":"API Error: 400 {\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"Your credit balance is too low to access the Anthropic API. Please go to Plans & Billing to upgrade or purchase credits.\"}}"}`,
+			want:  providerkit.TurnFailure{Kind: providerkit.TurnFailureBillingBlocked, Cause: "the vendor reported a billing or plan block"},
+		},
+		{
+			name:  "an Anthropic spend limit schedules at the stated access time",
+			frame: `{"type":"result","subtype":"success","is_error":true,"terminal_reason":"api_error","api_error_status":429,"result":"API Error: 429 {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"You have reached your API usage limits: Your workspace has reached its spend limit. You will regain access on 2026-11-01 at 00:00 UTC.\"}}"}`,
+			want: providerkit.TurnFailure{
+				Kind: providerkit.TurnFailureUsageLimited, ResetAt: time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC),
+				Cause: "Anthropic reported a spend limit that lifts at a stated time",
+			},
+		},
+		{
+			name:  "an Anthropic account limit without a reset outranks the 429",
+			frame: `{"type":"result","subtype":"success","is_error":true,"terminal_reason":"api_error","api_error_status":429,"result":"API Error: 429 {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"This request would exceed your account's rate limit. Please try again later.\"}}"}`,
+			want: providerkit.TurnFailure{
+				Kind: providerkit.TurnFailureUsageLimited, Window: providerkit.UsageWindowUnstated,
+				Cause: "Anthropic reported an account rate limit",
+			},
+		},
+		{
+			name:    "a compaction turn is not retried, even on a server error",
+			frame:   `{"type":"result","subtype":"success","is_error":true,"terminal_reason":"api_error","api_error_status":500,"result":"API Error: 500 Internal Server Error"}`,
+			signals: claudeTurnSignals{compaction: true},
+			want:    providerkit.CompactionEnd(),
+		},
+		{
+			name:    "a compaction turn is not retried, even on a usage limit that states its reset",
+			frame:   `{"type":"result","subtype":"success","is_error":true,"terminal_reason":"api_error","api_error_status":429,"result":"API Error: 429 {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"You have reached your API usage limits: Your workspace has reached its spend limit. You will regain access on 2026-11-01 at 00:00 UTC.\"}}"}`,
+			signals: claudeTurnSignals{compaction: true},
+			want:    providerkit.CompactionEnd(),
+		},
+		{
+			name:    "a compaction turn that the user stopped ends on the compaction verdict",
+			frame:   `{"type":"result","subtype":"error_during_execution","is_error":true,"terminal_reason":"aborted_streaming"}`,
+			signals: claudeTurnSignals{compaction: true, stopRequested: true},
+			want:    providerkit.CompactionEnd(),
+		},
+		{
+			name:    "a successful compaction turn ends on the compaction verdict",
+			frame:   `{"type":"result","subtype":"success","is_error":false,"result":""}`,
+			signals: claudeTurnSignals{compaction: true},
+			want:    providerkit.CompactionEnd(),
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var env messageEnvelope
+			require.NoError(t, json.Unmarshal([]byte(tc.frame), &env))
+			at := tc.observedAt
+			if at.IsZero() {
+				at = observedAt
+			}
+			assert.Equal(t, tc.want, claudeTurnFailure(&env, tc.signals, at))
 		})
 	}
 }
@@ -2880,6 +3436,196 @@ func TestHandleOutput_AFailedManualCompactionStoresOneFailureRow(t *testing.T) {
 	assert.JSONEq(t, failed, string(sink.PersistedNotifications()[0].Content))
 	require.Len(t, sink.Messages(), 1)
 	assert.Contains(t, string(sink.Messages()[0].Content), `"type":"result"`)
+}
+
+// --- The automatic-retry verdict of a compaction turn ---
+
+// claudeCompactionEnded is the timeline entry of the verdict at the end of a
+// compaction turn. It cancels the server-error retry and schedules nothing.
+var claudeCompactionEnded = agenttest.TimelineEntry{
+	Op: "cancel_server_error", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR,
+	Reason: providerkit.TurnEndedOnCompaction,
+}
+
+// claudeServerErrorResult is a root `result` whose 500 the classifier reads as
+// a transient failure.
+const claudeServerErrorResult = `{"type":"result","subtype":"success","is_error":true,"terminal_reason":"api_error","api_error_status":500,"result":"API Error: 500 Internal Server Error"}`
+
+// claudeFailFirstWriteStdin is a process stdin that refuses its first write
+// and accepts every later one.
+type claudeFailFirstWriteStdin struct {
+	written bytes.Buffer
+	failed  bool
+}
+
+func (s *claudeFailFirstWriteStdin) Write(data []byte) (int, error) {
+	if !s.failed {
+		s.failed = true
+		return 0, assert.AnError
+	}
+	return s.written.Write(data)
+}
+
+func (*claudeFailFirstWriteStdin) Close() error { return nil }
+
+// A `/compact` that fails on an error that the classifier reads as retryable
+// schedules no retry. The recorded failure (compact_fail400) ends on a `result`
+// with `is_error: false`. Each `result` here states the failure instead, as a
+// CLI that reports it would.
+func TestClaudeCompaction_AFailedCompactCommandSchedulesNoRetry(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		result string
+	}{
+		{"a server error", claudeServerErrorResult},
+		{"an overload", `{"type":"result","subtype":"success","is_error":true,"terminal_reason":"api_error","api_error_status":529,"result":"API Error: 529 Overloaded"}`},
+		{"a rate limit", `{"type":"result","subtype":"success","is_error":true,"terminal_reason":"api_error","api_error_status":429,"result":"API Error: 429 {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"Number of concurrent connections has exceeded your rate limit. Please try again later.\"}}"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a, _ := newClaudeAgentWithStdin(agent.NewProviderServices(sink))
+			require.NoError(t, a.SendInput("/compact", nil))
+
+			a.HandleOutput([]byte(`{"type":"system","subtype":"status","status":"compacting"}`))
+			a.HandleOutput([]byte(`{"type":"system","subtype":"status","status":null,"compact_result":"failed","compact_error":"Error during compaction: API Error: 500 Internal Server Error"}`))
+			a.HandleOutput([]byte(`{"type":"assistant","message":{"content":[{"type":"text","text":"Error during compaction: API Error: 500 Internal Server Error"}]},"local_command_run":{"command":"compact","args":""},"local_command_outcome":{"kind":"failed"}}`))
+			a.HandleOutput([]byte(tc.result))
+
+			assert.Equal(t, []agenttest.TimelineEntry{{Op: "notification"}, claudeTurnEndRow, claudeCompactionEnded}, sink.Timeline())
+			assert.Zero(t, sink.AutoScheduleCount())
+		})
+	}
+}
+
+// A `/compact` with arguments runs the CLI's compaction too. Its success ends
+// the turn on the compaction verdict, and the idle after the `result` applies
+// no second verdict.
+func TestClaudeCompaction_ASuccessfulCompactCommandAppliesTheCompactionVerdictOnce(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a, _ := newClaudeAgentWithStdin(agent.NewProviderServices(sink))
+	require.NoError(t, a.SendInput("/compact keep the plan", nil))
+
+	// Trimmed from compact_ok.
+	for _, frame := range []string{
+		`{"type":"system","subtype":"session_state_changed","state":"running"}`,
+		`{"type":"system","subtype":"status","status":"compacting"}`,
+		`{"type":"system","subtype":"status","status":null,"compact_result":"success"}`,
+		`{"type":"system","subtype":"compact_boundary","compact_metadata":{"trigger":"manual","pre_tokens":15,"post_tokens":890}}`,
+		`{"type":"system","subtype":"local_command_output","content":"Context compacted"}`,
+		`{"type":"result","subtype":"success","is_error":false,"result":""}`,
+		`{"type":"system","subtype":"session_state_changed","state":"idle"}`,
+	} {
+		a.HandleOutput([]byte(frame))
+	}
+
+	assert.Equal(t, []agenttest.TimelineEntry{{Op: "notification"}, claudeTurnEndRow, claudeCompactionEnded}, sink.Timeline())
+	last, published := sink.LastTurnActive()
+	require.True(t, published)
+	assert.False(t, last, "the idle ends the compaction turn")
+}
+
+// A stop of the reader ends a compaction turn on the compaction verdict, not on
+// the verdict of a stopped conversation turn.
+func TestClaudeCompaction_AStoppedCompactCommandAppliesTheCompactionVerdict(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a, _ := newClaudeAgentWithStdin(agent.NewProviderServices(sink))
+	require.NoError(t, a.SendInput("/compact", nil))
+
+	a.HandleOutput([]byte(`{"type":"system","subtype":"status","status":"compacting"}`))
+	a.noteInterruptRequested()
+	a.HandleOutput([]byte(claudeResultAbortedStreaming))
+
+	assert.Equal(t, []agenttest.TimelineEntry{claudeTurnEndRow, claudeCompactionEnded}, sink.Timeline())
+}
+
+// The `result` of the compaction spends the mark, so the next conversation turn
+// applies its own verdict.
+func TestClaudeCompaction_TheTurnAfterACompactionAppliesItsOwnVerdict(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a, _ := newClaudeAgentWithStdin(agent.NewProviderServices(sink))
+	require.NoError(t, a.SendInput("/compact", nil))
+	a.HandleOutput([]byte(`{"type":"result","subtype":"success","is_error":false,"result":""}`))
+
+	require.NoError(t, a.SendInput("hello", nil))
+	a.HandleOutput([]byte(claudeServerErrorResult))
+
+	assert.Equal(t, []agenttest.TimelineEntry{
+		claudeTurnEndRow, claudeCompactionEnded,
+		claudeTurnEndRow, claudeServerErrorScheduled,
+	}, sink.Timeline())
+}
+
+// The CLI runs a message that the reader steered into a compaction after the
+// compaction, and it ends each with its own `result`. Only the first `result`
+// ends the compaction, so the steered message keeps its own verdict.
+func TestClaudeCompaction_OnlyTheFirstResultOfTheTurnAppliesTheCompactionVerdict(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a, _ := newClaudeAgentWithStdin(agent.NewProviderServices(sink))
+	require.NoError(t, a.SendInput("/compact", nil))
+	a.HandleOutput([]byte(`{"type":"system","subtype":"session_state_changed","state":"running"}`))
+	require.NoError(t, a.SteerInput("hello", nil))
+
+	a.HandleOutput([]byte(`{"type":"result","subtype":"success","is_error":false,"result":""}`))
+	a.HandleOutput([]byte(claudeServerErrorResult))
+	a.HandleOutput([]byte(`{"type":"system","subtype":"session_state_changed","state":"idle"}`))
+
+	assert.Equal(t, []agenttest.TimelineEntry{
+		claudeTurnEndRow, claudeCompactionEnded,
+		claudeTurnEndRow, claudeServerErrorScheduled,
+	}, sink.Timeline())
+}
+
+// The queue never steers a compaction item, but an ordinary message that opens
+// with `/compact` can be steered. A steer joins the running turn, so that turn
+// keeps its own verdict.
+func TestClaudeCompaction_ACompactTextSteeredIntoATurnLeavesTheTurnItsOwnVerdict(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a, _ := newClaudeAgentWithStdin(agent.NewProviderServices(sink))
+	require.NoError(t, a.SendInput("hello", nil))
+	require.NoError(t, a.SteerInput("/compact keep the plan", nil))
+
+	a.HandleOutput([]byte(claudeServerErrorResult))
+
+	assert.Equal(t, []agenttest.TimelineEntry{claudeTurnEndRow, claudeServerErrorScheduled}, sink.Timeline())
+}
+
+// A message that carries an attachment is not a compaction command, whatever
+// its text says.
+func TestClaudeCompaction_ACompactTextWithAnAttachmentIsAConversationTurn(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a, _ := newClaudeAgentWithStdin(agent.NewProviderServices(sink))
+	attachments := []*leapmuxv1.Attachment{{Filename: "notes.txt", MimeType: "text/plain", Data: []byte("keep the plan")}}
+	require.NoError(t, a.SendInput("/compact", attachments))
+
+	a.HandleOutput([]byte(claudeServerErrorResult))
+
+	assert.Equal(t, []agenttest.TimelineEntry{claudeTurnEndRow, claudeServerErrorScheduled}, sink.Timeline())
+}
+
+// A `/compact` that never reached the CLI starts no compaction, so the next
+// turn keeps its own verdict.
+func TestClaudeCompaction_AFailedCompactWriteLeavesTheNextTurnItsOwnVerdict(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	stdin := &claudeFailFirstWriteStdin{}
+	a := &Agent{
+		Process: providerkit.NewProcessFrom(providerkit.ProcessConfig{AgentID: "test-agent", Stdin: stdin}),
+		sink:    agent.NewProviderServices(sink),
+	}
+	require.Error(t, a.SendInput("/compact", nil))
+	require.NoError(t, a.SendInput("hello", nil))
+
+	a.HandleOutput([]byte(claudeServerErrorResult))
+
+	assert.Equal(t, []agenttest.TimelineEntry{claudeTurnEndRow, claudeServerErrorScheduled}, sink.Timeline())
 }
 
 func TestHandleOutput_AnAutomaticFailureBelowTheBlockingLimitStoresTheFailure(t *testing.T) {

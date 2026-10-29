@@ -15,6 +15,7 @@ import (
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit/providerkittest"
 	"github.com/stretchr/testify/require"
 )
 
@@ -25,9 +26,10 @@ func TestCopilotManualCompactionUsesNativeSessionRPC(t *testing.T) {
 		WantEnv: "LEAPMUX_TEST_COPILOT_NATIVE",
 		Env:     []string{"LEAPMUX_TEST_COPILOT_SESSION_REQUESTS=" + requestsPath},
 	})
+	sink := &agenttest.Sink{}
 	provider, err := startNativeCopilot(t.Context(), agent.Options{
 		AgentID: "native-compaction", WorkingDir: t.TempDir(), Shell: testutil.TestShell(), APITimeout: time.Second,
-	}, agent.NewProviderServices(agenttest.Nop()))
+	}, agent.NewProviderServices(sink))
 	require.NoError(t, err)
 	t.Cleanup(func() { provider.Stop(); _ = provider.Wait() })
 	compactor, supported := provider.(agent.ContextCompactor)
@@ -57,6 +59,11 @@ func TestCopilotManualCompactionUsesNativeSessionRPC(t *testing.T) {
 	}
 	require.Equal(t, 1, compactCount)
 	require.Zero(t, sendCount)
+	// The reply of the runtime ends the compaction with its one verdict.
+	require.Eventually(t, func() bool {
+		return len(providerkittest.TurnEndAndRetryOps(sink.Timeline())) > 0
+	}, 30*time.Second, time.Millisecond)
+	require.Equal(t, copilotCompactionEnd, providerkittest.TurnEndAndRetryOps(sink.Timeline()))
 }
 
 func TestCopilotManualCompactionRefusesBusyAndUnavailableSessions(t *testing.T) {
@@ -130,6 +137,14 @@ func TestCopilotManualCompactionReportsNativeFailure(t *testing.T) {
 				defer a.stateMu.Unlock()
 				return !a.active
 			}, 30*time.Second, time.Millisecond)
+			// A failed compaction schedules no retry. Its verdict follows the
+			// error notice.
+			require.Eventually(t, func() bool {
+				return len(providerkittest.TurnEndAndRetryOps(sink.Timeline())) > 0
+			}, 30*time.Second, time.Millisecond)
+			require.Equal(t, copilotCompactionEnd, providerkittest.TurnEndAndRetryOps(sink.Timeline()))
+			timeline := sink.Timeline()
+			require.Equal(t, "leapmux_notification", timeline[len(timeline)-2].Op)
 		})
 	}
 }

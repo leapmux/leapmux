@@ -47,6 +47,8 @@ func (a *Agent) handleOutput(line *providerkit.ParsedLine) {
 			a.mu.Lock()
 			a.pendingPlanModeTools = nil
 			a.mu.Unlock()
+			// The rejection row ends the turn, so the turn's verdict follows it.
+			providerkit.ApplyTurnFailure(a.sink, providerkit.TurnFailure{Kind: providerkit.TurnFailureNotRetryable}, line.Raw)
 			a.setTurnActive(false)
 		}
 	case frameTypeControlRequest:
@@ -298,6 +300,14 @@ func (a *Agent) handleResult(raw []byte) {
 	if err := a.sink.PersistTurnEnd(content, agent.SpanInfo{}); err != nil {
 		slog.Warn("codebuddy: persist turn end failed", "agent_id", a.AgentID(), "error", err)
 	}
+	// A turn that the user stopped never retries, even when its own failure won
+	// the race against the stop. A manual /compact never retries either, whatever
+	// its result states.
+	failure := providerkit.CompactionEnd()
+	if !manualEnded {
+		failure = codebuddyResultFailure(result, stopRequested || permissionStop, a.Clock().Now())
+	}
+	providerkit.ApplyTurnFailure(a.sink, failure, raw)
 	a.sink.ResetSpans()
 	a.setTurnActive(false)
 	a.mu.Lock()

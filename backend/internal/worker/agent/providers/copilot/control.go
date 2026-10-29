@@ -23,6 +23,10 @@ type copilotControlSpec struct {
 	responseField string
 }
 
+// copilotControlKindAutoModeSwitch is the kind of the request that offers the
+// Auto model after a rate limit.
+const copilotControlKindAutoModeSwitch = "auto_mode_switch"
+
 var copilotControlSpecs = []copilotControlSpec{
 	{
 		kind: "permission", requestEvent: contracts.CopilotEventPermissionRequested,
@@ -45,7 +49,7 @@ var copilotControlSpecs = []copilotControlSpec{
 		method:        "ui.handlePendingElicitation", responseField: "result",
 	},
 	{
-		kind: "auto_mode_switch", requestEvent: contracts.CopilotEventAutoModeSwitchRequested,
+		kind: copilotControlKindAutoModeSwitch, requestEvent: contracts.CopilotEventAutoModeSwitchRequested,
 		completeEvent: contracts.CopilotEventAutoModeSwitchCompleted,
 		method:        "ui.handlePendingAutoModeSwitch", responseField: "response",
 	},
@@ -163,6 +167,11 @@ func (a *Agent) handleNativeControlEvent(raw []byte, event copilotEvent) bool {
 	if err := json.Unmarshal(event.Data, &data); err != nil || data.RequestID == "" {
 		slog.Warn("Read Copilot control request", "event", event.Type, "error", err)
 		return true
+	}
+	if spec.kind == copilotControlKindAutoModeSwitch {
+		// The auto-switch events reach only this dispatch, so the turn-end verdict
+		// reads its record from here.
+		a.recordNativeAutoSwitch(event, data.RequestID, completed)
 	}
 	sessionID := a.currentNativeSessionID()
 	identifier := copilotControlID(sessionID, spec.kind, data.RequestID)

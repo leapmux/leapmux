@@ -317,7 +317,7 @@ func TestCleanupAgentClosesNestedProgressPublishers(t *testing.T) {
 			grandchild := requireChildOutputSink(t, child, "grandchild-1")
 			grandchild.ReportProgress(agent.NativeTokenProgress("model", 9))
 
-			svc.Output.CleanupAgent(cleanupID)
+			svc.Output.CleanupAgent(cleanupID, CleanupTabClosed)
 
 			for _, publisher := range []*generationProgressPublisher{child.progress, grandchild.progress} {
 				publisher.mu.Lock()

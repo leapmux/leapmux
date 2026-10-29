@@ -36,6 +36,14 @@ type codexOpenCompaction struct {
 	turnID string
 }
 
+// codexPendingCompaction is one thread/compact/start whose turn Codex has not
+// started yet. Its address identifies the request, so a late failure of one
+// request cannot drop the mark of a later one.
+type codexPendingCompaction struct {
+	// threadID is the thread whose compaction the request starts.
+	threadID string
+}
+
 // Agent manages a single Codex app-server process.
 type Agent struct {
 	providerkit.JSONRPCProcess // shared process lifecycle + JSON-RPC plumbing
@@ -76,6 +84,12 @@ type Agent struct {
 	// response arrives. Non-nil only while CompactContext waits for acceptance.
 	compactionStartAck chan struct{}
 	openCompactions    map[string]codexOpenCompaction
+	// pendingCompaction is the compaction request whose turn has not started.
+	// Codex runs a requested compaction as its own turn, and the next main
+	// turn that starts on the request's thread is that turn:
+	// handleMainTurnStarted moves the mark onto it. A request that fails drops
+	// the mark. Guarded by Mu.
+	pendingCompaction *codexPendingCompaction
 
 	// permissionMode is the LeapMux permission mode, such as "on-request" or
 	// "auto-review". codexApprovalWire maps it to the native approval policy and
@@ -159,6 +173,18 @@ type Agent struct {
 	// retry owns the gap between the stopped turn and its replacement. Mu protects it.
 	// Each operation retains its own cancellation state after this pointer changes.
 	retry *codexTurnRetry
+	// rateLimitBuckets merges the sparse account/rateLimits/updated snapshots,
+	// one bucket for each Codex `limitId`. Guarded by Mu.
+	rateLimitBuckets map[string]*codexRateLimitBucket
+	// rateLimitBucketOrder lists the bucket IDs in the order of their first
+	// snapshot, so the display can fall back to the first bucket that holds a
+	// window. Guarded by Mu.
+	rateLimitBucketOrder []string
+	// retryTextLocation is the zone of the local time in Codex's usage-limit
+	// message. Codex writes that time in the local zone of its own process,
+	// which runs on this machine, so nil reads as time.Local. A test sets it
+	// before it feeds output, and nothing changes it later.
+	retryTextLocation *time.Location
 }
 
 // codexMainTurn owns one main turn's identity and retry state. Agent.Mu protects it.
@@ -170,6 +196,9 @@ type codexMainTurn struct {
 	agentMessageStarted bool
 	ended               chan struct{}
 	steers              int
+	// compaction records that the turn runs a compaction that CompactContext
+	// requested. The turn's end reads it for the retry verdict.
+	compaction bool
 }
 
 func (turn *codexMainTurn) finish() {
@@ -600,6 +629,10 @@ func (a *Agent) CompactContext() error {
 	}
 	ack := make(chan struct{})
 	a.compactionStartAck = ack
+	// The mark stands before the request goes out, because Codex can start the
+	// compaction's turn before it answers the request.
+	request := &codexPendingCompaction{threadID: threadID}
+	a.pendingCompaction = request
 	a.Mu.Unlock()
 	clearAck := func() {
 		a.Mu.Lock()
@@ -611,11 +644,19 @@ func (a *Agent) CompactContext() error {
 	params, err := json.Marshal(map[string]interface{}{"threadId": threadID})
 	if err != nil {
 		clearAck()
+		a.dropPendingCompaction(request)
 		return fmt.Errorf("marshal thread/compact/start params: %w", err)
 	}
 	response := make(chan error, 1)
 	go func() {
 		_, requestErr := a.SendRequest("thread/compact/start", params, 0)
+		// The request waits for its reply with no time limit. A request that
+		// fails therefore starts no compaction: Codex refused it, it never
+		// reached Codex, or the process ended. A caller that stops waiting
+		// leaves the mark, because Codex can still start the compaction.
+		if requestErr != nil {
+			a.dropPendingCompaction(request)
+		}
 		response <- requestErr
 	}()
 	timer := a.Clock().NewTimer(turnStartAckTimeout, codexCompactionAckTimerTag)
@@ -633,6 +674,27 @@ func (a *Agent) CompactContext() error {
 		clearAck()
 		return classifyCodexCompactionRequestError(fmt.Errorf("no response or contextCompaction start within %s", turnStartAckTimeout))
 	}
+}
+
+// dropPendingCompaction clears the pending compaction mark when the mark
+// belongs to request.
+func (a *Agent) dropPendingCompaction(request *codexPendingCompaction) {
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	if a.pendingCompaction == request {
+		a.pendingCompaction = nil
+	}
+}
+
+// takePendingCompactionLocked clears the pending compaction mark, and reports
+// whether the mark was for threadID. A main turn that starts on threadID calls
+// it, because that turn is the compaction's. A mark for another thread belongs
+// to a thread that a context replacement retired, so it is dropped. The caller
+// holds Mu.
+func (a *Agent) takePendingCompactionLocked(threadID string) bool {
+	request := a.pendingCompaction
+	a.pendingCompaction = nil
+	return request != nil && request.threadID == threadID
 }
 
 func classifyCodexCompactionRequestError(err error) error {

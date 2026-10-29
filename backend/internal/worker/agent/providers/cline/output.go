@@ -558,7 +558,8 @@ func completionOf(reason string, interrupted bool) agent.MessageCompletion {
 	}
 }
 
-// handleRunEnded ends the turn with Cline's own end event of the run.
+// handleRunEnded ends the turn with Cline's own end event of the run, and
+// decides its automatic-retry verdict from the event.
 func (a *Agent) handleRunEnded(event hubEvent) {
 	var end runEnd
 	_ = json.Unmarshal(event.Payload, &end)
@@ -571,12 +572,15 @@ func (a *Agent) handleRunEnded(event hubEvent) {
 		// It states nothing new.
 		return
 	}
-	a.endTurn(completionOf(end.Reason, interrupted), trimRunEnd(event.Raw))
+	failure := runEndFailure(end, interrupted, event.publishedAt(a.clock.Now()))
+	a.endTurn(completionOf(end.Reason, interrupted), trimRunEnd(event.Raw), failure)
 }
 
 // endTurn ends the running turn: it withdraws the turn's requests, persists
-// what the turn streamed and left open, persists the turn-end row, and then
-// clears the turn. The caller holds dispatchMu.
+// what the turn streamed and left open, persists the turn-end row, applies
+// failure as the turn's automatic-retry verdict, and then clears the turn. The
+// caller holds dispatchMu. Only Cline's own end event of a run can state a
+// retryable failure, so a caller that writes its own row passes NotRetryable.
 //
 // The turn stays set while the worker writes the rows, so a message that
 // arrives meanwhile waits in the input queue instead of starting a turn before
@@ -587,7 +591,7 @@ func (a *Agent) handleRunEnded(event hubEvent) {
 // A mode change that waited for the turn keeps the flag set with a settling
 // turn, and a goroutine applies the change and then clears it (afterTurn). The
 // input queue holds the next message until the session runs in its new mode.
-func (a *Agent) endTurn(completion agent.MessageCompletion, row []byte) {
+func (a *Agent) endTurn(completion agent.MessageCompletion, row []byte, failure providerkit.TurnFailure) {
 	a.leadRetry.Reset()
 	endedAt := a.clock.Now()
 	a.Mu.Lock()
@@ -624,6 +628,7 @@ func (a *Agent) endTurn(completion agent.MessageCompletion, row []byte) {
 		if err := a.sink.PersistTurnEnd(agent.WithToolUseCount(content, toolUses), agent.SpanInfo{}); err != nil {
 			slog.Error("cline persist turn end", "agent_id", a.AgentID(), "error", err)
 		}
+		providerkit.ApplyTurnFailure(a.sink, failure, row)
 	}
 	a.sink.ResetSpans()
 

@@ -101,8 +101,9 @@ func (a *Agent) configure(opts agent.Options) acp.Hooks {
 		// A final tool update ends the call its badge watched.
 		ToolOutputComplete: a.completeToolOutput,
 		// The turn end clears every permission-check badge and forgets a
-		// pending retry row, a stop included.
-		PromptEnded: func(error, bool) acp.PromptEnding {
+		// pending retry row, a stop included. It then returns the retry
+		// verdict of the end.
+		PromptEnded: func(err error, stopped bool) acp.PromptEnding {
 			a.clearPermissionChecks()
 			a.retryResolution.Reset()
 			a.stateMu.Lock()
@@ -111,8 +112,12 @@ func (a *Agent) configure(opts agent.Options) acp.Hooks {
 			// Every prompt end clears a live compaction: a native end frame
 			// usually arrived first, and a stop or a failure never gets one.
 			providerkit.EndCompaction(a.Sink())
-			return acp.PromptEnding{}
+			return a.finishGrokPrompt(err, stopped)
 		},
+		// A new prompt forgets the error_type of a failed request that no
+		// prompt end took, such as one of a turn that Grok started, and a
+		// compaction mark that no prompt end took.
+		PromptPrepared: a.clearGrokPromptState,
 		// The first genuine model output after a retry resolves its row. The
 		// handler claims no update.
 		SessionUpdateHandler: a.observeRetryContent,
@@ -133,4 +138,6 @@ func (a *Agent) clearProviderState() {
 	a.children.reset()
 	a.controls = controlIndex{}
 	a.turns = turnState{}
+	a.lastFailureType = ""
+	a.compactionPrompt = false
 }

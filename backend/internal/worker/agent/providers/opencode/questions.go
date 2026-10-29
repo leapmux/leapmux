@@ -75,6 +75,57 @@ func (q *openCodeQuestions) readStoredMessage(ctx context.Context, clock quartz.
 	return *message.Parts, nil
 }
 
+// storedAssistantError is the error of the newest stored message of a session.
+type storedAssistantError struct {
+	id      string
+	created time.Time
+	err     DaemonError
+	// info is the info object of the message, the record that holds the error.
+	info json.RawMessage
+}
+
+// readLatestAssistantError reads the newest stored message of sessionID. It
+// fails unless that message is an assistant message that holds an error. The
+// read ends after latestAssistantErrorReadTimeout on clock.
+func (q *openCodeQuestions) readLatestAssistantError(ctx context.Context, clock quartz.Clock, sessionID string) (storedAssistantError, error) {
+	if q.base() == "" {
+		return storedAssistantError{}, fmt.Errorf("the OpenCode daemon address is unavailable")
+	}
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	timer := clock.AfterFunc(latestAssistantErrorReadTimeout, func() { cancel(context.DeadlineExceeded) }, LatestAssistantErrorReadTimerTag)
+	defer timer.Stop()
+	raw, _, err := q.readRoute(ctx, "/session/"+url.PathEscape(sessionID)+"/message?"+url.Values{"limit": {"1"}}.Encode())
+	if err != nil {
+		return storedAssistantError{}, errors.Join(err, context.Cause(ctx))
+	}
+	var messages []struct {
+		Info json.RawMessage `json:"info"`
+	}
+	if err := json.Unmarshal(raw, &messages); err != nil {
+		return storedAssistantError{}, fmt.Errorf("decode the newest OpenCode stored message: %w", err)
+	}
+	if len(messages) == 0 {
+		return storedAssistantError{}, errors.New("the OpenCode session stores no message")
+	}
+	var info struct {
+		ID   string `json:"id"`
+		Role string `json:"role"`
+		Time struct {
+			// Created is the creation instant in epoch milliseconds.
+			Created int64 `json:"created"`
+		} `json:"time"`
+		Error *DaemonError `json:"error"`
+	}
+	if err := json.Unmarshal(messages[0].Info, &info); err != nil {
+		return storedAssistantError{}, fmt.Errorf("decode the info of the newest OpenCode stored message: %w", err)
+	}
+	if info.Role != "assistant" || info.Error == nil {
+		return storedAssistantError{}, fmt.Errorf("the newest OpenCode stored message %q holds no assistant error", info.ID)
+	}
+	return storedAssistantError{id: info.ID, created: time.UnixMilli(info.Time.Created), err: *info.Error, info: messages[0].Info}, nil
+}
+
 const (
 	// openCodeTaskPartPageSize is how many stored messages one read of the
 	// parent's history takes, newest first.
@@ -228,6 +279,9 @@ func (q *openCodeQuestions) abortSession(ctx context.Context, sessionID string) 
 const (
 	// StoredMessageReadTimerTag identifies the deadline for one stored-message read.
 	StoredMessageReadTimerTag = "opencode-stored-message-read"
+	// LatestAssistantErrorReadTimerTag identifies the deadline for one read of
+	// the error of the newest stored message.
+	LatestAssistantErrorReadTimerTag = "opencode-latest-assistant-error-read"
 	// QuestionsDiscoveryTag identifies the discovery deadline and its poll timers.
 	QuestionsDiscoveryTag = "opencode-questions-discovery"
 	// QuestionsReconnectTag identifies the wait before the next daemon connection.
@@ -479,6 +533,10 @@ type openCodeQuestions struct {
 	// ready runs once the daemon address is known, before the event stream
 	// opens, with the context of the bridge. It may be nil.
 	ready func(context.Context)
+	// connected runs on each connection of the event stream, before its first
+	// event, with the context of the bridge. It reads what the daemon stated
+	// while no connection was open. It may be nil.
+	connected func(context.Context)
 
 	// mu guards baseURL and pending. pending maps the LeapMux request id to the
 	// daemon's own question id: the reader answers with the first, and the daemon
@@ -596,6 +654,9 @@ func (q *openCodeQuestions) consume(ctx context.Context) error {
 	// event on this connection, so the pending list is what closes the gap -- on the
 	// first connection as well as on every reconnect.
 	q.publishPending(ctx)
+	if q.connected != nil {
+		q.connected(ctx)
+	}
 	return q.readEvents(ctx, response.Body)
 }
 

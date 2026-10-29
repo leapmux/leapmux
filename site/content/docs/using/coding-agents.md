@@ -156,12 +156,27 @@ you watch simply promotes its row to the immediate group; nothing is re-sent
 or lost. The promoted row still waits behind an item that is on its way to the
 agent, and behind one whose delivery failed or is uncertain.
 
-Providers use the same mechanism for their own automatic retries. When Claude
-Code or Codex hits a usage limit that lifts at a known time, or a turn fails
-with a retryable server error, the queue gains an **Auto-retry (usage limit)**
-or **Auto-retry (server error)** row that shows the time it waits for. The row
-is visible, reorderable within its group, and cancellable like any other item. Pausing the queue holds
-a matured retry exactly as it holds anything else; resuming delivers it.
+Every agent provider uses the same mechanism for automatic retries:
+
+- **A dated usage limit:** the agent hits a usage limit that lifts at a stated
+  time, and the queue gains an **Auto-retry (usage limit)** row for that time.
+- **A transient failure:** after the agent's own retries, the queue gains an
+  **Auto-retry (server error)** row.
+- **A long wait:** when OpenCode, Kilo, or Gemini CLI would wait more than 10
+  minutes for its own retry, LeapMux stops the turn and schedules the retry
+  instead.
+- **Dirac:** LeapMux declines Dirac's retry question for a transient failure,
+  and schedules its own retry.
+- **A billing block:** a limit that only a billing change lifts schedules
+  nothing.
+- **A compaction:** the end of a compaction schedules nothing, even when the
+  compaction fails, and it removes a pending **Auto-retry (server error)** row.
+  A retry would ask the agent to continue a task that you did not ask it to
+  continue.
+
+The row is visible, reorderable within its group, and cancellable like any
+other item. Pausing the queue holds a matured retry exactly as it holds
+anything else; resuming delivers it.
 
 ### Pausing
 

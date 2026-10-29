@@ -43,7 +43,18 @@ type Agent struct {
 	// interruptRequested records that the user stopped the RUNNING turn. The
 	// `result` that ends that turn spends the note, and disarmTurn drops a note that
 	// no `result` spent. Guarded by a.Mu. See noteInterruptRequested.
-	interruptRequested     bool
+	interruptRequested bool
+	// turnRateLimitRejected records that the latest rate_limit_event since the
+	// previous `result` rejected the request: an event that allows it clears the
+	// mark. The `result` that ends the turn spends it, so that result schedules
+	// no server-error retry for a usage limit whose own retry the event
+	// scheduled. Guarded by a.Mu. See takeTurnRateLimitRejected.
+	turnRateLimitRejected bool
+	// turnCompaction records that the running turn is the CLI's compaction:
+	// the reader's `/compact` started it. The `result` that ends the turn
+	// spends the mark, so that result applies the compaction verdict in place
+	// of the classifier's. Guarded by a.Mu. See takeTurnCompaction.
+	turnCompaction         bool
 	thirdPartyFromSettings bool // third-party LLM provider detected from settings at startup
 	// hasGoalCommand records whether the running CLI advertises /goal in its
 	// init frame's slash_commands. The command shipped in 2.1.139, so this is
@@ -186,6 +197,40 @@ func (a *Agent) takeInterruptRequest() bool {
 	return interrupted
 }
 
+// takeTurnRateLimitRejected reports whether the latest rate_limit_event of the
+// turn that is ending rejected the request, and clears the mark. One `result`
+// ends one turn, so the mark is spent there.
+func (a *Agent) takeTurnRateLimitRejected() bool {
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	rejected := a.turnRateLimitRejected
+	a.turnRateLimitRejected = false
+	return rejected
+}
+
+// takeTurnCompaction reports whether the reader's `/compact` started the turn
+// that is ending, and clears the mark. One `result` ends one turn, so the mark
+// is spent there. A message that the reader steered into the compaction runs
+// after it and ends on its own `result`, which then finds no mark.
+func (a *Agent) takeTurnCompaction() bool {
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	compaction := a.turnCompaction
+	a.turnCompaction = false
+	return compaction
+}
+
+// claudeIsCompactCommand reports whether a message that starts a turn runs
+// Claude Code's compaction: the `/compact` command, with or without arguments,
+// and with no attachment.
+func claudeIsCompactCommand(content string, classified []agent.ClassifiedAttachment) bool {
+	if len(classified) > 0 {
+		return false
+	}
+	name, _, ok := providerkit.SlashCommand(content)
+	return ok && name == claudeLocalCommandCompact
+}
+
 // SendInput writes a user message to the agent's stdin.
 func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
 	return a.sendInput(content, attachments, "")
@@ -300,8 +345,12 @@ func (a *Agent) recordClaudeResultEdgeLocked() map[string]string {
 	a.turnEndRevision++
 	// The result answers the input, so a later idle can end the turn.
 	a.awaitingResult = false
-	// A stop note cannot carry into a later result or turn.
+	// A stop note cannot carry into a later result or turn, and neither can
+	// the mark of a rejected rate_limit_event or of a compaction: a turn that
+	// an idle ends never spends them at a `result`.
 	a.interruptRequested = false
+	a.turnRateLimitRejected = false
+	a.turnCompaction = false
 	return a.takeControlsLocked(func(record *claudePendingControl) bool { return record.agentID == "" })
 }
 
@@ -356,13 +405,17 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 		},
 	}
 
-	if classified := agent.ClassifyAttachments(attachments); len(classified) == 0 {
+	classified := agent.ClassifyAttachments(attachments)
+	if len(classified) == 0 {
 		// Plain text uses the protocol's string content. A list that holds only
 		// nil entries carries no attachment, so it is plain text too.
 		msg.Message.Content = content
 	} else {
 		msg.Message.Content = buildClaudeContentBlocks(content, classified)
 	}
+	// Only a message that starts a turn can start a compaction. A steered
+	// `/compact` joins the running turn, which keeps its own verdict.
+	compaction := priority == "" && claudeIsCompactCommand(content, classified)
 
 	data, err := json.Marshal(msg)
 	if err != nil {
@@ -386,6 +439,9 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 	endRevision := a.turnEndRevision
 	if priority == "" {
 		a.awaitingResult = true
+		// The mark stands before the write, because the `result` that spends
+		// it can arrive before the write returns.
+		a.turnCompaction = compaction
 	}
 	a.Mu.Unlock()
 	writeErr := a.WriteStdin(data)
@@ -399,6 +455,7 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 			a.turnActive = true
 		} else if !a.turnActive {
 			a.awaitingResult = false
+			a.turnCompaction = false
 		}
 	}
 	a.Mu.Unlock()

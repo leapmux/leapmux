@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -15,6 +17,7 @@ import (
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/modelvendor"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
@@ -138,6 +141,9 @@ type piAgentEndMessage struct {
 	Role         string `json:"role"`
 	StopReason   string `json:"stopReason"`
 	ErrorMessage string `json:"errorMessage"`
+	// Timestamp is when Pi created the message, in Unix milliseconds. Zero
+	// when the message states none.
+	Timestamp int64 `json:"timestamp"`
 }
 
 // piAgentEndMessages requires an array when the native field is present.
@@ -184,10 +190,6 @@ type piAgentEndEnvelope struct {
 	Messages  piAgentEndMessages `json:"messages"`
 	WillRetry piRetryFlag        `json:"willRetry"`
 }
-
-// piRetryableWebSocketError is the exact errorMessage Pi emits for transient
-// WebSocket disconnects, which the input queue retries automatically.
-const piRetryableWebSocketError = "WebSocket error"
 
 // piDialogMethods is the set of extension UI methods that block waiting for an
 // extension_ui_response. These are surfaced as control requests so the
@@ -412,13 +414,100 @@ func piTurnDurationMs(startedAt, endedAt time.Time) *int64 {
 	return &ms
 }
 
-// isRetryableFailure reports whether the turn ended on the one transient
-// failure that LeapMux itself retries automatically.
-func (env piAgentEndEnvelope) isRetryableFailure() bool {
-	// Walk from the end: only the final assistant message reflects the
-	// turn's final outcome; earlier assistant entries are intra-turn.
+// piAbortTexts are the error texts of a run that a stop aborted. Pi states
+// some of them with stopReason "error", the same shape as a failure.
+var piAbortTexts = map[string]bool{
+	"Request aborted":            true,
+	"Request was aborted":        true,
+	"Request was aborted.":       true,
+	"This operation was aborted": true,
+}
+
+var (
+	// piOAuthFailureRe matches a refused credential refresh. The real text
+	// ends in "fetch failed", which also reads as a transport failure.
+	piOAuthFailureRe = regexp.MustCompile(`^OAuth refresh failed`)
+	// piChatGPTUsageLimitRe matches the usage limit of a ChatGPT plan, which
+	// Pi's openai-codex transport writes with the delay rounded to a minute.
+	piChatGPTUsageLimitRe = regexp.MustCompile(`^You have hit your ChatGPT usage limit(?: \([^)]*\))?\. Try again in ~(\d+) min\.$`)
+	// piStatusPrefixRe matches the status that opens an HTTP failure. Pi writes
+	// `<status>: <body>` for a JSON body and `<status> <body>` for any other
+	// body, such as the HTML page of a 502.
+	piStatusPrefixRe = regexp.MustCompile(`^(\d{3}):? `)
+	// piTransportRes match the transport failures of Pi's transports: a whole
+	// message, a prefix, a Node error code anywhere, or an overload.
+	piTransportRes = []*regexp.Regexp{
+		regexp.MustCompile(`^(?:Connection error\.|Request timed out\.|terminated|WebSocket error)$`),
+		regexp.MustCompile(`^(?:fetch failed|socket hang up|Stream ended without finish_reason|stream disconnected before completion)`),
+		regexp.MustCompile(`ECONNRESET|ENOTFOUND|EAI_AGAIN`),
+		regexp.MustCompile(`(?i)overloaded`),
+	}
+)
+
+// piChatGPTDelaySlack covers the rounding of the delay in the ChatGPT usage
+// limit, which Pi states to the minute.
+const piChatGPTDelaySlack = 30 * time.Second
+
+// failedAt is when the run's last assistant message failed: its own
+// timestamp, or fallback when the message states none.
+func (env piAgentEndEnvelope) failedAt(fallback time.Time) time.Time {
+	if last := env.lastAssistantMessage(); last != nil && last.Timestamp > 0 {
+		return time.UnixMilli(last.Timestamp).UTC()
+	}
+	return fallback
+}
+
+// piTurnFailure classifies the final run of a settled turn for the
+// automatic-retry queue. stopped reports a stop that the user or the worker
+// asked for. observedAt is when the run failed.
+//
+// The vendor's own sentence comes before the HTTP status of the
+// `<status>: <body>` form, because it is the more specific of the two: a 429
+// whose body states a monthly limit is a usage limit, and a 400 whose body
+// states a closed connection is transient.
+func piTurnFailure(env piAgentEndEnvelope, stopped bool, observedAt time.Time) providerkit.TurnFailure {
+	notRetryable := providerkit.TurnFailure{Kind: providerkit.TurnFailureNotRetryable}
 	last := env.lastAssistantMessage()
-	return last != nil && last.StopReason == contracts.PiStopReasonError && last.ErrorMessage == piRetryableWebSocketError
+	if stopped || last == nil || last.StopReason != contracts.PiStopReasonError {
+		return notRetryable
+	}
+	text := last.ErrorMessage
+	if piAbortTexts[text] || piOAuthFailureRe.MatchString(text) {
+		return notRetryable
+	}
+	vendor, vendorStated := modelvendor.ClassifyError(text, observedAt)
+	if vendorStated && vendor.Definitive {
+		return vendor.Failure
+	}
+	if match := piChatGPTUsageLimitRe.FindStringSubmatch(text); match != nil {
+		failure := providerkit.TurnFailure{Kind: providerkit.TurnFailureUsageLimited, Cause: "Pi reported a ChatGPT usage limit"}
+		// A delay that does not parse, or that exceeds the longest delay that
+		// a verdict accepts, leaves the verdict with no reset.
+		if delay, ok := providerkit.ParseRetryDelay(match[1] + " min"); ok {
+			failure = providerkit.WithResetHint(failure, observedAt.Add(delay+piChatGPTDelaySlack), observedAt)
+		}
+		return failure
+	}
+	if vendorStated {
+		return vendor.Failure
+	}
+	if match := piStatusPrefixRe.FindStringSubmatch(text); match != nil {
+		status, _ := strconv.Atoi(match[1])
+		switch {
+		case status >= 500 && status <= 599:
+			return providerkit.TurnFailure{Kind: providerkit.TurnFailureTransient, Cause: fmt.Sprintf("Pi reported the HTTP status %d", status)}
+		case status == 429:
+			return providerkit.TurnFailure{Kind: providerkit.TurnFailureRateLimited, Cause: "Pi reported the HTTP status 429"}
+		case status >= 400 && status <= 499:
+			return notRetryable
+		}
+	}
+	for _, transport := range piTransportRes {
+		if transport.MatchString(text) {
+			return providerkit.TurnFailure{Kind: providerkit.TurnFailureTransient, Cause: "Pi reported a transport failure"}
+		}
+	}
+	return notRetryable
 }
 
 func (env piAgentEndEnvelope) retainedCompletion() agent.MessageCompletion {

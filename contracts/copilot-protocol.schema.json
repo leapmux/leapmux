@@ -19,6 +19,7 @@
     "permissionDecisionSources",
     "toolErrorCodes",
     "autoModeSwitchResponses",
+    "errorCodes",
     "samplingDecisions",
     "leapmuxRowTypes"
   ],
@@ -172,6 +173,9 @@
       "$ref": "#/$defs/table"
     },
     "autoModeSwitchResponses": {
+      "$ref": "#/$defs/table"
+    },
+    "errorCodes": {
       "$ref": "#/$defs/table"
     },
     "samplingDecisions": {

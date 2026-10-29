@@ -480,6 +480,12 @@ type AutoRetryServices interface {
 }
 
 // AutoRetryWriter applies retry operations for one captured provider owner.
+//
+// Each cancellation states its reason: a sentence for an operator, such as
+// "the turn ended without a retryable failure". The queue writes the reason
+// into the log line of each retry that the cancellation removes, so the log
+// states why a retry disappeared. A cancellation that finds no pending retry
+// writes nothing.
 type AutoRetryWriter interface {
 	// ScheduleUsageLimitRetry asks for a retry a jittered moment after the
 	// provider's usage limit resets at resetAt.
@@ -488,10 +494,10 @@ type AutoRetryWriter interface {
 	// server-error backoff.
 	ScheduleServerErrorRetry(sourcePayload []byte)
 	// CancelUsageLimitRetry removes the pending usage-limit retry.
-	CancelUsageLimitRetry()
+	CancelUsageLimitRetry(reason string)
 	// CancelServerErrorRetry removes the pending server-error retry and ends
 	// its backoff cycle.
-	CancelServerErrorRetry()
+	CancelServerErrorRetry(reason string)
 }
 
 // ChildAgentSpec supplies a native child identity and its initial stored options.

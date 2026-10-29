@@ -197,6 +197,8 @@ func (a *Agent) endAbandonedCompaction(attempt *compactionAttempt, reason error)
 	a.manualCompaction = nil
 	a.compacting = false
 	a.Mu.Unlock()
+	// The abandoned compaction never retries.
+	providerkit.ApplyTurnFailure(a.sink, providerkit.CompactionEnd(), nil)
 	a.PublishTurnActive()
 }
 

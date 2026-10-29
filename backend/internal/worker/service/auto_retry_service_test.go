@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -14,6 +16,8 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/channel"
+	db "github.com/leapmux/leapmux/internal/worker/generated/db"
 	"github.com/leapmux/leapmux/internal/worker/inputqueue"
 )
 
@@ -48,6 +52,141 @@ func assertRetriesCancelled(t *testing.T, svc *Service, agentID string) {
 	require.NoError(t, err)
 	require.Len(t, snapshot.Items, 1, "the ordinary input survives")
 	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, snapshot.Items[0].Kind)
+}
+
+// Each lifecycle path that ends an agent's runtime states its own reason for
+// the retries that it removes, so the log separates a tab close from an
+// archive, a context clear, and a plan restart.
+func TestRuntimeCleanupStatesWhyItRemovedTheRetries(t *testing.T) {
+	// Not parallel: it captures the default logger, which is process-global.
+	startNothing := func(context.Context, agent.Options, agent.ProviderServices) (map[string]string, error) {
+		return map[string]string{}, nil
+	}
+	for _, test := range []struct {
+		name   string
+		reason RuntimeCleanupReason
+		end    func(t *testing.T, svc *Service, d *channel.Dispatcher, w *testResponseWriter)
+	}{
+		{"tab close", CleanupTabClosed, func(t *testing.T, _ *Service, d *channel.Dispatcher, w *testResponseWriter) {
+			dispatch(d, "CloseAgent", &leapmuxv1.CloseAgentRequest{AgentId: "agent-1"}, w)
+			require.Empty(t, w.errors)
+		}},
+		{"workspace archive", CleanupWorkspaceArchived, func(t *testing.T, svc *Service, _ *channel.Dispatcher, _ *testResponseWriter) {
+			applyArchive(t, svc, leapmuxv1.WorkspaceArchiveState_WORKSPACE_ARCHIVE_STATE_ARCHIVED,
+				&leapmuxv1.TabRef{TabType: leapmuxv1.TabType_TAB_TYPE_AGENT, TabId: "agent-1"})
+		}},
+		{"context clear", CleanupContextCleared, func(t *testing.T, svc *Service, _ *channel.Dispatcher, _ *testResponseWriter) {
+			svc.startAgentFn = startNothing
+			finish, err := svc.prepareClearContext("agent-1")
+			require.NoError(t, err)
+			finish()
+		}},
+		{"plan restart", CleanupPlanContextReset, func(t *testing.T, svc *Service, _ *channel.Dispatcher, _ *testResponseWriter) {
+			svc.startAgentFn = startNothing
+			require.NoError(t, svc.initiatePlanExecutionRestart("agent-1", "acceptEdits", requireAgentRow(t, svc, "agent-1")))
+		}},
+		{"closed-agent sweep", CleanupClosedAgentSwept, func(t *testing.T, svc *Service, _ *channel.Dispatcher, _ *testResponseWriter) {
+			// A close that bypassed every cleanup path leaves the agent's
+			// tracker and its retries behind, and the sweep reclaims both.
+			svc.Output.rootTracker("agent-1")
+			require.NoError(t, closeErr(svc.Queries.CloseAgent(t.Context(), "agent-1")))
+			svc.SweepOrphanedAgentState()
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			logs := testutil.CaptureDefaultLogger(t)
+			svc, d, w := setupTestService(t)
+			defer drainAllInFlight(svc)
+			seedScheduledRetries(t, svc, "agent-1")
+
+			test.end(t, svc, d, w)
+
+			removed := retryRemovalLines(logs, "agent-1")
+			require.Len(t, removed, 2, "one line for each pending retry")
+			for _, line := range removed {
+				assert.Contains(t, line, `reason="`+string(test.reason)+`"`)
+			}
+			assertRetriesCancelled(t, svc, "agent-1")
+		})
+	}
+}
+
+// A root tab close ends each subagent of the root with it, so the cleanup of
+// a subagent states the root's tab close as its reason: the subagent itself
+// did not end. The queue admits no retry for a subagent, so no log line can
+// show the reason, and the test records the cancellation that the cleanup
+// asks for instead.
+func TestRootTabCloseStatesItsReasonForTheRetriesOfASubagent(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	svc, d, w := setupTestService(t)
+	defer drainAllInFlight(svc)
+	seedAgent(t, svc, "agent-1")
+	require.NoError(t, svc.Queries.CreateChildAgent(ctx, db.CreateChildAgentParams{
+		ID: "child-1", ParentAgentID: sql.NullString{String: "agent-1", Valid: true},
+		SpawnSpanID: "spawn-1", WorkingDir: t.TempDir(), HomeDir: t.TempDir(),
+		AgentProvider: leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE,
+	}))
+	var mu sync.Mutex
+	reasons := map[string][]string{}
+	original := svc.Output.cancelAllAutoRetry
+	svc.Output.cancelAllAutoRetry = func(agentID, reason string) {
+		mu.Lock()
+		reasons[agentID] = append(reasons[agentID], reason)
+		mu.Unlock()
+		original(agentID, reason)
+	}
+
+	dispatch(d, "CloseAgent", &leapmuxv1.CloseAgentRequest{AgentId: "agent-1"}, w)
+	require.Empty(t, w.errors)
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, map[string][]string{
+		"agent-1": {string(CleanupTabClosed)},
+		"child-1": {string(cleanupRootTabClosed)},
+	}, reasons)
+}
+
+// A provider's cancellation reaches the queue with the provider's reason, and
+// it removes the retry of its own kind only.
+func TestAProviderCancellationStatesItsReasonInTheLog(t *testing.T) {
+	// Not parallel: it captures the default logger, which is process-global.
+	logs := testutil.CaptureDefaultLogger(t)
+	svc, _, _ := setupTestService(t)
+	defer drainAllInFlight(svc)
+	seedScheduledRetries(t, svc, "agent-1")
+	sink, err := svc.Output.NewRootSink("agent-1", leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	require.NoError(t, err)
+
+	sink.CancelUsageLimitRetry(`Claude reported status "allowed" for the five_hour usage limit`)
+
+	removed := retryRemovalLines(logs, "agent-1")
+	require.Len(t, removed, 1)
+	assert.Contains(t, removed[0], "kind="+leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT.String()+" ")
+	assert.Contains(t, removed[0], `reason="Claude reported status \"allowed\" for the five_hour usage limit"`)
+	snapshot, err := svc.InputQueue.Snapshot(t.Context(), "agent-1")
+	require.NoError(t, err)
+	var kinds []leapmuxv1.AgentInputKind
+	for _, item := range snapshot.Items {
+		kinds = append(kinds, item.Kind)
+	}
+	assert.ElementsMatch(t, []leapmuxv1.AgentInputKind{
+		leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR,
+		leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
+	}, kinds, "the server-error retry and the ordinary input stay")
+}
+
+// retryRemovalLines returns each captured "automatic retry removed" line of
+// one agent.
+func retryRemovalLines(logs *testutil.LogBuffer, agentID string) []string {
+	var removed []string
+	for _, line := range strings.Split(logs.String(), "\n") {
+		if strings.Contains(line, `msg="automatic retry removed"`) && strings.Contains(line, "agent_id="+agentID+" ") {
+			removed = append(removed, line)
+		}
+	}
+	return removed
 }
 
 func TestCloseAgent_CancelsScheduledRetries(t *testing.T) {
@@ -121,10 +260,10 @@ func TestAutoRetryRejectsAnOldProviderMutationAfterCleanup(t *testing.T) {
 			defer releaseMutation()
 			if cancel {
 				original := svc.Output.cancelAutoRetry
-				svc.Output.cancelAutoRetry = func(id string, kind leapmuxv1.AgentInputKind, admission agent.AutoRetryAdmission) {
+				svc.Output.cancelAutoRetry = func(id string, kind leapmuxv1.AgentInputKind, reason string, admission agent.AutoRetryAdmission) {
 					close(entered)
 					<-release
-					original(id, kind, admission)
+					original(id, kind, reason, admission)
 				}
 			} else {
 				original := svc.Output.scheduleAutoRetry
@@ -137,7 +276,7 @@ func TestAutoRetryRejectsAnOldProviderMutationAfterCleanup(t *testing.T) {
 			ordered := agent.NewOrderedProviderServices(&agent.OutputQueue{}, sink)
 			go func() {
 				if cancel {
-					ordered.CancelUsageLimitRetry()
+					ordered.CancelUsageLimitRetry("the usage limit lifted")
 				} else {
 					ordered.ScheduleUsageLimitRetry(time.Now().Add(time.Hour), []byte(`{"old":true}`))
 				}
@@ -148,7 +287,7 @@ func TestAutoRetryRejectsAnOldProviderMutationAfterCleanup(t *testing.T) {
 			case <-ctx.Done():
 				t.Fatal("the old provider mutation did not reach queue admission")
 			}
-			svc.Output.CleanupAgent(agentID)
+			svc.Output.CleanupAgent(agentID, CleanupContextCleared)
 			// A new process can now report a retry for the same open agent.
 			if cancel {
 				require.NoError(t, svc.InputQueue.ScheduleAutoRetry(t.Context(), agentID, retrySchedule(
@@ -186,13 +325,13 @@ func TestCapturedAutoRetryRefusesReplacedOwnersWithoutResettingBackoff(t *testin
 			case "process":
 				newTestRootOutputSink(t, svc.Output, agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
 			case "cleanup":
-				svc.Output.CleanupAgent(agentID)
+				svc.Output.CleanupAgent(agentID, CleanupContextCleared)
 			}
 			kind := leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR
 			require.NoError(t, svc.InputQueue.ScheduleAutoRetry(t.Context(), agentID, retrySchedule(kind, time.Time{})))
 			before, err := svc.InputQueue.Snapshot(t.Context(), agentID)
 			require.NoError(t, err)
-			writer.CancelServerErrorRetry()
+			writer.CancelServerErrorRetry("the turn ended")
 			writer.ScheduleServerErrorRetry([]byte(`{"old":true}`))
 			after, err := svc.InputQueue.Snapshot(t.Context(), agentID)
 			require.NoError(t, err)
@@ -223,4 +362,97 @@ func TestCapturedAutoRetryLeaseProtectsTheOwnerUntilRelease(t *testing.T) {
 	mutation.Unlock()
 	sink.UpdateSessionID("replacement-session")
 	assert.Nil(t, writer.Acquire(), "a released writer cannot renew an expired owner")
+}
+
+// serverErrorRetryRows counts the AUTO_RETRY_SERVER_ERROR items of the queue.
+func serverErrorRetryRows(t *testing.T, svc *Service, agentID string) int {
+	t.Helper()
+	snapshot, err := svc.InputQueue.Snapshot(testutil.DeadlineContext(t), agentID)
+	require.NoError(t, err)
+	count := 0
+	for _, item := range snapshot.Items {
+		if item.Kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR {
+			count++
+		}
+	}
+	return count
+}
+
+// messageRows counts the transcript rows of the agent in the database.
+func messageRows(t *testing.T, svc *Service, agentID string) int {
+	t.Helper()
+	var count int
+	require.NoError(t, svc.DB.QueryRowContext(testutil.DeadlineContext(t),
+		`SELECT COUNT(*) FROM messages WHERE agent_id = ?`, agentID).Scan(&count))
+	return count
+}
+
+// storedServerErrorDelay reads the server-error backoff that the queue stores.
+func storedServerErrorDelay(t *testing.T, svc *Service, agentID string) int64 {
+	t.Helper()
+	var delay int64
+	require.NoError(t, svc.DB.QueryRowContext(testutil.DeadlineContext(t),
+		`SELECT auto_retry_server_error_delay_ms FROM agent_input_queue_state WHERE agent_id = ?`, agentID).Scan(&delay))
+	return delay
+}
+
+// A provider turn failure schedules one durable server-error retry after the
+// turn-end row, through the same ordered sink that production wraps around
+// each provider. Each turn end doubles the stored backoff once.
+func TestAProviderTurnFailureSchedulesOneDurableRetryAfterTheTurnEnd(t *testing.T) {
+	t.Parallel()
+	svc, _, agentID, _ := setupBgTaskTestWithService(t)
+	root, err := svc.Output.NewRootSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	require.NoError(t, err)
+	sink := agent.NewModelProgressResetSink(root)
+	turnEnd := agent.MessageContent{Original: []byte(`{"type":"turn_end"}`)}
+	messagesBefore := messageRows(t, svc, agentID)
+
+	require.NoError(t, sink.PersistTurnEnd(turnEnd, agent.SpanInfo{}))
+	sink.ScheduleServerErrorRetry([]byte(`{"error":"503"}`))
+
+	assert.Equal(t, messagesBefore+1, messageRows(t, svc, agentID), "the turn-end row is stored")
+	assert.Equal(t, 1, serverErrorRetryRows(t, svc, agentID), "exactly one server-error retry row")
+	assert.Equal(t, int64(20000), storedServerErrorDelay(t, svc, agentID), "the delay doubled once, from 10 s to 20 s")
+
+	require.NoError(t, sink.PersistTurnEnd(turnEnd, agent.SpanInfo{}))
+	sink.ScheduleServerErrorRetry([]byte(`{"error":"503"}`))
+
+	assert.Equal(t, 1, serverErrorRetryRows(t, svc, agentID), "the second turn end replaces the row")
+	assert.Equal(t, int64(40000), storedServerErrorDelay(t, svc, agentID), "the delay doubled again, to 40 s")
+}
+
+// The ordered sink holds a retry behind every transcript write that precedes
+// it. While an earlier write cannot finish, neither the turn-end row nor the
+// retry row exists; once it finishes, both are stored, in order.
+func TestAProviderRetryWaitsForTheTurnEndThatPrecedesIt(t *testing.T) {
+	t.Parallel()
+	svc, _, agentID, _ := setupBgTaskTestWithService(t)
+	root, err := svc.Output.NewRootSink(agentID, leapmuxv1.AgentProvider_AGENT_PROVIDER_CLAUDE_CODE)
+	require.NoError(t, err)
+	sink := agent.NewModelProgressResetSink(root)
+	queue := agent.OutputQueueFor(sink)
+	require.NotNil(t, queue)
+	var released atomic.Bool
+	queue.Append(agent.OutputWrite{Label: "an earlier transcript write", Run: func() error {
+		if !released.Load() {
+			return errors.New("the earlier write is held")
+		}
+		return nil
+	}})
+	messagesBefore := messageRows(t, svc, agentID)
+
+	var pending *agent.PendingOutputError
+	require.ErrorAs(t, sink.PersistTurnEnd(agent.MessageContent{Original: []byte(`{"type":"turn_end"}`)}, agent.SpanInfo{}), &pending)
+	sink.ScheduleServerErrorRetry([]byte(`{"error":"503"}`))
+
+	assert.Equal(t, messagesBefore, messageRows(t, svc, agentID), "the turn-end row waits for the earlier write")
+	assert.Zero(t, serverErrorRetryRows(t, svc, agentID), "the retry waits for the turn-end row")
+
+	released.Store(true)
+	require.NoError(t, queue.Flush())
+
+	assert.Equal(t, messagesBefore+1, messageRows(t, svc, agentID))
+	assert.Equal(t, 1, serverErrorRetryRows(t, svc, agentID))
+	assert.Equal(t, int64(20000), storedServerErrorDelay(t, svc, agentID), "the delay doubled exactly once")
 }

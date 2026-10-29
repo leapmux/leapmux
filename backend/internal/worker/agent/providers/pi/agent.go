@@ -263,6 +263,10 @@ func (a *Agent) preparePiInput(expected *string, content string, attachments []*
 			if err != nil {
 				a.endPiCompaction()
 			}
+			// A compaction never schedules a retry, whatever its outcome. The
+			// command writes no turn-end row, and its one verdict precedes the
+			// release, as at a settled turn (settleHeldPiTurnAt).
+			providerkit.ApplyTurnFailure(a.orderedSink(), providerkit.CompactionEnd(), nil)
 			// Compaction ends without agent_end. Publish the idle turn after the
 			// native compact response so queued input can proceed.
 			a.PublishTurnActive()

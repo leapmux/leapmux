@@ -284,13 +284,13 @@ func (a *Agent) handleProcessExit(proc *ampProcess) {
 	recoverSteers := a.prepareSteerRecovery()
 	message := exitMessage(proc, threadID, stderr)
 	ended, turnFailed := false, false
-	a.endTurn(func(turn turnState) (agent.MessageCompletion, []byte) {
+	a.endTurn(func(turn turnState) turnEnding {
 		ended = true
 		if turn.interruptRequested {
-			return agent.MessageCompletionInterrupted, errorResultLine(threadID, interruptedMessage)
+			return turnEnding{completion: agent.MessageCompletionInterrupted}
 		}
 		turnFailed = true
-		return agent.MessageCompletionError, errorResultLine(threadID, message)
+		return turnEnding{completion: agent.MessageCompletionError, exitError: message}
 	})
 	resume := proc.resumesThreadAfterExit(turnFailed)
 	if !ended && !proc.sawResult.Load() && !proc.IntentionalStopRequested() {

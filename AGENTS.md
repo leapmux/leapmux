@@ -223,6 +223,7 @@ Add a file only when the provider owns that role.
 | `catalog.go` | Model and option catalog data, discovery and conversion when they need a separate file. |
 | `settings.go` | Live option methods, settings snapshots, and any shared axis table. |
 | `control.go` | Control requests and replies. |
+| `retry.go` | The turn-failure verdict for the automatic retry, and the failure evidence that it records. |
 | `output.go` | Conversation output handlers and live output state. |
 | `events.go` | Protocol event decoding and dispatch when these form one unit. |
 | `rpc.go` | Request and reply transport, including response routing. |

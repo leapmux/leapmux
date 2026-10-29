@@ -80,6 +80,7 @@ var allowedProviderImports = map[string][]string{
 
 	"internal/providerkit":                       nil,
 	"internal/providerkit/providerkittest":       nil,
+	"internal/modelvendor":                       nil,
 	"internal/sessionstore":                      nil,
 	"internal/tooltranscript":                    nil,
 	"internal/tooltranscript/tooltranscripttest": nil,

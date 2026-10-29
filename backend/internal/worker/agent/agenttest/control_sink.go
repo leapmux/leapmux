@@ -99,6 +99,7 @@ func (s *ControlSink) PersistLeapMuxNotification(info map[string]interface{}) {
 		cp[k] = v
 	}
 	s.notifications = append(s.notifications, cp)
+	s.appendTimeline(TimelineEntry{Op: "leapmux_notification"})
 }
 
 // PublishedControls returns the requests in publication order.

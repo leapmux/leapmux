@@ -66,7 +66,7 @@ func (svc *Service) SweepOrphanedAgentState() {
 		if svc.Agents.HasAgent(id) {
 			continue // still running (defensive; a running agent should be open)
 		}
-		svc.Output.CleanupAgent(id)
+		svc.Output.CleanupAgent(id, CleanupClosedAgentSwept)
 		swept++
 	}
 	if swept > 0 {

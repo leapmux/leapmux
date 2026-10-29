@@ -90,6 +90,10 @@ type Agent struct {
 	awaitingAbortOutcome bool
 	// turnEpoch associates native messages with the turn that first reports them.
 	turnEpoch uint64
+	// retryDecidedEpoch is the epoch of the newest turn whose end applied its
+	// automatic-retry verdict. The first turn's epoch is 1, so the zero value
+	// marks no turn.
+	retryDecidedEpoch uint64
 	// pendingFailures retains native failures in their original observation order.
 	// Each failure stays until its exact owner claims it or its write succeeds.
 	pendingFailures []*mimoFailure
@@ -128,6 +132,13 @@ type Agent struct {
 	manualCompactionID string
 	// manualCompactionReady lets the next plain input join that native loop.
 	manualCompactionReady bool
+	// manualCompactionVerdictDue records that the manual compaction of
+	// manualCompactionID started and that no end of it applied its
+	// automatic-retry verdict yet. The first end of the compaction spends it.
+	// It outlives manualCompactionID, because a rollback clears that identity
+	// before the idle that ends the compaction's turn. Guarded by Mu, like the
+	// fields around it.
+	manualCompactionVerdictDue bool
 	// manualFollowupSending marks the HTTP call that sends that next input.
 	// manualFollowupBusy records a busy event during the call. A refused call
 	// cannot start a turn, so the event takes effect only after acceptance.

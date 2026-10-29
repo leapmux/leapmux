@@ -354,10 +354,7 @@ func (b *Base) finishUnsentPrompt(sessionID string) {
 	b.finishRootSnapshot(turn, agent.MessageCompletionError, agent.MessageCompletionError, RootTranscriptPromptNotSent, nil)
 	// This request never ran. Do not ask the provider for another continuation
 	// of the same failed write. A queued native turn still keeps its ownership.
-	if end, queued := b.takeQueuedAgentTurn(sessionID); queued {
-		if end != nil {
-			b.EndAgentTurn(end)
-		}
+	if b.handoffQueuedAgentTurn(sessionID) {
 		return
 	}
 	b.clearActivePromptForSession(sessionID)

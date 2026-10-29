@@ -18,6 +18,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit/providerkittest"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -646,13 +647,14 @@ func TestHandlePiOutput_AgentEnd_WillRetryDecidesAutoRetry(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range []struct {
-		name      string
-		willRetry bool
-		schedules int
-		cancels   int
+		name         string
+		willRetry    bool
+		schedules    int
+		cancels      int
+		cancelReason string
 	}{
-		{"Pi retries, so LeapMux stands down", true, 0, 1},
-		{"Pi is done retrying, so LeapMux continues", false, 1, 0},
+		{"Pi retries, so LeapMux stands down", true, 0, 1, piRetriesFailedRequestReason},
+		{"Pi is done retrying, so LeapMux continues", false, 1, 0, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -668,6 +670,9 @@ func TestHandlePiOutput_AgentEnd_WillRetryDecidesAutoRetry(t *testing.T) {
 
 			assert.Equal(t, tc.schedules, sink.AutoScheduleCount())
 			assert.Equal(t, tc.cancels, sink.AutoCancelCount())
+			if tc.cancels > 0 {
+				assert.Equal(t, tc.cancelReason, sink.LastAutoCancelReason())
+			}
 		})
 	}
 }
@@ -985,10 +990,11 @@ func TestHandlePiOutput_AgentEnd_NonRetryableResultCancelsAutoRetry(t *testing.T
 
 	require.Equal(t, 1, sink.AutoCancelCount())
 	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, sink.LastAutoCancel())
+	assert.Equal(t, providerkit.TurnEndedWithoutRetryableFailure, sink.LastAutoCancelReason())
 	assert.Equal(t, 0, sink.AutoScheduleCount())
 }
 
-func TestHandlePiOutput_AgentEnd_NonWebSocketErrorMessageCancelsAutoRetry(t *testing.T) {
+func TestHandlePiOutput_AgentEnd_UnrecognizedErrorMessageCancelsAutoRetry(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.ControlSink{}
@@ -2324,4 +2330,258 @@ func TestPiPendingGenerationStaysBeforeALaterNativeMessage(t *testing.T) {
 	require.Len(t, messages, 2)
 	assert.Contains(t, string(messages[0].Content), "Earlier answer")
 	assert.Contains(t, string(messages[1].Content), "Later answer")
+}
+
+// piAgentEndFailure renders the final agent_end of a run whose last assistant
+// message failed with text. at is the message's timestamp in Unix
+// milliseconds, and 0 omits the field.
+func piAgentEndFailure(t *testing.T, text string, at int64) []byte {
+	t.Helper()
+	message := map[string]any{"role": contracts.PiRoleAssistant, "content": []any{}, "stopReason": contracts.PiStopReasonError, "errorMessage": text}
+	if at > 0 {
+		message["timestamp"] = at
+	}
+	raw, err := json.Marshal(map[string]any{"type": contracts.PiEventAgentEnd, "messages": []any{message}, "willRetry": false})
+	require.NoError(t, err)
+	return raw
+}
+
+// Real Pi failure texts (.tmp/retry-research/transcripts-kimi-pi-omp.md), each
+// with the timestamp of its assistant message in the transcript.
+const (
+	piText1305     = `429: {"code":"1305","message":"The service may be temporarily overloaded, please try again later"}`
+	piText1310     = `429: {"code":"1310","message":"Weekly/Monthly Limit Exhausted. Your limit will reset at 2026-07-25 20:42:58"}`
+	piText1302     = `429: {"code":"1302","message":"Rate limit reached for requests"}`
+	piText1308     = `429: {"code":"1308","message":"Usage limit reached for 5 hour. Your limit will reset at 2026-07-14 19:06:13"}`
+	piTextCodex    = `Codex error: {"type":"error","error":{"type":"usage_limit_reached","message":"The usage limit has been reached","plan_type":"free","resets_at":1779003886,"eligible_promo":null,"resets_in_seconds":89585},"status_code":429,"headers":{"X-Codex-Active-Limit":"premium","X-Codex-Plan-Type":"free","X-Codex-Primary-Used-Percent":"100","X-Codex-Secondary-Used-Percent":"0","X-Codex-Primary-Window-Minutes":"10080","X-Codex-Primary-Over-Secondary-Limit-Percent":"0","X-Codex-Secondary-Window-Minutes":"0","X-Codex-Primary-Reset-After-Seconds":"89586","X-Codex-Secondary-Reset-After-Seconds":"0","X-Codex-Primary-Reset-At":"1779003887","X-Codex-Secondary-Reset-At":"","X-Codex-Credits-Has-Credits":"False","X-Codex-Credits-Balance":"","X-Codex-Credits-Unlimited":"False"}}`
+	piTextOAuth    = `OAuth refresh failed for openai-codex: OpenAI Codex token refresh error: fetch failed`
+	piAt1305       = 1783936367328
+	piAt1310       = 1784555680038
+	piAt1302       = 1783936357587
+	piAt1308       = 1784025284809
+	piAtCodex      = 1778914300047
+	piAtOAuth      = 1786033355670
+	piAtTimeout    = 1784302205111
+	piAtWebSocket  = 1777942626890
+	piAtTerminated = 1783951268984
+)
+
+// piTurnFailure reads Pi's final error text in the order of the classifier
+// recipe.
+func TestPiTurnFailure(t *testing.T) {
+	t.Parallel()
+	// observedAt for a case that states no timestamp of its own.
+	fallback := time.Date(2026, 10, 28, 2, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		name    string
+		text    string
+		at      int64
+		kind    providerkit.TurnFailureKind
+		window  providerkit.UsageWindow
+		resetAt time.Time
+	}{
+		// Real texts.
+		{"a 1305 overload is transient", piText1305, piAt1305, providerkit.TurnFailureTransient, 0, time.Time{}},
+		{"a 1310 limit lifts at its stamp", piText1310, piAt1310, providerkit.TurnFailureUsageLimited, 0, time.Date(2026, 7, 25, 12, 42, 59, 0, time.UTC)},
+		{"a 1302 is a rate limit", piText1302, piAt1302, providerkit.TurnFailureRateLimited, 0, time.Time{}},
+		{"a 1308 limit lifts at its stamp", piText1308, piAt1308, providerkit.TurnFailureUsageLimited, 0, time.Date(2026, 7, 14, 11, 6, 14, 0, time.UTC)},
+		{"a Codex usage limit lifts at resets_at", piTextCodex, piAtCodex, providerkit.TurnFailureUsageLimited, 0, time.Unix(1779003886, 0).UTC()},
+		{"a timeout is transient", "Request timed out.", piAtTimeout, providerkit.TurnFailureTransient, 0, time.Time{}},
+		{"a WebSocket error is transient", "WebSocket error", piAtWebSocket, providerkit.TurnFailureTransient, 0, time.Time{}},
+		{"a terminated stream is transient", "terminated", piAtTerminated, providerkit.TurnFailureTransient, 0, time.Time{}},
+		{"an abort is not retryable", "Request aborted", 0, providerkit.TurnFailureNotRetryable, 0, time.Time{}},
+		{"an abort with a period is not retryable", "Request was aborted.", 0, providerkit.TurnFailureNotRetryable, 0, time.Time{}},
+		{"an abort without a period is not retryable", "Request was aborted", 0, providerkit.TurnFailureNotRetryable, 0, time.Time{}},
+		{"an aborted operation is not retryable", "This operation was aborted", 0, providerkit.TurnFailureNotRetryable, 0, time.Time{}},
+		{"a refused OAuth refresh is not retryable although it ends in fetch failed", piTextOAuth, piAtOAuth, providerkit.TurnFailureNotRetryable, 0, time.Time{}},
+		// The probes of .tmp/retry-research/partial-providers.md (section 1).
+		{"a 529 overload is transient", `529: {"type":"overloaded_error","message":"Overloaded"}`, 1793150377028, providerkit.TurnFailureTransient, 0, time.Time{}},
+		{"a 500 is transient", `500: {"message":"Internal server error","type":"server_error","code":null}`, 0, providerkit.TurnFailureTransient, 0, time.Time{}},
+		// .tmp/probe/pi/run-fake502.jsonl: a body that is not JSON follows the status with no colon.
+		{"a 502 with an HTML body is transient", `502 <html><head><title>502 Bad Gateway</title></head><body>502 Bad Gateway</body></html>`, 1793150380310, providerkit.TurnFailureTransient, 0, time.Time{}},
+		{"a 400 with a plain body is not retryable", `400 Bad Request`, 0, providerkit.TurnFailureNotRetryable, 0, time.Time{}},
+		{"a 429 rate limit is a rate limit", `429: {"message":"Rate limit reached for requests","type":"rate_limit_error"}`, 0, providerkit.TurnFailureRateLimited, 0, time.Time{}},
+		{"a connection error is transient", "Connection error.", 0, providerkit.TurnFailureTransient, 0, time.Time{}},
+		{"a stream with no finish reason is transient", "Stream ended without finish_reason", 0, providerkit.TurnFailureTransient, 0, time.Time{}},
+		// The texts below are constructed from Pi's own wording (retry.ts and
+		// openai-codex-responses.ts in Pi 1.4.0) and from Node's error codes.
+		{
+			"a ChatGPT usage limit lifts after its delay and the rounding slack",
+			"You have hit your ChatGPT usage limit (plus plan). Try again in ~42 min.", 0,
+			providerkit.TurnFailureUsageLimited, 0, fallback.Add(42*time.Minute + 30*time.Second),
+		},
+		{
+			"a ChatGPT usage limit without a plan lifts after its delay",
+			"You have hit your ChatGPT usage limit. Try again in ~0 min.", 0,
+			providerkit.TurnFailureUsageLimited, 0, fallback.Add(30 * time.Second),
+		},
+		{
+			"a ChatGPT delay beyond 31 days states no reset",
+			"You have hit your ChatGPT usage limit (pro plan). Try again in ~99999 min.", 0,
+			providerkit.TurnFailureUsageLimited, providerkit.UsageWindowUnstated, time.Time{},
+		},
+		{
+			"a ChatGPT delay that does not parse states no reset",
+			"You have hit your ChatGPT usage limit (pro plan). Try again in ~12345678901 min.", 0,
+			providerkit.TurnFailureUsageLimited, providerkit.UsageWindowUnstated, time.Time{},
+		},
+		{"a fetch failure is transient", "fetch failed", 0, providerkit.TurnFailureTransient, 0, time.Time{}},
+		{"a socket hang-up is transient", "socket hang up", 0, providerkit.TurnFailureTransient, 0, time.Time{}},
+		{"a reset connection is transient", "read ECONNRESET", 0, providerkit.TurnFailureTransient, 0, time.Time{}},
+		{"an unknown host is transient", "getaddrinfo ENOTFOUND api.z.ai", 0, providerkit.TurnFailureTransient, 0, time.Time{}},
+		{"a DNS retry is transient", "getaddrinfo EAI_AGAIN api.z.ai", 0, providerkit.TurnFailureTransient, 0, time.Time{}},
+		{"a dropped stream is transient", "stream disconnected before completion: idle timeout", 0, providerkit.TurnFailureTransient, 0, time.Time{}},
+		{"an overload in any case is transient", "The upstream is OVERLOADED", 0, providerkit.TurnFailureTransient, 0, time.Time{}},
+		{"a 400 is not retryable", `400: {"error":{"message":"Invalid request"}}`, 0, providerkit.TurnFailureNotRetryable, 0, time.Time{}},
+		{"a status outside HTTP is not a status", "600: unknown", 0, providerkit.TurnFailureNotRetryable, 0, time.Time{}},
+		{
+			// The vendor's sentence wins over the bare 400: MiMo states a closed
+			// connection as a 400 (.tmp/retry-research/transcripts-kimi-pi-omp.md).
+			"a 400 whose body states a closed connection is transient",
+			`400: {"error":{"code":"400","message":"Request failed","param":"Connection prematurely closed BEFORE response","type":""}}`, 0,
+			providerkit.TurnFailureTransient, 0, time.Time{},
+		},
+		{
+			// The vendor's sentence wins over the bare 429: a monthly limit
+			// schedules no server-error retry.
+			"a 429 whose body states a monthly limit is a usage limit longer than a week",
+			`429: {"error":{"message":"You've reached your monthly usage limit."}}`, 0,
+			providerkit.TurnFailureUsageLimited, providerkit.UsageWindowLonger, time.Time{},
+		},
+		{"an unrecognized text is not retryable", "rate limited", 0, providerkit.TurnFailureNotRetryable, 0, time.Time{}},
+		{"an empty text is not retryable", "", 0, providerkit.TurnFailureNotRetryable, 0, time.Time{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var env piAgentEndEnvelope
+			require.NoError(t, json.Unmarshal(piAgentEndFailure(t, tc.text, tc.at), &env))
+			failure := piTurnFailure(env, false, env.failedAt(fallback))
+			assert.Equal(t, tc.kind, failure.Kind)
+			assert.Equal(t, tc.window, failure.Window)
+			assert.True(t, tc.resetAt.Equal(failure.ResetAt), "reset %v, want %v", failure.ResetAt, tc.resetAt)
+		})
+	}
+
+	t.Run("a stop is not retryable", func(t *testing.T) {
+		t.Parallel()
+		var env piAgentEndEnvelope
+		require.NoError(t, json.Unmarshal(piAgentEndFailure(t, "WebSocket error", 0), &env))
+		assert.Equal(t, providerkit.TurnFailureNotRetryable, piTurnFailure(env, true, fallback).Kind)
+	})
+	for name, raw := range map[string]string{
+		"a completed run":            `{"type":"agent_end","messages":[{"role":"assistant","stopReason":"stop"}]}`,
+		"an aborted run":             `{"type":"agent_end","messages":[{"role":"assistant","stopReason":"aborted","errorMessage":"WebSocket error"}]}`,
+		"a run with no assistant":    `{"type":"agent_end","messages":[{"role":"user"}]}`,
+		"a run with no message":      `{"type":"agent_end","messages":[]}`,
+		"a failure before a stop":    `{"type":"agent_end","messages":[{"role":"assistant","stopReason":"error","errorMessage":"WebSocket error"},{"role":"assistant","stopReason":"stop"}]}`,
+		"a user after the assistant": `{"type":"agent_end","messages":[{"role":"assistant","stopReason":"stop"},{"role":"user"}]}`,
+	} {
+		t.Run(name+" is not retryable", func(t *testing.T) {
+			t.Parallel()
+			var env piAgentEndEnvelope
+			require.NoError(t, json.Unmarshal([]byte(raw), &env))
+			assert.Equal(t, providerkit.TurnFailureNotRetryable, piTurnFailure(env, false, fallback).Kind)
+		})
+	}
+}
+
+// The settled turn applies one verdict after its divider. It reads the time of
+// the failure from the message, not from the clock.
+func TestPiSettledTurnAppliesItsVerdictAfterTheDivider(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		frames [][]byte
+		want   []string
+	}{
+		{
+			// The probe's own sequence (.tmp/retry-research/partial-providers.md):
+			// the final failure, the retry end, and the settlement.
+			"an exhausted 529 schedules a server-error retry",
+			[][]byte{
+				[]byte(`{"type":"agent_end","messages":[{"role":"assistant","content":[],"api":"openai-completions","provider":"fake529","model":"fake-model","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"error","timestamp":1793150377028,"errorMessage":"529: {\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}","durationMs":4,"thinkingLevel":"off"}],"willRetry":false}`),
+				[]byte(`{"type":"auto_retry_end","success":false,"attempt":2,"finalError":"Connection error."}`),
+				[]byte(`{"type":"agent_settled","aborted":false}`),
+			},
+			[]string{"turn_end", "schedule_server_error"},
+		},
+		{
+			// The clock reads months after the failure, so only the message's
+			// own timestamp makes the stamp plausible.
+			"a dated 1308 schedules a usage-limit retry at its stamp",
+			[][]byte{piAgentEndFailure(t, piText1308, piAt1308), []byte(`{"type":"agent_settled","aborted":false}`)},
+			[]string{"turn_end", "schedule_usage_limit@2026-07-14T11:06:14Z", "cancel_server_error"},
+		},
+		{
+			"a refused OAuth refresh cancels the server-error retry",
+			[][]byte{piAgentEndFailure(t, piTextOAuth, piAtOAuth), []byte(`{"type":"agent_settled","aborted":false}`)},
+			[]string{"turn_end", "cancel_server_error"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			clock := testutil.NewQuartzMock(t)
+			clock.Set(time.Date(2026, 10, 28, 2, 0, 0, 0, time.UTC)).MustWait(testutil.DeadlineContext(t))
+			sink := &agenttest.ControlSink{}
+			a := newPiAgentWithClock(agent.NewProviderServices(sink), clock)
+			handlePiOutput(a, providerkit.ParseLine([]byte(`{"type":"agent_start"}`)))
+			for _, frame := range tc.frames {
+				handlePiOutput(a, providerkit.ParseLine(frame))
+			}
+			assert.Equal(t, tc.want, providerkittest.TurnEndAndRetryOpNames(sink.Timeline()))
+			if sink.AutoScheduleCount() > 0 {
+				assert.JSONEq(t, string(tc.frames[0]), string(sink.LastAutoSchedule().SourcePayload), "the retry carries the final agent_end")
+			}
+		})
+	}
+}
+
+// A transport failure that ends a stopped turn is not retried.
+func TestPiTransportFailureAfterAStopIsNotRetryable(t *testing.T) {
+	t.Parallel()
+	webSocketError := piAgentEndFailure(t, "WebSocket error", piAtWebSocket)
+
+	t.Run("an interrupt that Pi accepted", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.ControlSink{}
+		rig := newPiTestRig(t, agent.NewProviderServices(sink))
+		rig.agent.HandleOutput([]byte(`{"type":"agent_start"}`))
+		require.NoError(t, rig.agent.Interrupt(agent.StopContext{}))
+		rig.agent.HandleOutput(webSocketError)
+		rig.agent.HandleOutput([]byte(`{"type":"agent_settled"}`))
+		require.Equal(t, []string{"turn_end", "cancel_server_error"}, providerkittest.TurnEndAndRetryOpNames(sink.Timeline()))
+		assert.Equal(t, providerkit.TurnEndedWithoutRetryableFailure, sink.LastAutoCancelReason())
+	})
+
+	t.Run("a settlement while the agent stops", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.ControlSink{}
+		a := newPiAgentWithSink(agent.NewProviderServices(sink))
+		a.HandleOutput([]byte(`{"type":"agent_start"}`))
+		a.HandleOutput(webSocketError)
+		a.NoteIntentionalStop()
+		a.HandleOutput([]byte(`{"type":"agent_settled"}`))
+		require.Equal(t, []string{"turn_end", "cancel_server_error"}, providerkittest.TurnEndAndRetryOpNames(sink.Timeline()))
+	})
+
+	t.Run("the settlement that the stop itself writes", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.ControlSink{}
+		a := newPiAgentWithSink(agent.NewProviderServices(sink))
+		a.HandleOutput([]byte(`{"type":"agent_start"}`))
+		a.HandleOutput(webSocketError)
+		a.NoteIntentionalStop()
+		a.settleHeldPiTurn(agent.MessageCompletionInterrupted)
+		require.Equal(t, []string{"turn_end", "cancel_server_error"}, providerkittest.TurnEndAndRetryOpNames(sink.Timeline()))
+	})
+
+	t.Run("an exit that nobody asked for still applies the held failure", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.ControlSink{}
+		a := newPiAgentWithSink(agent.NewProviderServices(sink))
+		a.HandleOutput([]byte(`{"type":"agent_start"}`))
+		a.HandleOutput(webSocketError)
+		a.settleHeldPiTurn(agent.MessageCompletionInterrupted)
+		assert.Equal(t, []string{"turn_end", "schedule_server_error"}, providerkittest.TurnEndAndRetryOpNames(sink.Timeline()))
+	})
 }

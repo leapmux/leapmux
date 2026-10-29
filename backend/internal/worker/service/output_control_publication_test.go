@@ -118,7 +118,7 @@ func TestControlPublicationFailureLogsReleaseTheMutationBeforeCallbacks(t *testi
 			case "cancellation state read", "cancellation delete":
 				sink.CancelControlRequest("original")
 			case "full clear delete":
-				svc.Output.ClearAgentRuntimeState(agentID)
+				svc.Output.ClearAgentRuntimeState(agentID, CleanupTabClosed)
 			case "blocking clear delete":
 				svc.Output.ClearPendingControlRequests(agentID)
 			case "stop instance delete":
@@ -993,7 +993,7 @@ func TestAgentTeardownDeletesEveryControlRequest(t *testing.T) {
 	}))
 	publishStopControl(t, sink, "approval")
 
-	svc.Output.ClearAgentRuntimeState("agent-1")
+	svc.Output.ClearAgentRuntimeState("agent-1", CleanupTabClosed)
 
 	_, err := svc.Queries.GetControlRequest(t.Context(), db.GetControlRequestParams{AgentID: "agent-1", RequestID: "question"})
 	assert.ErrorIs(t, err, sql.ErrNoRows, "the teardown leaves the Codex thread that asked")

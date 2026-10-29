@@ -2,7 +2,7 @@ import type { MockModelRequestRecord } from './mockModelScript'
 import type { NativeScenarioContext } from './nativeScenario'
 import { randomUUID } from 'node:crypto'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { exerciseModelError, failedTurnRequests, nativeErrorMarker } from './nativeModelError'
+import { exerciseModelError, exerciseTransientModelFailure, failedTurnRequests, nativeErrorMarker } from './nativeModelError'
 
 const errorRows = vi.hoisted(() => ({
   count: 1,
@@ -14,13 +14,23 @@ vi.mock('./ui', () => ({
   sendMessage: vi.fn(async () => {}),
   waitForAgentIdle: async () => { errorRows.events.push('idle') },
   resumeQueueAfterFailure: vi.fn(async () => {}),
+  resumePausedQueue: vi.fn(async () => { errorRows.events.push('resume') }),
   visibleOnly: (value: unknown) => value,
   messageContents: () => ({
     filter: () => ({ errorRows: true }),
   }),
 }))
 vi.mock('./nativeConversation', () => ({
-  sendNativeAnswer: vi.fn(async () => {}),
+  sendNativeAnswer: vi.fn(async () => {
+    errorRows.events.push('answer')
+  }),
+}))
+vi.mock('./autoRetry', () => ({
+  pauseQueueUnlessPaused: vi.fn(async () => {
+    errorRows.events.push('pause')
+    return true
+  }),
+  deleteAutoRetryRow: vi.fn(async (_page: unknown, kind: string) => { errorRows.events.push(`delete ${kind}`) }),
 }))
 vi.mock('@playwright/test', () => ({
   expect: (value: unknown) => value && typeof value === 'object' && 'errorRows' in value
@@ -71,7 +81,7 @@ describe('exerciseModelError', () => {
   it('requires exactly one error live and after a reload', async () => {
     await exerciseModelError(context(), { queueAfterFailure: 'paused' })
     expect(errorRows.checks).toEqual([1, 1])
-    expect(errorRows.events).toEqual(['idle', 'reload', 'idle'])
+    expect(errorRows.events).toEqual(['idle', 'reload', 'idle', 'answer'])
   })
 
   it.each(['live', 'stored'])('rejects duplicate errors in the %s transcript', async (phase) => {
@@ -80,6 +90,97 @@ describe('exerciseModelError', () => {
     else
       errorRows.afterReload = 2
     await expect(exerciseModelError(context(), { queueAfterFailure: 'paused' })).rejects.toThrow('expected 2 to be 1')
+  })
+})
+
+describe('exerciseTransientModelFailure', () => {
+  beforeEach(() => {
+    errorRows.events = []
+  })
+
+  function context(consumed: number[], queued: unknown[][]): NativeScenarioContext {
+    return {
+      page: {},
+      modelScript: {
+        queue: async (...steps: unknown[]) => {
+          queued.push(steps)
+          errorRows.events.push(`queue ${steps.length}`)
+          return 4
+        },
+        prompt: (text: string) => text,
+        waitForSteps: async (step: number) => {
+          errorRows.events.push(`wait ${step}`)
+          return {
+            requests: consumed.map(stepIndex => record({ stepIndex })),
+          }
+        },
+      },
+    } as unknown as NativeScenarioContext
+  }
+
+  it('scripts every attempt, pauses before the checks, and deletes the retry before the recovery', async () => {
+    const queued: unknown[][] = []
+    const error = { status: 503, message: 'Service Unavailable' }
+    const answered: unknown[] = []
+
+    const failed = await exerciseTransientModelFailure(context([4, 5, 6], queued), {
+      error,
+      attempts: 3,
+      answerFailure: async (failure) => {
+        answered.push(failure)
+        errorRows.events.push('answer failure')
+      },
+    })
+
+    expect(queued).toEqual([
+      [
+        { error },
+        { error },
+        { error },
+      ],
+    ])
+    expect(answered).toEqual([error])
+    expect(failed.map(request => request.stepIndex)).toEqual([4, 5, 6])
+    expect(errorRows.events).toEqual([
+      'queue 3',
+      'wait 7',
+      'pause',
+      'answer failure',
+      'idle',
+      'delete server error',
+      'resume',
+      'answer',
+    ])
+  })
+
+  it('deletes a retry of the kind that the caller states', async () => {
+    await exerciseTransientModelFailure(context([4], []), {
+      error: { status: 429, message: 'limit', retryAfterSeconds: 18000 },
+      attempts: 1,
+      retryKind: 'usage limit',
+    })
+    expect(errorRows.events).toContain('delete usage limit')
+  })
+
+  it('fails when the native client consumed fewer steps than the stated attempts', async () => {
+    // The step check compares the consumed steps with the stated attempts.
+    await expect(exerciseTransientModelFailure(context([4], []), {
+      error: { status: 503, message: 'x' },
+      attempts: 2,
+    }))
+      .rejects
+      .toThrow(/expected \[ 4 \] to deeply equal \[ 4, 5 \]/)
+    expect(errorRows.events).not.toContain('delete server error')
+  })
+
+  it.each([0, -1, 1.5])('refuses %s attempts before it sends anything', async (attempts) => {
+    await expect(exerciseTransientModelFailure(context([], []), {
+      error: { status: 503, message: 'x' },
+      attempts,
+    }))
+      .rejects
+      .toThrow('positive whole number of attempts')
+    expect(errorRows.events).toEqual([])
   })
 })
 

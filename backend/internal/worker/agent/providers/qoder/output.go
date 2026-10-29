@@ -434,9 +434,13 @@ func (a *Agent) handleAssistant(raw []byte) {
 
 // handleResult ends the turn and publishes the frame verbatim, with the
 // turn's tool count as worker metadata and the user's stop as its completion.
+// The turn's automatic-retry verdict follows the turn-end row. A /compact
+// turn never retries, whatever its result states.
 func (a *Agent) handleResult(raw []byte) {
 	a.mu.Lock()
 	clear(a.rootStreamKinds)
+	compaction := a.compactionTurn
+	a.compactionTurn = false
 	a.mu.Unlock()
 	a.sink.ReportProgress(agent.ResetModelProgress())
 	interrupted := a.takeInterruptRequest() && !qoderResultSucceeded(raw)
@@ -454,6 +458,11 @@ func (a *Agent) handleResult(raw []byte) {
 	if err := a.sink.PersistTurnEnd(content, agent.SpanInfo{}); err != nil {
 		slog.Error("Persist Qoder turn end", "agent_id", a.AgentID(), "error", err)
 	}
+	failure := providerkit.CompactionEnd()
+	if !compaction {
+		failure = qoderResultFailure(raw, interrupted, a.Clock().Now())
+	}
+	providerkit.ApplyTurnFailure(a.sink, failure, raw)
 	a.setTurnActive(false)
 	a.broadcastContextUsage(raw)
 	// A turn spends credits, so the account quota is read again.

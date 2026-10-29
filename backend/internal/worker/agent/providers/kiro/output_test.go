@@ -957,8 +957,6 @@ func TestKiroFailedPromptDivider(t *testing.T) {
 	notifications := sink.Notifications()
 	require.NotEmpty(t, notifications, "the error row lands")
 	assert.Equal(t, "Kiro Probe is experiencing high traffic.", notifications[0][contracts.NotificationFieldError])
-	rows := [1]agenttest.Message{}
-	_ = rows
 	messages := sink.Messages()
 	ended := false
 	for _, message := range messages {
@@ -990,4 +988,326 @@ func TestKiroAbortTextReachesNoTranscript(t *testing.T) {
 	a.FinishPromptRequestForTest(kiroTestSession, json.RawMessage(`{"stopReason":"end_turn"}`), nil)
 
 	assert.Empty(t, kiroAssembledTexts(t, sink), "the aborted execution's text reaches no transcript")
+}
+
+// The JSON-RPC errors that Kiro CLI 2.24.0 answered to a failed prompt
+// (R/cursor-kiro-grok.md and .tmp/probe/kiro/run-*.summary), verbatim.
+const (
+	kiroMonthlyLimitResponse    = `{"jsonrpc":"2.0","id":3,"error":{"code":-32000,"message":"You've reached your monthly usage limit. Please return next month to continue building. (Request ID: probe-request-1)","data":{"errorType":"UsageLimitReachedError","retryErrorType":"CLIENT_ERROR","requestId":"probe-request-1","actions":["upgradePlan"]}}}`
+	kiroDailyLimitResponse      = `{"jsonrpc":"2.0","id":3,"error":{"code":-32000,"message":"You've reached your daily usage limit. Please return tomorrow to continue building. (Request ID: probe-request-1)","data":{"errorType":"UsageLimitReachedError","retryErrorType":"CLIENT_ERROR","requestId":"probe-request-1","actions":["viewUsage"]}}}`
+	kiroOverageLimitResponse    = `{"jsonrpc":"2.0","id":3,"error":{"code":-32000,"message":"You've reached your overage limit. (Request ID: probe-request-1)","data":{"errorType":"OverageLimitReachedError","retryErrorType":"CLIENT_ERROR","requestId":"probe-request-1","actions":["viewUsage"]}}}`
+	kiroInternalServerResponse  = `{"jsonrpc":"2.0","id":3,"error":{"code":-32000,"message":"The model service returned a temporary error. Please try again. (Request ID: probe-request-3)","data":{"errorType":"InternalServerError","retryErrorType":"TRANSIENT","requestId":"probe-request-3"}}}`
+	kiroAccessDeniedResponse    = `{"jsonrpc":"2.0","id":3,"error":{"code":-32000,"message":"Access denied. Please check your authentication. (Request ID: probe-request-2)","data":{"errorType":"AccessDeniedError","retryErrorType":"CLIENT_ERROR","requestId":"probe-request-2"}}}`
+	kiroServiceThrottleResponse = `{"jsonrpc":"2.0","id":3,"error":{"code":-32000,"message":"Too many requests, please wait before trying again. (Request ID: probe-request-3)","data":{"errorType":"ServiceThrottleError","retryErrorType":"THROTTLING","requestId":"probe-request-3"}}}`
+	kiroModelThrottleResponse   = `{"jsonrpc":"2.0","id":3,"error":{"code":-32000,"message":"Kiro Probe is experiencing high traffic. Try again, or select another model. (Request ID: probe-request-3)","data":{"errorType":"ModelThrottleError","retryErrorType":"THROTTLING","requestId":"probe-request-3"}}}`
+)
+
+// kiroTranslatedResponse is a failure that no probe provoked, in the shape of
+// the probed errors, with the message and the classes that Kiro's error
+// translator states for errorType (.tmp/probe/kiro/errtranslator.js).
+func kiroTranslatedResponse(message, errorType, retryErrorType string) string {
+	data, _ := json.Marshal(map[string]any{
+		"code": -32000, "message": message + " (Request ID: probe-request-1)",
+		"data": map[string]any{"errorType": errorType, "retryErrorType": retryErrorType, "requestId": "probe-request-1"},
+	})
+	return `{"jsonrpc":"2.0","id":3,"error":` + string(data) + `}`
+}
+
+// kiroResponseError reads the error of one JSON-RPC response line, as the base
+// hands it to Hooks.PromptEnded.
+func kiroResponseError(t *testing.T, line string) *providerkit.JSONRPCResponseError {
+	t.Helper()
+	var response struct {
+		Error struct {
+			Code    int             `json:"code"`
+			Message string          `json:"message"`
+			Data    json.RawMessage `json:"data"`
+		} `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(line), &response))
+	return &providerkit.JSONRPCResponseError{Code: response.Error.Code, Message: response.Error.Message, Data: response.Error.Data}
+}
+
+// kiroResponseErrorObject returns the error member of one response line,
+// verbatim.
+func kiroResponseErrorObject(t *testing.T, line string) json.RawMessage {
+	t.Helper()
+	var response struct {
+		Error json.RawMessage `json:"error"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(line), &response))
+	return response.Error
+}
+
+func TestKiroTurnFailure(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		response   string
+		wantKind   providerkit.TurnFailureKind
+		wantWindow providerkit.UsageWindow
+	}{
+		{name: "the monthly usage limit states a window longer than a week", response: kiroMonthlyLimitResponse, wantKind: providerkit.TurnFailureUsageLimited, wantWindow: providerkit.UsageWindowLonger},
+		{name: "the daily usage limit states a window within a week", response: kiroDailyLimitResponse, wantKind: providerkit.TurnFailureUsageLimited, wantWindow: providerkit.UsageWindowWeekOrLess},
+		{
+			name:     "the hourly usage limit states a window within a week",
+			response: kiroTranslatedResponse("You've reached your hourly usage limit. Please return soon to continue building.", "UsageLimitReachedError", "CLIENT_ERROR"),
+			wantKind: providerkit.TurnFailureUsageLimited, wantWindow: providerkit.UsageWindowWeekOrLess,
+		},
+		{
+			name:     "the weekly usage limit states a window within a week",
+			response: kiroTranslatedResponse("You've reached your weekly usage limit. Please return next week to continue building.", "UsageLimitReachedError", "CLIENT_ERROR"),
+			wantKind: providerkit.TurnFailureUsageLimited, wantWindow: providerkit.UsageWindowWeekOrLess,
+		},
+		{
+			name:     "a usage limit of no named window states none",
+			response: kiroTranslatedResponse("You've reached your usage limit. Thanks for using Kiro - please return soon to continue building.", "UsageLimitReachedError", "CLIENT_ERROR"),
+			wantKind: providerkit.TurnFailureUsageLimited, wantWindow: providerkit.UsageWindowUnstated,
+		},
+		{name: "the overage limit states no window", response: kiroOverageLimitResponse, wantKind: providerkit.TurnFailureUsageLimited, wantWindow: providerkit.UsageWindowUnstated},
+		{name: "an internal server error is transient", response: kiroInternalServerResponse, wantKind: providerkit.TurnFailureTransient},
+		{name: "a throttled service is a rate limit", response: kiroServiceThrottleResponse, wantKind: providerkit.TurnFailureRateLimited},
+		{name: "a throttled model is a rate limit", response: kiroModelThrottleResponse, wantKind: providerkit.TurnFailureRateLimited},
+		{name: "a denied access is not retryable", response: kiroAccessDeniedResponse, wantKind: providerkit.TurnFailureNotRetryable},
+		{
+			name:     "a throttled client is a rate limit",
+			response: kiroTranslatedResponse("Too many requests, please wait before trying again.", "ClientThrottleError", "THROTTLING"),
+			wantKind: providerkit.TurnFailureRateLimited,
+		},
+		{
+			name:     "a reset connection is transient",
+			response: kiroTranslatedResponse("Your connection was interrupted. Please try again in a moment.", "ServerConnectionResetError", "TRANSIENT"),
+			wantKind: providerkit.TurnFailureTransient,
+		},
+		{
+			name:     "a server error class is transient",
+			response: kiroTranslatedResponse("The model service returned an error.", "ServiceUnavailableError", "SERVER_ERROR"),
+			wantKind: providerkit.TurnFailureTransient,
+		},
+		{
+			// Kiro labels it TRANSIENT, but only the proxy settings lift it.
+			name:     "a proxy that wants credentials is not retryable",
+			response: kiroTranslatedResponse("Your network proxy refused the connection because it requires authentication (HTTP 407). Check your proxy settings or contact your network administrator.", "ProxyAuthenticationRequiredError", "TRANSIENT"),
+			wantKind: providerkit.TurnFailureNotRetryable,
+		},
+		{
+			name:     "an unsupported account is a billing block",
+			response: kiroTranslatedResponse("This feature is not available for your account.", "AccountNotSupportedError", "CLIENT_ERROR"),
+			wantKind: providerkit.TurnFailureBillingBlocked,
+		},
+		{
+			name:     "paused access of a new user is a billing block",
+			response: kiroTranslatedResponse("Kiro access not available for this account.", "NewUserAccessPausedError", "CLIENT_ERROR"),
+			wantKind: providerkit.TurnFailureBillingBlocked,
+		},
+		{
+			name:     "a suspended account is a billing block",
+			response: kiroTranslatedResponse("Your account has been temporarily suspended.", "TemporarilySuspendedError", "CLIENT_ERROR"),
+			wantKind: providerkit.TurnFailureBillingBlocked,
+		},
+		{
+			name:     "an internal error with details only is not retryable",
+			response: `{"jsonrpc":"2.0","id":3,"error":{"code":-32603,"message":"Internal error","data":{"details":"Cannot read properties of undefined"}}}`,
+			wantKind: providerkit.TurnFailureNotRetryable,
+		},
+		{
+			name:     "an error with no data is not retryable",
+			response: `{"jsonrpc":"2.0","id":3,"error":{"code":-32000,"message":"Authentication required"}}`,
+			wantKind: providerkit.TurnFailureNotRetryable,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			failure, payload := kiroTurnFailure(kiroResponseError(t, tc.response), false)
+			assert.Equal(t, tc.wantKind, failure.Kind)
+			assert.Equal(t, tc.wantWindow, failure.Window)
+			assert.True(t, failure.ResetAt.IsZero(), "Kiro states no reset instant")
+			if failure.Kind != providerkit.TurnFailureNotRetryable {
+				assert.NotEmpty(t, failure.Cause)
+			}
+			assert.JSONEq(t, string(kiroResponseErrorObject(t, tc.response)), string(payload), "the payload is the wire's error")
+		})
+	}
+
+	notRetryable := providerkit.TurnFailure{Kind: providerkit.TurnFailureNotRetryable}
+	t.Run("a stop is not retryable", func(t *testing.T) {
+		t.Parallel()
+		failure, payload := kiroTurnFailure(kiroResponseError(t, kiroInternalServerResponse), true)
+		assert.Equal(t, notRetryable, failure)
+		assert.Nil(t, payload)
+	})
+	t.Run("a success is not retryable", func(t *testing.T) {
+		t.Parallel()
+		failure, payload := kiroTurnFailure(nil, false)
+		assert.Equal(t, notRetryable, failure)
+		assert.Nil(t, payload)
+	})
+	t.Run("a failure with no JSON-RPC error is not retryable", func(t *testing.T) {
+		t.Parallel()
+		failure, payload := kiroTurnFailure(fmt.Errorf("throttled"), false)
+		assert.Equal(t, notRetryable, failure)
+		assert.Nil(t, payload)
+	})
+	t.Run("a wrapped JSON-RPC error is read", func(t *testing.T) {
+		t.Parallel()
+		failure, _ := kiroTurnFailure(fmt.Errorf("session/prompt: %w", kiroResponseError(t, kiroInternalServerResponse)), false)
+		assert.Equal(t, providerkit.TurnFailureTransient, failure.Kind)
+	})
+}
+
+// newKiroRetryAgent builds a Kiro agent with its own hooks, whose transcript
+// is a recording sink that keeps the order of every row and retry operation.
+func newKiroRetryAgent(t *testing.T) (*Agent, *agenttest.Sink) {
+	t.Helper()
+	a, _, _ := newKiroAgent(t, agent.Options{}, nil)
+	sink := &agenttest.Sink{}
+	a.SetSinkForTest(agent.NewProviderServices(sink))
+	return a, sink
+}
+
+func kiroTimelineOps(timeline []agenttest.TimelineEntry) []string {
+	ops := make([]string, 0, len(timeline))
+	for _, entry := range timeline {
+		ops = append(ops, entry.Op)
+	}
+	return ops
+}
+
+// kiroProbedDisplayError is the display error that Kiro states before the
+// error of a failed prompt, with the message and the classes of that error, as
+// the probe recorded it (.tmp/probe/kiro/run-daily.summary).
+func kiroProbedDisplayError(t *testing.T, response string) []byte {
+	t.Helper()
+	rpcErr := kiroResponseError(t, response)
+	var data struct {
+		ErrorType      string `json:"errorType"`
+		RetryErrorType string `json:"retryErrorType"`
+	}
+	require.NoError(t, json.Unmarshal(rpcErr.Data, &data))
+	return infoUpdate(t, map[string]any{
+		"displayError": map[string]any{"message": rpcErr.Message, "errorType": data.ErrorType, "retryErrorType": data.RetryErrorType},
+		"kind":         kiroKindDisplayError, "message": rpcErr.Message, "errorType": data.ErrorType, "retryErrorType": data.RetryErrorType,
+	})
+}
+
+// failKiroPrompt plays a failed prompt in the probed order: the turn starts,
+// Kiro states the display error, the turn ends with the stop reason error,
+// and the prompt answers response.
+func failKiroPrompt(t *testing.T, a *Agent, display []byte, response string) {
+	t.Helper()
+	a.SetPromptActiveForTest(true)
+	a.HandleOutput(turnStart(t))
+	a.HandleOutput(display)
+	a.HandleOutput(turnEnd(t, kiroStopError))
+	a.FinishPromptRequestForTest(kiroTestSession, nil, kiroResponseError(t, response))
+}
+
+// The held display error states the same text as the prompt's error, so the
+// reader reads the reason once. The native error turn end is the divider, and
+// the verdict follows the divider.
+func TestKiroFailedPromptStatesItsReasonOnceAndAppliesTheVerdict(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name     string
+		response string
+		wantOps  []string
+	}{
+		{name: "a daily limit schedules a server-error retry", response: kiroDailyLimitResponse, wantOps: []string{"leapmux_notification", "turn_end", "schedule_server_error"}},
+		{
+			name:     "an hourly limit schedules a server-error retry",
+			response: kiroTranslatedResponse("You've reached your hourly usage limit. Please return soon to continue building.", "UsageLimitReachedError", "CLIENT_ERROR"),
+			wantOps:  []string{"leapmux_notification", "turn_end", "schedule_server_error"},
+		},
+		{name: "a throttled service schedules a server-error retry", response: kiroServiceThrottleResponse, wantOps: []string{"leapmux_notification", "turn_end", "schedule_server_error"}},
+		{name: "an internal server error schedules a server-error retry", response: kiroInternalServerResponse, wantOps: []string{"leapmux_notification", "turn_end", "schedule_server_error"}},
+		{name: "a denied access cancels the server-error retry", response: kiroAccessDeniedResponse, wantOps: []string{"leapmux_notification", "turn_end", "cancel_server_error"}},
+		{
+			name:     "a proxy that wants credentials cancels the server-error retry",
+			response: kiroTranslatedResponse("Your network proxy refused the connection because it requires authentication (HTTP 407). Check your proxy settings or contact your network administrator.", "ProxyAuthenticationRequiredError", "TRANSIENT"),
+			wantOps:  []string{"leapmux_notification", "turn_end", "cancel_server_error"},
+		},
+		{
+			name:     "a suspended account cancels both retries",
+			response: kiroTranslatedResponse("Your account has been temporarily suspended.", "TemporarilySuspendedError", "CLIENT_ERROR"),
+			wantOps:  []string{"leapmux_notification", "turn_end", "cancel_usage_limit", "cancel_server_error"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a, sink := newKiroRetryAgent(t)
+
+			failKiroPrompt(t, a, kiroProbedDisplayError(t, tc.response), tc.response)
+
+			require.Equal(t, tc.wantOps, kiroTimelineOps(sink.Timeline()))
+			rpcErr := kiroResponseError(t, tc.response)
+			assert.Equal(t, []string{"prompt failed: " + rpcErr.Error()}, agenttest.AgentErrorTexts(sink.LeapMuxNotifications()),
+				"the prompt's own error states the display error's text, so the reader reads it once")
+			messages := sink.Messages()
+			require.NotEmpty(t, messages)
+			divider := messages[len(messages)-1]
+			assert.True(t, divider.TurnEnd, "the failed prompt ends with a divider")
+			nativeEnd, err := json.Marshal(turnEndObject(kiroStopError))
+			require.NoError(t, err)
+			assert.JSONEq(t, string(nativeEnd), string(divider.Content), "the native error turn end is the divider")
+			if tc.wantOps[len(tc.wantOps)-1] == "schedule_server_error" {
+				assert.JSONEq(t, string(kiroResponseErrorObject(t, tc.response)), string(sink.LastAutoSchedule().SourcePayload))
+			}
+		})
+	}
+}
+
+// The monthly limit lifts only next month, so the turn schedules no retry of
+// either kind. Its one call ends the backoff of a server-error retry.
+func TestKiroMonthlyLimitSchedulesNoRetry(t *testing.T) {
+	t.Parallel()
+	a, sink := newKiroRetryAgent(t)
+
+	failKiroPrompt(t, a, kiroProbedDisplayError(t, kiroMonthlyLimitResponse), kiroMonthlyLimitResponse)
+
+	timeline := sink.Timeline()
+	require.Equal(t, []string{"leapmux_notification", "turn_end", "cancel_server_error"}, kiroTimelineOps(timeline))
+	assert.Equal(t, "the turn ended on a usage limit that states no reset within a week", timeline[2].Reason)
+	assert.Zero(t, sink.AutoScheduleCount())
+}
+
+// A display error of another text stays the only record of its reason, the
+// native error turn end is the divider, and the verdict follows the divider.
+func TestKiroFailedPromptWithAnotherDisplayErrorAppliesTheVerdictAfterTheDivider(t *testing.T) {
+	t.Parallel()
+	a, sink := newKiroRetryAgent(t)
+
+	failKiroPrompt(t, a, displayError(t, "MCP server weather failed to connect."), kiroInternalServerResponse)
+
+	require.Equal(t, []string{"leapmux_notification", "leapmux_notification", "turn_end", "schedule_server_error"}, kiroTimelineOps(sink.Timeline()))
+	assert.Equal(t, []string{"MCP server weather failed to connect.", "prompt failed: " + kiroResponseError(t, kiroInternalServerResponse).Error()},
+		agenttest.AgentErrorTexts(sink.LeapMuxNotifications()))
+}
+
+// A stopped prompt states its held display error, and cancels the
+// server-error retry.
+func TestKiroStoppedPromptCancelsTheServerErrorRetry(t *testing.T) {
+	t.Parallel()
+	a, sink := newKiroRetryAgent(t)
+	a.SetPromptActiveForTest(true)
+	a.HandleOutput(kiroProbedDisplayError(t, kiroInternalServerResponse))
+	a.NoteInterruptRequestedForTest()
+
+	a.FinishPromptRequestForTest(kiroTestSession, nil, kiroResponseError(t, kiroInternalServerResponse))
+
+	require.Equal(t, []string{"leapmux_notification", "cancel_server_error"}, kiroTimelineOps(sink.Timeline()))
+	assert.Equal(t, providerkit.TurnEndedWithoutRetryableFailure, sink.LastAutoCancelReason())
+}
+
+// A turn that Kiro started by itself ends at its own turn_end marker, and the
+// default verdict cancels the server-error retry after that row.
+func TestKiroAgentTurnEndCancelsTheServerErrorRetry(t *testing.T) {
+	t.Parallel()
+	a, sink := newKiroRetryAgent(t)
+	a.HandleOutput(turnStart(t))
+	require.True(t, a.AgentTurnActive())
+
+	a.HandleOutput(turnEnd(t, kiroStopError))
+
+	require.Equal(t, []string{"turn_end", "cancel_server_error"}, kiroTimelineOps(sink.Timeline()))
+	assert.Equal(t, providerkit.TurnEndedWithoutRetryableFailure, sink.LastAutoCancelReason())
 }

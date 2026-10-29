@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { exerciseModelError } from '../helpers/nativeModelError'
+import { exerciseModelError, exerciseTransientModelFailure } from '../helpers/nativeModelError'
 import { reasonixTest } from '../reasonix-fixtures'
 
 reasonixTest('shows the native model failure and accepts a later valid prompt', async ({ native }) => {
@@ -14,5 +14,21 @@ reasonixTest('shows the native model failure and accepts a later valid prompt', 
     queueAfterFailure: 'running',
     attempts: 2,
     error: { status: 400, code: 'invalid_request_error', message },
+  })
+})
+
+reasonixTest('schedules LeapMux\'s own server-error retry after the native client gives up', async ({ native }) => {
+  // Reasonix 2.53.1 sends a request whose stream ends after a partial answer,
+  // with no completion, six times in about 18 s. It then fails the prompt with
+  // "stream ended before completion". It sends a 5xx again every 15 s or so for
+  // minutes, which exceeds the test budget, so this case cuts the stream instead.
+  await exerciseTransientModelFailure(native, {
+    error: {
+      status: 500,
+      code: 'server_error',
+      message: 'The stream ended before its completion.',
+      midStream: 'truncate',
+    },
+    attempts: 6,
   })
 })

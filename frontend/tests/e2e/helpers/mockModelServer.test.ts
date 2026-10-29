@@ -641,6 +641,39 @@ describe('createMockModelServer', () => {
       })
   })
 
+  it('sends the retry-after header of an error that states one', async () => {
+    const server = await startServer()
+    await registerScenario(server, 'error-retry-after', {
+      steps: [
+        {
+          error: {
+            status: 429,
+            code: 'rate_limit_exceeded',
+            message: 'The quota ended.',
+            retryAfterSeconds: 18000,
+          },
+        },
+      ],
+    })
+    const response = await chat(server, mockScenarioPrompt('error-retry-after', 'Report this error.'), false)
+    expect(response.status).toBe(429)
+    expect(response.headers.get('retry-after')).toBe('18000')
+  })
+
+  it('sends no retry-after header for an error that states none', async () => {
+    const server = await startServer()
+    await registerScenario(server, 'error-no-retry-after', {
+      steps: [
+        {
+          error: { status: 429, message: 'The quota ended.' },
+        },
+      ],
+    })
+    const response = await chat(server, mockScenarioPrompt('error-no-retry-after', 'Report this error.'), false)
+    expect(response.status).toBe(429)
+    expect(response.headers.get('retry-after')).toBeNull()
+  })
+
   it('fails a chat completion stream after one partial delta when the error is mid-stream', async () => {
     const server = await startServer()
     await registerScenario(server, 'mid-stream-error', {

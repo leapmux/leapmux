@@ -5,8 +5,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math"
+	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -18,6 +20,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/modelvendor"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/util/pathutil"
 )
@@ -57,7 +60,11 @@ const (
 	// claudeModelFallbackScopeLocal is the `scope` of a `model_refusal_fallback`
 	// frame whose fallback model serves one response only. Only the Worker
 	// reads it, so it is not in the contract.
-	claudeModelFallbackScopeLocal   = "local"
+	claudeModelFallbackScopeLocal = "local"
+
+	// claudeLocalCommandCompact is the name of Claude Code's compaction
+	// command. The reader types it as `/compact`, and the CLI reports its run
+	// as `local_command_run.command`.
 	claudeLocalCommandCompact       = "compact"
 	claudeLocalCommandOutcomeFailed = "failed"
 )
@@ -396,6 +403,14 @@ type messageEnvelope struct {
 	// `result`. Claude Code 2.1.289 writes it on every `result` of a turn. A frame
 	// from a build that does not write it leaves the field empty.
 	TerminalReason string `json:"terminal_reason"`
+	// APIErrorStatus is the HTTP status of the API error that ended the turn,
+	// on a `result`. A failure with no HTTP response (a lost connection) and a
+	// turn that did not fail write null, which reads as 0.
+	APIErrorStatus int `json:"api_error_status"`
+	// APIError is the CLI's own code for the API error that ended the turn, on
+	// a `result`, such as `usage_limit_reached`. Claude Code writes it from
+	// 2.1.302. A frame from an older build leaves the field empty.
+	APIError string `json:"api_error"`
 
 	// contentBlocks is lazily populated from RawContent.
 	contentBlocks []contentBlock
@@ -409,6 +424,15 @@ const (
 	claudeTerminalReasonAbortedStreaming = "aborted_streaming"
 	claudeTerminalReasonAbortedTools     = "aborted_tools"
 )
+
+// claudeTerminalReasonBlockingLimit is the `terminal_reason` of a turn that the CLI
+// ended at its blocking limit, for example when an automatic compaction failed at the
+// context limit. It states no rate limit.
+const claudeTerminalReasonBlockingLimit = "blocking_limit"
+
+// claudeAPIErrorUsageLimitReached is the `api_error` of a `result` that a plan usage
+// limit ended ("You've hit your session limit · resets 5:10am (Asia/Seoul)").
+const claudeAPIErrorUsageLimitReached = "usage_limit_reached"
 
 // statesAbortedTurn reports whether a `result` states that the stop took effect, so
 // the turn ended in an abort. A turn that ended some other way before the CLI read the
@@ -824,6 +848,8 @@ func (a *Agent) handlePersistableMessage(content []byte, msgType string) {
 	}
 
 	messageContent := agent.MessageContent{Original: content}
+	// turnSignals holds what this turn observed for the retry verdict of its `result`.
+	var turnSignals claudeTurnSignals
 	if msgType == claudeMsgTypeResult {
 		messageContent = a.MessageWithToolUses(content)
 		a.Mu.Lock()
@@ -832,8 +858,12 @@ func (a *Agent) handlePersistableMessage(content []byte, msgType string) {
 		// One `result` ends one turn, so it spends the note whatever it states. The
 		// note marks the turn end only when the frame also states that the stop took
 		// effect: a turn that ended before the CLI read the stop keeps its outcome.
-		stopRequested := a.takeInterruptRequest()
-		if stopRequested && env.statesAbortedTurn() {
+		turnSignals = claudeTurnSignals{
+			compaction:        a.takeTurnCompaction(),
+			stopRequested:     a.takeInterruptRequest(),
+			rateLimitRejected: a.takeTurnRateLimitRejected(),
+		}
+		if turnSignals.stopRequested && env.statesAbortedTurn() {
 			messageContent.Completion = agent.MessageCompletionInterrupted
 		}
 	}
@@ -877,7 +907,8 @@ func (a *Agent) handlePersistableMessage(content []byte, msgType string) {
 		// The root result ends this response. Native session state can keep the turn active for a queued steer.
 		// A build that forwards a child result routes it above, so that result cannot change the root turn.
 		// PersistTurnEnd already recorded the tool-call count. Interrupted and failed responses use this path also.
-		providerkit.ScheduleOrCancelServerErrorAutoRetry(a.sink, env.IsError && isRetryableClaudeResultError(env.Result), content)
+		// The verdict runs after the turn-end row and before the turn releases the input queue.
+		providerkit.ApplyTurnFailure(a.sink, claudeTurnFailure(&env, turnSignals, a.Clock().Now()), content)
 
 		// Reset all span tracking so the next turn starts clean.
 		a.sink.ResetSpans()
@@ -1537,8 +1568,13 @@ func (a *Agent) claudeCodeHandleRateLimitEvent(content []byte) {
 	usingOverage := rlInfo.IsUsingOverage != nil && *rlInfo.IsUsingOverage
 	blocked, resumeAt := claudeRateLimitResume(
 		rlInfo.Status, rlInfo.ResetsAt, usingOverage, rlInfo.OverageStatus, rlInfo.OverageResetsAt)
+	// The latest event states the block, so an event that allows the request
+	// clears the mark that an earlier rejected event of the turn set.
+	a.Mu.Lock()
+	a.turnRateLimitRejected = blocked
+	a.Mu.Unlock()
 	if !blocked {
-		a.sink.CancelUsageLimitRetry()
+		a.sink.CancelUsageLimitRetry(claudeRateLimitLiftedReason(rlInfo.RateLimitType, rlInfo.Status, usingOverage, rlInfo.OverageStatus))
 		return
 	}
 	// Blocked, but a resume can only be scheduled if the event says when the
@@ -1577,6 +1613,17 @@ func claudeRateLimitResume(status string, resetsAt *int64, usingOverage bool, ov
 		return true, resetsAt
 	}
 	return false, nil
+}
+
+// claudeRateLimitLiftedReason states, for the log, which rate_limit_event
+// cancelled the usage-limit retry. It names the status that claudeRateLimitResume
+// read: the overage status while the overage allowance serves the requests,
+// and the window's own status otherwise.
+func claudeRateLimitLiftedReason(rateLimitType, status string, usingOverage bool, overageStatus string) string {
+	if usingOverage {
+		return fmt.Sprintf("Claude reported overage status %q for the %s usage limit", overageStatus, rateLimitType)
+	}
+	return fmt.Sprintf("Claude reported status %q for the %s usage limit", status, rateLimitType)
 }
 
 // extractAndBroadcastUsage extracts token usage from assistant/result messages.
@@ -1791,26 +1838,138 @@ func claudeIsConsolidatable(content []byte) bool {
 var claudeSyntheticAPI5xxPattern = regexp.MustCompile(`(?i)^API Error[^[:alnum:]]+5[0-9]{2}(?:$|[^[:alnum:]].*)`)
 var claudeRetryableIdleTimeoutPattern = regexp.MustCompile(`(?i)^API Error[^[:alnum:]]+Stream idle timeout(?:$|[^[:alnum:]].*)`)
 
-// claudeRetryableOverloadedPattern matches the bare "Overloaded" result string.
-// An overload is Anthropic HTTP 529 -- the most retryable error there is -- but
-// Claude Code emits it in two forms: "API Error: 529 Overloaded" (with the
-// numeric code, already caught by claudeSyntheticAPI5xxPattern) and a bare
-// "API Error: Overloaded" with no code, which the 5xx pattern cannot match
-// because it requires a three-digit code right after the punctuation. This
-// pattern covers the code-less form so both spellings schedule a retry.
-var claudeRetryableOverloadedPattern = regexp.MustCompile(`(?i)^API Error[^[:alnum:]]+Overloaded(?:$|[^[:alnum:]].*)`)
+// claudeRetryableOverloadedPattern matches the overload texts that
+// claudeSyntheticAPI5xxPattern misses. An overload is Anthropic HTTP 529 -- the
+// most retryable error there is -- and Claude Code writes it in three forms:
+//
+//   - "API Error: 529 Overloaded", which claudeSyntheticAPI5xxPattern matches.
+//   - "API Error: Overloaded", with no code. The 5xx pattern cannot match it,
+//     because that pattern requires a three-digit code right after the
+//     punctuation.
+//   - "API Error: Repeated 529 Overloaded errors. The API is at capacity ...",
+//     which Claude Code 2.1.310 writes when it gives up after several 529s.
+var claudeRetryableOverloadedPattern = regexp.MustCompile(`(?i)^API Error[^[:alnum:]]+(?:Repeated 529 )?Overloaded(?:$|[^[:alnum:]].*)`)
 
-// isRetryableClaudeResultError reports whether a Claude result error should
-// schedule an automatic retry. Matching is case-insensitive (each pattern carries the
-// (?i) flag): the result field is an unstructured, human-readable error string,
-// not a structured code, so a cosmetic casing change must not silently regress
-// the retry -- that over-strictness is exactly what left the bare "Overloaded"
-// form unmatched before. False positives stay implausible regardless of casing
-// because every pattern is anchored to the "API Error" prefix Claude Code emits.
-func isRetryableClaudeResultError(s string) bool {
-	return claudeSyntheticAPI5xxPattern.MatchString(s) ||
-		claudeRetryableIdleTimeoutPattern.MatchString(s) ||
-		claudeRetryableOverloadedPattern.MatchString(s)
+// claudeRetryableTransportPattern matches a refused or lost connection, a
+// request that timed out, and a response stream that broke off. Claude Code
+// writes these with `error: server_error` and no HTTP status: they are failures
+// of the client's network or of the stream, not an HTTP 5xx. The alternatives
+// are the wordings of Claude Code 2.1.310. "Unable to connect to API" matches
+// only when no colon follows it, because the colon form states a TLS
+// certificate problem, which a retry does not fix.
+var claudeRetryableTransportPattern = regexp.MustCompile(`(?i)^API Error[^[:alnum:]]+(?:` + strings.Join([]string{
+	`Connection refused`,
+	`Connection dropped`,
+	`Connection to the API was lost`,
+	`Connection lost (?:mid-response|before a response was produced)`,
+	`Can['’]t reach the API server`,
+	`No internet route`,
+	`Unable to connect to API(?:$|[^:[:alnum:]])`,
+	`Request timed out`,
+	`Server error mid-response`,
+	`The response stopped arriving`,
+	`The response stalled before a response was produced`,
+	`Part of the response never arrived`,
+	`The response stream was malformed`,
+	`Your computer went to sleep (?:mid-response|before a response was produced)`,
+}, "|") + `)`)
+
+// claudeTransientResultPatterns match the `result` text of a failure that a
+// retry can fix. Every pattern is anchored to the "API Error" prefix that Claude
+// Code writes, so a false match stays implausible. Each pattern is
+// case-insensitive: the text is human-readable, not a structured code, so a
+// cosmetic change of case must not drop the retry. That strictness once left the
+// bare "Overloaded" form unmatched.
+var claudeTransientResultPatterns = []*regexp.Regexp{
+	claudeSyntheticAPI5xxPattern,
+	claudeRetryableIdleTimeoutPattern,
+	claudeRetryableOverloadedPattern,
+	claudeRetryableTransportPattern,
+}
+
+// claudeTurnSignals holds what the agent observed during the turn that a
+// `result` ends, beside the frame itself.
+type claudeTurnSignals struct {
+	// compaction records that the reader's `/compact` started the turn.
+	compaction bool
+	// stopRequested records that the user asked to stop the turn.
+	stopRequested bool
+	// rateLimitRejected records that the latest rate_limit_event of the turn
+	// rejected the request.
+	rateLimitRejected bool
+}
+
+// claudeAPIErrorPrefix opens the text of a `result` that relays an API error.
+// Claude Code writes the error's body after it.
+const claudeAPIErrorPrefix = "API Error"
+
+// claudeTurnFailure classifies the `result` that ends a root turn. observedAt
+// bounds a reset instant that the text states. The stages run in this order, and
+// the first that decides wins:
+//
+//  1. A compaction turn ends on the compaction verdict, whatever its outcome.
+//     A retry would resume the task that the turn before the compaction left.
+//  2. A turn that the user stopped, or that the CLI states it aborted, is not
+//     retried. This holds also for a turn that failed before the CLI read the
+//     stop: a retry would run the work that the user asked to stop.
+//  3. A `result` that states no failure (`is_error: false`) is not retried,
+//     whatever its text says. The model can end a turn on a quoted error.
+//  4. A definitive vendor verdict: a billing block, or a usage limit that states
+//     its reset. Claude Code puts the body of the API error in its text, after
+//     "API Error", and a third-party endpoint, such as Z.AI for GLM, states its
+//     own limits there. A text without that prefix is Claude Code's own, and the
+//     vendor parser does not read it.
+//  5. Claude Code's own wordings of a transient failure.
+//  6. A plan usage limit is not retried here, because the rate_limit_event of
+//     the turn owns its usage-limit retry. `api_error: usage_limit_reached`
+//     states the limit from CLI 2.1.302, and a rejected event states it for an
+//     older CLI.
+//  7. An indicative vendor verdict.
+//  8. A 429 that no earlier stage explains is a rate limit that outlasted the
+//     CLI's own retries, so it schedules a server-error retry. The blocking
+//     limit is not a rate limit, whatever its status.
+func claudeTurnFailure(env *messageEnvelope, signals claudeTurnSignals, observedAt time.Time) providerkit.TurnFailure {
+	if signals.compaction {
+		return providerkit.CompactionEnd()
+	}
+	notRetryable := providerkit.TurnFailure{Kind: providerkit.TurnFailureNotRetryable}
+	// statesAbortedTurn is not used here: for a frame without a reason it reads
+	// every failure as an abort.
+	if signals.stopRequested ||
+		env.TerminalReason == claudeTerminalReasonAbortedStreaming ||
+		env.TerminalReason == claudeTerminalReasonAbortedTools {
+		return notRetryable
+	}
+	if !env.IsError {
+		return notRetryable
+	}
+	// Claude Code puts the body of an API error after "API Error". Its own
+	// usage-limit texts, such as "You're out of extra usage", read as billing
+	// to the vendor parser although the limit lifts at the reset that the
+	// rate_limit_event states, so only an API error reaches the parser.
+	var vendor modelvendor.Verdict
+	vendorMatched := false
+	if strings.HasPrefix(env.Result, claudeAPIErrorPrefix) {
+		vendor, vendorMatched = modelvendor.ClassifyError(env.Result, observedAt)
+	}
+	if vendorMatched && vendor.Definitive {
+		return vendor.Failure
+	}
+	for _, pattern := range claudeTransientResultPatterns {
+		if pattern.MatchString(env.Result) {
+			return providerkit.TurnFailure{Kind: providerkit.TurnFailureTransient, Cause: "Claude Code reported a transient API failure"}
+		}
+	}
+	if env.APIError == claudeAPIErrorUsageLimitReached || signals.rateLimitRejected {
+		return notRetryable
+	}
+	if vendorMatched {
+		return vendor.Failure
+	}
+	if env.APIErrorStatus == http.StatusTooManyRequests && env.TerminalReason != claudeTerminalReasonBlockingLimit {
+		return providerkit.TurnFailure{Kind: providerkit.TurnFailureRateLimited, Cause: "Claude Code reported HTTP 429 after its own retries"}
+	}
+	return notRetryable
 }
 
 // isSimpleUserTextEcho returns true if the NDJSON line is a user message echo

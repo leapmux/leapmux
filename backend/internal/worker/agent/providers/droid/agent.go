@@ -45,6 +45,18 @@ type Agent struct {
 	compaction *droidCompaction
 	settings   droidSettings
 	catalog    droidCatalog
+	// interruptRequested records that the user stopped the running main turn,
+	// so the failure that ends it does not retry. Interrupt sets it, and the
+	// next main turn start clears it.
+	interruptRequested bool
+	// pendingTurnError holds what the error notification of the running main
+	// turn stated, from that notification until the turn's
+	// agent_turn_completed reads it for the retry verdict. The idle working
+	// state that follows the completion drops a record that no completion
+	// read. The notification ends the turn flag at once, so a queued prompt
+	// can start the next turn before the completion arrives. The record
+	// therefore keeps the facts of the failed turn apart from the new turn's.
+	pendingTurnError *droidTurnError
 	// controls holds every permission and question LeapMux published and
 	// nothing resolved yet.
 	controls     map[string]*droidPendingControl
@@ -322,8 +334,18 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 	return nil
 }
 
+// agentClock returns the agent's clock. An agent that a test builds without
+// one reads the real clock.
+func (a *Agent) agentClock() quartz.Clock {
+	if a.clock == nil {
+		return quartz.NewReal()
+	}
+	return a.clock
+}
+
 // startTurn marks a turn active and publishes the flag. A repeat of the current
 // state publishes nothing, so a frame that is not a turn signal moves nothing.
+// A turn that starts clears the stop of the turn before it.
 func (a *Agent) startTurn() {
 	a.Mu.Lock()
 	if a.turnActive {
@@ -331,6 +353,7 @@ func (a *Agent) startTurn() {
 		return
 	}
 	a.turnActive = true
+	a.interruptRequested = false
 	seq := a.NextTurnSeq()
 	steerable := a.compaction == nil
 	a.Mu.Unlock()
@@ -369,6 +392,11 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 	a.Mu.Lock()
 	sessionID := a.sessionID
 	active := a.turnActive
+	if active && sessionID != "" {
+		// The note is set before the request, so a failure that wins the race
+		// against the interrupt still reads it.
+		a.interruptRequested = true
+	}
 	a.Mu.Unlock()
 	if !active || sessionID == "" {
 		return nil

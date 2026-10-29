@@ -180,6 +180,7 @@ type Agent struct {
 	// state.updated result ends it, so the input queue stays busy meanwhile.
 	compactionSessionID    string
 	compactionGeneration   uint64
+	compactionRetry        *zcodeCompactionRetry
 	codingPlanEntitlements map[string]zcodeAccountEntitlement
 	compactionLive         bool
 	// turns holds the owner record of every turn the session runs, keyed by the
@@ -303,6 +304,8 @@ type zcodeTurnState struct {
 	// reply, a todo reminder. Such a turn must not end the user's turn or reset
 	// its state.
 	background bool
+	// compacting identifies this owner as a manual compaction.
+	compacting bool
 	// foregroundExecutionID is the turn.started foregroundExecutionId, recorded
 	// for background turns too: a runtime turn states the user execution it
 	// belongs to.
@@ -363,9 +366,10 @@ type zcodeAcceptedModelResponse struct {
 }
 
 type zcodeInputAdmission struct {
-	epoch     uint64
-	sessionID string
-	owner     *zcodeTurnState
+	compacting bool
+	epoch      uint64
+	sessionID  string
+	owner      *zcodeTurnState
 }
 
 var _ agent.Agent = (*Agent)(nil)
@@ -391,6 +395,7 @@ func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) e
 // CompactContext starts ZCode's native asynchronous context summary.
 // The state.updated completion closes the queue turn after this RPC accepts it.
 func (a *Agent) CompactContext() error {
+	retryWriter := a.sink.CaptureAutoRetry()
 	a.Mu.Lock()
 	if a.StoppedLocked() {
 		a.Mu.Unlock()
@@ -408,6 +413,7 @@ func (a *Agent) CompactContext() error {
 	a.compactionSessionID = sessionID
 	a.compactionGeneration++
 	generation := a.compactionGeneration
+	a.compactionRetry = &zcodeCompactionRetry{generation: generation, apply: func() { providerkit.ApplyTurnFailure(retryWriter, providerkit.CompactionEnd(), nil) }}
 	a.Mu.Unlock()
 	a.PublishTurnActive()
 
@@ -455,17 +461,37 @@ func (a *Agent) finishZCodeCompactionGeneration(sessionID string, generation uin
 		return
 	}
 	pending := a.compactionSessionID != "" && (sessionID == "" || a.compactionSessionID == sessionID)
+	var apply func()
 	if pending {
 		a.compactionSessionID = ""
 		if !a.turnActive {
 			a.cancelStoppedZCodeTurnLocked()
 		}
+		if retry := a.compactionRetry; retry != nil && retry.generation == a.compactionGeneration && (retry.owner == nil || retry.turnEnded) {
+			apply = retry.apply
+			a.compactionRetry = nil
+		}
 	}
 	a.Mu.Unlock()
 	a.endZCodeCompaction()
+	if apply != nil {
+		apply()
+	}
 	if pending {
 		a.PublishTurnActive()
 	}
+}
+
+// zcodeCompactSlashCommand identifies ZCode's native context compaction command.
+const zcodeCompactSlashCommand = "compact"
+
+// zcodeRunsCompaction requires a slash command without attachments.
+func zcodeRunsCompaction(content string, attachments []*leapmuxv1.Attachment) bool {
+	if len(attachments) > 0 {
+		return false
+	}
+	name, _, ok := providerkit.SlashCommand(content)
+	return ok && name == zcodeCompactSlashCommand
 }
 
 // ZCode's installed app-server refuses session/send while a prompt runs.
@@ -528,7 +554,7 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 	if a.inputAdmissions == nil {
 		a.inputAdmissions = make(map[string]*zcodeInputAdmission)
 	}
-	admission := &zcodeInputAdmission{sessionID: sessionID, epoch: identity.epoch}
+	admission := &zcodeInputAdmission{sessionID: sessionID, epoch: identity.epoch, compacting: zcodeRunsCompaction(content, attachments)}
 	a.inputAdmissions[inputID] = admission
 	a.Mu.Unlock()
 	defer func() {
@@ -653,6 +679,7 @@ func (a *Agent) createProvisionalZCodeTurnForSession(identity zcodeSessionObserv
 	})
 	if admission := a.inputAdmissions[inputID]; admission != nil && admission.sessionID == expectedSessionID {
 		admission.owner = turn
+		turn.compacting = admission.compacting
 	}
 	a.Mu.Unlock()
 	a.PublishTurnActive()

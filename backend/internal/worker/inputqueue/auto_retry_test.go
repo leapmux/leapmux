@@ -26,7 +26,7 @@ import (
 
 func scheduleRetry(t *testing.T, store *Store, kind leapmuxv1.AgentInputKind, at time.Time, payload []byte) Snapshot {
 	t.Helper()
-	snapshot, err := store.scheduleAutoRetry(t.Context(), "agent-1", agent.AutoRetrySchedule{
+	snapshot, _, err := store.scheduleAutoRetry(t.Context(), "agent-1", agent.AutoRetrySchedule{
 		Kind: kind, ResetAt: at, SourcePayload: payload,
 	})
 	require.NoError(t, err)
@@ -196,15 +196,55 @@ func TestAutoRetryBothKindsCoexistAndCancelRemovesOnlyItsKind(t *testing.T) {
 	assert.Equal(t, server, snapshot.Items[0].Kind)
 	assert.Equal(t, usage, snapshot.Items[1].Kind)
 
-	snapshot, changed, err := store.cancelAutoRetries(t.Context(), "agent-1", usage)
+	snapshot, removed, err := store.cancelAutoRetries(t.Context(), "agent-1", usage)
 	require.NoError(t, err)
-	assert.True(t, changed)
+	require.Len(t, removed, 1, "the cancellation reports the one row it removed")
+	assert.Equal(t, usage, removed[0].kind)
 	require.Len(t, snapshot.Items, 1)
 	assert.Equal(t, server, snapshot.Items[0].Kind)
 	usageID, _ := storedRetryRow(t, database, usage)
 	assert.Empty(t, usageID)
 	serverID, _ := storedRetryRow(t, database, server)
 	assert.NotEmpty(t, serverID)
+}
+
+// The cancellation reports each row that it removed as the row was stored, in
+// order_index order. It reports neither a FAILED retry nor an ordinary input,
+// because it removes neither.
+func TestAutoRetryCancelReportsEachRemovedRowInOrderIndexOrder(t *testing.T) {
+	t.Parallel()
+	clock, _, store := newPriorityFixture(t)
+	usage := leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT
+	server := leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR
+	failedID := failDueRetry(t, clock, store, `{"error":"overloaded"}`)
+	_, err := store.Enqueue(t.Context(), NewItem{ID: "typed", AgentID: "agent-1", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE, Text: "hello"})
+	require.NoError(t, err)
+	scheduleRetry(t, store, usage, clock.Now().Add(time.Hour), nil)
+	scheduled := scheduleRetry(t, store, server, time.Time{}, nil)
+	pending := map[leapmuxv1.AgentInputKind]SnapshotItem{}
+	for _, item := range scheduled.Items {
+		if IsAutoRetryKind(item.Kind) && item.State == leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED {
+			pending[item.Kind] = item
+		}
+	}
+	require.Len(t, pending, 2)
+
+	snapshot, removed, err := store.cancelAutoRetries(t.Context(), "agent-1", server, usage)
+	require.NoError(t, err)
+
+	require.Len(t, removed, 2)
+	for i, kind := range []leapmuxv1.AgentInputKind{usage, server} {
+		assert.Equal(t, pending[kind].ID, removed[i].id)
+		assert.Equal(t, kind, removed[i].kind)
+		assert.Equal(t, leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED, removed[i].state)
+		require.NotNil(t, removed[i].scheduledAt)
+		assert.True(t, removed[i].scheduledAt.Equal(*pending[kind].ScheduledAt), "%s keeps its stored deadline", kind)
+	}
+	var remaining []string
+	for _, item := range snapshot.Items {
+		remaining = append(remaining, item.ID)
+	}
+	assert.ElementsMatch(t, []string{failedID, "typed"}, remaining)
 }
 
 func TestAutoRetryServerErrorBackoffDoublesAcrossAcceptedCycles(t *testing.T) {
@@ -251,11 +291,11 @@ func TestAutoRetryCancelDeleteAndRefusalResetOrKeepBackoff(t *testing.T) {
 	// A refusal leaves the durable delay untouched: the transaction rolls back.
 	grow(2)
 	assert.Equal(t, int64(40000), storedServerErrorDelay(t, database))
-	_, err := store.scheduleAutoRetry(t.Context(), "agent-1", agent.AutoRetrySchedule{
+	_, _, err := store.scheduleAutoRetry(t.Context(), "agent-1", agent.AutoRetrySchedule{
 		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_USER_MESSAGE,
 	})
 	assert.ErrorIs(t, err, ErrInvalidInput)
-	_, err = store.scheduleAutoRetry(t.Context(), "closed-agent", agent.AutoRetrySchedule{Kind: kind})
+	_, _, err = store.scheduleAutoRetry(t.Context(), "closed-agent", agent.AutoRetrySchedule{Kind: kind})
 	assert.ErrorIs(t, err, ErrConflict)
 	assert.Equal(t, int64(40000), storedServerErrorDelay(t, database), "a refused schedule changes no backoff")
 
@@ -269,7 +309,7 @@ func TestAutoRetryCancelDeleteAndRefusalResetOrKeepBackoff(t *testing.T) {
 	grow(1)
 	snapshot := scheduleRetry(t, store, kind, time.Time{}, nil)
 	assert.Equal(t, int64(40000), storedServerErrorDelay(t, database))
-	_, err = store.Delete(t.Context(), "agent-1", snapshot.Items[0].ID)
+	_, _, err = store.Delete(t.Context(), "agent-1", snapshot.Items[0].ID)
 	require.NoError(t, err)
 	assert.Equal(t, int64(10000), storedServerErrorDelay(t, database))
 }
@@ -312,14 +352,14 @@ func TestAutoRetryRefusesClosedAndArchivedAgents(t *testing.T) {
 	// close removed it.
 	_, err := database.ExecContext(t.Context(), `UPDATE agents SET closed_at = strftime('%Y-%m-%dT%H:%M:%fZ','now') WHERE id = 'agent-1'`)
 	require.NoError(t, err)
-	_, err = store.scheduleAutoRetry(t.Context(), "agent-1", agent.AutoRetrySchedule{Kind: kind})
+	_, _, err = store.scheduleAutoRetry(t.Context(), "agent-1", agent.AutoRetrySchedule{Kind: kind})
 	assert.ErrorIs(t, err, ErrConflict)
 	assert.Zero(t, countQueueRows(t, database))
 
 	// An archived workspace refuses just the same, without touching the row.
 	_, err = database.ExecContext(t.Context(), `UPDATE agents SET closed_at = NULL, workspace_archived = 1 WHERE id = 'agent-1'`)
 	require.NoError(t, err)
-	_, err = store.scheduleAutoRetry(t.Context(), "agent-1", agent.AutoRetrySchedule{Kind: kind})
+	_, _, err = store.scheduleAutoRetry(t.Context(), "agent-1", agent.AutoRetrySchedule{Kind: kind})
 	assert.ErrorIs(t, err, ErrConflict)
 	assert.Zero(t, countQueueRows(t, database))
 }
@@ -335,7 +375,7 @@ func TestAutoRetryQueueFullRefusesWithoutTouchingDurableState(t *testing.T) {
 		})
 		require.NoError(t, err)
 	}
-	_, err := store.scheduleAutoRetry(t.Context(), "agent-1", agent.AutoRetrySchedule{Kind: kind})
+	_, _, err := store.scheduleAutoRetry(t.Context(), "agent-1", agent.AutoRetrySchedule{Kind: kind})
 	assert.ErrorIs(t, err, ErrQueueFull)
 	assert.Equal(t, MaxItems, countQueueRows(t, database))
 }
@@ -371,8 +411,8 @@ func TestAutoRetryCancelForAnAgentWithoutQueueStateSucceeds(t *testing.T) {
 	manager := NewManager(store, &recordingDispatcher{}, &recordingObserver{})
 	t.Cleanup(manager.StopAndWait)
 
-	require.NoError(t, manager.CancelAutoRetry(t.Context(), "agent-1", leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, nil))
-	require.NoError(t, manager.CancelAutoRetries(t.Context(), "agent-1"))
+	require.NoError(t, manager.CancelAutoRetry(t.Context(), "agent-1", leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, "the turn ended", nil))
+	require.NoError(t, manager.CancelAutoRetries(t.Context(), "agent-1", "the agent tab closed"))
 }
 
 // A retry that the user steers into a turn, on a provider that writes the
@@ -793,10 +833,10 @@ func TestAutoRetryDeleteResetsTheBackoffOnlyWhenNoRetryOfTheKindRemainsPending(t
 		pending := otherRetry(t, scheduleRetry(t, store, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, time.Time{}, nil), failedID)
 		require.Equal(t, int64(40000), storedServerErrorDelay(t, database))
 
-		_, err := store.Delete(t.Context(), "agent-1", failedID)
+		_, _, err := store.Delete(t.Context(), "agent-1", failedID)
 		require.NoError(t, err)
 		assert.Equal(t, int64(40000), storedServerErrorDelay(t, database), "the live cycle keeps its backoff")
-		_, err = store.Delete(t.Context(), "agent-1", pending.ID)
+		_, _, err = store.Delete(t.Context(), "agent-1", pending.ID)
 		require.NoError(t, err)
 		assert.Equal(t, int64(10000), storedServerErrorDelay(t, database), "deleting the pending retry ends the cycle")
 	})
@@ -806,7 +846,7 @@ func TestAutoRetryDeleteResetsTheBackoffOnlyWhenNoRetryOfTheKindRemainsPending(t
 		failedID := failDueRetry(t, clock, store, `{"e":1}`)
 		require.Equal(t, int64(20000), storedServerErrorDelay(t, database))
 
-		_, err := store.Delete(t.Context(), "agent-1", failedID)
+		_, _, err := store.Delete(t.Context(), "agent-1", failedID)
 		require.NoError(t, err)
 		assert.Equal(t, int64(10000), storedServerErrorDelay(t, database))
 	})
@@ -918,7 +958,7 @@ func TestAutoRetryAdmissionReleasesBeforeObserversAndOnEveryExit(t *testing.T) {
 			kind := leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT
 			var err error
 			if operation == "cancel without a row" {
-				err = manager.CancelAutoRetry(t.Context(), "agent-1", kind, admission)
+				err = manager.CancelAutoRetry(t.Context(), "agent-1", kind, "the turn ended", admission)
 			} else {
 				err = manager.ScheduleAutoRetry(t.Context(), "agent-1", agent.AutoRetrySchedule{Kind: kind, ResetAt: time.Now().Add(time.Hour), Admission: admission})
 			}

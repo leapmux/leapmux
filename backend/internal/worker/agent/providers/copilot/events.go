@@ -8,6 +8,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -368,19 +369,33 @@ func (a *Agent) handleNativeEvent(raw []byte, event copilotEvent) {
 			errorText = strings.TrimSpace(message)
 		}
 		a.nativeRetry(event.AgentID).lastError = errorText
+		if event.AgentID == "" {
+			a.noteNativeCallFailure(event.Data)
+		}
 		return
 	case contracts.CopilotEventModelTurnRetry, contracts.CopilotEventAssistantTurnRetry:
 		a.retryNativeTurn(event.AgentID, sink)
 		return
+	case contracts.CopilotEventSessionError:
+		// The frame still persists below. Only the verdict at the turn end reads
+		// the record.
+		if event.AgentID == "" {
+			a.recordNativeSessionError(raw, event.Data)
+		}
 	case contracts.CopilotEventAssistantTurnStart:
 		if child == nil && !a.closing {
 			a.setNativeTurnActive(true)
+		}
+		// Each model call of a turn starts again, so a failure that an earlier
+		// call recovered from does not reach the verdict of the turn end.
+		if event.AgentID == "" {
+			a.clearNativeTurnFailure()
 		}
 		// A background subagent that a message woke starts its next turn.
 		a.resumeNativeChild(child)
 	case contracts.CopilotEventSessionIdle:
 		if child == nil {
-			a.endNativeTurn(raw, copilotTurnWasAborted(event.Data))
+			a.endNativeTurn(raw, copilotTurnWasAborted(event.Data), a.nativeEventTime(event))
 			return
 		}
 		a.resetNativeRetry(event.AgentID)
@@ -543,9 +558,15 @@ func copilotTurnWasAborted(data json.RawMessage) bool {
 	return json.Unmarshal(data, &idle) == nil && idle.Aborted
 }
 
-func (a *Agent) endNativeTurn(raw []byte, aborted bool) {
+// endNativeTurn ends the root turn at its session.idle. observedAt is the
+// timestamp of that idle event. The caller holds outputMu.
+func (a *Agent) endNativeTurn(raw []byte, aborted bool, observedAt time.Time) {
 	a.resetNativeRetry("")
-	if !a.setNativeTurnActive(false) {
+	// The records belong to the turn that ends here. An idle that ends no turn
+	// drops them too, so a later turn cannot read them.
+	failure, autoSwitch := a.takeNativeTurnFailure()
+	ended, verdict := a.releaseNativeTurn()
+	if !ended {
 		// Idle before a turn or after its end supplies no new transcript boundary.
 		return
 	}
@@ -568,6 +589,7 @@ func (a *Agent) endNativeTurn(raw []byte, aborted bool) {
 	if err := a.sink.PersistTurnEnd(agent.WithToolUseCount(content, uses), agent.SpanInfo{}); err != nil {
 		slog.Error("Persist Copilot turn end", "agent_id", a.AgentID(), "error", err)
 	}
+	a.applyNativeTurnVerdict(failure, autoSwitch, aborted, observedAt, verdict)
 }
 
 // closeOpenNativeTools ends every call the runtime started and never finished.

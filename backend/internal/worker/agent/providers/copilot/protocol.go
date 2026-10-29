@@ -12,6 +12,10 @@ type copilotEvent struct {
 	AgentID  string          `json:"agentId"`
 	ParentID string          `json:"parentId"`
 	Data     json.RawMessage `json:"data"`
+	// Timestamp is the runtime's RFC 3339 stamp of the event. The retry verdict
+	// reads it (nativeEventTime). It stays undecoded, so a stamp of another JSON
+	// type cannot reject the whole event.
+	Timestamp json.RawMessage `json:"timestamp"`
 	// Ephemeral marks an event that the runtime itself does not write to its session
 	// log. Every streaming delta carries it. LeapMux reports those as live progress and
 	// never persists them, because the runtime sends the finished message separately and

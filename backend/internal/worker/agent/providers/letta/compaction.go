@@ -136,6 +136,11 @@ func (a *Agent) handleManualCompactionResponse(raw []byte) {
 	a.Mu.Lock()
 	a.manualCompaction = nil
 	a.Mu.Unlock()
+	// The command's end is a root turn end, so a failed model request of the
+	// compaction cannot decide the next turn. The compaction itself never
+	// retries, whatever its outcome.
+	a.rootErrorRetryable = nil
+	providerkit.ApplyTurnFailure(a.sink, providerkit.CompactionEnd(), nil)
 	a.setTurnActive(false)
 }
 

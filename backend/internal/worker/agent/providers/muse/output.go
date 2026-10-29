@@ -282,10 +282,12 @@ func (a *Agent) handleItem(raw, params []byte, state *sessionState) {
 				a.stateMu.Unlock()
 			}
 			// A compaction runs outside model turns. The host reports no idle state for it.
-			// End the worker's compaction turn here.
+			// End the worker's compaction turn here. A manual compaction applies
+			// its verdict before the release. An automatic one has no mark.
 			a.stateMu.Lock()
 			root := item.SessionID == a.sessionID
 			a.stateMu.Unlock()
+			a.endManualCompaction(item.SessionID, state.sink)
 			if root {
 				a.PublishTurnActive()
 			}
@@ -492,10 +494,12 @@ func completion(outcome string) agent.MessageCompletion {
 		return agent.MessageCompletionFinished
 	}
 }
+
+// finishTurn ends a turn at its turn/completed. A root turn also decides its
+// retry verdict once, when its finalization is captured. A child turn decides
+// none.
 func (a *Agent) finishTurn(raw []byte, id, turnID string) {
-	var frame struct {
-		Params turnCompletion `json:"params"`
-	}
+	var frame completionFrame
 	if json.Unmarshal(raw, &frame) != nil || frame.Params.SessionID != id || frame.Params.TurnID != turnID || frame.Params.Outcome == "" {
 		return
 	}
@@ -514,7 +518,12 @@ func (a *Agent) finishTurn(raw []byte, id, turnID string) {
 	current := a.currentSessionState(id, state)
 	a.stateMu.Unlock()
 	state.retry.Reset()
-	if a.captureFinalization(state, id, turnID, raw, completion(frame.Params.Outcome)) == nil {
+	var verdict *providerkit.TurnFailure
+	if root {
+		decided := museTurnVerdict(frame.Params, a.completionObservedAt(frame))
+		verdict = &decided
+	}
+	if a.captureFinalization(state, id, turnID, raw, completion(frame.Params.Outcome), verdict) == nil {
 		return
 	}
 	a.retryFinalizations(state)

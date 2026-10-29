@@ -16,6 +16,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit/providerkittest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -472,6 +473,139 @@ func TestPiManualCompactReturnsTheNativeError(t *testing.T) {
 		return nil, true, ""
 	})
 	assert.ErrorContains(t, rig.agent.SendInput("/compact", nil), "the session has no conversation to compact")
+}
+
+// piCompactionEnd is the timeline of the verdict that a manual compaction
+// applies. Pi writes no turn-end row for the compact command.
+var piCompactionEnd = []agenttest.TimelineEntry{{
+	Op: "cancel_server_error", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR,
+	Reason: providerkit.TurnEndedOnCompaction,
+}}
+
+// piReleaseObserver records how many timeline entries precede each idle
+// publish, so a test states the order of a verdict and the release.
+type piReleaseObserver struct {
+	agent.ProviderServices
+	sink   *agenttest.ControlSink
+	mu     sync.Mutex
+	idleAt []int
+}
+
+func (o *piReleaseObserver) SetTurnState(state agent.TurnState, seq uint64) {
+	if !state.Active {
+		o.mu.Lock()
+		o.idleAt = append(o.idleAt, len(o.sink.Timeline()))
+		o.mu.Unlock()
+	}
+	o.ProviderServices.SetTurnState(state, seq)
+}
+
+func (o *piReleaseObserver) idlePublishes() []int {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]int(nil), o.idleAt...)
+}
+
+// A manual compaction never schedules a retry, whatever its outcome. Its one
+// verdict cancels the server-error retry before the idle publish releases the
+// queue, as a settled conversation turn does.
+func TestPiManualCompactEndCancelsTheServerErrorRetry(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		input   string
+		success bool
+		errMsg  string
+	}{
+		{name: "success", input: "/compact", success: true},
+		{name: "custom instructions", input: "/compact Keep the plan.", success: true},
+		{name: "a server error", input: "/compact", errMsg: "500 Internal Server Error"},
+		{name: "an overload", input: "/compact", errMsg: `529: {"type":"overloaded_error","message":"Overloaded"}`},
+		{name: "a rate limit", input: "/compact", errMsg: "429 Too Many Requests"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.ControlSink{}
+			observer := &piReleaseObserver{ProviderServices: agent.NewProviderServices(sink), sink: sink}
+			rig := newPiTestRig(t, observer)
+			rig.setResponder(func(req piRecordedRequest) (json.RawMessage, bool, string) {
+				if req.Type == CommandCompact {
+					rig.agent.HandleOutput([]byte(`{"type":"compaction_start","reason":"manual"}`))
+					return nil, tc.success, tc.errMsg
+				}
+				return nil, true, ""
+			})
+			err := rig.agent.SendInput(tc.input, nil)
+			if tc.success {
+				require.NoError(t, err)
+			} else {
+				require.ErrorContains(t, err, tc.errMsg)
+			}
+			assert.Equal(t, piCompactionEnd, providerkittest.TurnEndAndRetryOps(sink.Timeline()))
+			assert.Zero(t, sink.AutoScheduleCount())
+			assert.Equal(t, []int{len(sink.Timeline())}, observer.idlePublishes(), "the verdict precedes the one idle publish")
+		})
+	}
+}
+
+// The compact command can end because the process exits. The compaction
+// still applies its one verdict, as a Pi turn that settles while the agent
+// stops does.
+func TestPiManualCompactThatTheProcessEndsAppliesTheCompactionVerdict(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.ControlSink{}
+	rig := newPiTestRig(t, agent.NewProviderServices(sink))
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	rig.holdResponse(CommandCompact, release)
+	result := make(chan error, 1)
+	go func() { result <- rig.agent.SendInput("/compact", nil) }()
+	require.Eventually(t, func() bool {
+		for _, request := range rig.requests() {
+			if request.Type == CommandCompact {
+				return true
+			}
+		}
+		return false
+	}, 30*time.Second, time.Millisecond)
+	rig.cancel()
+	require.Error(t, <-result)
+	assert.Equal(t, piCompactionEnd, providerkittest.TurnEndAndRetryOps(sink.Timeline()))
+}
+
+// The compact command marks no turn, so the next conversation turn applies
+// its own verdict: a server error after the compaction schedules its retry.
+func TestPiTurnAfterManualCompactAppliesItsOwnVerdict(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.ControlSink{}
+	rig := newPiTestRig(t, agent.NewProviderServices(sink))
+	rig.setResponder(func(req piRecordedRequest) (json.RawMessage, bool, string) {
+		if req.Type == CommandCompact {
+			return nil, false, "500 Internal Server Error"
+		}
+		return nil, true, ""
+	})
+	require.Error(t, rig.agent.SendInput("/compact", nil))
+	require.NoError(t, rig.agent.SendInput("Continue the task.", nil))
+	rig.agent.HandleOutput([]byte(`{"type":"agent_start"}`))
+	rig.agent.HandleOutput([]byte(`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"error","errorMessage":"529: {\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}"}]}`))
+	rig.agent.HandleOutput([]byte(`{"type":"agent_settled"}`))
+	assert.Equal(t, []string{"cancel_server_error", "turn_end", "schedule_server_error"}, providerkittest.TurnEndAndRetryOpNames(sink.Timeline()))
+	assert.Equal(t, 1, sink.AutoScheduleCount())
+}
+
+// A /compact text that the queue steers into a running turn is a prompt for
+// that turn. It starts no compaction and applies no verdict of its own.
+func TestPiSteeredCompactTextAppliesNoCompactionVerdict(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.ControlSink{}
+	rig := newPiTestRig(t, agent.NewProviderServices(sink))
+	rig.agent.HandleOutput([]byte(`{"type":"agent_start"}`))
+	require.NoError(t, rig.agent.SteerInput("/compact keep the plan", nil))
+	assert.Empty(t, providerkittest.TurnEndAndRetryOps(sink.Timeline()))
+	rig.agent.HandleOutput([]byte(`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"error","errorMessage":"529: {\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}"}]}`))
+	rig.agent.HandleOutput([]byte(`{"type":"agent_settled"}`))
+	assert.Equal(t, []string{"turn_end", "schedule_server_error"}, providerkittest.TurnEndAndRetryOpNames(sink.Timeline()))
 }
 
 func TestPi_SteerInput_DuringTurnSetsSteer(t *testing.T) {

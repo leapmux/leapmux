@@ -389,7 +389,8 @@ func (a *Agent) handleDisplayError(raw json.RawMessage) {
 // states the same text: the base writes that error as the failure note of the
 // prompt, and the reader then reads the reason once. A prompt that returned a
 // result, or that the reader stopped, writes no failure note, so the display
-// error is the only record of the reason.
+// error is the only record of the reason. Every end returns the retry verdict
+// of the prompt's error.
 func (a *Agent) handlePromptEnded(err error, stopped bool) acp.PromptEnding {
 	a.requestUsageRefresh()
 	a.stateMu.Lock()
@@ -398,18 +399,88 @@ func (a *Agent) handlePromptEnded(err error, stopped bool) acp.PromptEnding {
 	frame := a.turns.heldEndFrame
 	a.turns.heldEndFrame = nil
 	a.stateMu.Unlock()
-	if held != "" {
-		if err != nil && !stopped && strings.Contains(err.Error(), held) {
-			return acp.PromptEnding{}
-		}
+	failure, payload := kiroTurnFailure(err, stopped)
+	failed := err != nil && !stopped
+	// The base writes the prompt's own error as its failure note, so a held
+	// error with the same text is written once.
+	statedByPrompt := failed && strings.Contains(err.Error(), held)
+	if held != "" && !statedByPrompt {
 		a.persistAgentError(held)
 	}
+	ending := acp.PromptEnding{Retry: &acp.TurnVerdict{Failure: failure, Payload: payload}}
 	// The failed prompt writes the native error turn end as its divider, so
-	// the reader sees why the turn ended beside the error itself.
-	if err != nil && !stopped && len(frame) > 0 {
-		return acp.PromptEnding{EndFrame: frame}
+	// the reader sees why the turn ended beside the error itself, whichever
+	// note states that error.
+	if failed && len(frame) > 0 {
+		ending.EndFrame = frame
 	}
-	return acp.PromptEnding{}
+	return ending
+}
+
+// Kiro states the class of a failed prompt in the `data` of its JSON-RPC
+// error: errorType gives the failure, and retryErrorType gives the class that
+// Kiro's own retries read. These are the errorType values that LeapMux reads.
+const (
+	kiroErrorUsageLimitReached    = "UsageLimitReachedError"
+	kiroErrorOverageLimitReached  = "OverageLimitReachedError"
+	kiroErrorProxyAuthRequired    = "ProxyAuthenticationRequiredError"
+	kiroErrorClientThrottle       = "ClientThrottleError"
+	kiroRetryErrorTypeTransient   = "TRANSIENT"
+	kiroRetryErrorTypeServerError = "SERVER_ERROR"
+	kiroRetryErrorTypeThrottling  = "THROTTLING"
+)
+
+// kiroBillingErrorTypes are the account blocks that no wait lifts.
+var kiroBillingErrorTypes = map[string]bool{
+	"AccountNotSupportedError":  true,
+	"NewUserAccessPausedError":  true,
+	"TemporarilySuspendedError": true,
+}
+
+// kiroTurnFailure classifies the end of one prompt. payload is the JSON-RPC
+// error that carries the failure, or nil.
+func kiroTurnFailure(err error, stopped bool) (failure providerkit.TurnFailure, payload []byte) {
+	notRetryable := providerkit.TurnFailure{Kind: providerkit.TurnFailureNotRetryable}
+	if stopped || err == nil {
+		return notRetryable, nil
+	}
+	rpcErr, ok := providerkit.AsJSONRPCResponseError(err)
+	if !ok {
+		return notRetryable, nil
+	}
+	payload = rpcErr.WireJSON()
+	// Data of another shape, such as the `details` of a -32603, states no
+	// class and stays at the zero value.
+	var data struct {
+		ErrorType      string `json:"errorType"`
+		RetryErrorType string `json:"retryErrorType"`
+	}
+	_ = json.Unmarshal(rpcErr.Data, &data)
+	switch {
+	case kiroBillingErrorTypes[data.ErrorType]:
+		return providerkit.TurnFailure{Kind: providerkit.TurnFailureBillingBlocked, Cause: "Kiro reported " + data.ErrorType}, payload
+	case data.ErrorType == kiroErrorUsageLimitReached:
+		// The message can state the window: hourly, daily, weekly or
+		// monthly.
+		return providerkit.TurnFailure{
+			Kind: providerkit.TurnFailureUsageLimited, Window: providerkit.UsageWindowOf(rpcErr.Message),
+			Cause: "Kiro reported its usage limit",
+		}, payload
+	case data.ErrorType == kiroErrorOverageLimitReached:
+		return providerkit.TurnFailure{
+			Kind: providerkit.TurnFailureUsageLimited, Window: providerkit.UsageWindowUnstated,
+			Cause: "Kiro reported its overage limit",
+		}, payload
+	case data.ErrorType == kiroErrorProxyAuthRequired:
+		// Kiro classifies a proxy that wants credentials as TRANSIENT, but
+		// only a change of the proxy settings lifts it.
+		return notRetryable, payload
+	case data.RetryErrorType == kiroRetryErrorTypeThrottling, data.ErrorType == kiroErrorClientThrottle:
+		return providerkit.TurnFailure{Kind: providerkit.TurnFailureRateLimited, Cause: "Kiro reported " + data.ErrorType}, payload
+	case data.RetryErrorType == kiroRetryErrorTypeTransient, data.RetryErrorType == kiroRetryErrorTypeServerError:
+		return providerkit.TurnFailure{Kind: providerkit.TurnFailureTransient, Cause: "Kiro reported " + data.ErrorType}, payload
+	}
+	return notRetryable, payload
 }
 
 // reportSummarization states a compaction of the context in the transcript.

@@ -6,11 +6,13 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/modelvendor"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
@@ -537,7 +539,9 @@ func (a *Agent) handleZCodeTurnStarted(event zcodeEventEnvelope) {
 	})
 	if admission := a.inputAdmissions[payload.InputID]; admission != nil && admission.sessionID == a.sessionID && admission.epoch == a.sessionEpoch {
 		admission.owner = turn
+		turn.compacting = admission.compacting
 	}
+	a.bindZCodeCompactionOwnerLocked(turn)
 	a.refreshTurnActiveLocked()
 	a.Mu.Unlock()
 	a.PublishTurnActive()
@@ -590,18 +594,93 @@ func (a *Agent) takeStopCancelledRequest() bool {
 	return cancelled
 }
 
-// zcodeTurnFailed is the turn.failed payload. `error.retryable` is the app-server's
-// own verdict on whether the failure is transient, which is exactly the question the
-// automatic retry decides on -- so no message-text matching is needed.
+// zcodeTurnFailed is the turn.failed payload.
+//
+// ZCode states its own class of the failure in `error.attribution`: the reason,
+// and whether that class is retryable. `retryable` stays true after ZCode's own
+// retry budget runs out, which is the moment the turn fails, so it states the
+// class and not ZCode's next step. ZCode states no `retryable` outside the
+// attribution.
 type zcodeTurnFailed struct {
 	Error struct {
-		Type      string `json:"type"`
-		Message   string `json:"message"`
-		Code      string `json:"code"`
-		Detail    string `json:"detail"`
-		Retryable *bool  `json:"retryable"`
+		Type    string `json:"type"`
+		Message string `json:"message"`
+		Code    string `json:"code"`
+		Detail  string `json:"detail"`
+		// UnderlyingErrorMessage is the provider's own text, which Message can
+		// replace with ZCode's summary ("Provider returned a server error.").
+		UnderlyingErrorMessage string           `json:"underlyingErrorMessage"`
+		Attribution            zcodeAttribution `json:"attribution"`
 	} `json:"error"`
 	TurnPhase string `json:"turnPhase"`
+}
+
+// zcodeAttribution is ZCode's class of a failed turn.
+type zcodeAttribution struct {
+	Reason            string `json:"reason"`
+	ProviderErrorCode string `json:"providerErrorCode"`
+	StatusCode        *int   `json:"statusCode"`
+	Retryable         *bool  `json:"retryable"`
+}
+
+// statesCancellation reports whether the failure states a stop: its type or
+// code identifies a cancel or an interrupt, or ZCode attributes it to a
+// cancellation.
+func (f zcodeTurnFailed) statesCancellation() bool {
+	kind := strings.ToLower(f.Error.Type + " " + f.Error.Code)
+	return strings.Contains(kind, "cancel") || strings.Contains(kind, "interrupt") ||
+		f.Error.Attribution.Reason == zcodeFailureReasonCancelled
+}
+
+// statesProviderNotConfigured reports whether the session's model provider
+// carries no usable credential. See CauseProviderNotConfigured.
+func (f zcodeTurnFailed) statesProviderNotConfigured() bool {
+	return f.Error.Code == CauseProviderNotConfigured || f.Error.Type == CauseProviderNotConfigured ||
+		f.Error.Attribution.Reason == CauseProviderNotConfigured
+}
+
+// zcodeTransientReasons are the attribution reasons of a transient failure.
+var zcodeTransientReasons = map[string]bool{
+	zcodeFailureReasonServerError:        true,
+	zcodeFailureReasonProviderOverloaded: true,
+	zcodeFailureReasonNetworkError:       true,
+	zcodeFailureReasonTimeout:            true,
+	zcodeFailureReasonStreamIdleTimeout:  true,
+	zcodeFailureReasonStaleConnection:    true,
+	zcodeFailureReasonProxyError:         true,
+}
+
+// zcodeTurnFailure classifies a failed turn for the automatic-retry queue.
+// stopRequested reports a stop that LeapMux asked for while the turn ran.
+// observedAt is when the turn failed.
+func zcodeTurnFailure(payload zcodeTurnFailed, stopRequested bool, observedAt time.Time) providerkit.TurnFailure {
+	notRetryable := providerkit.TurnFailure{Kind: providerkit.TurnFailureNotRetryable}
+	if stopRequested || payload.statesCancellation() || payload.statesProviderNotConfigured() {
+		return notRetryable
+	}
+	// ZCode can replace the provider's text with its own summary, so the
+	// vendor's sentence may be in either message.
+	texts := []string{payload.Error.Message, payload.Error.UnderlyingErrorMessage}
+	vendor, matched := modelvendor.ClassifyErrors(texts, observedAt)
+	if matched && vendor.Definitive {
+		return vendor.Failure
+	}
+	attribution := payload.Error.Attribution
+	retryable := attribution.Retryable != nil && *attribution.Retryable
+	if retryable && zcodeTransientReasons[attribution.Reason] {
+		return providerkit.TurnFailure{Kind: providerkit.TurnFailureTransient, Cause: "ZCode reported " + attribution.Reason}
+	}
+	if retryable && attribution.Reason == zcodeFailureReasonRateLimited {
+		return providerkit.TurnFailure{Kind: providerkit.TurnFailureRateLimited, Cause: "ZCode reported a rate limit"}
+	}
+	if matched {
+		return vendor.Failure
+	}
+	if attribution.Reason == zcodeFailureReasonRateLimited {
+		// ZCode stops its own retries on a quota that it calls not retryable.
+		return providerkit.TurnFailure{Kind: providerkit.TurnFailureUsageLimited, Cause: "ZCode reported a quota stop"}
+	}
+	return notRetryable
 }
 
 func (a *Agent) handleZCodeTurnFailed(event zcodeEventEnvelope, owner *zcodeTurnState) {
@@ -612,28 +691,13 @@ func (a *Agent) handleZCodeTurnFailed(event zcodeEventEnvelope, owner *zcodeTurn
 		}
 	}
 	completion := agent.MessageCompletionError
-	failureKind := strings.ToLower(payload.Error.Type + " " + payload.Error.Code)
-	if strings.Contains(failureKind, "cancel") || strings.Contains(failureKind, "interrupt") {
+	if payload.statesCancellation() {
 		completion = agent.MessageCompletionInterrupted
 	}
-	a.finishZCodeTurn(event, owner, zcodeTurnEnd{
-		failedCompletion: completion,
-		retryable:        zcodeFailureIsRetryable(payload),
-	})
-}
-
-// zcodeFailureIsRetryable reports whether a failed turn should be retried.
-//
-// The app-server's own `retryable` flag decides when it states one. A missing flag
-// falls back to "not retryable", with one exception: a provider that carries no
-// usable credential is NEVER retryable, because a retry re-reads the same empty
-// configuration and produces the same failure forever.
-func zcodeFailureIsRetryable(payload zcodeTurnFailed) bool {
-	if payload.Error.Code == CauseProviderNotConfigured ||
-		payload.Error.Type == CauseProviderNotConfigured {
-		return false
-	}
-	return payload.Error.Retryable != nil && *payload.Error.Retryable
+	a.Mu.Lock()
+	stopRequested := !owner.background && a.foregroundTurnID == owner.id && (a.stopCanCancelLocked() || a.IntentionalStopRequested())
+	a.Mu.Unlock()
+	a.finishZCodeTurn(event, owner, zcodeTurnEnd{failedCompletion: completion, failure: zcodeTurnFailure(payload, stopRequested, a.Clock().Now())})
 }
 
 // zcodeTurnEnd is what one turn end states beside its event.
@@ -648,10 +712,8 @@ type zcodeTurnEnd struct {
 	// with: error, or interrupted when the failure reports a cancellation. A
 	// turn.completed leaves it unset and derives its own outcomes from cancelled.
 	failedCompletion agent.MessageCompletion
-	// retryable is the app-server's own verdict on whether a turn.failed is
-	// transient, which the automatic retry decides on. A turn.completed leaves it
-	// false: its end cancels any pending server-error retry.
-	retryable bool
+	// failure retains the classified verdict through deferred canonical settlement.
+	failure providerkit.TurnFailure
 }
 
 // zcodeTurnDivider freezes native output and presentation metadata at receipt.
@@ -719,8 +781,7 @@ func (a *Agent) finishZCodeTurn(event zcodeEventEnvelope, owner *zcodeTurnState,
 	if raw == nil {
 		settle = zcodeTurnSettlement{}
 	}
-	retryWriter := a.sink.CaptureAutoRetry()
-	settle.afterForeground = func() { providerkit.ScheduleOrCancelServerErrorAutoRetry(retryWriter, end.retryable, raw) }
+	settle.afterForeground = a.captureZCodeRetryVerdict(owner, end.failure, raw)
 	if raw != nil && canonicalRequired {
 		a.queueZCodeNativeSettlement(owner, settle, source)
 		return

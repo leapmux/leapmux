@@ -38,8 +38,18 @@ type Agent struct {
 	// A compaction holds a queue turn but does not accept steering. Its request
 	// revision also keeps a late reply from clearing a replacement session.
 	compactingRevision uint64
-	turnOrder          providerkit.TurnSeq
-	activityRevision   uint64
+	// turnCompaction is the revision of the manual compaction that the active
+	// root turn belongs to, and zero for a conversation turn. The runtime can run
+	// a model turn inside the compaction request, and the end of that turn
+	// applies the compaction's verdict, not the classifier's. The mark is zero
+	// whenever no root turn is active. stateMu guards it.
+	turnCompaction uint64
+	// compactionVerdictRevision is the revision of the last manual compaction
+	// whose retry verdict applied, so that a turn end and the reply of one
+	// compaction apply one verdict between them. stateMu guards it.
+	compactionVerdictRevision uint64
+	turnOrder                 providerkit.TurnSeq
+	activityRevision          uint64
 
 	// outputMu serializes the reader goroutine against every caller that replaces
 	// or ends the session. It also guards the three maps below, which only those
@@ -54,6 +64,13 @@ type Agent struct {
 	// turnToolUses counts the tool calls that the current turn started in the
 	// root transcript. The turn end states it and restarts it. outputMu guards it.
 	turnToolUses int
+	// turnFailure is what the root transcript of the current turn states about its
+	// failure, and autoSwitch is the root auto-mode switch of that turn with its
+	// answer. The turn end reads both for its retry verdict (retry.go). The root
+	// assistant.turn_start, the turn end, and a session replacement clear both.
+	// outputMu guards both.
+	turnFailure copilotTurnFailure
+	autoSwitch  copilotAutoSwitch
 	// nativeText accumulates the assistant text the runtime STREAMS.
 	//
 	// The runtime marks every delta ephemeral and sends the assistant message only
@@ -174,6 +191,14 @@ func (a *Agent) setNativeTurnActive(active bool) bool {
 	previous := a.active
 	a.active = active
 	a.activityRevision++
+	switch {
+	case !active:
+		a.turnCompaction = 0
+	case !previous:
+		// A root turn that starts while a manual compaction runs is the
+		// runtime's model turn for that compaction.
+		a.turnCompaction = a.compactingRevision
+	}
 	state := a.nativeTurnStateLocked()
 	sequence := a.turnOrder.NextTurnSeq()
 	a.stateMu.Unlock()
@@ -188,10 +213,48 @@ func (a *Agent) rejectNativeInput(revision uint64) {
 		return
 	}
 	a.active = false
+	a.turnCompaction = 0
 	state := a.nativeTurnStateLocked()
 	sequence := a.turnOrder.NextTurnSeq()
 	a.stateMu.Unlock()
 	providerkit.PublishTurnStateTo(a.sink, state, sequence)
+}
+
+// releaseNativeTurn makes the root turn idle at its session.idle. ended is
+// false when no turn was active. verdict states the retry verdict of the turn
+// end. A turn that belongs to a manual compaction claims the verdict of that
+// compaction in the same critical section, so the reply of the compaction
+// cannot apply it a second time.
+func (a *Agent) releaseNativeTurn() (ended bool, verdict copilotTurnEndVerdict) {
+	a.stateMu.Lock()
+	ended = a.active
+	compaction := a.turnCompaction
+	a.active = false
+	a.turnCompaction = 0
+	a.activityRevision++
+	verdict = copilotTurnEndClassified
+	if ended && compaction != 0 {
+		verdict = copilotTurnEndCompactionApplied
+		if a.claimCompactionVerdictLocked(compaction) {
+			verdict = copilotTurnEndCompaction
+		}
+	}
+	state := a.nativeTurnStateLocked()
+	sequence := a.turnOrder.NextTurnSeq()
+	a.stateMu.Unlock()
+	providerkit.PublishTurnStateTo(a.sink, state, sequence)
+	return ended, verdict
+}
+
+// claimCompactionVerdictLocked reports whether the caller applies the retry
+// verdict of the manual compaction of revision, and records that the verdict
+// applied. The caller holds stateMu.
+func (a *Agent) claimCompactionVerdictLocked(revision uint64) bool {
+	if a.compactionVerdictRevision == revision {
+		return false
+	}
+	a.compactionVerdictRevision = revision
+	return true
 }
 
 func (a *Agent) clearNativeCompaction() {
@@ -200,20 +263,28 @@ func (a *Agent) clearNativeCompaction() {
 	a.stateMu.Unlock()
 }
 
-func (a *Agent) finishNativeCompaction(revision uint64) {
+// finishNativeCompaction ends the manual compaction of revision. It reports
+// whether the caller applies the retry verdict of that compaction: this call
+// ended the compaction, no model turn of the compaction still runs, and no
+// turn end applied the verdict first. A model turn that outlives the reply
+// applies the verdict at its own end, after its turn-end row.
+func (a *Agent) finishNativeCompaction(revision uint64) bool {
 	a.stateMu.Lock()
 	if a.compactingRevision != revision {
 		a.stateMu.Unlock()
-		return
+		return false
 	}
 	a.compactingRevision = 0
 	if a.activityRevision == revision {
 		a.active = false
+		a.turnCompaction = 0
 	}
+	applies := !a.active && a.claimCompactionVerdictLocked(revision)
 	state := a.nativeTurnStateLocked()
 	sequence := a.turnOrder.NextTurnSeq()
 	a.stateMu.Unlock()
 	providerkit.PublishTurnStateTo(a.sink, state, sequence)
+	return applies
 }
 
 // copilotBlobAttachments encodes attachments as the inline `blob` attachments of
@@ -258,40 +329,65 @@ func (a *Agent) CompactContext() error {
 	a.activityRevision++
 	revision := a.activityRevision
 	a.compactingRevision = revision
+	a.turnCompaction = revision
 	a.stateMu.Unlock()
 	a.PublishTurnActive()
 
+	// The two failures below leave before the request reaches the runtime. No
+	// compaction turn started, so the dispatcher receives the error and no
+	// retry verdict applies.
 	params, err := json.Marshal(map[string]any{"sessionId": sessionID, "trigger": "manual"})
 	if err != nil {
 		a.finishNativeCompaction(revision)
 		return fmt.Errorf("encode Copilot compaction request: %w", err)
 	}
 	err = a.SendDetachedRequest("session.history.compact", params, func(raw json.RawMessage, requestErr error) {
-		a.sessionMu.RLock()
-		defer a.sessionMu.RUnlock()
-		defer a.finishNativeCompaction(revision)
-		if a.IsStopped() || a.currentNativeSessionID() != sessionID {
-			return
-		}
-		if requestErr != nil {
-			a.reportNativeCompactionError(requestErr)
-			return
-		}
-		var result struct {
-			Success *bool `json:"success"`
-		}
-		if json.Unmarshal(raw, &result) != nil || result.Success == nil {
-			a.reportNativeCompactionError(fmt.Errorf("the Copilot runtime returned no valid compaction result"))
-			return
-		}
-		if !*result.Success {
-			a.reportNativeCompactionError(fmt.Errorf("the Copilot runtime did not compact the context"))
-		}
+		a.endNativeCompaction(revision, sessionID, raw, requestErr)
 	})
 	if err != nil {
 		providerkit.EndCompaction(a.sink)
 		a.finishNativeCompaction(revision)
 		return providerkit.ClassifyJSONRPCDeliveryError("session.history.compact", err)
+	}
+	return nil
+}
+
+// endNativeCompaction handles the reply to the session.history.compact request
+// of revision, which sessionID sent. It reports a failed compaction, releases
+// the queue, and then applies the compaction's retry verdict. A compaction never
+// schedules a retry, whatever its outcome (CompactionEnd). The verdict follows
+// the release, as it does at a root turn end. A reply that arrives after the
+// process stopped or the session changed applies no verdict, as a turn that
+// ends on those paths applies none.
+func (a *Agent) endNativeCompaction(revision uint64, sessionID string, raw json.RawMessage, requestErr error) {
+	a.sessionMu.RLock()
+	defer a.sessionMu.RUnlock()
+	if a.IsStopped() || a.currentNativeSessionID() != sessionID {
+		a.finishNativeCompaction(revision)
+		return
+	}
+	if err := copilotCompactionFailure(raw, requestErr); err != nil {
+		a.reportNativeCompactionError(err)
+	}
+	if a.finishNativeCompaction(revision) {
+		providerkit.ApplyTurnFailure(a.sink, providerkit.CompactionEnd(), nil)
+	}
+}
+
+// copilotCompactionFailure returns the failure that the reply to
+// session.history.compact states, and nil for a compaction that succeeded.
+func copilotCompactionFailure(raw json.RawMessage, requestErr error) error {
+	if requestErr != nil {
+		return requestErr
+	}
+	var result struct {
+		Success *bool `json:"success"`
+	}
+	if json.Unmarshal(raw, &result) != nil || result.Success == nil {
+		return fmt.Errorf("the Copilot runtime returned no valid compaction result")
+	}
+	if !*result.Success {
+		return fmt.Errorf("the Copilot runtime did not compact the context")
 	}
 	return nil
 }
@@ -324,6 +420,8 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 		return fmt.Errorf("the Copilot session is unavailable")
 	}
 	a.active = true
+	// A conversation turn belongs to no compaction.
+	a.turnCompaction = 0
 	a.activityRevision++
 	revision := a.activityRevision
 	fleet := a.fleetOnLocked()

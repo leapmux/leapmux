@@ -78,10 +78,18 @@ func (b *FamilyBase) handleDaemonEvent(raw json.RawMessage) {
 		b.FlushBufferedOutputOffReader(agent.MessageCompletionComplete)
 		b.persistDaemonNotification(raw, sessionID)
 		providerkit.EndCompaction(b.Sink())
+	case openCodeEventSessionError:
+		b.holdSessionError(raw, event.Properties)
 	case contracts.OpenCodeEventSessionStatus:
 		var properties struct {
 			Status struct {
 				Type string `json:"type"`
+				// Next is the instant of the daemon's next attempt, in epoch
+				// milliseconds. A retry status states it. It stays raw: the
+				// daemon adds an unrounded retry-after-ms wait, so the value
+				// can hold a fraction, and a typed field would fail this
+				// whole decode and drop the retry handling below.
+				Next json.RawMessage `json:"next"`
 			} `json:"status"`
 		}
 		if json.Unmarshal(event.Properties, &properties) != nil {
@@ -109,6 +117,7 @@ func (b *FamilyBase) handleDaemonEvent(raw json.RawMessage) {
 			b.daemonMu.Unlock()
 			b.persistDaemonNotification(raw, sessionID)
 			b.retryResolution.NoteRetry()
+			b.stopForLongWait(raw, properties.Status.Next)
 		case "idle":
 			b.retryResolution.Reset()
 			providerkit.EndCompaction(b.Sink())
@@ -181,10 +190,15 @@ func (b *FamilyBase) observeDaemonPart(partID, messageID string) {
 	b.daemonMessageLocked(messageID)
 }
 
+// resetDaemonGeneration forgets the daemon state of the prompt before, when a
+// prompt starts or the session changes.
 func (b *FamilyBase) resetDaemonGeneration() {
 	b.retryResolution.Reset()
+	startedAt := b.Clock().Now()
 	b.daemonMu.Lock()
 	b.daemonMessages, b.daemonParts, b.lastAssistant = nil, nil, ""
+	b.promptStartedAt = startedAt
+	b.heldSessionError, b.longWait, b.userStopRequested, b.compactionPrompt = nil, nil, false, false
 	b.daemonMu.Unlock()
 }
 

@@ -440,55 +440,6 @@ func TestHandleZCodeOutput_TurnCompleted_OfABackgroundTurnLeavesTheAgentIdle(t *
 	assert.False(t, turnActive, "nothing is running, so Interrupt must not send a session/stop")
 }
 
-func TestHandleZCodeOutput_TurnFailed_SchedulesAutoRetryOnlyWhenRetryable(t *testing.T) {
-	t.Parallel()
-
-	cases := []struct {
-		name          string
-		payload       string
-		wantScheduled bool
-	}{
-		{"retryable true", `{"error":{"type":"api_error","message":"503","retryable":true}}`, true},
-		{"retryable false", `{"error":{"type":"api_error","message":"400","retryable":false}}`, false},
-		{"retryable absent", `{"error":{"type":"api_error","message":"?"}}`, false},
-		{
-			"provider not configured is never retryable",
-			`{"error":{"type":"provider_not_configured","message":"no key","retryable":true}}`,
-			false,
-		},
-		{
-			"provider not configured by code is never retryable",
-			`{"error":{"type":"api_error","code":"provider_not_configured","retryable":true}}`,
-			false,
-		},
-		{"no error object", `{}`, false},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			t.Parallel()
-			sink := &agenttest.ControlSink{}
-			a := newZCodeTestAgent(t, agent.NewProviderServices(sink))
-			zcodeStartTestTurn(t, a, `{"turnNumber":1,"input":"hi"}`)
-			a.turnActive = true
-
-			a.HandleOutput(zcodeEventLine(t, 1, contracts.ZCodeEventTurnFailed, tc.payload))
-
-			a.Mu.Lock()
-			turnActive := a.turnActive
-			a.Mu.Unlock()
-			assert.False(t, turnActive, "a failed turn always ends the turn")
-			require.Equal(t, 1, sink.MessageCount())
-			assert.True(t, sink.Messages()[0].TurnEnd)
-
-			if tc.wantScheduled {
-				assert.Positive(t, sink.AutoScheduleCount(), "a retryable failure must schedule an automatic retry")
-			} else {
-				assert.Equal(t, 0, sink.AutoScheduleCount())
-			}
-		})
-	}
-}
-
 // --- streaming ---
 
 func TestHandleZCodeOutput_ModelStreaming_TextAndReasoningDeltas(t *testing.T) {

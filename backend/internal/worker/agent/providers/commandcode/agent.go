@@ -52,6 +52,11 @@ type Agent struct {
 	generation       providerkit.GenerationBuffer
 	retryResolution  providerkit.RetryResolution
 	steers           providerkit.SteerLedger
+
+	// interruptRequestedTurnID identifies the turn that the user stopped, so
+	// the failure that ends that turn does not retry. Interrupt sets it, and
+	// the next turn start clears it. Mu guards it.
+	interruptRequestedTurnID string
 }
 
 type openTool struct {
@@ -158,6 +163,7 @@ func (a *Agent) startTurn(turnID string) {
 		return
 	}
 	a.turnID, a.turnStarted, a.TurnToolUses = turnID, a.clock.Now(), 0
+	a.interruptRequestedTurnID = ""
 	a.Mu.Unlock()
 	a.PublishTurnActive()
 }
@@ -214,7 +220,15 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 	return providerkit.ClassifyJSONRPCDeliveryError(methodTurnSteer, err)
 }
 
+// Interrupt asks Command Code to stop the running turn. It notes the stop
+// before the request, so a failure that wins the race against the abort still
+// reads it.
 func (a *Agent) Interrupt(stop agent.StopContext) error {
+	a.Mu.Lock()
+	if a.turnID != "" {
+		a.interruptRequestedTurnID = a.turnID
+	}
+	a.Mu.Unlock()
 	_, err := a.request(methodTurnInterrupt, nil, a.APITimeout())
 	return err
 }

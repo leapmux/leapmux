@@ -39,6 +39,14 @@ type Agent struct {
 	// retryResolution folds the native retry rows of one turn and resolves
 	// them at the first genuine model output after the retry.
 	retryResolution providerkit.RetryResolution
+	// lastFailureType is the error_type of the last failed or exhausted
+	// retry_state frame of the main session, "" for none. The end of the
+	// prompt takes it, and the start of the next prompt forgets it.
+	lastFailureType string
+	// compactionPrompt states that the running prompt is Grok's compaction
+	// (sendCompactPrompt). The end of the prompt takes it, and the start of
+	// the next prompt forgets it.
+	compactionPrompt bool
 	// chunkStreamStart names the model request that produced the last message
 	// chunk, through the streamStartMs of its notification metadata. A retry
 	// starts a new request, so the first chunk of a new stream makes the
@@ -139,5 +147,63 @@ func grokSteerContent(content string, attachments []agent.ClassifiedAttachment) 
 // makes the summary turn, and reports its size on an `auto_compact_completed`
 // notification.
 func (a *Agent) CompactContext() error {
-	return a.SendInput(grokCompactCommand, nil)
+	return a.sendCompactPrompt(nil, grokCompactCommand)
+}
+
+// SendInput starts one prompt. Grok runs a typed /compact as the turn of
+// CompactContext, so such a prompt starts the same compaction turn.
+func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
+	if !grokStartsCompaction(content, attachments) {
+		return a.Base.SendInput(content, attachments)
+	}
+	return a.sendCompactPrompt(nil, content)
+}
+
+// SendInputForSession is SendInput for the session that the caller validated.
+func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
+	if !grokStartsCompaction(content, attachments) {
+		return a.Base.SendInputForSession(sessionID, content, attachments)
+	}
+	return a.sendCompactPrompt(&sessionID, content)
+}
+
+// grokStartsCompaction reports whether Grok runs a prompt of content and
+// attachments as its compaction: /compact alone. The slash commands of Grok
+// Build 1.0.70 state "/compact takes no arguments.", so a /compact with
+// arguments runs no compaction. A message with an attachment is a
+// conversation turn.
+func grokStartsCompaction(content string, attachments []*leapmuxv1.Attachment) bool {
+	name, args, ok := providerkit.SlashCommand(content)
+	return ok && name == strings.TrimPrefix(grokCompactCommand, "/") && args == "" && len(attachments) == 0
+}
+
+// sendCompactPrompt sends content as a prompt that runs Grok's compaction
+// turn. expected is the session that the input was written for, or nil for the
+// current session. The base offers the prompt's preparation for the current
+// session only, so the preparation checks expected against the prompt's
+// session itself. The check before the send refuses another session before the
+// base claims the turn, as the base's own check does. A failed native write
+// leaves the mark on the prompt that never ran, and the start of the next
+// prompt clears it.
+func (a *Agent) sendCompactPrompt(expected *string, content string) error {
+	if err := providerkit.CheckInputSession(expected, a.CurrentSessionID()); err != nil {
+		return err
+	}
+	return a.SendPreparedPrompt(content, nil, a.prepareCompactPrompt(expected))
+}
+
+// prepareCompactPrompt returns the preparation of a compaction prompt for the
+// session expected, or for any session when expected is nil. It receives the
+// session of the prompt, refuses another session than expected, and otherwise
+// marks the prompt as the compaction.
+func (a *Agent) prepareCompactPrompt(expected *string) func(sessionID string) error {
+	return func(sessionID string) error {
+		if err := providerkit.CheckInputSession(expected, sessionID); err != nil {
+			return err
+		}
+		a.stateMu.Lock()
+		a.compactionPrompt = true
+		a.stateMu.Unlock()
+		return nil
+	}
 }

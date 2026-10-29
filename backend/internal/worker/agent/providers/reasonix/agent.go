@@ -39,6 +39,10 @@ type Agent struct {
 	// plan approval after streaming the proposal, so the observer saves this text
 	// for a possible fresh-context execution. Guarded by Base.Mu.
 	planDraft strings.Builder
+	// failureRecord is the failure that the last status update of a failed
+	// turn stated. The end of the prompt takes it, and the start of the next
+	// prompt forgets it. Guarded by Base.Mu.
+	failureRecord *reasonixFailureRecord
 }
 
 // Agent steers. Manager.SupportsSteering answers false, with no build error, for a

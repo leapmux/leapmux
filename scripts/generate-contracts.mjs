@@ -2642,6 +2642,13 @@ export const PROVIDER_PROTOCOLS = [
         tsType: 'CommandCodeTool',
         doc: 'native tool names',
       },
+      {
+        key: 'stopReasons',
+        goTable: 'StopReason',
+        tsTable: 'STOP_REASON',
+        tsType: 'CommandCodeStopReason',
+        doc: '`stopReason` values of `turn/completed` that the readers compare',
+      },
     ],
   },
   {
@@ -3943,6 +3950,16 @@ export const PROVIDER_PROTOCOLS = [
         tsTable: 'AUTO_MODE_SWITCH_RESPONSE',
         tsType: 'CopilotAutoModeSwitchResponse',
         doc: 'answers to the automatic model switch ask',
+      },
+      // Both sides, because the worker classifies a failed turn by the codes of
+      // `session.error`, and the browser words the reason of a model switch from
+      // the same field of `auto_mode_switch.requested`.
+      {
+        key: 'errorCodes',
+        goTable: 'ErrorCode',
+        tsTable: 'ERROR_CODE',
+        tsType: 'CopilotErrorCode',
+        doc: '`errorCode` values of `session.error` and `auto_mode_switch.requested`',
       },
       {
         key: 'samplingDecisions',

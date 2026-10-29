@@ -286,8 +286,8 @@ func TestOrderedTranscriptKeepsTheOldRowAndSkipsAnEffectAfterSessionReplacement(
 	// sink at once.
 	services.ScheduleUsageLimitRetry(time.Now().Add(time.Hour), []byte(`{"reset":1}`))
 	services.ScheduleServerErrorRetry([]byte(`{"error":1}`))
-	services.CancelUsageLimitRetry()
-	services.CancelServerErrorRetry()
+	services.CancelUsageLimitRetry("the usage limit lifted")
+	services.CancelServerErrorRetry("the turn ended")
 	sink.UpdateSessionID("new")
 	sink.PersistErr = nil
 	require.NoError(t, queue.Flush())
@@ -297,6 +297,27 @@ func TestOrderedTranscriptKeepsTheOldRowAndSkipsAnEffectAfterSessionReplacement(
 	assert.Zero(t, sink.AutoCancelCount())
 	active, _ := sink.LastTurnActive()
 	assert.True(t, active)
+}
+
+// Each ordered cancellation waits behind the earlier output and then reaches
+// the sink with the kind and the reason that the provider gave.
+func TestOrderedProviderServicesForwardEachCancellationReason(t *testing.T) {
+	t.Parallel()
+	var queue agent.OutputQueue
+	sink := &agenttest.Sink{}
+	services := agent.NewOrderedProviderServices(&queue, agent.NewProviderServices(sink))
+
+	services.CancelUsageLimitRetry("the usage limit lifted")
+	require.NoError(t, queue.Flush())
+	require.Equal(t, 1, sink.AutoCancelCount())
+	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, sink.LastAutoCancel())
+	assert.Equal(t, "the usage limit lifted", sink.LastAutoCancelReason())
+
+	services.CancelServerErrorRetry("the turn ended")
+	require.NoError(t, queue.Flush())
+	require.Equal(t, 2, sink.AutoCancelCount())
+	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, sink.LastAutoCancel())
+	assert.Equal(t, "the turn ended", sink.LastAutoCancelReason())
 }
 
 type batchMutationSink struct {

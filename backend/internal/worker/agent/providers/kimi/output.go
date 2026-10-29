@@ -8,10 +8,12 @@ import (
 	"maps"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/modelvendor"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
@@ -212,6 +214,9 @@ func (a *Agent) handleTurnStarted(event kimiEvent) {
 	a.turnActive = true
 	a.turnSteerable = kimiOriginTakesSteer(payload.Origin.Kind)
 	a.TurnToolUses = 0
+	// A new main turn replaces the turn that a pending usage limit belongs to.
+	// See kimiPendingUsageLimit.
+	a.usageTurnSeq++
 	run.turnID = payload.TurnID
 	run.turnActive = true
 	a.Mu.Unlock()
@@ -261,16 +266,30 @@ func kimiOriginTakesSteer(kind string) bool {
 
 // kimiTurnEnded is the turn.ended payload.
 type kimiTurnEnded struct {
-	TurnID int64         `json:"turnId"`
-	Reason string        `json:"reason"`
-	Error  *kimiEventErr `json:"error"`
+	TurnID int64  `json:"turnId"`
+	Reason string `json:"reason"`
+	// Time is when the server ended the turn, in Unix milliseconds. Zero when
+	// the event states none.
+	Time  int64         `json:"time"`
+	Error *kimiEventErr `json:"error"`
 }
 
 // kimiEventErr is the error object of a failed turn and of an `error` event.
+//
+// The server also states `retryable`, which LeapMux does not read: it is a
+// per-code table entry, true for a rate limit of a suspended account and false
+// for every 5xx, so it cannot decide a retry.
 type kimiEventErr struct {
-	Code      string `json:"code"`
-	Message   string `json:"message"`
-	Retryable bool   `json:"retryable"`
+	Code    string `json:"code"`
+	Name    string `json:"name"`
+	Message string `json:"message"`
+	// Details is present only for a failure with an HTTP status.
+	Details *kimiEventErrDetails `json:"details"`
+}
+
+// kimiEventErrDetails is the `details` object of a failure with an HTTP status.
+type kimiEventErrDetails struct {
+	StatusCode *int `json:"statusCode"`
 }
 
 // key identifies the failure, so the `error` event that repeats it can be told
@@ -280,6 +299,70 @@ func (e *kimiEventErr) key() string {
 		return ""
 	}
 	return e.Code + "\x00" + e.Message
+}
+
+// The `error.code` and `error.name` words of a failed turn that the
+// automatic-retry verdict reads.
+const (
+	kimiErrorCodeConnection = "provider.connection_error"
+	kimiErrorCodeOverloaded = "provider.overloaded"
+	kimiErrorCodeAPI        = "provider.api_error"
+	kimiErrorCodeRateLimit  = "provider.rate_limit"
+	// kimiErrorNameQuotaExhausted names both the 5-hour limit of the plan and a
+	// suspended account, under the code provider.api_error and the status 429.
+	// Only the message tells the two apart.
+	kimiErrorNameQuotaExhausted = "APIProviderQuotaExhaustedError"
+)
+
+// kimiTransientAPIStatus reports whether an HTTP status of provider.api_error
+// states a transient failure. Kimi Code retries these statuses itself, so the
+// turn ends on one only after its own retries ran out.
+func kimiTransientAPIStatus(status int) bool {
+	switch status {
+	case 408, 500, 502, 503, 504, 529:
+		return true
+	default:
+		return false
+	}
+}
+
+// kimiTurnFailure classifies the end of a main turn for the automatic-retry
+// queue. observedAt is when the turn ended. Only a failed turn can be retried,
+// so a completed, cancelled, or blocked turn gives NotRetryable.
+func kimiTurnFailure(payload kimiTurnEnded, observedAt time.Time) providerkit.TurnFailure {
+	notRetryable := providerkit.TurnFailure{Kind: providerkit.TurnFailureNotRetryable}
+	failure := payload.Error
+	if payload.Reason != contracts.KimiTurnEndFailed || failure == nil {
+		return notRetryable
+	}
+	vendor, vendorStated := modelvendor.ClassifyError(failure.Message, observedAt)
+	if vendorStated && vendor.Definitive {
+		return vendor.Failure
+	}
+	// The name precedes the code: a quota failure arrives under the code
+	// provider.api_error with the status 429, which no transient status matches.
+	if failure.Name == kimiErrorNameQuotaExhausted {
+		if vendorStated {
+			return vendor.Failure
+		}
+		// A quota of the plan that the message does not describe. The plan-usage
+		// read can still state when it lifts. See kimiPendingUsageLimit.
+		return providerkit.TurnFailure{Kind: providerkit.TurnFailureUsageLimited, Cause: "Kimi Code reported an exhausted quota"}
+	}
+	switch failure.Code {
+	case kimiErrorCodeConnection, kimiErrorCodeOverloaded:
+		return providerkit.TurnFailure{Kind: providerkit.TurnFailureTransient, Cause: "Kimi Code reported " + failure.Code}
+	case kimiErrorCodeAPI:
+		if failure.Details != nil && failure.Details.StatusCode != nil && kimiTransientAPIStatus(*failure.Details.StatusCode) {
+			return providerkit.TurnFailure{Kind: providerkit.TurnFailureTransient, Cause: fmt.Sprintf("Kimi Code reported the HTTP status %d", *failure.Details.StatusCode)}
+		}
+	case kimiErrorCodeRateLimit:
+		if vendorStated {
+			return vendor.Failure
+		}
+		return providerkit.TurnFailure{Kind: providerkit.TurnFailureRateLimited, Cause: "Kimi Code reported a rate limit"}
+	}
+	return notRetryable
 }
 
 // kimiTurnCompletion maps a turn's end reason onto LeapMux's completion.
@@ -334,11 +417,20 @@ func (a *Agent) handleTurnEnded(event kimiEvent) {
 	run.turnActive = false
 	a.Mu.Unlock()
 	a.PublishTurnActive()
+
+	observedAt := a.clock.Now()
+	if payload.Time > 0 {
+		observedAt = time.UnixMilli(payload.Time).UTC()
+	}
+	failure := kimiTurnFailure(payload, observedAt)
+	// The record precedes the read that the turn end requests, so that read
+	// takes it. A verdict that the read cannot complete applies now.
+	deferred := a.deferUsageLimit(failure, event.Raw)
 	// The turn used the plan, so its windows moved.
 	a.requestUsageRefresh()
-
-	retry := payload.Reason == contracts.KimiTurnEndFailed && payload.Error != nil && payload.Error.Retryable
-	providerkit.ScheduleOrCancelServerErrorAutoRetry(a.sink, retry, event.Raw)
+	if !deferred {
+		providerkit.ApplyTurnFailure(a.sink, failure, event.Raw)
+	}
 }
 
 // kimiWithContextUsage adds the last context readout to a turn end's metadata,
@@ -725,6 +817,17 @@ func (a *Agent) handleCompactionBlocked(event kimiEvent) {
 }
 
 // handleCompactionFinished releases the queue after a manual result.
+//
+// The end of a manual compaction then applies its one verdict, after the
+// stored end and the release, as a main turn end applies its verdict. A
+// compaction never schedules a retry, whatever its outcome (CompactionEnd).
+// The flag allows one verdict for each manual compaction, so a repeated end
+// applies none.
+//
+// A usage-limit verdict that waits for the plan-usage read
+// (kimiPendingUsageLimit) cannot land after this verdict. The compaction's
+// start published an active turn, which retires the writer that the waiting
+// verdict captured. usageTurnSeq therefore needs no advance here.
 func (a *Agent) handleCompactionFinished(event kimiEvent) {
 	run := a.run(event.AgentID)
 	if sink := a.runSink(run); sink != nil {
@@ -741,6 +844,7 @@ func (a *Agent) handleCompactionFinished(event kimiEvent) {
 	a.Mu.Unlock()
 	if manual {
 		a.PublishTurnActive()
+		providerkit.ApplyTurnFailure(a.sink, providerkit.CompactionEnd(), nil)
 	}
 }
 

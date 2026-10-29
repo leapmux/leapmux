@@ -178,6 +178,7 @@ func (a *Agent) finishOutput(completion agent.MessageCompletion) {
 	a.compactionAck = nil
 	a.manualCompactionID = ""
 	a.manualCompactionReady = false
+	a.manualCompactionVerdictDue = false
 	a.manualFollowupSending = false
 	a.manualFollowupBusy = false
 	a.Mu.Unlock()

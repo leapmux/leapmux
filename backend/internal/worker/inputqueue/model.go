@@ -314,8 +314,11 @@ type PreparedDispatch struct {
 }
 
 type AcceptedTranscript struct {
-	ID                             string
-	AgentID                        string
+	ID      string
+	AgentID string
+	// Kind is the kind of the accepted input. The queue logs the delivery of
+	// an automatic retry by it.
+	Kind                           leapmuxv1.AgentInputKind
 	Seq                            int64
 	Content                        []byte
 	ContentCompression             leapmuxv1.ContentCompression

@@ -141,7 +141,7 @@ func (a *Agent) applyStatus(status kimiStatus) {
 // applyStatusLocked is applyStatus for a caller that holds a.Mu.
 func (a *Agent) applyStatusLocked(status kimiStatus) {
 	if status.Model != "" {
-		a.settings.model = status.Model
+		a.setModelLocked(status.Model)
 	}
 	if a.settings.effort != agent.EffortAuto && status.ThinkingLevel != "" {
 		a.settings.effort = status.ThinkingLevel
@@ -154,6 +154,17 @@ func (a *Agent) applyStatusLocked(status kimiStatus) {
 	if status.MaxContextTokens > 0 || status.ContextTokens > 0 {
 		a.recordContextLocked(status.ContextTokens, status.MaxContextTokens)
 	}
+}
+
+// setModelLocked records the model that the session runs. Both settings paths
+// reach it: the status read after UpdateSettings, and a move that the server
+// reports by itself. A move to another model replaces the model that a pending
+// usage limit belongs to (see kimiPendingUsageLimit). The caller holds a.Mu.
+func (a *Agent) setModelLocked(model string) {
+	if model != a.settings.model {
+		a.usageTurnSeq++
+	}
+	a.settings.model = model
 }
 
 // foldStatus folds a status read into the settings and the context readout,
@@ -469,7 +480,7 @@ func (a *Agent) handleStatusUpdated(event kimiEvent) {
 		a.settings.swarmMode = *update.SwarmMode
 	}
 	if update.Model != "" {
-		a.settings.model = update.Model
+		a.setModelLocked(update.Model)
 	}
 	if update.ThinkingEffort != "" && a.settings.effort != agent.EffortAuto {
 		a.settings.effort = update.ThinkingEffort

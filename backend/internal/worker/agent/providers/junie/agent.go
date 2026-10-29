@@ -27,6 +27,12 @@ type Agent struct {
 	// childTailMu guards the readers keyed by their ACP child session IDs.
 	childTailMu sync.Mutex
 	childTails  map[string]*junieChildTail
+	// failureRecord is the error that the last sessionFailure of the main
+	// session stated in the running turn. Each turn end reads it, and the
+	// start of the next turn forgets it: a prompt of LeapMux's
+	// (Hooks.PromptPrepared), or a turn that a steer started. Guarded by
+	// Base.Mu.
+	failureRecord *junieFailureRecord
 
 	// goalMu guards the goal-report bookkeeping. It is separate from Base.Mu so
 	// the goal fold never takes the base lock.
@@ -38,6 +44,15 @@ type Agent struct {
 	// goalLast is the fingerprint of the last goal report, and nil when the
 	// goal is absent. It separates a restatement from a transition.
 	goalLast *junieGoalFingerprint
+}
+
+// clockOrReal returns the clock that Start configures, or the real clock for an
+// agent that no start configured.
+func (a *Agent) clockOrReal() quartz.Clock {
+	if a.clock == nil {
+		return quartz.NewReal()
+	}
+	return a.clock
 }
 
 // This assertion makes a missing Agent method a compile error.
@@ -60,10 +75,20 @@ const junieSteerMethod = "_session/steering"
 // end, so the agent turn ends there with no turn-end row. A turn LeapMux
 // started ends at its session/prompt response, where ending no agent turn is a
 // no-op.
+//
+// Junie sends the marker in a turn of LeapMux's too, and the marker of an
+// agent turn can arrive while that turn still waits behind a prompt of
+// LeapMux's, which drops the turn. Neither marker ends an agent turn, so the
+// prompt's own end decides, from the same recorded failure.
 func (a *Agent) observeJunieTurnEnd(_ string, metadata map[string]json.RawMessage) {
-	if providerkit.RawBool(metadata["lastRequestComplete"]) {
-		a.EndAgentTurnWithoutRow()
+	if !providerkit.RawBool(metadata["lastRequestComplete"]) {
+		return
 	}
+	a.Mu.Lock()
+	record := a.failureRecord
+	a.Mu.Unlock()
+	verdict := junieTurnVerdict(nil, a.IsStopped() || a.InterruptRequested(), record, a.clockOrReal().Now())
+	a.EndAgentTurnWithoutRowWithVerdict(verdict)
 }
 
 // SteerInput injects text into the running turn through Junie's own
@@ -93,8 +118,11 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 		}
 		// A steer that started a new turn of Junie's own runs outside the
 		// prompt of LeapMux: track it as an agent turn so the turn state and
-		// the reader follow it to its own end.
+		// the reader follow it to its own end. The new turn runs after the
+		// prompt's own work ended, so the prompt's failure says nothing
+		// about it, and a failure recorded from here on is the new turn's.
 		if reply.Outcome == "startedNewTurn" {
+			a.clearJunieFailure()
 			a.BeginAgentTurn()
 		}
 	})

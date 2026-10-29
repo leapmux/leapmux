@@ -54,7 +54,7 @@ func (museProvider) Classify(raw json.RawMessage) agent.NotificationClassificati
 	if json.Unmarshal(raw, &message) != nil {
 		return agent.NotificationClassification{}
 	}
-	if message.Method == contracts.MuseMethodTurnRetryScheduled {
+	if message.Method == contracts.MuseMethodTurnRetryScheduled || message.Method == contracts.MuseMethodTurnModelRetryScheduled {
 		return agent.APIRetryNotification()
 	}
 	switch message.Method {

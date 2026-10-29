@@ -12,7 +12,17 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit/providerkittest"
 )
+
+// compactionVerdictOps is the retry operation that the end of one manual
+// compaction applies: CompactionEnd's cancellation of the server-error retry.
+func compactionVerdictOps() []agenttest.TimelineEntry {
+	reference := &agenttest.Sink{}
+	providerkit.ApplyTurnFailure(reference, providerkit.CompactionEnd(), nil)
+	return reference.Timeline()
+}
 
 func newLettaCompactionTestAgent(t *testing.T) (*fakeAppServer, *Agent, *agenttest.Sink) {
 	t.Helper()
@@ -145,8 +155,10 @@ func TestLettaManualCompactionLifecycle(t *testing.T) {
 	}
 	a.HandleOutput([]byte(lettaLiveTurnFinished))
 	assertLettaActive(t, sink, true)
+	assert.Empty(t, providerkittest.TurnEndAndRetryOps(sink.Timeline()), "a running compaction applies no verdict")
 	a.HandleOutput(compactResponse(t, command["request_id"], true))
 	assertLettaActive(t, sink, false)
+	assert.Equal(t, compactionVerdictOps(), providerkittest.TurnEndAndRetryOps(sink.Timeline()))
 	require.Len(t, observed.noticesAtRelease, 1)
 	var envelope struct {
 		Delta json.RawMessage `json:"delta"`
@@ -158,6 +170,7 @@ func TestLettaManualCompactionLifecycle(t *testing.T) {
 	assert.Equal(t, "input", fake.nextCommand(t)["type"])
 	a.HandleOutput(compactResponse(t, command["request_id"], true))
 	assertLettaActive(t, sink, true)
+	assert.Equal(t, compactionVerdictOps(), providerkittest.TurnEndAndRetryOps(sink.Timeline()), "a replayed reply applies no second verdict")
 }
 
 func TestLettaManualCompactionFailures(t *testing.T) {
@@ -199,6 +212,7 @@ func TestLettaManualCompactionFailures(t *testing.T) {
 				a.HandleOutput(compactResponse(t, command["request_id"], tc.success))
 			}
 			assertLettaActive(t, sink, false)
+			assert.Equal(t, compactionVerdictOps(), providerkittest.TurnEndAndRetryOps(sink.Timeline()))
 			if tc.help {
 				assert.Empty(t, sink.SessionInfoValues(contracts.SessionInfoKeyCompaction))
 				assert.Empty(t, sink.LeapMuxNotifications())
@@ -234,6 +248,7 @@ func TestLettaManualCompactionInterrupt(t *testing.T) {
 	assert.Equal(t, "app_server_info", fake.nextCommand(t)["type"])
 	a.HandleOutput(compactResponse(t, command["request_id"], true))
 	assertLettaActive(t, sink, false)
+	assert.Equal(t, compactionVerdictOps(), providerkittest.TurnEndAndRetryOps(sink.Timeline()))
 }
 
 func TestLettaManualCompactionAdmission(t *testing.T) {
@@ -302,6 +317,7 @@ func TestLettaManualCompactionWriteFailure(t *testing.T) {
 	a.Mu.Unlock()
 	require.Error(t, a.SendInput("/compact", nil))
 	assertLettaActive(t, sink, false)
+	assert.Empty(t, providerkittest.TurnEndAndRetryOps(sink.Timeline()), "a compaction that never reached Letta applies no verdict")
 	require.NoError(t, a.Interrupt(agent.StopContext{}))
 	a.Mu.Lock()
 	a.ws = connection
@@ -311,6 +327,7 @@ func TestLettaManualCompactionWriteFailure(t *testing.T) {
 	assert.Equal(t, "execute_command", command["type"])
 	a.HandleOutput(compactResponse(t, command["request_id"], true))
 	assertLettaActive(t, sink, false)
+	assert.Equal(t, compactionVerdictOps(), providerkittest.TurnEndAndRetryOps(sink.Timeline()))
 }
 
 func TestLettaManualCompactionPersistenceFailureStillSettles(t *testing.T) {
@@ -352,4 +369,22 @@ func TestLettaManualCompactionIgnoresUnownedDeltas(t *testing.T) {
 			assertLettaActive(t, sink, true)
 		})
 	}
+}
+
+// A manual compaction whose model request fails with an error that Letta marks
+// as retryable still ends with the compaction's verdict alone, once. The turn
+// end that Letta sends during the command decides nothing.
+func TestLettaFailedManualCompactionNeverSchedulesARetry(t *testing.T) {
+	t.Parallel()
+	fake, a, sink := newLettaCompactionTestAgent(t)
+	require.NoError(t, a.SendInput("/compact", nil))
+	command := fake.nextCommand(t)
+	a.HandleOutput(compactDelta(t, "slash_command_start", "/compact", nil))
+	a.HandleOutput(lettaErrorMessageDelta(t, "", true))
+	a.HandleOutput([]byte(`{"type":"turn_finished","turn_id":"turn-compact","stop_reason":"llm_api_error","error":"503: Service Unavailable","runtime":{"agent_id":"agent-local-1","conversation_id":"local-conv-1"}}`))
+	failed := false
+	a.HandleOutput(compactDelta(t, "slash_command_end", "/compact", &failed))
+	a.HandleOutput(compactResponse(t, command["request_id"], false))
+	assertLettaActive(t, sink, false)
+	assert.Equal(t, compactionVerdictOps(), providerkittest.TurnEndAndRetryOps(sink.Timeline()))
 }

@@ -1,6 +1,7 @@
 package fastagent
 
 import (
+	"encoding/json"
 	"sync"
 
 	"github.com/coder/quartz"
@@ -36,6 +37,11 @@ type Agent struct {
 	childClaims     map[string]*fastagentChildState
 	childStop       chan struct{}
 	archiveWG       sync.WaitGroup
+	// lastChunkText and lastChunkRaw record the last non-empty agent message
+	// chunk of the main session, and its raw update, for the turn-failure
+	// verdict (observeFastagentSessionUpdate). Guarded by Mu.
+	lastChunkText string
+	lastChunkRaw  json.RawMessage
 }
 
 // This assertion makes a missing Agent method a compile error.

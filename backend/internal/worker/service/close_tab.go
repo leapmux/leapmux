@@ -546,7 +546,7 @@ func (svc *Service) closeAgentTabCommon(userID, agentID string, action leapmuxv1
 		// and are invisible to the reconciler). Free each child's span
 		// tracker/caches alongside the row teardown.
 		svc.Agents.StopAgent(agentID)
-		svc.Output.ClearAgentRuntimeState(agentID)
+		svc.Output.ClearAgentRuntimeState(agentID, CleanupTabClosed)
 		svc.agentCleanups.closeTab(agentID)
 		// Prune all child sinks and per-child state in one pass. Calling
 		// CleanupAgent per child would scan rootSinks for each (O(children x

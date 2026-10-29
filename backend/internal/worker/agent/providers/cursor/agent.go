@@ -1,6 +1,8 @@
 package cursor
 
 import (
+	"encoding/json"
+
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/tooltranscript"
@@ -11,6 +13,12 @@ type Agent struct {
 	acp.Base
 	// bypassPermissions records the immutable --force choice used to start this process.
 	bypassPermissions bool
+
+	// lastChunkText and lastChunkRaw record the last agent message chunk of
+	// the root session, and its raw update, for the turn-failure verdict
+	// (recordCursorRootUpdate). Guarded by Base's Mu.
+	lastChunkText string
+	lastChunkRaw  json.RawMessage
 
 	// taskToolCalls holds the toolCallId of every `task` tool call the spawn
 	// hook claimed. The closing hook needs it: Cursor reports "this ran in the

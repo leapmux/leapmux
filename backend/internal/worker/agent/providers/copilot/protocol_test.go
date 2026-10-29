@@ -44,13 +44,14 @@ func TestCopilotSessionEventPreservesUnknownEventKinds(t *testing.T) {
 
 func TestNativeCopilotIdleDoesNotInventOrRepeatATurnEnd(t *testing.T) {
 	sink := &agenttest.Sink{}
-	agent := &Agent{sink: agent.NewProviderServices(sink), sessionID: "session"}
+	// The connection supplies the clock that an idle without a timestamp reads.
+	a := newCopilotControlAgent(agent.NewProviderServices(sink))
 	idle := []byte(`{"method":"session.event","params":{"sessionId":"session","event":{"type":"session.idle","data":{}}}}`)
-	agent.HandleOutput(idle)
+	a.HandleOutput(idle)
 	require.Empty(t, sink.Messages(), "idle before a turn creates no divider")
-	agent.HandleOutput([]byte(`{"method":"session.event","params":{"sessionId":"session","event":{"type":"assistant.turn_start","data":{}}}}`))
-	agent.HandleOutput(idle)
-	agent.HandleOutput(idle)
+	a.HandleOutput([]byte(`{"method":"session.event","params":{"sessionId":"session","event":{"type":"assistant.turn_start","data":{}}}}`))
+	a.HandleOutput(idle)
+	a.HandleOutput(idle)
 	var ends int
 	for _, message := range sink.Messages() {
 		if message.TurnEnd {

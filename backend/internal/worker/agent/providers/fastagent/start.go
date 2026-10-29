@@ -85,10 +85,11 @@ func (a *Agent) hooks(model string, sink agent.ProviderServices) acp.Hooks {
 		BeforeWaitCleanup:          a.finishChildArchiveReads,
 		AfterWaitCleanup:           a.finishArchiveReads,
 		DisableHostTerminal:        a.nativeCommands,
-		SessionUpdateHandler:       a.observePromptUpdate,
+		SessionUpdateHandler:       a.observeSessionUpdate,
 		PreparePrompt:              a.prepareAudioPrompt,
 		OpenRootTranscript:         a.openRootTranscript,
-		PromptEnded:                a.retryChildArchives,
+		PromptPrepared:             a.clearFastagentChunk,
+		PromptEnded:                a.finishFastagentPrompt,
 		SessionNotificationMetadata: func(_ string, metadata map[string]json.RawMessage) {
 			broadcastFastagentStatusLine(sink, metadata)
 		},

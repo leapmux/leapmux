@@ -231,16 +231,28 @@ func (b *FamilyBase) followChildSession(rootSessionID, callID, childSessionID st
 			slog.Warn("load the OpenCode subagent session", "agent_id", b.AgentID(), "call_id", callID, "session_id", childSessionID, "error", err)
 			return
 		}
-		_ = b.WithSessionID(func(currentRoot string) error {
-			b.childSessionsMu.Lock()
-			if currentRoot == rootSessionID && b.childSessions[callID] == child {
-				child.modelID = modelID
-				child.loaded = true
-			}
-			b.childSessionsMu.Unlock()
-			return nil
-		})
+		b.markChildSessionLoaded(rootSessionID, callID, child, modelID)
 	}()
+}
+
+// markChildSessionLoaded records that the agent loaded the child session that
+// follows callID, while rootSessionID is still the current root and child
+// still follows callID.
+//
+// It takes no session lock. A root replacement takes that lock as soon as the
+// admitted load ends, and holds it through its whole session/new round trip.
+// The replacement then removes every child of the outgoing root under
+// childSessionsMu (clearSessionState). So a child that this marks just before
+// the swap is removed, and a call after the removal finds no child to mark.
+func (b *FamilyBase) markChildSessionLoaded(rootSessionID, callID string, child *openCodeChildSession, modelID string) {
+	current := b.CurrentSessionID()
+	b.childSessionsMu.Lock()
+	defer b.childSessionsMu.Unlock()
+	if current != rootSessionID || b.childSessions[callID] != child {
+		return
+	}
+	child.modelID = modelID
+	child.loaded = true
 }
 
 // forgetChildSession ends the following of the child session of callID. The

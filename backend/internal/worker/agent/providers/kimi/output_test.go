@@ -4,14 +4,18 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit/providerkittest"
 )
 
 // kimiOutputRig is an agent with no server, fed events of session_1.
@@ -402,6 +406,77 @@ func TestKimiCompactionEndClearsTheLiveKeyAndStoresTheEnd(t *testing.T) {
 	}
 }
 
+// kimiCompactionEnd is the timeline of the verdict that a manual compaction
+// applies: a compaction writes no turn-end row.
+var kimiCompactionEnd = []agenttest.TimelineEntry{{
+	Op: "cancel_server_error", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR,
+	Reason: providerkit.TurnEndedOnCompaction,
+}}
+
+// The end of a manual compaction applies one verdict that cancels the
+// server-error retry, whatever the outcome. It follows the stored end of the
+// compaction, and a repeated end applies no second verdict.
+func TestKimiManualCompactionEndCancelsTheServerErrorRetry(t *testing.T) {
+	t.Parallel()
+	for _, end := range []map[string]any{
+		{"type": contracts.KimiEventCompactionCompleted, "result": map[string]any{"summary": "Keep the task state.", "compactedCount": 3, "tokensBefore": 120, "tokensAfter": 20}},
+		{"type": contracts.KimiEventCompactionCancelled},
+	} {
+		t.Run(end["type"].(string), func(t *testing.T) {
+			t.Parallel()
+			rig := newKimiOutputRig(t)
+			rig.feed(t, map[string]any{"type": contracts.KimiEventCompactionStarted, "trigger": "manual"})
+			rig.feed(t, end)
+			assert.Equal(t, kimiCompactionEnd, providerkittest.TurnEndAndRetryOps(rig.sink.Timeline()))
+			timeline := rig.sink.Timeline()
+			require.Len(t, timeline, 2)
+			assert.Equal(t, "notification", timeline[0].Op, "the stored end precedes the verdict")
+			rig.feed(t, end)
+			assert.Equal(t, kimiCompactionEnd, providerkittest.TurnEndAndRetryOps(rig.sink.Timeline()), "a repeated end applies no second verdict")
+			assert.Zero(t, rig.sink.AutoScheduleCount())
+		})
+	}
+}
+
+// A compaction inside a conversation turn, and a subagent's compaction, end no
+// turn of the queue, so they apply no verdict.
+func TestKimiCompactionThatEndsNoQueueTurnAppliesNoVerdict(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		start map[string]any
+	}{
+		{name: "an automatic compaction", start: map[string]any{"type": contracts.KimiEventCompactionStarted, "trigger": "auto"}},
+		{name: "a subagent's manual compaction", start: map[string]any{"type": contracts.KimiEventCompactionStarted, "trigger": "manual", "agentId": "agent-1"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rig := newKimiOutputRig(t)
+			rig.agent.children.link("agent-1", &kimiChild{childAgentID: "child-1", rowKey: "session_1/agent-1"})
+			rig.feed(t, tc.start)
+			end := map[string]any{"type": contracts.KimiEventCompactionCompleted}
+			if agentID, ok := tc.start["agentId"]; ok {
+				end["agentId"] = agentID
+			}
+			rig.feed(t, end)
+			assert.Empty(t, providerkittest.TurnEndAndRetryOps(rig.sink.Timeline()))
+		})
+	}
+}
+
+// The compaction's end does not reach the next turn: that turn applies its own
+// verdict.
+func TestKimiTurnAfterManualCompactionAppliesItsOwnVerdict(t *testing.T) {
+	t.Parallel()
+	rig := newKimiOutputRig(t)
+	rig.feed(t, map[string]any{"type": contracts.KimiEventCompactionStarted, "trigger": "manual"})
+	rig.feed(t, map[string]any{"type": contracts.KimiEventCompactionCompleted})
+	rig.startTurn(t, 0, contracts.KimiOriginUser)
+	rig.feed(t, kimiFixturePayload(t, kimiTurnEnded500))
+	want := append(append([]agenttest.TimelineEntry(nil), kimiCompactionEnd...), providerkittest.TurnEndThen(providerkit.TurnFailure{Kind: providerkit.TurnFailureTransient})...)
+	assert.Equal(t, want, providerkittest.TurnEndAndRetryOps(rig.sink.Timeline()))
+}
+
 func TestKimiChildCompactionPublishesOnTheChildSink(t *testing.T) {
 	t.Parallel()
 	rig := newKimiOutputRig(t)
@@ -438,14 +513,68 @@ func TestKimiFailedTurn(t *testing.T) {
 		assert.Equal(t, 2, rig.sink.NotificationCount())
 	})
 
-	t.Run("a retryable failure schedules a retry", func(t *testing.T) {
+	// The verdict lands after the turn-end row. The model of this rig is not a
+	// model of the plan, so a usage limit applies at once, with no plan read.
+	for _, tc := range []struct {
+		name    string
+		payload string
+		want    []kimiRetryOp
+	}{
+		{"a 5xx that the server calls not retryable schedules a server-error retry", kimiTurnEnded500, []kimiRetryOp{{op: "schedule_server_error"}}},
+		{"a rate limit schedules a server-error retry", kimiTurnEndedRateLimit, []kimiRetryOp{{op: "schedule_server_error"}}},
+		{"a connection failure schedules a server-error retry", kimiTurnEndedConnection, []kimiRetryOp{{op: "schedule_server_error"}}},
+		{
+			"a suspended account cancels both retries", kimiTurnEndedSuspended,
+			[]kimiRetryOp{{op: "cancel_usage_limit"}, {op: "cancel_server_error"}},
+		},
+		{
+			"the 5-hour limit of a model outside the plan schedules a server-error retry at once", kimiTurnEndedFiveHour,
+			[]kimiRetryOp{{op: "schedule_server_error"}},
+		},
+		{
+			"a cancelled turn cancels the server-error retry", kimiTurnEndedCancelled,
+			[]kimiRetryOp{{op: "cancel_server_error"}},
+		},
+		{
+			// The clock of the rig reads months after this stamp, so only the
+			// event's own time makes the reset plausible.
+			"a dated usage limit counts from the event's own time", kimiTurnEndedZAIUsageLimit,
+			[]kimiRetryOp{
+				{op: "schedule_usage_limit", resetAt: time.Date(2026, 7, 14, 11, 6, 14, 0, time.UTC)},
+				{op: "cancel_server_error"},
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			rig := newKimiOutputRig(t)
+			clock := testutil.NewQuartzMock(t)
+			clock.Set(time.Date(2026, 10, 28, 2, 0, 0, 0, time.UTC)).MustWait(testutil.DeadlineContext(t))
+			rig.agent.clock = clock
+			payload := kimiFixturePayload(t, tc.payload)
+			rig.startTurn(t, int(payload["turnId"].(float64)), contracts.KimiOriginUser)
+			rig.feed(t, payload)
+			require.Equal(t, append([]kimiRetryOp{{op: "turn_end"}}, tc.want...), kimiRetryOps(rig.sink.Timeline()))
+			if rig.sink.AutoScheduleCount() > 0 {
+				assert.JSONEq(t, tc.payload, string(rig.sink.LastAutoSchedule().SourcePayload), "the retry carries the turn's own event")
+			}
+			if tc.payload == kimiTurnEndedCancelled {
+				assert.Equal(t, providerkit.TurnEndedWithoutRetryableFailure, rig.sink.LastAutoCancelReason())
+			}
+		})
+	}
+
+	t.Run("a failed turn of a subagent applies no verdict", func(t *testing.T) {
 		t.Parallel()
 		rig := newKimiOutputRig(t)
 		rig.startTurn(t, 0, contracts.KimiOriginUser)
-		rig.feed(t, map[string]any{"type": contracts.KimiEventTurnEnded, "turnId": 0, "reason": "failed",
-			"error": map[string]any{"code": "provider.overloaded", "message": "busy", "retryable": true}})
-		require.Equal(t, 1, rig.sink.AutoScheduleCount())
-		assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, rig.sink.LastAutoSchedule().Kind)
+		spawnAgent(t, rig, "agent-0", "call_agent", nil)
+		failed := kimiFixturePayload(t, kimiTurnEnded500)
+		failed["agentId"] = "agent-0"
+		rig.feed(t, failed)
+		_, child := childOf(t, rig.sink, "session_1/agent-0")
+		assert.Zero(t, rig.sink.AutoScheduleCount()+rig.sink.AutoCancelCount(), "the main turn still runs")
+		assert.Zero(t, child.AutoScheduleCount()+child.AutoCancelCount(), "a child transcript owns no retry")
 	})
 
 	t.Run("an error of a subagent is recorded in its own transcript only", func(t *testing.T) {
@@ -454,6 +583,156 @@ func TestKimiFailedTurn(t *testing.T) {
 		rig.feed(t, map[string]any{"type": contracts.KimiEventError, "agentId": "agent-0", "code": "x", "message": "y"})
 		assert.Zero(t, rig.sink.NotificationCount(), "an unlinked subagent's error waits for its transcript")
 	})
+}
+
+// Captured turn.ended payloads. The first four are Kimi Code 2.3.1 probes
+// (.tmp/retry-research/partial-providers.md, section 3). The 5-hour limit and
+// the cancelled turn are real turns that LeapMux stored
+// (.tmp/retry-research/transcripts-codex-leapmuxdb.md and the LeapMux database
+// report it cites).
+const (
+	kimiTurnEnded500        = `{"type":"turn.ended","time":1793152924385,"agentId":"main","turnId":0,"reason":"failed","error":{"code":"provider.api_error","message":"500 Internal server error","name":"APIStatusError","details":{"statusCode":500,"requestId":null,"traceId":null},"retryable":false},"durationMs":1720,"interruptReason":"error","sessionId":"session_de077b83-6f83-481c-8f46-c86dd0e1a85e"}`
+	kimiTurnEndedRateLimit  = `{"type":"turn.ended","time":1793152966724,"agentId":"main","turnId":0,"reason":"failed","error":{"code":"provider.rate_limit","message":"429 Rate limit reached for requests","name":"APIProviderRateLimitError","details":{"statusCode":429,"requestId":null,"traceId":null},"retryable":true},"durationMs":2045,"interruptReason":"error","sessionId":"session_25cf2a8d-8ed0-4491-ba3e-74f32b9e652a"}`
+	kimiTurnEndedSuspended  = `{"type":"turn.ended","time":1793153035243,"agentId":"main","turnId":0,"reason":"failed","error":{"code":"provider.api_error","message":"429 Your account org-x is suspended due to insufficient balance, please recharge your account or check your plan and billing details","name":"APIProviderQuotaExhaustedError","details":{"statusCode":429,"requestId":null,"traceId":null},"retryable":false},"durationMs":25,"interruptReason":"error","sessionId":"session_ce909678-79cb-4eb8-8b03-010b7497975c"}`
+	kimiTurnEndedConnection = `{"type":"turn.ended","time":1793152989365,"agentId":"main","turnId":0,"reason":"failed","error":{"code":"provider.connection_error","message":"Connection error.","name":"APIConnectionError","retryable":true},"durationMs":1788,"interruptReason":"error","sessionId":"session_1beef9b0-8212-4296-bf0a-c9789e97ad7e"}`
+	kimiTurnEndedFiveHour   = `{"type": "turn.ended", "time": 1792675623669, "agentId": "main", "turnId": 41, "reason": "failed", "error": {"code": "provider.api_error", "message": "429 You've reached your 5-hour usage limit. Your quota will reset when the current 5-hour window ends. To continue now, purchase extra usage or upgrade your plan: https://www.kimi.com/membership/subscription?tab=quota", "name": "APIProviderQuotaExhaustedError", "details": {"statusCode": 429, "requestId": null, "traceId": "3900d0e339b554dae38e9a66be121266"}, "retryable": false}, "durationMs": 160410, "interruptReason": "error", "traceId": "3900d0e339b554dae38e9a66be121266", "sessionId": "session_a56895e5-0d92-4ef9-b0fa-9a6475fbe433"}`
+	kimiTurnEndedCancelled  = `{"type": "turn.ended", "time": 1792664655114, "agentId": "main", "turnId": 11, "reason": "cancelled", "durationMs": 179438, "interruptReason": "user_cancelled", "traceId": "7e837d04dea16bfc5d0b32546b33264d", "sessionId": "session_a56895e5-0d92-4ef9-b0fa-9a6475fbe433"}`
+	// kimiTurnEndedZAIUsageLimit is constructed: a GLM model behind Kimi Code,
+	// whose rate-limit error carries the Z.AI 1308 sentence that Pi captured
+	// (.tmp/retry-research/transcripts-kimi-pi-omp.md). The time is Pi's own
+	// stamp of that failure.
+	kimiTurnEndedZAIUsageLimit = `{"type":"turn.ended","time":1784025284809,"agentId":"main","turnId":0,"reason":"failed","error":{"code":"provider.rate_limit","message":"429 Usage limit reached for 5 hour. Your limit will reset at 2026-07-14 19:06:13","name":"APIProviderRateLimitError","details":{"statusCode":429,"requestId":null,"traceId":null},"retryable":true},"durationMs":25,"interruptReason":"error","sessionId":"session_1"}`
+)
+
+// kimiFixturePayload decodes a captured event payload for a rig's feed.
+func kimiFixturePayload(t *testing.T, raw string) map[string]any {
+	t.Helper()
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal([]byte(raw), &payload))
+	return payload
+}
+
+// kimiRetryOp is a turn-end row or a retry operation of a sink's timeline.
+type kimiRetryOp struct {
+	op string
+	// resetAt is the instant of a usage-limit schedule, zero otherwise.
+	resetAt time.Time
+}
+
+// kimiRetryOps projects a timeline onto its turn-end rows and its retry
+// operations, in call order.
+func kimiRetryOps(timeline []agenttest.TimelineEntry) []kimiRetryOp {
+	var ops []kimiRetryOp
+	for _, entry := range timeline {
+		switch entry.Op {
+		case "message", "notification", "leapmux_notification":
+			continue
+		}
+		ops = append(ops, kimiRetryOp{op: entry.Op, resetAt: entry.ResetAt})
+	}
+	return ops
+}
+
+// TestKimiTurnFailure reads each captured failure into its verdict. The
+// server's `retryable` flag never decides.
+func TestKimiTurnFailure(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		payload string
+		kind    providerkit.TurnFailureKind
+		window  providerkit.UsageWindow
+		resetAt time.Time
+	}{
+		{"a 500 is transient", kimiTurnEnded500, providerkit.TurnFailureTransient, 0, time.Time{}},
+		{"a 429 rate limit is a rate limit", kimiTurnEndedRateLimit, providerkit.TurnFailureRateLimited, 0, time.Time{}},
+		{"a suspended account is a billing block", kimiTurnEndedSuspended, providerkit.TurnFailureBillingBlocked, 0, time.Time{}},
+		{"a connection failure is transient", kimiTurnEndedConnection, providerkit.TurnFailureTransient, 0, time.Time{}},
+		{
+			"the 5-hour limit is a usage limit of a week or less", kimiTurnEndedFiveHour,
+			providerkit.TurnFailureUsageLimited, providerkit.UsageWindowWeekOrLess, time.Time{},
+		},
+		{"a cancelled turn is not retryable", kimiTurnEndedCancelled, providerkit.TurnFailureNotRetryable, 0, time.Time{}},
+		{
+			"a dated Z.AI limit lifts at its stamp", kimiTurnEndedZAIUsageLimit,
+			providerkit.TurnFailureUsageLimited, 0, time.Date(2026, 7, 14, 11, 6, 14, 0, time.UTC),
+		},
+		// The cases below are constructed from the wire shape that the probes
+		// show (events-zod.ts in Kimi Code 2.3.1).
+		{
+			// The engine overload that Kimi's own service sends as a 429. The
+			// transcripts carry this text on turn.step.retrying.
+			"an overload sent as a rate limit is transient",
+			`{"type":"turn.ended","agentId":"main","turnId":0,"reason":"failed","error":{"code":"provider.rate_limit","message":"429 The engine is currently overloaded, please try again later","name":"APIProviderRateLimitError","details":{"statusCode":429},"retryable":true}}`,
+			providerkit.TurnFailureTransient, 0, time.Time{},
+		},
+		{
+			"an overloaded code is transient",
+			`{"type":"turn.ended","agentId":"main","turnId":0,"reason":"failed","error":{"code":"provider.overloaded","message":"529 Overloaded","name":"APIStatusError","details":{"statusCode":529},"retryable":true}}`,
+			providerkit.TurnFailureTransient, 0, time.Time{},
+		},
+		{
+			"a 400 is not retryable",
+			`{"type":"turn.ended","agentId":"main","turnId":0,"reason":"failed","error":{"code":"provider.api_error","message":"400 Bad request","name":"APIStatusError","details":{"statusCode":400},"retryable":false}}`,
+			providerkit.TurnFailureNotRetryable, 0, time.Time{},
+		},
+		{
+			"an API error with no details is not retryable",
+			`{"type":"turn.ended","agentId":"main","turnId":0,"reason":"failed","error":{"code":"provider.api_error","message":"Internal server error","name":"APIStatusError","retryable":false}}`,
+			providerkit.TurnFailureNotRetryable, 0, time.Time{},
+		},
+		{
+			"an API error with a null status is not retryable",
+			`{"type":"turn.ended","agentId":"main","turnId":0,"reason":"failed","error":{"code":"provider.api_error","message":"500 Internal server error","name":"APIStatusError","details":{"statusCode":null}}}`,
+			providerkit.TurnFailureNotRetryable, 0, time.Time{},
+		},
+		{
+			// A provider type other than Kimi's own reports a balance block as a
+			// rate limit that it calls retryable.
+			"a balance block under the rate-limit code is a billing block",
+			`{"type":"turn.ended","agentId":"main","turnId":0,"reason":"failed","error":{"code":"provider.rate_limit","message":"429 Your account org-x is suspended due to insufficient balance, please recharge your account or check your plan and billing details","name":"APIProviderRateLimitError","details":{"statusCode":429},"retryable":true}}`,
+			providerkit.TurnFailureBillingBlocked, 0, time.Time{},
+		},
+		{
+			"an exhausted quota with an unknown message is a usage limit with no stated window",
+			`{"type":"turn.ended","agentId":"main","turnId":0,"reason":"failed","error":{"code":"provider.api_error","message":"429 Quota exhausted","name":"APIProviderQuotaExhaustedError","details":{"statusCode":429},"retryable":false}}`,
+			providerkit.TurnFailureUsageLimited, providerkit.UsageWindowUnstated, time.Time{},
+		},
+		{
+			"the monthly limit is a usage limit longer than a week",
+			`{"type":"turn.ended","agentId":"main","turnId":0,"reason":"failed","error":{"code":"provider.api_error","message":"429 You've reached your monthly usage limit.","name":"APIProviderQuotaExhaustedError","details":{"statusCode":429},"retryable":false}}`,
+			providerkit.TurnFailureUsageLimited, providerkit.UsageWindowLonger, time.Time{},
+		},
+		{
+			"a failed turn with no error is not retryable",
+			`{"type":"turn.ended","agentId":"main","turnId":0,"reason":"failed"}`,
+			providerkit.TurnFailureNotRetryable, 0, time.Time{},
+		},
+		{
+			"a blocked turn is not retryable",
+			`{"type":"turn.ended","agentId":"main","turnId":0,"reason":"blocked","error":{"code":"provider.connection_error","message":"Connection error.","name":"APIConnectionError","retryable":true}}`,
+			providerkit.TurnFailureNotRetryable, 0, time.Time{},
+		},
+		{
+			"a completed turn is not retryable",
+			`{"type":"turn.ended","agentId":"main","turnId":0,"reason":"completed"}`,
+			providerkit.TurnFailureNotRetryable, 0, time.Time{},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var payload kimiTurnEnded
+			require.NoError(t, json.Unmarshal([]byte(tc.payload), &payload))
+			observedAt := time.Date(2026, 10, 28, 2, 0, 0, 0, time.UTC)
+			if payload.Time > 0 {
+				observedAt = time.UnixMilli(payload.Time).UTC()
+			}
+			failure := kimiTurnFailure(payload, observedAt)
+			assert.Equal(t, tc.kind, failure.Kind)
+			assert.Equal(t, tc.window, failure.Window)
+			assert.True(t, tc.resetAt.Equal(failure.ResetAt), "reset %v, want %v", failure.ResetAt, tc.resetAt)
+		})
+	}
 }
 
 func TestKimiWithContextUsage(t *testing.T) {

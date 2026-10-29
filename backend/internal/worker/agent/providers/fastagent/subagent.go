@@ -120,7 +120,7 @@ func (a *Agent) subagentFromToolCallUpdate(tcu acp.ToolCallUpdateEnvelope) *acp.
 		}
 		state.finalSeen = true
 		state.finalStatus = acp.FinalStatus(tcu.Status)
-		state.deadline = a.archiveClock().Now().Add(fastagentArchiveDeadline)
+		state.deadline = a.agentClock().Now().Add(fastagentArchiveDeadline)
 	}
 	a.childMu.Unlock()
 	if !known {
@@ -155,7 +155,9 @@ func fastagentChildRowKey(sessionID, nativeID string) string {
 	return bgtask.NormalizeRowKey(sessionID + ":" + nativeID)
 }
 
-func (a *Agent) archiveClock() quartz.Clock {
+// agentClock returns the clock of the child-archive retries and of the
+// turn-failure verdict. A test injects it through the clock field.
+func (a *Agent) agentClock() quartz.Clock {
 	if a.clock != nil {
 		return a.clock
 	}
@@ -311,7 +313,7 @@ func (a *Agent) retryFastagentChild(state *fastagentChildState, stop <-chan stru
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	clock := a.archiveClock()
+	clock := a.agentClock()
 	delay := fastagentArchiveRetryInterval
 	for {
 		remaining := state.deadline.Sub(clock.Now())

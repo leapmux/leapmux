@@ -49,11 +49,8 @@ describe('cursorErrorResponse', () => {
     [409, 'aborted'],
     [500, 'internal'],
     [501, 'unimplemented'],
-    [502, 'unavailable'],
-    [503, 'unavailable'],
-    [504, 'deadline_exceeded'],
     [599, 'internal'],
-  ])('maps HTTP %i to native Connect %s', (status, code) => {
+  ])('maps HTTP %i to native Connect %s with the service details', (status, code) => {
     const { reply, details } = decodeError(status, 'Native model failure.')
     expect(reply.error.code).toBe(code)
     expect([
@@ -62,6 +59,21 @@ describe('cursorErrorResponse', () => {
     expect([
       ...descend(details, [2])!.subarray(-2),
     ]).toEqual([0x20, 0])
+  })
+
+  it.each([
+    [502, 'unavailable'],
+    [503, 'unavailable'],
+    [504, 'deadline_exceeded'],
+  ])('maps gateway HTTP %i to a bare native Connect %s error', (status, code) => {
+    const { frame, error } = cursorErrorResponse({ status, message: 'upstream connect error' })
+    expect(frame[0]).toBe(2)
+    expect(new DataView(frame.buffer, frame.byteOffset).getUint32(1)).toBe(frame.length - 5)
+    const reply: unknown = JSON.parse(new TextDecoder().decode(frame.subarray(5)))
+    expect(reply).toEqual({
+      error: { code, message: 'upstream connect error' },
+    })
+    expect(error).toEqual({ code, message: 'upstream connect error' })
   })
 
   it.each(['', 'Native quota: 零 🔒'])('preserves the exact UTF-8 message %s', (message) => {

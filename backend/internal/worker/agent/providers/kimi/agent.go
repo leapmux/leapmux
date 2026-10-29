@@ -37,6 +37,7 @@ type Agent struct {
 
 	// dispatchMu serializes handleFrame calls from the event stream and HandleOutput.
 	// Without it, a tool result could precede its opener and leave the card active indefinitely.
+	// settleUsageLimit takes it too, so no turn starts between its check and its apply.
 	dispatchMu sync.Mutex
 	// The launch stamp is immutable. dispatchMu protects the warning fingerprints.
 	serverLaunchedAt      time.Time
@@ -78,6 +79,14 @@ type Agent struct {
 	// server repeats it as an `error` event right after the turn end, and the
 	// divider already states it.
 	lastTurnError string
+	// usageTurnSeq numbers the turn, the session, and the model that a pending
+	// usage limit belongs to. A main turn start, a model change, and a context
+	// clear each advance it. See kimiPendingUsageLimit.
+	usageTurnSeq uint64
+	// pendingUsageLimit is the verdict of a main turn that failed on a usage
+	// limit with no reset instant. The next plan-usage read takes it and states
+	// the reset. See rate_limits.go.
+	pendingUsageLimit *kimiPendingUsageLimit
 	// runs holds the output state of each agent of the session: the main agent
 	// and every subagent that reported an event. See output.go.
 	runs map[string]*kimiRun

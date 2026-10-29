@@ -71,9 +71,14 @@ func (a *Agent) configure(clock quartz.Clock) acp.Hooks {
 		SessionMetadataHandler:     a.observeDiracNotice,
 		SubagentFromToolCall:       a.subagentFromToolCall,
 		SubagentFromToolCallUpdate: a.subagentFromToolCallUpdate,
-		PromptEnded:                a.hydrateSubagentArchives,
-		ClearProviderState:         a.clearChildState,
-		BeforeWaitCleanup:          a.beforeWaitCleanup,
+		// LeapMux rejects the failed-request dialog of a failure that it
+		// retries itself (user decision 1).
+		AnswerControlRequest:   a.answerDiracFailedRequest,
+		ControlRequestAnswered: a.diracFailedRequestAnswered,
+		PromptPrepared:         a.clearDiracPromptState,
+		PromptEnded:            a.finishDiracPrompt,
+		ClearProviderState:     a.clearChildState,
+		BeforeWaitCleanup:      a.beforeWaitCleanup,
 		// Dirac's `respond` tool is the control plane: a question rides
 		// elicitation and a plan defers its approval to the next prompt. The
 		// base answers both, so no provider control reader is needed.

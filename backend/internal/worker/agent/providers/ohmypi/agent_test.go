@@ -13,6 +13,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit/providerkittest"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -461,7 +462,272 @@ func TestCompactContext(t *testing.T) {
 		assert.NotEmpty(t, notifications[0][contracts.NotificationFieldError])
 		assert.Contains(t, r.sink.SessionInfos(), map[string]interface{}{contracts.SessionInfoKeyCompaction: nil})
 		assert.Zero(t, r.sink.NotificationCount(), "no omp frame answered the command")
+		// A turn that ends because the process exits applies no verdict, as
+		// finishOutput applies none.
+		assert.Empty(t, providerkittest.TurnEndAndRetryOps(r.sink.Timeline()))
 	})
+}
+
+// ompCompactionEnd is the timeline of the verdict that a manual compaction
+// applies when no turn-end row precedes it.
+var ompCompactionEnd = []agenttest.TimelineEntry{{
+	Op: "cancel_server_error", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR,
+	Reason: providerkit.TurnEndedOnCompaction,
+}}
+
+// The compact command of CompactContext ends with one verdict that cancels the
+// server-error retry, whatever omp answers. The verdict follows omp's answer
+// and precedes the idle publish.
+func TestAManualCompactionEndsWithTheCompactionVerdict(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		reply *rigReply
+	}{
+		{name: "a summary", reply: &rigReply{Data: json.RawMessage(`{"summary":"short","tokensBefore":60030}`)}},
+		{name: "a server error", reply: &rigReply{Error: "500 Internal server error"}},
+		{name: "an overload", reply: &rigReply{Error: `529 {"type":"overloaded_error","message":"Overloaded"}`}},
+		{name: "a rate limit", reply: &rigReply{Error: "429 Rate limit reached for requests"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := newRig(t)
+			r.respond(func(command recordedCommand) *rigReply {
+				if command.Type == contracts.OhMyPiCommandCompact {
+					return tc.reply
+				}
+				return nil
+			})
+			require.NoError(t, r.agent.CompactContext())
+			waitFor(t, func() bool {
+				active, _ := r.sink.LastTurnActive()
+				return !active
+			})
+			assert.Equal(t, ompCompactionEnd, providerkittest.TurnEndAndRetryOps(r.sink.Timeline()))
+			timeline := r.sink.Timeline()
+			require.Len(t, timeline, 2)
+			assert.Equal(t, "notification", timeline[0].Op, "omp's answer precedes the verdict")
+			assert.Zero(t, r.sink.AutoScheduleCount())
+		})
+	}
+}
+
+// A manual compaction turn accepts no steer, as Copilot's does. Its end applies
+// the compaction's verdict, so a message steered into it would lose the
+// verdict of its own run. The queue holds the message until the compaction
+// ends, and the message then starts a turn of its own.
+func TestAManualCompactionTurnAcceptsNoSteering(t *testing.T) {
+	t.Parallel()
+	for name, start := range map[string]func(*rig) error{
+		"CompactContext":   func(r *rig) error { return r.agent.CompactContext() },
+		"a typed /compact": func(r *rig) error { return r.agent.SendInput("/compact keep the plan", nil) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			r := newRig(t)
+			release := make(chan struct{})
+			r.respond(func(command recordedCommand) *rigReply {
+				switch command.Type {
+				case contracts.OhMyPiCommandCompact:
+					<-release
+					return &rigReply{Data: json.RawMessage(`{"summary":"short","tokensBefore":60030}`)}
+				case CommandPrompt:
+					<-release
+					return &rigReply{Data: json.RawMessage(`{"agentInvoked":false}`)}
+				}
+				return nil
+			})
+			go func() { _ = start(r) }()
+			waitFor(t, func() bool {
+				active, _ := r.sink.LastTurnActive()
+				return active
+			})
+
+			assert.False(t, r.agent.SupportsSteering(), "the dispatcher records the compaction turn as one that accepts no steer")
+			states := r.sink.TurnStates()
+			assert.Equal(t, agent.TurnState{Active: true}, states[len(states)-1])
+
+			close(release)
+			waitFor(t, func() bool {
+				active, _ := r.sink.LastTurnActive()
+				return !active
+			})
+			assert.True(t, r.agent.SupportsSteering(), "an ordinary turn accepts a steer again")
+		})
+	}
+}
+
+// An ordinary turn still accepts a steer while it runs.
+func TestAnOrdinaryTurnAcceptsSteering(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.respond(func(recordedCommand) *rigReply { return &rigReply{Data: json.RawMessage(`{}`)} })
+	require.NoError(t, r.agent.SendInput("Write a report.", nil))
+
+	assert.True(t, r.agent.SupportsSteering())
+	states := r.sink.TurnStates()
+	assert.Equal(t, agent.TurnState{Active: true, Steerable: true}, states[len(states)-1])
+}
+
+// omp can start a run while its compact command works. The run belongs to the
+// compaction turn: its end applies the compaction's verdict, not the
+// classifier's, and the compaction applies one verdict in each order of the
+// run's end and omp's answer.
+func TestARunInsideAManualCompactionAppliesTheCompactionVerdictOnce(t *testing.T) {
+	t.Parallel()
+
+	t.Run("the run ends before omp answers", func(t *testing.T) {
+		t.Parallel()
+		r := newRig(t)
+		release := make(chan struct{})
+		r.respond(func(command recordedCommand) *rigReply {
+			if command.Type == contracts.OhMyPiCommandCompact {
+				<-release
+				return &rigReply{Data: json.RawMessage(`{"summary":"short","tokensBefore":60030}`)}
+			}
+			return nil
+		})
+		require.NoError(t, r.agent.CompactContext())
+		r.waitForCommand(contracts.OhMyPiCommandCompact, 1)
+		r.emit(`{"type":"agent_start"}`, ompAgentEnd500)
+		want := providerkittest.TurnEndThen(providerkit.CompactionEnd())
+		require.Equal(t, want, providerkittest.TurnEndAndRetryOps(r.sink.Timeline()))
+		publishes := len(r.sink.TurnActives())
+		close(release)
+		waitFor(t, func() bool { return len(r.sink.TurnActives()) > publishes })
+		assert.Equal(t, want, providerkittest.TurnEndAndRetryOps(r.sink.Timeline()), "omp's answer applies no second verdict")
+		assert.Zero(t, r.sink.AutoScheduleCount())
+	})
+
+	t.Run("omp answers while the run still works", func(t *testing.T) {
+		t.Parallel()
+		r := newRig(t)
+		r.respond(func(command recordedCommand) *rigReply {
+			if command.Type == contracts.OhMyPiCommandCompact {
+				return &rigReply{Data: json.RawMessage(`{"summary":"short","tokensBefore":60030}`), Before: []string{`{"type":"agent_start"}`}}
+			}
+			return nil
+		})
+		publishes := len(r.sink.TurnActives())
+		require.NoError(t, r.agent.CompactContext())
+		// The arm, the run start, and the answer each publish once.
+		waitFor(t, func() bool { return len(r.sink.TurnActives()) >= publishes+3 })
+		assert.Empty(t, providerkittest.TurnEndAndRetryOps(r.sink.Timeline()), "the running turn keeps the verdict")
+		active, _ := r.sink.LastTurnActive()
+		assert.True(t, active, "the run still holds the turn")
+		r.emit(ompAgentEnd500)
+		assert.Equal(t, providerkittest.TurnEndThen(providerkit.CompactionEnd()), providerkittest.TurnEndAndRetryOps(r.sink.Timeline()))
+		assert.Zero(t, r.sink.AutoScheduleCount())
+	})
+}
+
+// omp runs the built-in /compact of a prompt itself and answers it locally.
+// That turn is a manual compaction, so its release applies the compaction's
+// verdict.
+func TestATypedCompactCommandEndsWithTheCompactionVerdict(t *testing.T) {
+	t.Parallel()
+	for _, input := range []string{"/compact", "/compact keep the plan", "/compact:soft keep the plan"} {
+		t.Run(input, func(t *testing.T) {
+			t.Parallel()
+			r := newRig(t)
+			r.respond(func(command recordedCommand) *rigReply {
+				if command.Type == CommandPrompt {
+					return &rigReply{Data: json.RawMessage(`{"agentInvoked":false}`)}
+				}
+				return nil
+			})
+			require.NoError(t, r.agent.SendInput(input, nil))
+			assert.Equal(t, ompCompactionEnd, providerkittest.TurnEndAndRetryOps(r.sink.Timeline()))
+			active, _ := r.sink.LastTurnActive()
+			assert.False(t, active)
+		})
+	}
+}
+
+// A prompt that omp does not run as its built-in /compact is no compaction
+// turn: its run's end applies the classifier's verdict.
+func TestAPromptThatOmpDoesNotRunAsCompactKeepsItsOwnVerdict(t *testing.T) {
+	t.Parallel()
+	image := &leapmuxv1.Attachment{Filename: "shot.png", MimeType: "image/png", Data: []byte{0x89, 0x50, 0x4e, 0x47}}
+	for _, tc := range []struct {
+		name        string
+		input       string
+		attachments []*leapmuxv1.Attachment
+	}{
+		// omp reads a slash command only at the first byte of the message.
+		{name: "a leading space", input: " /compact keep the plan"},
+		{name: "an attachment", input: "/compact keep the plan", attachments: []*leapmuxv1.Attachment{image}},
+		{name: "another command", input: "/compaction"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := newRig(t)
+			require.NoError(t, r.agent.SendInput(tc.input, tc.attachments))
+			r.emit(`{"type":"agent_start"}`, ompAgentEnd500)
+			assert.Equal(t, []string{"turn_end", "schedule_server_error"}, providerkittest.TurnEndAndRetryOpNames(r.sink.Timeline()))
+		})
+	}
+}
+
+// A /compact text that the queue steers into a running turn does not make
+// that turn a compaction.
+func TestASteeredCompactTextKeepsTheRunningTurnVerdict(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.emit(`{"type":"agent_start"}`)
+	require.NoError(t, r.agent.SteerInput("/compact keep the plan", nil))
+	r.emit(ompAgentEnd500)
+	assert.Equal(t, []string{"turn_end", "schedule_server_error"}, providerkittest.TurnEndAndRetryOpNames(r.sink.Timeline()))
+}
+
+// The compaction's mark ends with its turn: the next turn applies the
+// classifier's verdict again.
+func TestATurnAfterAManualCompactionAppliesItsOwnVerdict(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		compact func(r *rig)
+	}{
+		{name: "CompactContext", compact: func(r *rig) {
+			require.NoError(r.t, r.agent.CompactContext())
+			waitFor(r.t, func() bool { return len(providerkittest.TurnEndAndRetryOps(r.sink.Timeline())) == 1 })
+		}},
+		{name: "a typed /compact", compact: func(r *rig) {
+			r.respond(func(command recordedCommand) *rigReply {
+				if command.Type == CommandPrompt {
+					return &rigReply{Data: json.RawMessage(`{"agentInvoked":false}`)}
+				}
+				return nil
+			})
+			require.NoError(r.t, r.agent.SendInput("/compact keep the plan", nil))
+			r.respond(nil)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := newRig(t)
+			tc.compact(r)
+			waitFor(t, func() bool {
+				active, _ := r.sink.LastTurnActive()
+				return !active
+			})
+			require.NoError(t, r.agent.SendInput("Continue the task.", nil))
+			r.emit(`{"type":"agent_start"}`, ompAgentEnd500)
+			assert.Equal(t, []string{"cancel_server_error", "turn_end", "schedule_server_error"}, providerkittest.TurnEndAndRetryOpNames(r.sink.Timeline()))
+		})
+	}
+}
+
+// A compaction request that never reached omp starts no compaction turn.
+// CompactContext returns the error to the dispatcher and applies no verdict.
+func TestAManualCompactionThatIsNotDeliveredAppliesNoVerdict(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.agent.SetStdinForTest(agenttest.FailingStdin{})
+	require.Error(t, r.agent.CompactContext())
+	assert.Empty(t, providerkittest.TurnEndAndRetryOps(r.sink.Timeline()))
+	active, _ := r.sink.LastTurnActive()
+	assert.False(t, active)
 }
 
 func TestStopPersistsTheUnfinishedOutput(t *testing.T) {

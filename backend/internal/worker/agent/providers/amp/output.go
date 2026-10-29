@@ -370,18 +370,18 @@ func (a *Agent) handleResultLine(proc *ampProcess, raw []byte) {
 	}
 	a.prepareSteerRecovery()
 	ended := false
-	a.endTurn(func(turn turnState) (agent.MessageCompletion, []byte) {
+	a.endTurn(func(turn turnState) turnEnding {
 		ended = true
 		switch {
 		case turn.interruptRequested && !line.statesFailure():
-			return agent.MessageCompletionInterrupted, raw
+			return turnEnding{completion: agent.MessageCompletionInterrupted, printedLine: raw}
 		case line.IsError:
 			if proc != nil {
 				proc.resumeAfterExit.Store(true)
 			}
-			return agent.MessageCompletionError, raw
+			return turnEnding{completion: agent.MessageCompletionError, printedLine: raw}
 		default:
-			return agent.MessageCompletionComplete, raw
+			return turnEnding{completion: agent.MessageCompletionComplete, printedLine: raw}
 		}
 	})
 	if !ended && line.IsError && !answersSignal(proc, line) {
@@ -462,20 +462,33 @@ func (a *Agent) closeToolCall(block ampBlock, row []byte) {
 // resultLine is the `result` Amp printed, or nil for a turn that ended inside
 // the process, whose row the worker writes itself.
 func (a *Agent) finishTurn(completion agent.MessageCompletion, resultLine []byte) {
-	a.endTurn(func(turnState) (agent.MessageCompletion, []byte) { return completion, resultLine })
+	a.endTurn(func(turnState) turnEnding { return turnEnding{completion: completion, printedLine: resultLine} })
+}
+
+// turnEnding states how one turn ends.
+type turnEnding struct {
+	completion agent.MessageCompletion
+	// printedLine is the `result` line that Amp printed for the turn, or nil
+	// when the turn ended with none and the worker writes the row. Only a
+	// printed line states a model failure, so only it can schedule a retry.
+	printedLine []byte
+	// exitError states why the process ended with no `result`, for the error
+	// row that the worker writes. An empty one gives Amp's cancel wording.
+	exitError string
 }
 
 // endTurn ends the running turn: it closes the tool calls the turn left open,
-// persists the turn-end row, and clears the flag. decide states the turn's
-// completion and its `result` line from the turn itself, read under the same
+// persists the turn-end row, applies the turn's automatic-retry verdict, and
+// clears the flag. A discarded turn writes no row and applies no verdict.
+// decide states how the turn ends from the turn itself, read under the same
 // lock that ends it, so an interrupt that lands a moment earlier is never
-// lost. A nil line makes the worker write one: Amp's success shape for a
+// lost. With no printed line the worker writes one: Amp's success shape for a
 // complete turn, and its error shape otherwise.
 //
 // The worker persists the row BEFORE the flag clears, because the clear is the
 // settle edge that spends the turn's tool count (see
 // agent.TranscriptServices.PersistTurnEnd).
-func (a *Agent) endTurn(decide func(turn turnState) (agent.MessageCompletion, []byte)) {
+func (a *Agent) endTurn(decide func(turn turnState) turnEnding) {
 	endedAt := a.now()
 	a.mu.Lock()
 	if !a.turn.active {
@@ -483,7 +496,8 @@ func (a *Agent) endTurn(decide func(turn turnState) (agent.MessageCompletion, []
 		return
 	}
 	turn := a.turn
-	completion, resultLine := decide(turn)
+	ending := decide(turn)
+	completion := ending.completion
 	a.turn = turnState{}
 	open := a.takeOpenToolsLocked()
 	threadID := a.threadID
@@ -493,10 +507,14 @@ func (a *Agent) endTurn(decide func(turn turnState) (agent.MessageCompletion, []
 	// A permission request outlives no turn: every tool of the turn ended.
 	a.bridge.cancelAll(errTurnEnded)
 	a.closeIncompleteTools(open, completion)
+	resultLine := ending.printedLine
 	if resultLine == nil {
-		if completion == agent.MessageCompletionComplete {
+		switch {
+		case completion == agent.MessageCompletionComplete:
 			resultLine = successResultLine(threadID, turn)
-		} else {
+		case ending.exitError != "":
+			resultLine = errorResultLine(threadID, ending.exitError)
+		default:
 			resultLine = errorResultLine(threadID, interruptedMessage)
 		}
 	}
@@ -512,6 +530,8 @@ func (a *Agent) endTurn(decide func(turn turnState) (agent.MessageCompletion, []
 		if err := a.sink.PersistTurnEnd(agent.WithToolUseCount(content, turn.toolUses+len(open)), agent.SpanInfo{}); err != nil {
 			slog.Error("amp persist turn end", "agent_id", a.agentID, "error", err)
 		}
+		// The verdict follows the turn-end row on the same ordered sink.
+		providerkit.ApplyTurnFailure(a.sink, ampTurnFailure(completion, turn.interruptRequested, ending.printedLine, endedAt), resultLine)
 	}
 	a.sink.ResetSpans()
 	a.PublishTurnActive()

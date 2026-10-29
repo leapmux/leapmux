@@ -78,7 +78,14 @@ type lettaNativeToolCall struct {
 func (a *Agent) onStreamDelta(payload []byte, subagentID string, scope *runtimeScope) {
 	kind := providerkit.StringField(payload, contracts.LettaDeltaFieldMessageType)
 	switch kind {
-	case lettaDeltaApprovalRequestMessage, lettaDeltaApprovalClassificationEnd, lettaDeltaErrorMessage:
+	case lettaDeltaErrorMessage:
+		// The loop_error delta draws the error. This one states only whether
+		// Letta may retry it, which the root turn end reads.
+		if subagentID == "" {
+			a.noteRootErrorRetryable(payload)
+		}
+		return
+	case lettaDeltaApprovalRequestMessage, lettaDeltaApprovalClassificationEnd:
 		return
 	}
 	commandLifecycle := kind == contracts.LettaDeltaKindSlashCommandStart || kind == contracts.LettaDeltaKindSlashCommandEnd
@@ -170,6 +177,18 @@ func (a *Agent) onStreamDelta(payload []byte, subagentID string, scope *runtimeS
 	default:
 		a.persistUnknownDelta(target, payload, scope)
 	}
+}
+
+// noteRootErrorRetryable records the retryable flag of a root error_message
+// delta. A delta that states no flag leaves the record unchanged.
+func (a *Agent) noteRootErrorRetryable(payload []byte) {
+	var delta struct {
+		Retryable *bool `json:"retryable"`
+	}
+	if json.Unmarshal(payload, &delta) != nil || delta.Retryable == nil {
+		return
+	}
+	a.rootErrorRetryable = delta.Retryable
 }
 
 func (a *Agent) ownsRuntime(scope *runtimeScope) bool {
@@ -323,6 +342,7 @@ func (a *Agent) finishOutputAfterExit(completion agent.MessageCompletion) {
 	}
 	a.quotaRetries = nil
 	a.Mu.Lock()
+	manualCompaction := a.manualCompaction != nil
 	a.manualCompaction = nil
 	if a.transportErr != nil {
 		completion = agent.MessageCompletionError
@@ -348,6 +368,10 @@ func (a *Agent) finishOutputAfterExit(completion agent.MessageCompletion) {
 			a.retryForTarget(id).Reset()
 			a.finishToolOutputScope(id, target)
 		}
+	}
+	if manualCompaction {
+		// The exit ends the manual compaction's turn, which never retries.
+		providerkit.ApplyTurnFailure(a.sink, providerkit.CompactionEnd(), nil)
 	}
 	a.setTurnActive(false)
 }
@@ -516,7 +540,8 @@ func lettaTurnCompletion(stopReason string) agent.MessageCompletion {
 	}
 }
 
-// onTurnFinished ends the turn. PersistTurnEnd runs before the clear.
+// onTurnFinished ends the turn. PersistTurnEnd runs before the clear, and the
+// turn's automatic-retry verdict follows the turn-end row.
 func (a *Agent) onTurnFinished(payload []byte) {
 	a.Mu.Lock()
 	manual := a.manualCompaction != nil
@@ -542,6 +567,7 @@ func (a *Agent) onTurnFinished(payload []byte) {
 	a.Mu.Lock()
 	toolUses := len(a.turnToolCallIDs)
 	a.turnToolCallIDs = nil
+	interrupted := a.interruptRequested
 	a.Mu.Unlock()
 	completion := lettaTurnCompletion(finished.StopReason)
 	a.flushGenerationFor("", completion)
@@ -551,6 +577,9 @@ func (a *Agent) onTurnFinished(payload []byte) {
 	if err := a.sink.PersistTurnEnd(agent.WithToolUseCount(content, toolUses), agent.SpanInfo{}); err != nil {
 		slog.Debug("letta: persist turn end failed", "agent_id", a.AgentID(), "error", err)
 	}
+	rootRetryable := a.rootErrorRetryable
+	a.rootErrorRetryable = nil
+	providerkit.ApplyTurnFailure(a.sink, lettaTurnFailure(finished.StopReason, finished.Error, rootRetryable, interrupted, a.Clock().Now()), payload)
 	a.finishToolOutputScope("", a.sink)
 	a.withdrawPermissions()
 	a.setTurnActive(false)

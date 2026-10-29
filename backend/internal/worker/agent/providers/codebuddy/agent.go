@@ -384,9 +384,17 @@ func (a *Agent) Wait() error {
 }
 
 // cleanupAfterProcessExit stops archive retries and clears controls and turn state.
+// The exit ends a manual /compact that is still running, and that compaction
+// never retries. The reader has drained by then, so no result follows.
 func (a *Agent) cleanupAfterProcessExit() {
 	a.stopWorkflowArchiveRetries()
 	a.withdrawControls()
+	a.mu.Lock()
+	compactionEnded := a.active && a.manualCompaction
+	a.mu.Unlock()
+	if compactionEnded {
+		providerkit.ApplyTurnFailure(a.sink, providerkit.CompactionEnd(), nil)
+	}
 	a.setTurnActive(false)
 }
 

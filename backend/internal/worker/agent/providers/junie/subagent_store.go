@@ -437,10 +437,7 @@ type junieChildTail struct {
 }
 
 func newJunieChildTail(a *Agent, rootSessionID, childSessionID, childName, prompt string) *junieChildTail {
-	clock := a.clock
-	if clock == nil {
-		clock = quartz.NewReal()
-	}
+	clock := a.clockOrReal()
 	return &junieChildTail{
 		agent: a, childSessionID: childSessionID, childName: childName, prompt: prompt,
 		rootSessionID: rootSessionID,

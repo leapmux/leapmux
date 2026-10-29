@@ -2,7 +2,6 @@ package qwen
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -101,6 +100,13 @@ func (a *Agent) handleSessionMetadata(updateType string, metadata map[string]jso
 	return false
 }
 
+// handleExecutionLifecycle reads the lifecycle of one model request of the
+// main session.
+//
+// Qwen ends every failed attempt with an error, the last one and a fail-fast
+// one included, and states no plan to retry it. So the error only records the
+// prompt of the failed request. The next request of that same prompt is the
+// retry, and its start writes the api_retry row.
 func (a *Agent) handleExecutionLifecycle(raw json.RawMessage) {
 	var lifecycle struct {
 		Kind       string `json:"kind"`
@@ -108,6 +114,7 @@ func (a *Agent) handleExecutionLifecycle(raw json.RawMessage) {
 		Outcome    string `json:"outcome"`
 		SessionID  string `json:"sessionId"`
 		SubagentID string `json:"subagentId"`
+		PromptID   string `json:"promptId"`
 	}
 	if err := json.Unmarshal(raw, &lifecycle); err != nil {
 		slog.Debug("decode Qwen execution lifecycle", "agent_id", a.AgentID(), "error", err)
@@ -120,24 +127,35 @@ func (a *Agent) handleExecutionLifecycle(raw json.RawMessage) {
 	switch lifecycle.Phase {
 	case "started":
 		a.stateMu.Lock()
+		retry := a.failedPromptID != nil && *a.failedPromptID == lifecycle.PromptID
+		a.failedPromptID = nil
+		var count int64
+		if retry {
+			a.retryCount = agent.SaturatingAdd(a.retryCount, 1)
+			count = a.retryCount
+		}
 		a.requestHasText = false
 		a.stateMu.Unlock()
-	case "ended":
-		switch lifecycle.Outcome {
-		case "error":
-			a.stateMu.Lock()
-			a.retryCount = agent.SaturatingAdd(a.retryCount, 1)
-			count := a.retryCount
-			hasText := a.requestHasText
-			a.stateMu.Unlock()
-			if !hasText {
-				a.DiscardBufferedOutput(agent.AssembledMessageKindReasoning)
-			}
+		if retry {
 			a.Sink().PersistLeapMuxNotification(map[string]any{
 				contracts.NotificationFieldType:  contracts.NotificationTypeApiRetry,
 				contracts.NotificationFieldCount: count,
 			})
 			a.retryResolution.NoteRetry()
+		}
+	case "ended":
+		switch lifecycle.Outcome {
+		case "error":
+			a.stateMu.Lock()
+			promptID := lifecycle.PromptID
+			a.failedPromptID = &promptID
+			hasText := a.requestHasText
+			a.stateMu.Unlock()
+			// A failed request that wrote no text drops its reasoning,
+			// which a retry streams again.
+			if !hasText {
+				a.DiscardBufferedOutput(agent.AssembledMessageKindReasoning)
+			}
 		case "success":
 			a.retryResolution.Resolve(a.Sink())
 			a.resetRequestRetries()
@@ -152,6 +170,7 @@ func (a *Agent) resetRequestRetries() {
 	a.stateMu.Lock()
 	a.retryCount = 0
 	a.requestHasText = false
+	a.failedPromptID = nil
 	a.stateMu.Unlock()
 	a.retryResolution.Reset()
 }
@@ -159,6 +178,12 @@ func (a *Agent) resetRequestRetries() {
 // The refusal detail comes from qwen/logs/r2-compress-1.log.
 const qwenCompressNotBeneficial = "Compression was not beneficial for this history size."
 
+// handlePromptEnded settles the state of the prompt that ended
+// (Hooks.PromptEnded). A manual compaction ends on CompactionEnd, whatever its
+// outcome: a failed compaction leaves the task where the last turn left it, so
+// no retry may resume it. A refused manual compaction is no failure either:
+// Qwen fails the prompt only to state the refusal, so the refusal becomes a
+// status. Every other end returns the verdict of its failure.
 func (a *Agent) handlePromptEnded(err error, stopped bool) acp.PromptEnding {
 	a.resetRequestRetries()
 	a.stateMu.Lock()
@@ -167,13 +192,17 @@ func (a *Agent) handlePromptEnded(err error, stopped bool) acp.PromptEnding {
 	a.stateMu.Unlock()
 	// A stopped or failed prompt can end compaction without a native completion frame.
 	providerkit.EndCompaction(a.Sink())
-	var responseError *providerkit.JSONRPCResponseError
-	if manual && !stopped && errors.As(err, &responseError) && responseError.Code == -32603 &&
+	if !manual {
+		return a.finishQwenPrompt(err, stopped)
+	}
+	ending := acp.PromptEnding{Retry: &acp.TurnVerdict{Failure: providerkit.CompactionEnd()}}
+	responseError, failed := providerkit.AsJSONRPCResponseError(err)
+	if !stopped && failed && responseError.Code == qwenInternalErrorCode &&
 		providerkit.StringField(responseError.Data, "details") == qwenCompressNotBeneficial {
 		a.reportStatus("Qwen Code did not compact the context: the compression was not beneficial for this history size.")
-		return acp.PromptEnding{NoteWritten: true}
+		ending.NoteWritten = true
 	}
-	return acp.PromptEnding{}
+	return ending
 }
 
 func qwenDiscreteMessage(metadata map[string]json.RawMessage) bool {

@@ -40,7 +40,7 @@ func TestClearAgentRuntimeState_DeletesPendingAndBroadcastsCancels(t *testing.T)
 	// Register a watcher so broadcasts have somewhere to go.
 	registerAgentWatch(svc, "test-ch", "agent-1", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
-	svc.Output.ClearAgentRuntimeState("agent-1")
+	svc.Output.ClearAgentRuntimeState("agent-1", CleanupTabClosed)
 
 	// DB rows are gone.
 	remaining, err := svc.Queries.ListControlRequestsByAgentID(ctx, "agent-1")
@@ -71,7 +71,7 @@ func TestClearAgentRuntimeState_NoPendingIsNoOp(t *testing.T) {
 
 	registerAgentWatch(svc, "test-ch", "agent-empty", leapmuxv1.WatchMode_WATCH_MODE_FULL, w)
 
-	svc.Output.ClearAgentRuntimeState("agent-empty")
+	svc.Output.ClearAgentRuntimeState("agent-empty", CleanupTabClosed)
 
 	cancels := collectBroadcastCancelIDs(t, w)
 	assert.Empty(t, cancels, "expected no broadcasts when nothing was pending")

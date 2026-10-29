@@ -4,15 +4,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"regexp"
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/modelvendor"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
@@ -299,7 +302,10 @@ func (a *Agent) handleMainTurnStarted(turnID string) {
 	a.clearCodexRawExecutionsBeforeTurn(threadID, turnID)
 	a.Mu.Lock()
 	a.mainTurn.finish()
-	a.mainTurn = codexMainTurn{id: turnID, model: a.model, ended: make(chan struct{})}
+	a.mainTurn = codexMainTurn{
+		id: turnID, model: a.model, ended: make(chan struct{}),
+		compaction: a.takePendingCompactionLocked(threadID),
+	}
 	pending := a.pendingStart
 	matched := pending != nil && pending.threadID == threadID
 	publishSettings := false
@@ -718,8 +724,11 @@ func (a *Agent) handleTurnCompleted(params json.RawMessage) {
 	collaborationMode := a.collaborationMode
 	a.Mu.Unlock()
 
-	// Read turn data without changing the native parameters.
-	var turnStatus, turnID, turnErrorMessage, turnErrorInfo string
+	// Read turn data without changing the native parameters. codexErrorInfo is
+	// a string or a single-key object, so it decodes raw: a string field would
+	// fail the whole decode for an object and leave the turn without a status.
+	var turnID string
+	var outcome codexTurnOutcome
 	parsed := make(map[string]json.RawMessage)
 	if err := json.Unmarshal(params, &parsed); err == nil {
 		if turnRaw, ok := parsed["turn"]; ok {
@@ -727,21 +736,25 @@ func (a *Agent) handleTurnCompleted(params json.RawMessage) {
 				ID     string `json:"id"`
 				Status string `json:"status"`
 				Error  struct {
-					Message        string `json:"message"`
-					CodexErrorInfo string `json:"codexErrorInfo"`
+					Message        string          `json:"message"`
+					CodexErrorInfo json.RawMessage `json:"codexErrorInfo"`
 				} `json:"error"`
 			}
 			if json.Unmarshal(turnRaw, &turn) == nil {
-				turnStatus = turn.Status
 				turnID = turn.ID
-				turnErrorMessage = turn.Error.Message
-				turnErrorInfo = turn.Error.CodexErrorInfo
+				outcome = codexTurnOutcome{
+					status:    turn.Status,
+					message:   turn.Error.Message,
+					errorInfo: decodeCodexErrorInfo(turn.Error.CodexErrorInfo),
+				}
 			}
 		}
 	}
 	// Clear provider turn state before the deferred publish below releases the
 	// Worker's input queue. This lets the next queued input start a new turn.
+	// The compaction mark is read first, because finish clears it.
 	a.Mu.Lock()
+	outcome.compaction = a.mainTurn.compaction
 	a.mainTurn.finish()
 	a.turnSawPlan = false
 	a.turnPlanText = ""
@@ -758,6 +771,9 @@ func (a *Agent) handleTurnCompleted(params json.RawMessage) {
 			a.PublishTurnActive()
 		}
 	}()
+	// An interrupt that LeapMux sent for this turn marks it stopped, whatever
+	// status Codex states. Read the mark before the clear below drops it.
+	outcome.stopRequested = a.hasInterruptCall(notif.ThreadID, turnID)
 	a.clearInterruptCallsForThread(notif.ThreadID)
 
 	// Persist as a result divider.
@@ -771,46 +787,45 @@ func (a *Agent) handleTurnCompleted(params json.RawMessage) {
 	// process restart removes the routes for the old child tree.
 	a.sink.ResetSpans()
 
-	if turnStatus != "" {
-		retryable := turnStatus == "failed" &&
-			(turnErrorInfo == "serverOverloaded" || isRetryableCodexTurnFailure(turnErrorMessage))
-		providerkit.ScheduleOrCancelServerErrorAutoRetry(a.sink, retryable, params)
-		if turnStatus == "completed" && collaborationMode == CollaborationPlan && sawPlan && planText != "" {
-			// Persist plan content so initiatePlanExecution can use it.
-			compressed, compression := msgcodec.Compress([]byte(planText))
-			a.sink.UpdatePlan(compressed, compression, providerkit.ExtractPlanTitle(planText))
-			requestID := fmt.Sprintf("codex-plan-prompt-%s", turnID)
-			// One plan is stored for each agent, and the UpdatePlan above just
-			// REPLACED it. A card from an earlier turn identifies the plan the reader
-			// saw and would execute THIS one, so it is invalid from this line on --
-			// whether or not the new card publishes. Retiring it only on a successful
-			// publish left a publish failure with a live card pointing at a plan that
-			// is gone; the composer renders the OLDEST card, so approving what the
-			// reader could see executed a plan it never showed.
-			//
-			// CancelControlRequest returns in silence for a row that is already gone,
-			// so an answered card costs nothing. Nothing else can retire this request:
-			// it is LeapMux's own, it carries no JSON-RPC id, and so the
-			// outstanding-control registrar never held it.
-			a.Mu.Lock()
-			superseded := a.planPromptRequestID
-			a.planPromptRequestID = requestID
-			a.Mu.Unlock()
-			if superseded != "" && superseded != requestID {
-				a.sink.CancelControlRequest(superseded)
-			}
-			payload, err := json.Marshal(map[string]interface{}{
-				"type":       "control_request",
-				"request_id": requestID,
-				"request": map[string]interface{}{
-					"tool_name": contracts.CodexControlToolPlanModePrompt,
-					"input":     map[string]interface{}{},
-				},
-			})
-			if err == nil {
-				if err := a.sink.PublishControlRequest(agent.ControlRequest{RequestID: requestID, Payload: payload}); err != nil {
-					slog.Error("publish plan approval", "agent_id", a.AgentID(), "request_id", requestID, "error", err)
-				}
+	// Every turn end applies one verdict. A frame that states no status
+	// cancels the server-error retry, as a turn without a failure does.
+	providerkit.ApplyTurnFailure(a.sink, a.mainTurnFailure(outcome), params)
+
+	if outcome.status == "completed" && collaborationMode == CollaborationPlan && sawPlan && planText != "" {
+		// Persist plan content so initiatePlanExecution can use it.
+		compressed, compression := msgcodec.Compress([]byte(planText))
+		a.sink.UpdatePlan(compressed, compression, providerkit.ExtractPlanTitle(planText))
+		requestID := fmt.Sprintf("codex-plan-prompt-%s", turnID)
+		// One plan is stored for each agent, and the UpdatePlan above just
+		// REPLACED it. A card from an earlier turn identifies the plan the reader
+		// saw and would execute THIS one, so it is invalid from this line on --
+		// whether or not the new card publishes. Retiring it only on a successful
+		// publish left a publish failure with a live card pointing at a plan that
+		// is gone; the composer renders the OLDEST card, so approving what the
+		// reader could see executed a plan it never showed.
+		//
+		// CancelControlRequest returns in silence for a row that is already gone,
+		// so an answered card costs nothing. Nothing else can retire this request:
+		// it is LeapMux's own, it carries no JSON-RPC id, and so the
+		// outstanding-control registrar never held it.
+		a.Mu.Lock()
+		superseded := a.planPromptRequestID
+		a.planPromptRequestID = requestID
+		a.Mu.Unlock()
+		if superseded != "" && superseded != requestID {
+			a.sink.CancelControlRequest(superseded)
+		}
+		payload, err := json.Marshal(map[string]interface{}{
+			"type":       "control_request",
+			"request_id": requestID,
+			"request": map[string]interface{}{
+				"tool_name": contracts.CodexControlToolPlanModePrompt,
+				"input":     map[string]interface{}{},
+			},
+		})
+		if err == nil {
+			if err := a.sink.PublishControlRequest(agent.ControlRequest{RequestID: requestID, Payload: payload}); err != nil {
+				slog.Error("publish plan approval", "agent_id", a.AgentID(), "request_id", requestID, "error", err)
 			}
 		}
 	}
@@ -923,8 +938,172 @@ func codexTurnCompletion(params json.RawMessage) agent.MessageCompletion {
 	}
 }
 
-func isRetryableCodexTurnFailure(message string) bool {
-	return codexRetryableDisconnectPattern.MatchString(message)
+// The codexErrorInfo kinds that the retry verdict reads, as Codex's
+// app-server schema spells them.
+const (
+	codexErrorUsageLimitExceeded             = "usageLimitExceeded"
+	codexErrorRateLimitExceeded              = "rateLimitExceeded"
+	codexErrorServerOverloaded               = "serverOverloaded"
+	codexErrorInternalServerError            = "internalServerError"
+	codexErrorFlexUnavailable                = "flexUnavailable"
+	codexErrorResponseStreamDisconnected     = "responseStreamDisconnected"
+	codexErrorHTTPConnectionFailed           = "httpConnectionFailed"
+	codexErrorResponseStreamConnectionFailed = "responseStreamConnectionFailed"
+	codexErrorResponseTooManyFailedAttempts  = "responseTooManyFailedAttempts"
+	codexErrorOther                          = "other"
+)
+
+// codexTransientMessagePatterns match Codex's own wordings of a failure that a
+// retry can fix, in a turn whose error kind is `other` or absent.
+var codexTransientMessagePatterns = []*regexp.Regexp{
+	codexRetryableDisconnectPattern,
+	regexp.MustCompile(`Selected model is at capacity`),
+	regexp.MustCompile(`currently experiencing high demand`),
+}
+
+// codexErrorInfo is the `codexErrorInfo` of a turn error. Codex writes a plain
+// string for most kinds, and a single-key object for a kind that carries the
+// upstream HTTP status: {"responseStreamDisconnected":{"httpStatusCode":502}}.
+type codexErrorInfo struct {
+	// kind is the string, or the key of the object. It is empty for an absent,
+	// null, or unreadable field.
+	kind string
+	// httpStatus is the upstream HTTP status of an object kind, or 0 when the
+	// object states none.
+	httpStatus int
+}
+
+// decodeCodexErrorInfo reads the `codexErrorInfo` field as a string, or as an
+// object whose single key holds an object. Any other shape reads as no kind.
+func decodeCodexErrorInfo(raw json.RawMessage) codexErrorInfo {
+	if len(raw) == 0 {
+		return codexErrorInfo{}
+	}
+	var kind string
+	if json.Unmarshal(raw, &kind) == nil {
+		return codexErrorInfo{kind: kind}
+	}
+	var object map[string]json.RawMessage
+	if json.Unmarshal(raw, &object) != nil || len(object) != 1 {
+		return codexErrorInfo{}
+	}
+	for key, value := range object {
+		var detail struct {
+			HTTPStatusCode *int `json:"httpStatusCode"`
+		}
+		if json.Unmarshal(value, &detail) != nil {
+			return codexErrorInfo{}
+		}
+		info := codexErrorInfo{kind: key}
+		if detail.HTTPStatusCode != nil {
+			info.httpStatus = *detail.HTTPStatusCode
+		}
+		return info
+	}
+	return codexErrorInfo{}
+}
+
+// retryableStatus reports whether the upstream status of a failed connection
+// lets a retry succeed: a 5xx, a 429, or no status at all.
+func (info codexErrorInfo) retryableStatus() bool {
+	return info.httpStatus == 0 || info.httpStatus == http.StatusTooManyRequests ||
+		info.httpStatus >= 500 && info.httpStatus <= 599
+}
+
+// codexTurnOutcome is what the retry verdict reads from one turn/completed of
+// the main thread.
+type codexTurnOutcome struct {
+	status    string
+	errorInfo codexErrorInfo
+	message   string
+	// stopRequested records that LeapMux asked Codex to interrupt the turn.
+	stopRequested bool
+	// compaction records that the turn ran a compaction that CompactContext
+	// requested.
+	compaction bool
+}
+
+// hasInterruptCall reports whether LeapMux sent turn/interrupt for the turn.
+// An empty threadID is the main thread.
+func (a *Agent) hasInterruptCall(threadID, turnID string) bool {
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	if threadID == "" {
+		threadID = a.threadID
+	}
+	_, present := a.interruptCalls[codexInterruptKey{threadID: threadID, turnID: turnID}]
+	return present
+}
+
+// mainTurnFailure is the retry verdict of a main-thread turn end. It reads the
+// merged `codex` bucket and the clock for a usage limit.
+func (a *Agent) mainTurnFailure(outcome codexTurnOutcome) providerkit.TurnFailure {
+	now := a.Clock().Now()
+	a.Mu.Lock()
+	sources := codexUsageLimitSources{
+		bucketReset:  a.codexUsageLimitResetLocked(now),
+		textLocation: a.retryTextLocation,
+	}
+	a.Mu.Unlock()
+	return codexTurnFailure(outcome, sources, now)
+}
+
+// codexTurnFailure classifies a main-thread turn end. The stages run in this
+// order, and the first that decides wins:
+//
+//  1. A compaction turn ends on the compaction verdict, whatever its outcome.
+//     A retry would resume the task that the turn before the compaction left.
+//  2. A turn that did not fail, or that LeapMux asked to stop, is not retried.
+//  3. A definitive vendor verdict on the message: a billing block, or a usage
+//     limit that states its reset.
+//  4. usageLimitExceeded is a usage limit. Its reset comes from the merged
+//     `codex` bucket or from the message (see codexUsageLimitFailure).
+//  5. The kinds of a server-side or network failure are transient. A failed
+//     connection is transient only with a 5xx, a 429, or no status, because
+//     another status states a fault that a retry repeats. rateLimitExceeded
+//     is a rate limit.
+//  6. For the kind `other`, or no kind, Codex's own transient wordings, and
+//     then an indicative vendor verdict. A Codex that writes no kind still
+//     retries a disconnect. Every other kind states its fault, so the message
+//     does not override it.
+//  7. Not retryable.
+func codexTurnFailure(outcome codexTurnOutcome, usage codexUsageLimitSources, now time.Time) providerkit.TurnFailure {
+	if outcome.compaction {
+		return providerkit.CompactionEnd()
+	}
+	notRetryable := providerkit.TurnFailure{Kind: providerkit.TurnFailureNotRetryable}
+	if outcome.status != "failed" || outcome.stopRequested {
+		return notRetryable
+	}
+	vendor, vendorMatched := modelvendor.ClassifyError(outcome.message, now)
+	if vendorMatched && vendor.Definitive {
+		return vendor.Failure
+	}
+	kind := outcome.errorInfo.kind
+	transient := providerkit.TurnFailure{Kind: providerkit.TurnFailureTransient, Cause: "Codex reported " + kind}
+	switch kind {
+	case codexErrorUsageLimitExceeded:
+		return codexUsageLimitFailure(outcome.message, usage, now)
+	case codexErrorServerOverloaded, codexErrorInternalServerError, codexErrorFlexUnavailable, codexErrorResponseStreamDisconnected:
+		return transient
+	case codexErrorHTTPConnectionFailed, codexErrorResponseStreamConnectionFailed, codexErrorResponseTooManyFailedAttempts:
+		if outcome.errorInfo.retryableStatus() {
+			return transient
+		}
+		return notRetryable
+	case codexErrorRateLimitExceeded:
+		return providerkit.TurnFailure{Kind: providerkit.TurnFailureRateLimited, Cause: "Codex reported rateLimitExceeded"}
+	case codexErrorOther, "":
+		for _, pattern := range codexTransientMessagePatterns {
+			if pattern.MatchString(outcome.message) {
+				return providerkit.TurnFailure{Kind: providerkit.TurnFailureTransient, Cause: "Codex reported a transient failure"}
+			}
+		}
+		if vendorMatched {
+			return vendor.Failure
+		}
+	}
+	return notRetryable
 }
 
 // handleTokenUsageUpdated processes thread/tokenUsage/updated notifications.

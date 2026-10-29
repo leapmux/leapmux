@@ -5,10 +5,13 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -140,4 +143,84 @@ func TestPromptEndedIgnoresFailureFrameAfterAStopOrSuccess(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The verdict follows the row that ends the turn: the turn-end row of a
+// success, or the failure note of a failed prompt that sent no end frame.
+func TestPromptEndingRetry_TheVerdictFollowsTheRowThatEndsTheTurn(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		response *providerkit.ParsedLine
+		endRow   string
+	}{
+		"success": {promptResponse(1), "turn_end"},
+		"failure": {providerkit.ParseLine([]byte(`{"jsonrpc":"2.0","id":1,"error":{"code":-32603,"message":"Internal error"}}`)), "leapmux_notification"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			b, sink := newACPTurnBase(t, &agenttest.Stdin{})
+			b.hooks.PromptEnded = func(error, bool) PromptEnding {
+				retry := transientVerdict()
+				return PromptEnding{Retry: &retry}
+			}
+			require.NoError(t, b.SendInput("hi", nil))
+
+			b.HandleJSONRPCResponseForTest(tc.response)
+			testutil.RequireEventually(t, func() bool { return !b.PromptActive() })
+
+			timeline := sink.Timeline()
+			require.GreaterOrEqual(t, len(timeline), 2)
+			assert.Equal(t, "schedule_server_error", timeline[len(timeline)-1].Op, "the verdict is the last operation")
+			assert.Equal(t, tc.endRow, timeline[len(timeline)-2].Op, "the row that ends the turn comes directly before it")
+			ops, _ := retryOps(timeline)
+			assert.Len(t, ops, 1, "the turn applies exactly one verdict")
+			require.Equal(t, 1, sink.AutoScheduleCount())
+			assert.JSONEq(t, `{"error":"503"}`, string(sink.LastAutoSchedule().SourcePayload))
+		})
+	}
+}
+
+func TestPromptEndingRetry_ANilVerdictCancelsTheServerErrorRetry(t *testing.T) {
+	t.Parallel()
+	for name, hook := range map[string]func(error, bool) PromptEnding{
+		"no hook":        nil,
+		"a nil verdict":  func(error, bool) PromptEnding { return PromptEnding{} },
+		"a zero verdict": func(error, bool) PromptEnding { return PromptEnding{Retry: &TurnVerdict{}} },
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			b, sink := newACPTurnBase(t, &agenttest.Stdin{})
+			b.hooks.PromptEnded = hook
+			require.NoError(t, b.SendInput("hi", nil))
+
+			b.HandleJSONRPCResponseForTest(promptResponse(1))
+			testutil.RequireEventually(t, func() bool { return !b.PromptActive() })
+
+			ops, _ := retryOps(sink.Timeline())
+			require.Equal(t, []string{"cancel_server_error"}, opNames(ops))
+			assert.Equal(t, providerkit.TurnEndedWithoutRetryableFailure, ops[0].Reason)
+		})
+	}
+}
+
+func TestPromptEndingRetry_AStoppedPromptAppliesTheVerdictThatItsHookReturns(t *testing.T) {
+	t.Parallel()
+	b, sink := newACPTurnBase(t, &agenttest.Stdin{})
+	resetAt := time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC)
+	var sawStopped bool
+	b.hooks.PromptEnded = func(_ error, stopped bool) PromptEnding {
+		sawStopped = stopped
+		retry := usageVerdict(resetAt)
+		return PromptEnding{Retry: &retry}
+	}
+	require.NoError(t, b.SendInput("hi", nil))
+	b.noteACPInterruptRequested()
+
+	b.HandleJSONRPCResponseForTest(providerkit.ParseLine([]byte(`{"jsonrpc":"2.0","id":1,"result":{"stopReason":"cancelled"}}`)))
+	testutil.RequireEventually(t, func() bool { return !b.PromptActive() })
+
+	assert.True(t, sawStopped)
+	ops, _ := retryOps(sink.Timeline())
+	require.Equal(t, []string{"schedule_usage_limit", "cancel_server_error"}, opNames(ops))
+	assert.True(t, resetAt.Equal(ops[0].ResetAt))
 }

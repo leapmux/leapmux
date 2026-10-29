@@ -72,13 +72,15 @@ func diracNoticeMatches(text string) bool {
 // Dirac's notices becomes its own native row, so the notice never joins the
 // model's stream. A retry card flushes the buffered text of the failed
 // attempt first, marked interrupted, because Dirac replaces that attempt.
-// It claims no other update.
+// It claims no other update. Every tool card also reaches the turn-failure
+// record first (observeDiracFailure), which claims nothing.
 //
 // The metadata of an update plays no part here. Dirac stamps every update of
 // the main session with `dev.dirac/seq`, and a chunk that a subagent tag
 // routes to a child transcript never reaches this handler (see
 // Hooks.ChildUpdateRoute, which the base runs first).
 func (a *Agent) observeDiracNotice(updateType string, _ map[string]json.RawMessage, update json.RawMessage) bool {
+	a.observeDiracFailure(updateType, update)
 	switch updateType {
 	case contracts.ACPUpdateAgentMessageChunk:
 		var chunk struct {

@@ -10,6 +10,8 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit/providerkittest"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -535,4 +537,149 @@ func TestHardChildOpeningPromptFailureBlocksViewUntilOneExplicitRetry(t *testing
 	rows := base.Child(state.childID).Messages()
 	require.Len(t, rows, 1)
 	assert.JSONEq(t, `{"content":"Original assignment"}`, string(rows[0].Content))
+}
+
+// compactionVerdictOps is the retry operation that the end of one manual
+// compaction applies: CompactionEnd's cancellation of the server-error retry.
+func compactionVerdictOps() []agenttest.TimelineEntry {
+	reference := &agenttest.Sink{}
+	providerkit.ApplyTurnFailure(reference, providerkit.CompactionEnd(), nil)
+	return reference.Timeline()
+}
+
+// museCompactPeer answers session/compact with status. It runs during before
+// the answer, as a host that emits frames before its acknowledgement does.
+func museCompactPeer(t *testing.T, a *Agent, status string, during func()) *museTestPeer {
+	t.Helper()
+	return &museTestPeer{agent: a, reply: func(method string, raw json.RawMessage) agenttest.RPCReply {
+		require.Equal(t, methodSessionCompact, method)
+		var params map[string]any
+		require.NoError(t, json.Unmarshal(raw, &params))
+		if during != nil {
+			during()
+		}
+		result, err := json.Marshal(map[string]any{"commandId": params["commandId"], "status": status})
+		require.NoError(t, err)
+		return agenttest.RPCReply{Result: result}
+	}}
+}
+
+// feedCompactionItem feeds the start of the root compaction item, and then its
+// end with outcome when outcome is set.
+func feedCompactionItem(t *testing.T, a *Agent, outcome string) {
+	t.Helper()
+	feed(t, a, contracts.MuseMethodItemStarted, itemParams{SessionID: "session", Item: nativeItem{ID: "compact", Kind: contracts.MuseItemKindCompaction, Revision: 1, Status: contracts.MuseItemStatusInProgress, Trigger: "manual"}})
+	if outcome != "" {
+		feed(t, a, contracts.MuseMethodItemCompleted, itemParams{SessionID: "session", Item: nativeItem{ID: "compact", Kind: contracts.MuseItemKindCompaction, Revision: 2, Status: contracts.MuseItemStatusCompleted, Outcome: outcome}})
+	}
+}
+
+// A manual compaction applies CompactionEnd once when it ends, whatever its
+// outcome: the end of its item, or the noop acknowledgement that emits no item.
+// A replayed end applies no second verdict.
+func TestMuseManualCompactionEndAppliesTheCompactionVerdictOnce(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		status string
+		// during runs before the acknowledgement, after runs after it.
+		during, after func(*testing.T, *Agent)
+	}{
+		{name: "a compacted compaction", status: "accepted", after: func(t *testing.T, a *Agent) {
+			feedCompactionItem(t, a, contracts.MuseCompactionOutcomeCompacted)
+			feedCompactionItem(t, a, contracts.MuseCompactionOutcomeCompacted)
+		}},
+		{name: "a failed compaction", status: "accepted", after: func(t *testing.T, a *Agent) {
+			feedCompactionItem(t, a, contracts.MuseCompactionOutcomeFailed)
+		}},
+		{name: "a cancelled compaction", status: "accepted", after: func(t *testing.T, a *Agent) {
+			feedCompactionItem(t, a, contracts.MuseCompactionOutcomeCancelled)
+		}},
+		{name: "a noop acknowledgement", status: contracts.MuseCompactionOutcomeNoop},
+		{name: "an item that ends before the acknowledgement", status: "accepted", during: func(t *testing.T, a *Agent) {
+			feedCompactionItem(t, a, contracts.MuseCompactionOutcomeCompacted)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a, sink := testAgent(t)
+			var during func()
+			if tc.during != nil {
+				during = func() { tc.during(t, a) }
+			}
+			a.SetStdinForTest(museCompactPeer(t, a, tc.status, during))
+			require.NoError(t, a.CompactContext())
+			if tc.after != nil {
+				tc.after(t, a)
+			}
+			assert.Equal(t, compactionVerdictOps(), providerkittest.TurnEndAndRetryOps(sink.Timeline()))
+			active, published := sink.LastTurnActive()
+			require.True(t, published)
+			assert.False(t, active)
+		})
+	}
+}
+
+// An automatic compaction ends no turn of its own, so it applies no verdict.
+func TestMuseAutomaticCompactionEndAppliesNoVerdict(t *testing.T) {
+	t.Parallel()
+	a, sink := testAgent(t)
+	feedCompactionItem(t, a, contracts.MuseCompactionOutcomeFailed)
+	assert.Empty(t, providerkittest.TurnEndAndRetryOps(sink.Timeline()))
+}
+
+// A compaction that Muse does not accept leaves no mark, so a later automatic
+// compaction applies no verdict.
+func TestMuseRefusedCompactionLeavesNoMark(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		reply agenttest.RPCReply
+		want  error
+	}{
+		{name: "an unavailable compaction", reply: agenttest.RPCReply{Error: json.RawMessage(`{"code":-32000,"message":"unavailable","data":{"code":"compaction_unavailable"}}`)}, want: agent.ErrCompactionUnsupported},
+		{name: "a rejected request", reply: agenttest.RPCReply{Error: json.RawMessage(`{"code":-32000,"message":"rejected"}`)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a, sink := testAgent(t)
+			a.SetStdinForTest(&museTestPeer{agent: a, reply: func(string, json.RawMessage) agenttest.RPCReply { return tc.reply }})
+			err := a.CompactContext()
+			require.Error(t, err)
+			if tc.want != nil {
+				require.ErrorIs(t, err, tc.want)
+			}
+			feedCompactionItem(t, a, contracts.MuseCompactionOutcomeCompacted)
+			assert.Empty(t, providerkittest.TurnEndAndRetryOps(sink.Timeline()))
+		})
+	}
+}
+
+// The host's retirement ends a manual compaction that is still running, with
+// the compaction's verdict, once.
+func TestMuseRetirementEndsAPendingManualCompactionOnce(t *testing.T) {
+	t.Parallel()
+	a, sink := testAgent(t)
+	a.SetStdinForTest(museCompactPeer(t, a, "accepted", nil))
+	require.NoError(t, a.CompactContext())
+	feedCompactionItem(t, a, "")
+	a.retireHost(agent.MessageCompletionError)
+	a.retireHost(agent.MessageCompletionError)
+	assert.Equal(t, compactionVerdictOps(), providerkittest.TurnEndAndRetryOps(sink.Timeline()))
+}
+
+// The compaction's verdict belongs to the compaction alone. The next turn
+// takes the classifier's verdict again.
+func TestMuseTurnAfterManualCompactionTakesItsOwnVerdict(t *testing.T) {
+	t.Parallel()
+	a, sink := testAgent(t)
+	a.SetStdinForTest(museCompactPeer(t, a, "accepted", nil))
+	require.NoError(t, a.CompactContext())
+	feedCompactionItem(t, a, contracts.MuseCompactionOutcomeFailed)
+	a.startTurn("session", "turn")
+	a.HandleOutput([]byte(museCompletionFrame(t, museFailedParams(map[string]any{
+		"kind": "modelError", "message": "API error 500: Internal Server Error (server_error) (after 10 provider attempts)", "retryable": true,
+	}), 1793150211651)))
+	want := append(compactionVerdictOps(), providerkittest.TurnEndThen(museTransient("modelError"))...)
+	assert.Equal(t, want, providerkittest.TurnEndAndRetryOps(sink.Timeline()))
 }

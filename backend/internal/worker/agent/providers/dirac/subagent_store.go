@@ -83,7 +83,9 @@ func (a *Agent) hydrateSubagentArchives(_ error, _ bool) acp.PromptEnding {
 	return acp.PromptEnding{}
 }
 
-func (a *Agent) archiveClock() quartz.Clock {
+// agentClock returns the clock of the child-archive retries and of the
+// turn-failure verdict. A test injects it through configure.
+func (a *Agent) agentClock() quartz.Clock {
 	if a.clock != nil {
 		return a.clock
 	}
@@ -192,7 +194,7 @@ func (a *Agent) retryDiracChild(state *diracChildState, stop <-chan struct{}) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	clock := a.archiveClock()
+	clock := a.agentClock()
 	delay := diracArchiveRetryInterval
 	for {
 		remaining := state.deadline.Sub(clock.Now())

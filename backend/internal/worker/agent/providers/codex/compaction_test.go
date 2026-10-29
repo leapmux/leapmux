@@ -3,14 +3,17 @@ package codex
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
 
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit/providerkittest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -342,4 +345,280 @@ func TestHandleCodexOutput_TurnCompletionPublishesTheClearBeforeItReturns(t *tes
 
 	assert.Equal(t, []bool{true, false}, sink.TurnActives(),
 		"the handler reports the end before it returns, so the reader's next line cannot overtake it")
+}
+
+// --- The automatic-retry verdict of a compaction turn ---
+
+// codexCompactionEnded is the timeline entry of the verdict at the end of a
+// compaction turn. It cancels the server-error retry and schedules nothing.
+var codexCompactionEnded = agenttest.TimelineEntry{
+	Op: "cancel_server_error", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR,
+	Reason: providerkit.TurnEndedOnCompaction,
+}
+
+// The frames of one compaction turn of the main thread.
+const (
+	codexCompactionTurnStarted = `{"method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"compact-turn"}}}`
+	codexCompactionItemStarted = `{"method":"item/started","params":{"threadId":"main-thread","turnId":"compact-turn","item":{"type":"contextCompaction","id":"compact-1"}}}`
+)
+
+// codexFailedTurnCompleted returns the turn/completed of a main-thread turn
+// that failed with the codexErrorInfo info and the message message.
+func codexFailedTurnCompleted(turnID, info, message string) string {
+	return fmt.Sprintf(`{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":%q,"status":"failed","items":[],"error":{"message":%q,"codexErrorInfo":%s,"additionalDetails":null}}}}`, turnID, message, info)
+}
+
+// newCodexCompactionAgent builds an agent on the main thread whose Codex
+// answers every request at once with an empty result.
+func newCodexCompactionAgent(t *testing.T) (*Agent, *agenttest.Sink) {
+	t.Helper()
+	a, sink, _ := newCodexAgentForRPC(t, func(string) agenttest.RPCReply {
+		return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+	})
+	a.threadID = "main-thread"
+	return a, sink
+}
+
+// A compaction that fails on an error that the classifier reads as retryable
+// schedules no retry. The clock stands at the capture of the usage-limit
+// message, so its reset lies ahead.
+func TestCodexCompactContext_AFailedCompactionSchedulesNoRetry(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		info    string
+		message string
+	}{
+		{"an internal server error", `"internalServerError"`, "Internal server error"},
+		{"an overload", `"serverOverloaded"`, "Selected model is at capacity. Please try a different model."},
+		{"a stream that disconnected with a 502", `{"responseStreamDisconnected":{"httpStatusCode":502}}`, "stream disconnected before completion"},
+		{"a rate limit", `"rateLimitExceeded"`, "exceeded retry limit, last status: 429 Too Many Requests"},
+		{"a usage limit that states its reset", `"usageLimitExceeded"`, "You've hit your usage limit. Try again at Nov 2nd, 2026 3:00 PM."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			clock := testutil.NewQuartzMock(t)
+			clock.Set(codexRealUsageLimitAt).MustWait(testutil.DeadlineContext(t))
+			a, sink, _ := newCodexAgentForRPCWithClock(t, clock, func(string) agenttest.RPCReply {
+				return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+			})
+			a.threadID = "main-thread"
+			require.NoError(t, a.CompactContext())
+
+			feedCodexLines(a,
+				codexCompactionTurnStarted,
+				codexCompactionItemStarted,
+				codexFailedTurnCompleted("compact-turn", tc.info, tc.message),
+			)
+
+			assert.Equal(t, []agenttest.TimelineEntry{{Op: "leapmux_notification"}, codexTurnEndRow, codexCompactionEnded}, sink.Timeline())
+		})
+	}
+}
+
+// Codex can start the compaction's turn before it answers the request. The
+// mark stands before the request goes out, so the turn that starts first still
+// carries it.
+func TestCodexCompactContext_ACompactionTurnThatStartsBeforeTheReplySchedulesNoRetry(t *testing.T) {
+	t.Parallel()
+	releaseResponse := make(chan struct{})
+	a, sink, requests := newCodexAgentForRPC(t, func(string) agenttest.RPCReply {
+		<-releaseResponse
+		return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+	})
+	a.threadID = "main-thread"
+	result := make(chan error, 1)
+	go func() { result <- a.CompactContext() }()
+	require.Eventually(t, func() bool { return len(requests()) == 1 }, 30*time.Second, time.Millisecond)
+
+	feedCodexLines(a, codexCompactionTurnStarted, codexCompactionItemStarted)
+	require.NoError(t, <-result, "the contextCompaction start confirms delivery")
+	feedCodexLines(a, codexFailedTurnCompleted("compact-turn", `"internalServerError"`, "Internal server error"))
+	close(releaseResponse)
+
+	assert.Equal(t, []agenttest.TimelineEntry{{Op: "leapmux_notification"}, codexTurnEndRow, codexCompactionEnded}, sink.Timeline())
+}
+
+// A successful compaction ends its turn on the compaction verdict too.
+func TestCodexCompactContext_ASuccessfulCompactionAppliesTheCompactionVerdict(t *testing.T) {
+	t.Parallel()
+	a, sink := newCodexCompactionAgent(t)
+	require.NoError(t, a.CompactContext())
+
+	feedCodexLines(a,
+		codexCompactionTurnStarted,
+		codexCompactionItemStarted,
+		`{"method":"item/completed","params":{"threadId":"main-thread","turnId":"compact-turn","item":{"type":"contextCompaction","id":"compact-1"}}}`,
+		`{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"compact-turn","status":"completed"}}}`,
+	)
+
+	assert.Equal(t, []agenttest.TimelineEntry{{Op: "notification"}, codexTurnEndRow, codexCompactionEnded}, sink.Timeline())
+}
+
+// An interrupted compaction ends its turn on the compaction verdict, not on
+// the verdict of an interrupted conversation turn.
+func TestCodexCompactContext_AnInterruptedCompactionAppliesTheCompactionVerdict(t *testing.T) {
+	t.Parallel()
+	a, sink := newCodexCompactionAgent(t)
+	require.NoError(t, a.CompactContext())
+
+	feedCodexLines(a,
+		codexCompactionTurnStarted,
+		codexCompactionItemStarted,
+		`{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"compact-turn","status":"interrupted"}}}`,
+	)
+
+	assert.Equal(t, []agenttest.TimelineEntry{{Op: "leapmux_notification"}, codexTurnEndRow, codexCompactionEnded}, sink.Timeline())
+}
+
+// The compaction's turn end spends the mark, so the next conversation turn
+// applies its own verdict.
+func TestCodexCompactContext_TheTurnAfterACompactionAppliesItsOwnVerdict(t *testing.T) {
+	t.Parallel()
+	a, sink := newCodexCompactionAgent(t)
+	require.NoError(t, a.CompactContext())
+	feedCodexLines(a,
+		codexCompactionTurnStarted,
+		`{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"compact-turn","status":"completed"}}}`,
+	)
+
+	feedCodexLines(a,
+		`{"method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"turn-2"}}}`,
+		codexFailedTurnCompleted("turn-2", `"internalServerError"`, "Internal server error"),
+	)
+
+	assert.Equal(t, []agenttest.TimelineEntry{
+		codexTurnEndRow, codexCompactionEnded,
+		codexTurnEndRow, codexServerErrorScheduled,
+	}, sink.Timeline())
+}
+
+// An automatic compaction inside a conversation turn ends no turn. A failed
+// conversation turn keeps its own verdict, also when the compaction failed it.
+func TestCodexAnAutomaticCompactionLeavesTheConversationTurnItsOwnVerdict(t *testing.T) {
+	t.Parallel()
+	a, sink := newCodexCompactionAgent(t)
+
+	feedCodexLines(a,
+		`{"method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"turn-1"}}}`,
+		`{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn-1","item":{"type":"contextCompaction","id":"auto-1"}}}`,
+		codexFailedTurnCompleted("turn-1", `"internalServerError"`, "Internal server error"),
+	)
+
+	assert.Equal(t, []agenttest.TimelineEntry{{Op: "leapmux_notification"}, codexTurnEndRow, codexServerErrorScheduled}, sink.Timeline())
+}
+
+// A compaction request that Codex refuses starts no compaction, so the next
+// turn keeps its own verdict.
+func TestCodexCompactContext_ARefusedRequestLeavesTheNextTurnItsOwnVerdict(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newCodexAgentForRPC(t, func(string) agenttest.RPCReply {
+		return agenttest.RPCReply{Error: json.RawMessage(`{"code":-32600,"message":"thread is active"}`)}
+	})
+	a.threadID = "main-thread"
+	require.Error(t, a.CompactContext())
+
+	feedCodexLines(a,
+		`{"method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"turn-1"}}}`,
+		codexFailedTurnCompleted("turn-1", `"internalServerError"`, "Internal server error"),
+	)
+
+	assert.Equal(t, []agenttest.TimelineEntry{codexTurnEndRow, codexServerErrorScheduled}, sink.Timeline())
+}
+
+// A compaction requested for a thread that a context replacement retired never
+// marks a turn of the new thread.
+func TestCodexCompactContext_AReplacedThreadDropsThePendingCompaction(t *testing.T) {
+	t.Parallel()
+	a, sink := newCodexCompactionAgent(t)
+	require.NoError(t, a.CompactContext())
+	_, err := a.replaceMainThread(codexThreadResult{ID: "fresh-thread"})
+	require.NoError(t, err)
+
+	feedCodexLines(a,
+		`{"method":"turn/started","params":{"threadId":"fresh-thread","turn":{"id":"turn-1"}}}`,
+		`{"method":"turn/completed","params":{"threadId":"fresh-thread","turn":{"id":"turn-1","status":"failed","items":[],"error":{"message":"Internal server error","codexErrorInfo":"internalServerError","additionalDetails":null}}}}`,
+	)
+
+	assert.Equal(t, []agenttest.TimelineEntry{codexTurnEndRow, codexServerErrorScheduled}, providerkittest.TurnEndAndRetryOps(sink.Timeline()))
+}
+
+// A steer that waits for its reply holds the compaction's turn end. The held
+// end replays once, after the reply, and it applies the compaction verdict
+// once.
+func TestCodexCompactContext_AHeldCompactionTurnEndAppliesTheCompactionVerdictOnce(t *testing.T) {
+	t.Parallel()
+	steerReplies := make(chan func(agenttest.RPCReply), 1)
+	a, sink, _ := newCodexAgentForAsyncRPCRequests(t, func(request codexRecordedRequest, respond func(agenttest.RPCReply)) {
+		if request.Method == "turn/steer" {
+			steerReplies <- respond
+			return
+		}
+		respond(agenttest.RPCReply{Result: json.RawMessage(`{}`)})
+	})
+	a.threadID = "main-thread"
+	require.NoError(t, a.CompactContext())
+	feedCodexLines(a, codexCompactionTurnStarted, codexCompactionItemStarted)
+
+	steered := make(chan error, 1)
+	go func() { steered <- a.SteerInput("guide", nil) }()
+	respond := <-steerReplies
+	feedCodexLines(a, codexFailedTurnCompleted("compact-turn", `"internalServerError"`, "Internal server error"))
+	assert.Empty(t, providerkittest.TurnEndAndRetryOps(sink.Timeline()), "the pending steer holds the turn end")
+
+	respond(agenttest.RPCReply{Error: json.RawMessage(`{"code":-32600,"message":"cannot steer a compact turn","data":{"codexErrorInfo":{"activeTurnNotSteerable":{"turnKind":"compact"}}}}`)})
+	require.Error(t, <-steered)
+
+	assert.Equal(t, []agenttest.TimelineEntry{codexTurnEndRow, codexCompactionEnded}, providerkittest.TurnEndAndRetryOps(sink.Timeline()))
+}
+
+// Codex replaces a running turn with the compaction's own turn. The replaced
+// turn keeps its own verdict, and the mark reaches only the compaction's turn.
+func TestCodexCompactContext_TheTurnThatACompactionReplacesKeepsItsOwnVerdict(t *testing.T) {
+	t.Parallel()
+	a, sink := newCodexCompactionAgent(t)
+	feedCodexLines(a, `{"method":"turn/started","params":{"threadId":"main-thread","turn":{"id":"turn-1"}}}`)
+	require.NoError(t, a.CompactContext())
+
+	feedCodexLines(a,
+		`{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"interrupted"}}}`,
+		codexCompactionTurnStarted,
+		codexFailedTurnCompleted("compact-turn", `"internalServerError"`, "Internal server error"),
+	)
+
+	assert.Equal(t, []agenttest.TimelineEntry{
+		codexTurnEndRow, codexServerErrorCancelled,
+		codexTurnEndRow, codexCompactionEnded,
+	}, sink.Timeline())
+}
+
+// A caller that stops waiting leaves the mark, because Codex can still start
+// the compaction. The late compaction turn then schedules no retry.
+func TestCodexCompactContext_ACompactionTurnAfterTheAckTimeoutSchedulesNoRetry(t *testing.T) {
+	t.Parallel()
+	clock := testutil.NewQuartzMock(t)
+	ctx := testutil.DeadlineContext(t)
+	ackTimer := clock.Trap().NewTimer(codexCompactionAckTimerTag)
+	t.Cleanup(ackTimer.Close)
+	// The deferred release runs before the fixture's cleanup, which waits for
+	// the fake peer that this reply blocks.
+	releaseResponse := make(chan struct{})
+	defer close(releaseResponse)
+	a, sink, _ := newCodexAgentForRPCWithClock(t, clock, func(string) agenttest.RPCReply {
+		<-releaseResponse
+		return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+	})
+	a.threadID = "main-thread"
+	result := make(chan error, 1)
+	go func() { result <- a.CompactContext() }()
+	assert.Equal(t, turnStartAckTimeout, testutil.WaitForTimer(t, ctx, ackTimer))
+	clock.Advance(turnStartAckTimeout).MustWait(ctx)
+	require.ErrorIs(t, <-result, agent.ErrDeliveryUncertain)
+
+	feedCodexLines(a,
+		codexCompactionTurnStarted,
+		codexFailedTurnCompleted("compact-turn", `"internalServerError"`, "Internal server error"),
+	)
+
+	assert.Equal(t, []agenttest.TimelineEntry{codexTurnEndRow, codexCompactionEnded}, sink.Timeline())
 }

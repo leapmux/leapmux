@@ -231,6 +231,11 @@ func (a *Agent) applySessionEvent(stream *sessionStream, event sessionEvent, raw
 			return err
 		}
 		if stream.childAgentID == "" {
+			// Only the root turn retries. Its verdict follows the turn-end row.
+			a.Mu.Lock()
+			interrupted := a.interruptRequested
+			a.Mu.Unlock()
+			providerkit.ApplyTurnFailure(sink, dshTurnEndFailure(event.Data, interrupted, dshEventTime(event, a.Clock().Now())), raw)
 			a.setTurnState(false)
 		} else {
 			if err := a.childTurnState(stream.sessionID, false, completion); err != nil {

@@ -43,6 +43,25 @@ func (b *Base) PublishSessionControlRequest(line *providerkit.ParsedLine, cancel
 	if b.hooks.ControlRequestObserver != nil {
 		b.hooks.ControlRequestObserver(line)
 	}
+	// A provider that can answer its own control request does so here, before
+	// the bypass branch. After a delivery failure the published card keeps the
+	// reject answer, and the bypass sweep can send it later. This is consistent
+	// with LeapMux's own decision.
+	if b.hooks.AnswerControlRequest != nil {
+		if answer, ok := b.hooks.AnswerControlRequest(line); ok {
+			ownerSessionID := b.agentSessionOfControlRequest(sessionID)
+			queued := b.ApproveUnpublishedSessionControlRequest(b.sink, ownerSessionID, line.Raw, cancelAnswer, answer)
+			if b.hooks.ControlRequestAnswered != nil {
+				b.hooks.ControlRequestAnswered(line, queued)
+			}
+			if queued {
+				return
+			}
+			publication := b.PublishSessionControlRequestWithApproval(b.sink, ownerSessionID, line.Raw, cancelAnswer, nil)
+			b.bindURLElicitation(line, publication)
+			return
+		}
+	}
 	ownerSessionID := b.agentSessionOfControlRequest(sessionID)
 	var answer any
 	if line.Method == acpMethodSessionRequestPermission && b.hooks.WithBypassPermission != nil &&

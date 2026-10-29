@@ -3,12 +3,15 @@ package codewhale
 import (
 	"encoding/json"
 	"log/slog"
+	"regexp"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/modelvendor"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
@@ -138,16 +141,25 @@ func completionFor(event string) agent.MessageCompletion {
 // turnEventPayload is the payload of turn.started and turn.completed.
 type turnEventPayload struct {
 	Turn turnRecord `json:"turn"`
+	// ManualCompaction is true on the turn.started of a turn that runs a
+	// manual compaction (runtime_threads.rs emit_claimed_turn_started, from
+	// Codewhale 0.9.13). Only the Worker reads it.
+	ManualCompaction bool `json:"manual_compaction"`
 }
 
 // handleTurnStarted sets the turn flag. A turn the runtime starts on its own --
 // a goal continuation, a compaction -- is a turn like any other: the agent is
-// busy, and the input queue waits for it.
+// busy, and the input queue waits for it. The runtime marks the start of a
+// manual compaction's turn, also when another client requested it, so the end
+// of that turn applies the compaction verdict.
 func (a *Agent) handleTurnStarted(env codewhaleEnvelope) {
 	turnID := env.TurnID
 	var payload turnEventPayload
 	if json.Unmarshal(env.Payload, &payload) == nil && payload.Turn.ID != "" {
 		turnID = payload.Turn.ID
+	}
+	if payload.ManualCompaction {
+		a.noteCompactionTurn(turnID)
 	}
 	if a.markTurnStarted(turnID) {
 		a.discardGeneration()
@@ -201,6 +213,11 @@ func (a *Agent) completeTurn(end codewhaleTurnEnd) {
 	env, payload, turnID := end.env, end.payload, end.turnID
 	a.Mu.Lock()
 	compacting := a.compactionLive
+	// The end of a manual compaction's turn spends the mark.
+	compactionTurn := turnID != "" && a.compactionTurnID == turnID
+	if compactionTurn {
+		a.compactionTurnID = ""
+	}
 	a.Mu.Unlock()
 	completion := turnCompletion(payload.Turn.Status)
 	if compacting && a.endCompaction(turnID) {
@@ -232,7 +249,14 @@ func (a *Agent) completeTurn(end codewhaleTurnEnd) {
 	if a.markTurnFinished(turnID) {
 		a.PublishTurnActive()
 	}
-	a.sink.CancelServerErrorRetry()
+	// Every turn end applies one verdict. A turn that did not fail cancels the
+	// server-error retry. A manual compaction's turn ends on the compaction
+	// verdict, whatever its outcome, so it never schedules a retry.
+	verdict := providerkit.CompactionEnd()
+	if !compactionTurn {
+		verdict = codewhaleTurnFailure(payload.Turn.Status, failure, a.IntentionalStopRequested(), a.clock.Now())
+	}
+	providerkit.ApplyTurnFailure(a.sink, verdict, env.raw)
 	a.refreshContextUsage()
 }
 
@@ -246,6 +270,50 @@ func turnCompletion(status string) agent.MessageCompletion {
 	default:
 		return agent.MessageCompletionError
 	}
+}
+
+// codewhaleTransientRe matches the start of a failure text that states a
+// transient failure: the Display forms of Codewhale's LlmError
+// (llm_client/mod.rs) for a 5xx, a network failure, and a timeout, and its
+// stream failures. Codewhale retries each of them itself first.
+var codewhaleTransientRe = regexp.MustCompile(
+	`^(?:Server error \(5\d\d\): |Network error: |Request timed out after |Chat Completions stream closed before \[DONE\] or finish_reason|Responses stream closed before a successful completion event|Stream stalled)`)
+
+// The failure-text prefixes of a 429 and of a plan quota (LlmError's Display).
+// The vendor's own body follows each prefix.
+const (
+	codewhaleRateLimitPrefix = "Rate limit exceeded: "
+	codewhaleQuotaPrefix     = "Provider plan quota exhausted: "
+)
+
+// codewhaleTurnFailure classifies a turn end for the automatic-retry queue.
+// Only a failed turn can be retried: a completed, interrupted, or canceled turn,
+// and a turn that ends while the agent stops, gives NotRetryable. failure is
+// the turn's error text, and observedAt is when the turn ended.
+func codewhaleTurnFailure(status, failure string, stopRequested bool, observedAt time.Time) providerkit.TurnFailure {
+	notRetryable := providerkit.TurnFailure{Kind: providerkit.TurnFailureNotRetryable}
+	if status != contracts.CodewhaleTurnStatusFailed || stopRequested {
+		return notRetryable
+	}
+	vendor, vendorStated := modelvendor.ClassifyError(failure, observedAt)
+	if vendorStated && vendor.Definitive {
+		return vendor.Failure
+	}
+	switch {
+	case codewhaleTransientRe.MatchString(failure):
+		return providerkit.TurnFailure{Kind: providerkit.TurnFailureTransient, Cause: "Codewhale reported a transient failure"}
+	case strings.HasPrefix(failure, codewhaleRateLimitPrefix):
+		if vendorStated {
+			return vendor.Failure
+		}
+		return providerkit.TurnFailure{Kind: providerkit.TurnFailureRateLimited, Cause: "Codewhale reported a rate limit"}
+	case strings.HasPrefix(failure, codewhaleQuotaPrefix):
+		if vendorStated {
+			return vendor.Failure
+		}
+		return providerkit.TurnFailure{Kind: providerkit.TurnFailureUsageLimited, Cause: "Codewhale reported an exhausted plan quota"}
+	}
+	return notRetryable
 }
 
 // --- items ---
@@ -385,6 +453,21 @@ func (a *Agent) publishCompaction() {
 	if !live {
 		providerkit.PublishCompaction(a.sink, "")
 	}
+}
+
+// noteCompactionTurn records that turnID runs a manual compaction. It records
+// nothing for a turn that already ended, because that end already applied its
+// verdict. A reply that arrives after its turn ended therefore marks no turn.
+func (a *Agent) noteCompactionTurn(turnID string) {
+	if turnID == "" {
+		return
+	}
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	if a.finishedTurns.contains(turnID) {
+		return
+	}
+	a.compactionTurnID = turnID
 }
 
 // endCompaction records the native end and clears its live indicator.

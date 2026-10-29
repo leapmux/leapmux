@@ -144,6 +144,7 @@ func (a *Agent) ClearContext() (string, error) {
 	a.compactionAck = nil
 	a.manualCompactionID = ""
 	a.manualCompactionReady = false
+	a.manualCompactionVerdictDue = false
 	a.manualFollowupSending = false
 	a.manualFollowupBusy = false
 	a.usage = mimoUsage{}
@@ -301,6 +302,7 @@ func (a *Agent) settleManualCompactionRoute(sessionID string, requestID uint64, 
 	held := a.readyUnreportedFailuresLocked()
 	a.manualCompactionID = ""
 	a.manualCompactionReady = routeErr == nil && readErr == nil && summarized && !held
+	verdictDue, verdictEpoch := a.takeManualCompactionVerdictLocked()
 	a.turnActive = false
 	a.Mu.Unlock()
 	a.endLiveCompactions(mainActorID)
@@ -320,6 +322,11 @@ func (a *Agent) settleManualCompactionRoute(sessionID string, requestID uint64, 
 				contracts.NotificationFieldText: message,
 			})
 		}
+	}
+	// The reply ends the compaction. Its verdict follows the rows above and
+	// precedes the release, as a turn end's does.
+	if verdictDue {
+		a.applyCompactionVerdict(verdictEpoch)
 	}
 	a.sink.ReportProgress(agent.ResetModelProgress())
 	a.PublishTurnActive()

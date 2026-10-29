@@ -846,7 +846,7 @@ func TestPersistSettingsRefresh_RejectsARemovedSource(t *testing.T) {
 	t.Parallel()
 	f := newRefreshTestFixture(t, settingsSeed{Model: "opus", Effort: "low"})
 	stored := mustGetAgent(t, f.svc)
-	f.svc.Output.CleanupAgent("agent-1")
+	f.svc.Output.CleanupAgent("agent-1", CleanupTabClosed)
 	before := f.mock.streamCount.Load()
 
 	f.sink.PersistSettingsRefresh(map[string]string{agent.OptionIDEffort: "high"})

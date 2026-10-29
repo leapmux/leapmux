@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -39,12 +40,33 @@ type FamilyBase struct {
 	// a change of one of them in its own UpdateSettings. Set it before the
 	// start. It may be nil.
 	MemberOptionGroups func() []*leapmuxv1.AvailableOptionGroup
+	// MemberFailure classifies the error of a failed turn by the vocabulary of
+	// one member's own gateway, before the family recipe reads it. It returns
+	// false for an error that the family recipe decides. Set it before the
+	// start. It may be nil.
+	MemberFailure func(failure DaemonError) (providerkit.TurnFailure, bool)
 
 	daemonMu        sync.Mutex
 	daemonMessages  map[string]*openCodeMessageState
 	daemonParts     map[string]string
 	lastAssistant   string
 	retryResolution providerkit.RetryResolution
+	// promptStartedAt, heldSessionError, longWait, userStopRequested, and
+	// compactionPrompt belong to one prompt: resetDaemonGeneration clears them
+	// when the next prompt starts. A Kilo steer joins the running prompt, so it
+	// keeps them. Guarded by daemonMu.
+	//
+	// promptStartedAt is the agent clock's instant of the prompt's start.
+	promptStartedAt time.Time
+	// heldSessionError is the newest session.error of the current session.
+	heldSessionError *heldSessionError
+	// longWait is the retry status that made LeapMux end the turn.
+	longWait *openCodeLongWait
+	// userStopRequested records a stop that the reader asked for.
+	userStopRequested bool
+	// compactionPrompt states that the prompt is the /compact command, which
+	// the daemon runs as its compaction (sendCompactionPrompt).
+	compactionPrompt bool
 	// autoApprove is the current value of the Auto-approve option. Guarded by
 	// the base's settings lock, Base.Mu, which an automatic approval also holds.
 	autoApprove bool
@@ -62,6 +84,7 @@ func (b *FamilyBase) configureQuestions(sink agent.ControlServices) {
 	b.Questions.Configure(sink)
 	b.Questions.observe = b.handleDaemonEvent
 	b.Questions.ready = b.DaemonReady
+	b.Questions.connected = b.readMissedSessionStatus
 }
 
 // ReadDaemon GETs one route of the daemon's HTTP server, such as a route that
@@ -78,11 +101,97 @@ func (b *FamilyBase) ReadDaemon(ctx context.Context, route string) ([]byte, erro
 // that LeapMux answers by id on the stream it arrived on; a question never reached
 // that stream, so it has no id there to answer and the daemon reads its answer from
 // a route instead.
+//
+// A raw session/cancel is the reader's stop, as Interrupt is: the worker
+// service pauses the queue for it, so it records the stop for the verdict too.
 func (b *FamilyBase) SendRawInput(raw []byte, stop agent.StopContext) error {
 	if handled, err := b.Questions.answer(b.Context(), raw); handled {
 		return err
 	}
+	if (acp.Provider{}).IsInterrupt(string(raw)) {
+		b.noteUserStop()
+	}
 	return b.Base.SendRawInput(raw, stop)
+}
+
+// openCodeCompactCommand is the slash command that the family's ACP adapter
+// runs as the daemon's compaction (session.summarize). OpenCode 1.19.4 ignores
+// the command's arguments, and runs nothing for "summarize".
+const openCodeCompactCommand = "compact"
+
+// SendInput starts one prompt. A /compact command starts the daemon's
+// compaction, so the prompt carries the compaction's mark.
+func (b *FamilyBase) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
+	if !startsCompaction(content, attachments) {
+		return b.Base.SendInput(content, attachments)
+	}
+	return b.sendCompactionPrompt(nil, content, attachments)
+}
+
+// SendInputForSession is SendInput for the session that the caller validated.
+func (b *FamilyBase) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
+	if !startsCompaction(content, attachments) {
+		return b.Base.SendInputForSession(sessionID, content, attachments)
+	}
+	return b.sendCompactionPrompt(&sessionID, content, attachments)
+}
+
+// startsCompaction reports whether a prompt of content and attachments is the
+// compaction command. A message with an attachment is a conversation turn.
+func startsCompaction(content string, attachments []*leapmuxv1.Attachment) bool {
+	name, _, ok := providerkit.SlashCommand(content)
+	return ok && name == openCodeCompactCommand && len(attachments) == 0
+}
+
+// sendCompactionPrompt sends the compaction command as a prompt that carries
+// the compaction's mark. expected is the session that the input was written
+// for, or nil for the current session.
+//
+// The prompt's own preparation sets the mark. It runs after the base cleared
+// the state of the prompt before (resetDaemonGeneration), and before the
+// native write. So no other prompt can take the mark, and no daemon event of
+// the compaction arrives before it. The base offers that preparation for the
+// current session only, so the preparation checks expected against the
+// prompt's session itself. The check before the send refuses another session
+// before the base claims the turn, as the base's own check does. A failed
+// native write leaves the mark on the prompt that never ran, and the start of
+// the next prompt clears it.
+func (b *FamilyBase) sendCompactionPrompt(expected *string, content string, attachments []*leapmuxv1.Attachment) error {
+	if err := providerkit.CheckInputSession(expected, b.CurrentSessionID()); err != nil {
+		return err
+	}
+	return b.SendPreparedPrompt(content, attachments, b.prepareCompactionPrompt(expected))
+}
+
+// prepareCompactionPrompt returns the preparation of a compaction prompt for
+// the session expected, or for any session when expected is nil. It receives
+// the session of the prompt, and refuses another session than expected.
+func (b *FamilyBase) prepareCompactionPrompt(expected *string) func(sessionID string) error {
+	return func(sessionID string) error {
+		if err := providerkit.CheckInputSession(expected, sessionID); err != nil {
+			return err
+		}
+		b.daemonMu.Lock()
+		b.compactionPrompt = true
+		b.daemonMu.Unlock()
+		return nil
+	}
+}
+
+// Interrupt stops the running turn for the reader. It records the stop first,
+// so the turn's verdict schedules no retry, also after a long wait
+// (TurnEndVerdict). LeapMux's own stop for a long wait calls Base.Interrupt
+// and records nothing.
+func (b *FamilyBase) Interrupt(stop agent.StopContext) error {
+	b.noteUserStop()
+	return b.Base.Interrupt(stop)
+}
+
+// noteUserStop records that the reader stopped the running turn.
+func (b *FamilyBase) noteUserStop() {
+	b.daemonMu.Lock()
+	b.userStopRequested = true
+	b.daemonMu.Unlock()
 }
 
 // SteerInput sends the steer as a second prompt on the running session.

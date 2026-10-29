@@ -58,6 +58,17 @@ type Agent struct {
 	lastTurnError   string
 	retryResolution providerkit.RetryResolution
 	pendingSteers   []*pendingSteer
+
+	// interruptRequested records that the user stopped the running root turn,
+	// so the failure that ends it does not retry. Interrupt sets it, and the
+	// next turn start clears it. Mu guards it.
+	interruptRequested bool
+
+	// compactionTurn records that compact holds the root turn for a native
+	// compaction. The end of that turn takes it, so the compaction applies its
+	// retry verdict once: at the command's return, or at a stream failure that
+	// ends the turn first. Mu guards it, and dispatchMu orders the two ends.
+	compactionTurn bool
 }
 
 // pendingSteer keeps the original input until native history proves its delivery or removal.
@@ -149,11 +160,7 @@ func (a *Agent) sendInput(expected, content string, attachments []*leapmuxv1.Att
 		return err
 	}
 	if delivery == "queue" {
-		a.Mu.Lock()
-		a.active = true
-		seq := a.NextTurnSeq()
-		a.Mu.Unlock()
-		a.sink.SetTurnState(agent.TurnState{Active: true, Steerable: true}, seq)
+		a.setTurnState(true)
 	}
 	var receipt struct {
 		Accepted bool `json:"accepted"`
@@ -204,8 +211,13 @@ func (a *Agent) PublishTurnActive() agent.TurnState {
 	return state
 }
 
+// setTurnState sets the root turn flag and publishes it. A turn that starts
+// clears the stop of the turn before it.
 func (a *Agent) setTurnState(active bool) {
 	a.Mu.Lock()
+	if active && !a.active {
+		a.interruptRequested = false
+	}
 	a.active = active
 	seq := a.NextTurnSeq()
 	a.Mu.Unlock()
@@ -218,6 +230,11 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 	defer a.steerMu.Unlock()
 	a.Mu.Lock()
 	sessionID, active := a.sessionID, a.active
+	if active {
+		// The note is set before the cancel, so a failure that wins the race
+		// against the cancel still reads it.
+		a.interruptRequested = true
+	}
 	steers := slices.Clone(a.pendingSteers)
 	a.Mu.Unlock()
 	if active {

@@ -672,12 +672,13 @@ func New(cfg Config) *Service {
 			logAutoRetryError("schedule an automatic retry", agentID,
 				svc.InputQueue.ScheduleAutoRetry(bgCtx(), agentID, schedule), "kind", schedule.Kind.String())
 		},
-		func(agentID string, kind leapmuxv1.AgentInputKind, admission agent.AutoRetryAdmission) {
+		func(agentID string, kind leapmuxv1.AgentInputKind, reason string, admission agent.AutoRetryAdmission) {
 			logAutoRetryError("cancel an automatic retry", agentID,
-				svc.InputQueue.CancelAutoRetry(bgCtx(), agentID, kind, admission), "kind", kind.String())
+				svc.InputQueue.CancelAutoRetry(bgCtx(), agentID, kind, reason, admission), "kind", kind.String(), "reason", reason)
 		},
-		func(agentID string) {
-			logAutoRetryError("cancel the automatic retries", agentID, svc.InputQueue.CancelAutoRetries(bgCtx(), agentID))
+		func(agentID string, reason string) {
+			logAutoRetryError("cancel the automatic retries", agentID,
+				svc.InputQueue.CancelAutoRetries(bgCtx(), agentID, reason), "reason", reason)
 		},
 	)
 	// Let PersistSettingsRefresh detect the startup window so it doesn't

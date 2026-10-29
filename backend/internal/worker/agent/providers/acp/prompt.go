@@ -160,7 +160,11 @@ func (b *Base) finishOwnedPromptRequest(sessionID string, target *acpTranscriptT
 	if stopped {
 		b.releaseAwaitedTerminals()
 	}
-	b.endTurn(sessionID)
+	verdict := TurnVerdict{}
+	if ending.Retry != nil {
+		verdict = *ending.Retry
+	}
+	b.endTurn(sessionID, verdict)
 }
 
 // SendPromptDetached keeps validation and the write in the captured root session.

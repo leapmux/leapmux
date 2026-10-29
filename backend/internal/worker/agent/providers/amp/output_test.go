@@ -11,6 +11,8 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit/providerkittest"
 	"github.com/leapmux/leapmux/internal/worker/bgtask"
 )
 
@@ -895,4 +897,384 @@ func TestTurnFrames(t *testing.T) {
 		h.feed(nil, tc.Line)
 		return h.sink.TurnActives()
 	})
+}
+
+// --- Automatic retry ---
+
+// ampFreeTierText is the hourly free-tier text of Amp 0.0.1781034998: the title
+// and the description of its credits error, joined by a space, as the
+// stream-json rewrite joins them. No probe printed it, because that rewrite
+// passes freeTierEnabled false. The test composes it from the bundle's strings.
+const ampFreeTierText = "Out of Credits Add credits to keep using Amp right now, or wait until the next hour starts for more free usage."
+
+// The classifier reads Amp's `result` lines. The research lines come from
+// .tmp/retry-research/amp-droid.md. The passthrough lines are what Amp printed
+// for an error that the probe server sent (.tmp/probe/amp/runs). Lines marked
+// synthetic test a rule that no capture reaches.
+func TestAmpTurnFailure(t *testing.T) {
+	t.Parallel()
+	observedAt := time.Date(2026, 7, 14, 10, 34, 45, 0, time.UTC)
+	transient := providerkit.TurnFailure{Kind: providerkit.TurnFailureTransient, Cause: "Amp reported a transient failure"}
+	rateLimited := providerkit.TurnFailure{Kind: providerkit.TurnFailureRateLimited, Cause: "Amp reported a rate limit"}
+	quota := providerkit.TurnFailure{Kind: providerkit.TurnFailureUsageLimited, Window: providerkit.UsageWindowUnstated, Cause: "Amp reported an exhausted usage quota"}
+	for _, tc := range []struct {
+		name       string
+		completion agent.MessageCompletion
+		stop       bool
+		line       string
+		want       providerkit.TurnFailure
+	}{
+		{
+			name: "an overload is transient",
+			line: `{"type":"result","subtype":"error_during_execution","duration_ms":356,"is_error":true,"num_turns":0,"error":"Model Provider Overloaded Try again in a few seconds.","session_id":"T-cdee64e4-e764-4104-8f4d-d00deb0a4c5e"}`,
+			want: transient,
+		},
+		{
+			name: "a stalled stream is transient",
+			line: `{"type":"result","subtype":"error_during_execution","duration_ms":417,"is_error":true,"num_turns":0,"error":"Model Stream Timed Out The model stopped sending data before finishing. Try again in a few seconds.","session_id":"T-0bdca618-6e7e-4699-8184-0bedf3d5fc4b"}`,
+			want: transient,
+		},
+		{
+			name: "out of credits is a billing block",
+			line: `{"type":"result","subtype":"error_during_execution","duration_ms":326,"is_error":true,"num_turns":0,"error":"Out of Credits Add credits to keep using Amp.","session_id":"T-7e27ec98-d46a-470b-a686-29aa862fd605"}`,
+			want: providerkit.TurnFailure{Kind: providerkit.TurnFailureBillingBlocked, Cause: "Amp reported that the account is out of credits"},
+		},
+		{
+			name: "a full context is not retryable",
+			line: `{"type":"result","subtype":"error_during_execution","duration_ms":334,"is_error":true,"num_turns":0,"error":"Context Limit Reached This conversation has reached the context window limit. Start a new thread to continue.","session_id":"T-c6518ebe-a1c1-4930-a601-3e52bfba9024"}`,
+			want: providerkit.TurnFailure{},
+		},
+		{
+			name: "the hourly free tier is a usage limit of a week or less before the billing prefix",
+			line: errorResult(ampFreeTierText),
+			want: providerkit.TurnFailure{Kind: providerkit.TurnFailureUsageLimited, Window: providerkit.UsageWindowWeekOrLess, Cause: "Amp reported its hourly free usage limit"},
+		},
+		{
+			// The body is Anthropic's, and the vendor reads its api_error type.
+			name: "a passthrough API error 500 is transient",
+			line: `{"type":"result","subtype":"error_during_execution","duration_ms":327,"is_error":true,"num_turns":0,"error":"API error (500): {\"type\":\"error\",\"error\":{\"type\":\"api_error\",\"message\":\"Internal server error\"}}","session_id":"T-1bbd1fc7-61d2-463b-a19e-cf4f21b421dc"}`,
+			want: providerkit.TurnFailure{Kind: providerkit.TurnFailureTransient, Cause: "the vendor reported a transient failure"},
+		},
+		{
+			name: "a passthrough API error 500 whose body no vendor rule reads is transient (synthetic)",
+			line: errorResult(`API error (502): {"error":"bad gateway"}`),
+			want: transient,
+		},
+		{
+			// A passthrough status is generic. The vendor's body states a monthly
+			// limit, which a retry within the week does not lift.
+			name: "a passthrough 5xx body with a monthly vendor limit is a longer usage limit (synthetic)",
+			line: errorResult(`API error (500): {"error":{"message":"You have reached your monthly usage limit."}}`),
+			want: providerkit.TurnFailure{Kind: providerkit.TurnFailureUsageLimited, Window: providerkit.UsageWindowLonger, Cause: "Kimi reported its monthly usage limit"},
+		},
+		{
+			name: "a passthrough 5xx status line with a monthly vendor limit is a longer usage limit (synthetic)",
+			line: errorResult(`503 You have reached your monthly usage limit.`),
+			want: providerkit.TurnFailure{Kind: providerkit.TurnFailureUsageLimited, Window: providerkit.UsageWindowLonger, Cause: "Kimi reported its monthly usage limit"},
+		},
+		{
+			name: "Amp's own overload title decides before a vendor's wording (synthetic)",
+			line: errorResult(`Model Provider Overloaded Try again in a few seconds. You have reached your monthly usage limit.`),
+			want: transient,
+		},
+		{
+			name: "a passthrough 503 status line is transient",
+			line: `{"type":"result","subtype":"error_during_execution","duration_ms":327,"is_error":true,"num_turns":0,"error":"503 Service Unavailable","session_id":"T-b4daf5b6-0645-433f-8fe6-97d5ea447bf7"}`,
+			want: transient,
+		},
+		{
+			name: "a failed fetch is transient",
+			line: `{"type":"result","subtype":"error_during_execution","duration_ms":337,"is_error":true,"num_turns":0,"error":"fetch failed: ECONNRESET","session_id":"T-c6810453-f2af-4d53-acf6-5f228f5ba1c4"}`,
+			want: transient,
+		},
+		{
+			name: "a bare connection reset is transient",
+			line: `{"type":"result","subtype":"error_during_execution","duration_ms":336,"is_error":true,"num_turns":0,"error":"ECONNRESET","session_id":"T-eeed2469-8f91-4cc3-a556-5399cc94e07a"}`,
+			want: transient,
+		},
+		{
+			name: "a terminated stream is transient",
+			line: `{"type":"result","subtype":"error_during_execution","duration_ms":333,"is_error":true,"num_turns":0,"error":"terminated","session_id":"T-04a97878-27c1-4b35-9fa1-dec9575079c4"}`,
+			want: transient,
+		},
+		{
+			name: "an incomplete response is transient",
+			line: `{"type":"result","subtype":"error_during_execution","duration_ms":333,"is_error":true,"num_turns":0,"error":"response incomplete","session_id":"T-1661a524-8a2e-4387-9aa0-9a8d821dbae7"}`,
+			want: transient,
+		},
+		{
+			name: "a plain rate limit is rate limited",
+			line: `{"type":"result","subtype":"error_during_execution","duration_ms":340,"is_error":true,"num_turns":0,"error":"Rate limit exceeded","session_id":"T-5e6c57fb-2341-4bca-9afa-0b4ba3fca437"}`,
+			want: rateLimited,
+		},
+		{
+			name: "a 429 body that a vendor rule reads takes the vendor verdict",
+			line: `{"type":"result","subtype":"error_during_execution","duration_ms":364,"is_error":true,"num_turns":0,"error":"429 {\"type\":\"error\",\"error\":{\"type\":\"rate_limit_error\",\"message\":\"Number of request tokens has exceeded your per-minute rate limit\"}}","session_id":"T-637c99e6-ae88-4f00-b3db-c9beb92dd61e"}`,
+			want: providerkit.TurnFailure{Kind: providerkit.TurnFailureRateLimited, Cause: "the vendor reported a rate limit"},
+		},
+		{
+			name: "a 429 body that no vendor rule reads is rate limited (synthetic)",
+			line: errorResult(`429 {"error":"too many"}`),
+			want: rateLimited,
+		},
+		{
+			name: "a 429 body with a monthly vendor limit is a longer usage limit (synthetic)",
+			line: errorResult(`429 {"error":{"message":"You have reached your monthly usage limit."}}`),
+			want: providerkit.TurnFailure{Kind: providerkit.TurnFailureUsageLimited, Window: providerkit.UsageWindowLonger, Cause: "Kimi reported its monthly usage limit"},
+		},
+		{
+			name: "a bare rate_limit_error code decides nothing",
+			line: `{"type":"result","subtype":"error_during_execution","duration_ms":341,"is_error":true,"num_turns":0,"error":"rate_limit_error: Rate limit exceeded","session_id":"T-080a1072-51ad-4066-a51b-43dfeff32a25"}`,
+			want: providerkit.TurnFailure{},
+		},
+		{
+			name: "an exceeded usage quota is a usage limit with no stated window",
+			line: `{"type":"result","subtype":"error_during_execution","duration_ms":805,"is_error":true,"num_turns":0,"error":"You've exceeded your usage quota of $100.00 for this month. Contact your workspace admin.","session_id":"T-15322159-aeab-45a6-a1bd-252a57cb7fb8"}`,
+			want: quota,
+		},
+		{
+			// Amp's own quota wording is more specific than the status before it.
+			name: "a 429 that states Amp's usage quota is a usage limit with no stated window (synthetic)",
+			line: errorResult(`429 You've exceeded your usage quota of $100.00 for this month. Contact your workspace admin.`),
+			want: quota,
+		},
+		{
+			name: "a free usage limit is a usage limit with no stated window",
+			line: `{"type":"result","subtype":"error_during_execution","duration_ms":331,"is_error":true,"num_turns":0,"error":"You've reached your free usage limit. Add credits or wait until the next hour.","session_id":"T-079ced8c-d06f-437e-8c45-b35164477168"}`,
+			want: quota,
+		},
+		{
+			name: "a definitive vendor billing code wins over the 500 prefix (synthetic)",
+			line: errorResult(`API error (500): {"error":{"code":"insufficient_quota"}}`),
+			want: providerkit.TurnFailure{Kind: providerkit.TurnFailureBillingBlocked, Cause: "the vendor reported insufficient_quota"},
+		},
+		{
+			name: "a Z.AI usage limit in a 429 body schedules at its stamp (synthetic wrapper)",
+			line: errorResult(`429 {"code":"1308","message":"Usage limit reached for 5 hour. Your limit will reset at 2026-07-14 19:06:13"}`),
+			want: providerkit.TurnFailure{Kind: providerkit.TurnFailureUsageLimited, ResetAt: time.Date(2026, 7, 14, 11, 6, 14, 0, time.UTC), Cause: "Z.AI reported a usage limit that lifts at a stated time"},
+		},
+		{
+			name: "an unknown error is not retryable",
+			line: `{"type":"result","subtype":"error_during_execution","duration_ms":333,"is_error":true,"num_turns":0,"error":"Gemini requests are limited to 100 turns","session_id":"T-a02907d4-498e-4832-b9a2-d04d3654feaa"}`,
+			want: providerkit.TurnFailure{},
+		},
+		{
+			name: "an empty error is not retryable",
+			line: errorResult(""),
+			want: providerkit.TurnFailure{},
+		},
+		{
+			name: "an error that is not a string is not retryable",
+			line: `{"type":"result","subtype":"error_during_execution","is_error":true,"error":{"message":"Model Provider Overloaded Try again in a few seconds."}}`,
+			want: providerkit.TurnFailure{},
+		},
+		{
+			name: "a malformed line is not retryable",
+			line: `{"type":"result","error":"Model Provider Overloaded `,
+			want: providerkit.TurnFailure{},
+		},
+		{
+			name:       "a complete turn is not retryable",
+			completion: agent.MessageCompletionComplete,
+			line:       errorResult("Model Provider Overloaded Try again in a few seconds."),
+			want:       providerkit.TurnFailure{},
+		},
+		{
+			name:       "an interrupted turn is not retryable",
+			completion: agent.MessageCompletionInterrupted,
+			line:       errorResult(interruptedMessage),
+			want:       providerkit.TurnFailure{},
+		},
+		{
+			name: "a failure of a stopped turn is not retryable",
+			stop: true,
+			line: errorResult("Model Provider Overloaded Try again in a few seconds."),
+			want: providerkit.TurnFailure{},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			completion := tc.completion
+			if completion == "" {
+				completion = agent.MessageCompletionError
+			}
+			assert.Equal(t, tc.want, ampTurnFailure(completion, tc.stop, []byte(tc.line), observedAt))
+		})
+	}
+}
+
+// The probe transcript of an overload ends the turn on Amp's own result row,
+// and the server-error retry follows that row.
+func TestProbeRetryErrorSchedulesAServerErrorRetryAfterTheTurnEnd(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	fp := h.send("retry please")
+	h.feedFixture(fp, "probe_retry_error.jsonl")
+
+	assert.Equal(t, providerkittest.TurnEndThen(providerkit.TurnFailure{
+		Kind: providerkit.TurnFailureTransient, Cause: "Amp reported a transient failure",
+	}), providerkittest.TurnEndAndRetryOps(h.sink.Timeline()))
+	require.Equal(t, 1, h.sink.AutoScheduleCount())
+	assert.JSONEq(t, fixtureLines(t, "probe_retry_error.jsonl")[2], string(h.sink.LastAutoSchedule().SourcePayload),
+		"the retry carries the result line that failed")
+}
+
+// A failed result line decides the verdict of its turn through the real
+// handler. The lines are the research captures of Amp 0.0.1792915237.
+func TestFailedResultLinesApplyTheirVerdictAfterTheTurnEnd(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		line string
+		want providerkit.TurnFailure
+	}{
+		{
+			name: "an overload schedules a server-error retry",
+			line: `{"type":"result","subtype":"error_during_execution","duration_ms":356,"is_error":true,"num_turns":0,"error":"Model Provider Overloaded Try again in a few seconds.","session_id":"T-cdee64e4-e764-4104-8f4d-d00deb0a4c5e"}`,
+			want: providerkit.TurnFailure{Kind: providerkit.TurnFailureTransient, Cause: "Amp reported a transient failure"},
+		},
+		{
+			name: "out of credits cancels both retries",
+			line: `{"type":"result","subtype":"error_during_execution","duration_ms":326,"is_error":true,"num_turns":0,"error":"Out of Credits Add credits to keep using Amp.","session_id":"T-7e27ec98-d46a-470b-a686-29aa862fd605"}`,
+			want: providerkit.TurnFailure{Kind: providerkit.TurnFailureBillingBlocked, Cause: "Amp reported that the account is out of credits"},
+		},
+		{
+			name: "a full context cancels the server-error retry",
+			line: `{"type":"result","subtype":"error_during_execution","duration_ms":334,"is_error":true,"num_turns":0,"error":"Context Limit Reached This conversation has reached the context window limit. Start a new thread to continue.","session_id":"T-c6518ebe-a1c1-4930-a601-3e52bfba9024"}`,
+			want: providerkit.TurnFailure{},
+		},
+		{
+			// The hourly free-tier text starts with the billing title, so only the
+			// order of the rules keeps it from reading as a billing block.
+			name: "the hourly free tier schedules a server-error retry and not a billing block",
+			line: errorResult(ampFreeTierText),
+			want: providerkit.TurnFailure{Kind: providerkit.TurnFailureUsageLimited, Window: providerkit.UsageWindowWeekOrLess, Cause: "Amp reported its hourly free usage limit"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			h := newHarness(t)
+			fp := h.send("go")
+			h.feed(fp, tc.line)
+			assert.Equal(t, providerkittest.TurnEndThen(tc.want), providerkittest.TurnEndAndRetryOps(h.sink.Timeline()))
+		})
+	}
+}
+
+// A turn that completes cancels the server-error retry once, after its row.
+// The line is the research capture of a turn that recovered after the
+// server's own retries (.tmp/retry-research/amp-droid.md).
+func TestACompletedTurnCancelsTheServerErrorRetry(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	fp := h.send("go")
+	h.feed(fp, `{"type":"assistant","message":{"type":"message","role":"assistant","content":[{"type":"text","text":"recovered"}],"stop_reason":"end_turn","usage":{"input_tokens":10,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":5,"service_tier":"standard"}},"parent_tool_use_id":null,"session_id":"T-c6a7b118-3c90-4c71-b915-ce522680a120"}`)
+	ends := h.turnEnds()
+	require.Len(t, ends, 1)
+	require.Equal(t, agent.MessageCompletionComplete, ends[0].Completion)
+	assert.Equal(t, providerkittest.TurnEndThen(providerkit.TurnFailure{}), providerkittest.TurnEndAndRetryOps(h.sink.Timeline()))
+}
+
+// A stop whose cancel result ends the turn as interrupted never retries.
+func TestAnInterruptedTurnCancelsTheServerErrorRetry(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	fp := h.send("sleep")
+	require.NoError(t, h.agent.Interrupt(agent.StopContext{}))
+	h.feed(fp, errorResult(interruptedMessage))
+	assert.Equal(t, providerkittest.TurnEndThen(providerkit.TurnFailure{}), providerkittest.TurnEndAndRetryOps(h.sink.Timeline()))
+}
+
+// A failure that wins the race against the user's interrupt ends the turn as
+// an error (probe_interrupt_failed.jsonl). The user asked to stop, so the
+// failure must not schedule a retry.
+func TestAFailureThatWinsTheRaceAgainstAnInterruptDoesNotRetry(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	fp := h.send("Probe the interrupt race.")
+	lines := fixtureLines(t, "probe_interrupt_failed.jsonl")
+	h.feed(fp, lines[0])
+	h.feed(fp, lines[1])
+	require.NoError(t, h.agent.Interrupt(agent.StopContext{}))
+	h.feed(fp, lines[2])
+
+	ends := h.turnEnds()
+	require.Len(t, ends, 1)
+	require.Equal(t, agent.MessageCompletionError, ends[0].Completion)
+	assert.Equal(t, providerkittest.TurnEndThen(providerkit.TurnFailure{}), providerkittest.TurnEndAndRetryOps(h.sink.Timeline()))
+}
+
+// The same race against the agent's own Stop also schedules nothing.
+func TestAFailureThatWinsTheRaceAgainstStopDoesNotRetry(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	fp := h.send("go")
+	lines := fixtureLines(t, "probe_interrupt_failed.jsonl")
+	h.feed(fp, lines[0])
+	fp.stdin.onClose = func() {
+		h.feed(fp, lines[2])
+		fp.exit()
+	}
+
+	h.agent.Stop()
+	fp.awaitHandled(t)
+	ends := h.turnEnds()
+	require.Len(t, ends, 1)
+	require.Equal(t, agent.MessageCompletionError, ends[0].Completion)
+	assert.Equal(t, providerkittest.TurnEndThen(providerkit.TurnFailure{}), providerkittest.TurnEndAndRetryOps(h.sink.Timeline()))
+}
+
+// A process that dies with no result ends the running turn on the worker's own
+// error row, and that row decides one verdict too.
+func TestAProcessExitWithNoResultAppliesOneVerdict(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	fp := h.send("go")
+	fp.exit()
+	fp.awaitHandled(t)
+
+	ends := h.turnEnds()
+	require.Len(t, ends, 1)
+	require.Equal(t, agent.MessageCompletionError, ends[0].Completion)
+	assert.Equal(t, providerkittest.TurnEndThen(providerkit.TurnFailure{}), providerkittest.TurnEndAndRetryOps(h.sink.Timeline()))
+}
+
+// A process that crashes with no result ends the turn on the row that the
+// worker writes. Its error states how the process exited, not a model failure,
+// so a connection reset in its stderr must not schedule a retry.
+func TestAProcessCrashWithAConnectionResetDoesNotRetry(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	h.agent.stderrFn = func(*ampProcess) string { return "Error: read ECONNRESET\n" }
+	fp := h.send("go")
+	fp.exit()
+	fp.awaitHandled(t)
+
+	ends := h.turnEnds()
+	require.Len(t, ends, 1)
+	require.Equal(t, agent.MessageCompletionError, ends[0].Completion)
+	require.Contains(t, decodeRow(t, ends[0].Content)["error"], "Error: read ECONNRESET", "the worker's row states the stderr")
+	assert.Equal(t, providerkittest.TurnEndThen(providerkit.TurnFailure{}), providerkittest.TurnEndAndRetryOps(h.sink.Timeline()))
+}
+
+// A result that arrives with no turn running ends no turn, so it applies no
+// verdict: the earlier turn end already decided.
+func TestAResultWithNoTurnRunningAppliesNoVerdict(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	fp := h.send("go")
+	h.feed(fp, textLine("done", stopReasonEndTurn))
+	h.feed(fp, errorResult("Model Provider Overloaded Try again in a few seconds."))
+	assert.Equal(t, providerkittest.TurnEndThen(providerkit.TurnFailure{}), providerkittest.TurnEndAndRetryOps(h.sink.Timeline()))
+}
+
+// A turn whose output the service discards writes no row, so it applies no
+// verdict either.
+func TestADiscardedTurnAppliesNoVerdict(t *testing.T) {
+	t.Parallel()
+	h := newHarness(t)
+	fp := h.send("go")
+	h.agent.DiscardOutput()
+	h.feed(fp, errorResult("Model Provider Overloaded Try again in a few seconds."))
+	assert.Empty(t, providerkittest.TurnEndAndRetryOps(h.sink.Timeline()))
 }

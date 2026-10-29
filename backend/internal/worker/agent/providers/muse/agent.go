@@ -38,6 +38,12 @@ type Agent struct {
 	sessions               map[string]*sessionState
 	uncertainInput         *museUncertainInput           // sendMu protects the pending native command identity.
 	uncertainChildCommands map[string]museUncertainInput // sendMu protects child command identities.
+	// manualCompactionSession is the root session whose manual compaction
+	// CompactContext started and whose end has not applied its retry verdict
+	// yet. It is empty when no manual compaction is pending. The first end of
+	// that compaction takes it: the noop acknowledgement, the end of the
+	// compaction item, or the retirement of the session. stateMu guards it.
+	manualCompactionSession string
 }
 
 type museUncertainInput struct {

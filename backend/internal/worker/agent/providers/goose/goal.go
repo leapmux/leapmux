@@ -6,7 +6,6 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
-	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
@@ -54,12 +53,14 @@ func (a *Agent) hasGoalCommand() bool {
 	return a.HasAvailableCommand(gooseGoalAdvertisedCommand)
 }
 
-// observeGooseSessionUpdate records the text of the last agent message of the
-// main session, by messageId, for the goal-end rule. Goose states no
-// structured goal report, so the goal's end is inferred from the FINAL message
-// of a round: this observer keeps that message's complete text, because the
-// chunks arrive before the prompt response and PromptEnded runs before the
-// final text persists.
+// observeGooseSessionUpdate records the last agent message of the main
+// session, by messageId, for the goal-end rule and the turn-failure verdict.
+// Goose states no structured goal report, so the goal's end is inferred from
+// the FINAL message of a round. Goose also ends a failed model request with an
+// agent message and a successful prompt response, so that message is the only
+// record of the failure. This observer keeps the message's complete text,
+// because the chunks arrive before the prompt response and PromptEnded runs
+// before the final text persists.
 //
 // It claims no update: reading one must not change its transcript route.
 func (a *Agent) observeGooseSessionUpdate(sessionID string, _ agent.ProviderServices, update json.RawMessage) bool {
@@ -73,6 +74,11 @@ func (a *Agent) observeGooseSessionUpdate(sessionID string, _ agent.ProviderServ
 			Type string `json:"type"`
 			Text string `json:"text"`
 		} `json:"content"`
+		Meta struct {
+			Goose struct {
+				Inference json.RawMessage `json:"inference"`
+			} `json:"goose"`
+		} `json:"_meta"`
 	}
 	if json.Unmarshal(update, &message) != nil || message.Content.Type != "text" {
 		return false
@@ -82,12 +88,42 @@ func (a *Agent) observeGooseSessionUpdate(sessionID string, _ agent.ProviderServ
 	}
 	a.Mu.Lock()
 	defer a.Mu.Unlock()
-	if a.goalLastMessageID != message.MessageID {
-		a.goalLastMessageID = message.MessageID
-		a.goalLastMessageText = ""
+	if a.lastMessageID != message.MessageID {
+		a.lastMessageID = message.MessageID
+		a.lastMessageText = ""
+		a.lastMessageInference = false
 	}
-	a.goalLastMessageText += message.Content.Text
+	a.lastMessageText += message.Content.Text
+	if providerkit.RawPresent(message.Meta.Goose.Inference) {
+		a.lastMessageInference = true
+	}
+	a.lastMessageUpdate = append(json.RawMessage(nil), update...)
 	return false
+}
+
+// gooseLastMessage is one snapshot of the last agent message of a prompt.
+type gooseLastMessage struct {
+	text      string
+	inference bool
+	update    json.RawMessage
+}
+
+// takeGooseLastMessage returns the last agent message and clears it, under one
+// lock acquisition, so the goal-end rule and the turn-failure verdict read the
+// same message.
+func (a *Agent) takeGooseLastMessage() gooseLastMessage {
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	last := gooseLastMessage{text: a.lastMessageText, inference: a.lastMessageInference, update: a.lastMessageUpdate}
+	a.lastMessageID, a.lastMessageText, a.lastMessageInference, a.lastMessageUpdate = "", "", false, nil
+	return last
+}
+
+// clearGooseLastMessage drops the last agent message before a prompt starts
+// (Hooks.PromptPrepared), so a message of an earlier turn or of a session
+// replay never decides the next prompt's end.
+func (a *Agent) clearGooseLastMessage() {
+	a.takeGooseLastMessage()
 }
 
 // armGooseGoal arms the end-of-goal rule for the running prompt. The notice
@@ -100,23 +136,22 @@ func (a *Agent) armGooseGoal(objective string) {
 	a.goalObjective = objective
 }
 
-// finishGooseGoalPrompt decides the goal's end at PromptEnded. An ordinary
-// final message completes the goal; Goose's own error message and its
-// max-turns question keep it, and so do a failed prompt, a stop, and a round
-// with no final message or no arming notice. The rule serves one prompt: the
-// state is consumed here either way.
-func (a *Agent) finishGooseGoalPrompt(err error, stopped bool) acp.PromptEnding {
+// finishGooseGoalPrompt decides the goal's end at PromptEnded. lastText is the
+// final agent message of the prompt. An ordinary final message completes the
+// goal; one of Goose's own error messages and its max-turns question keep it,
+// and so do a failed prompt, a stop, and a round with no final message or no
+// arming notice. The rule serves one prompt: the arming is consumed here
+// either way.
+func (a *Agent) finishGooseGoalPrompt(err error, stopped bool, lastText string) {
 	a.Mu.Lock()
 	armed, objective := a.goalArmed, a.goalObjective
-	lastText := a.goalLastMessageText
-	a.goalArmed, a.goalObjective, a.goalLastMessageID, a.goalLastMessageText = false, "", "", ""
+	a.goalArmed, a.goalObjective = false, ""
 	a.Mu.Unlock()
 	if err != nil || stopped || !armed || strings.TrimSpace(lastText) == "" {
-		return acp.PromptEnding{}
+		return
 	}
-	if strings.HasPrefix(lastText, contracts.GooseGoalTextErrorPrefix) || lastText == contracts.GooseGoalTextMaxTurnsMessage {
-		return acp.PromptEnding{}
+	if gooseErrorText(lastText) || lastText == contracts.GooseGoalTextMaxTurnsMessage {
+		return
 	}
 	a.Sink().UpsertGoal(agent.GoalUpdate{Objective: objective, Status: agent.GoalStatusDone})
-	return acp.PromptEnding{}
 }

@@ -2,14 +2,18 @@ package ohmypi
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
+	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit/providerkittest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -100,6 +104,287 @@ func TestARunOmpStartedByItselfIsATurn(t *testing.T) {
 	r.emit(`{"type":"agent_end","isTerminal":true,"messages":[]}`)
 	active, _ = r.sink.LastTurnActive()
 	assert.False(t, active)
+}
+
+// omp classifies each failure in the errorId of its message. A failed turn
+// whose message states no retryable class, and no vendor sentence, cancels a
+// pending server-error retry once, after its divider.
+func TestATurnEndWithoutARetryableFailureCancelsTheServerErrorRetry(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.emit(`{"type":"agent_start"}`,
+		`{"type":"agent_end","isTerminal":true,"messages":[{"role":"assistant","stopReason":"error","errorMessage":"500 server error"}]}`)
+
+	require.Equal(t, []string{"turn_end", "cancel_server_error"}, providerkittest.TurnEndAndRetryOpNames(r.sink.Timeline()))
+	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, r.sink.LastAutoCancel())
+	assert.Equal(t, providerkit.TurnEndedWithoutRetryableFailure, r.sink.LastAutoCancelReason())
+}
+
+// Captured frames of omp 18.12.6. The four agent_end frames are the fixtures of
+// .tmp/retry-research/partial-providers.md (section 2), and the 429 pair is the
+// probe of .tmp/probe/ohmypi/run-fake429.jsonl. The MiMo 400 is a real failure
+// (.tmp/retry-research/transcripts-kimi-pi-omp.md) whose message the transcript
+// stores; the frame around it follows the fixtures.
+const (
+	ompAgentEnd500 = `{"type":"agent_end","messages":[{"role":"assistant","content":[],"api":"openai-completions","provider":"fake500","model":"fake-model","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"error","timestamp":1793150670954,"errorStatus":500,"errorId":135168,"errorMessage":"500 Internal server error\nInternal server error (type=server_error)","duration":15520.980958}],"isTerminal":true,"yielded":true}`
+	// ompAgentEndUsage1308 shifts the fixture's timestamp from 1793150803724
+	// (01:26:43.724 UTC) to 11:00 UTC. The fake server's stamp, 12:06 UTC, lies
+	// more than the stated five hours after the probe, so the vendor parser
+	// would read it as implausible.
+	ompAgentEndUsage1308 = `{"type":"agent_end","messages":[{"role":"assistant","content":[],"api":"openai-completions","provider":"fakeglm","model":"fake-model","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"error","timestamp":1793185200000,"errorStatus":429,"errorId":659456,"errorMessage":"429 Usage limit reached for 5 hour. Your limit will reset at 2026-10-28 20:06:00\nUsage limit reached for 5 hour. Your limit will reset at 2026-10-28 20:06:00 (type=1308)","duration":3.6251669999999194}],"isTerminal":true,"yielded":true}`
+	// ompAutoRetryEndUsage1308 is the probe's own wait for the 1308, which omp
+	// computes from the stamp read as UTC.
+	ompAutoRetryEndUsage1308 = `{"type":"auto_retry_end","success":false,"attempt":1,"finalError":"Provider requested 67156270ms wait, exceeds retry.maxDelayMs (300000ms). Original error: 429 Usage limit reached for 5 hour. Your limit will reset at 2026-10-28 20:06:00\nUsage limit reached for 5 hour. Your limit will reset at 2026-10-28 20:06:00 (type=1308)"}`
+	ompAgentEndDrop          = `{"type":"agent_end","messages":[{"role":"assistant","content":[{"type":"text","text":"Hel"}],"api":"openai-completions","provider":"fakedrop","model":"fake-model","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"error","timestamp":1793150806332,"responseId":"chatcmpl-1","errorId":135168,"errorMessage":"OpenAI completions stream closed before a finish_reason was received","duration":1.3223749999999654,"ttft":1.2107080000000678}],"isTerminal":true,"yielded":true}`
+	ompAutoRetryEnd429       = `{"type":"auto_retry_end","success":false,"attempt":1,"finalError":"Provider requested 3600000ms wait, exceeds retry.maxDelayMs (300000ms). Original error: 429 Rate limit reached for requests retry-after-ms=3600000\nRate limit reached for requests (type=rate_limit_error)"}`
+	ompAgentEnd429           = `{"type":"agent_end","messages":[{"role":"user","content":[{"type":"text","text":"Say hello."}],"attribution":"user","timestamp":1793150800582},{"role":"assistant","content":[],"api":"openai-completions","provider":"fake429","model":"fake-model","usage":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"totalTokens":0,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"error","timestamp":1793150801117,"errorStatus":429,"errorId":135168,"errorMessage":"429 Rate limit reached for requests retry-after-ms=3600000\nRate limit reached for requests (type=rate_limit_error)","duration":1.243249999999989}],"isTerminal":true,"yielded":true}`
+	ompAgentEndMiMo400       = `{"type":"agent_end","messages":[{"role":"assistant","content":[],"api":"openai-completions","provider":"xiaomi-token-plan-sgp","model":"mimo-v2.6-pro","stopReason":"error","timestamp":1792177755143,"errorStatus":400,"errorId":400,"errorMessage":"400 data:{\"error\":{\"code\":\"400\",\"message\":\"Request failed\",\"param\":\"Connection prematurely closed BEFORE response\",\"type\":\"\"}}\n\n\nraw-http-request=/Users/trustin/.omp/logs/http-400-requests/1792177755143-3g4p3lfjmwwi0.json"}],"isTerminal":true,"yielded":true}`
+)
+
+// ompAgentEndWithError renders a terminal agent_end whose assistant message
+// failed with an errorId and an errorStatus. The text states no vendor
+// sentence, so only the omp fields decide.
+func ompAgentEndWithError(errorID int64, errorStatus int) string {
+	return fmt.Sprintf(`{"type":"agent_end","messages":[{"role":"assistant","content":[],"stopReason":"error","timestamp":1793150670954,"errorStatus":%d,"errorId":%d,"errorMessage":"the request failed"}],"isTerminal":true,"yielded":true}`, errorStatus, errorID)
+}
+
+// The terminal agent_end applies one verdict after its divider, and the retry
+// carries that frame.
+func TestATerminalAgentEndAppliesItsVerdictAfterTheDivider(t *testing.T) {
+	t.Parallel()
+	// probeClock is the clock of the 429 probe, just after its failure.
+	probeClock := time.UnixMilli(1793150801200).UTC()
+	for _, tc := range []struct {
+		name   string
+		clock  time.Time
+		frames []string
+		want   []string
+	}{
+		{"a 500 that omp gave up on schedules a server-error retry", probeClock, []string{ompAgentEnd500}, []string{"turn_end", "schedule_server_error"}},
+		{
+			"a dated 1308 schedules a usage-limit retry at its stamp",
+			time.Date(2026, 10, 28, 11, 0, 0, 0, time.UTC), []string{ompAgentEndUsage1308},
+			[]string{"turn_end", "schedule_usage_limit@2026-10-28T12:06:01Z", "cancel_server_error"},
+		},
+		{
+			// omp reads the naive stamp as UTC and requests 18.65 hours. The
+			// vendor's stamp, read as UTC+8, decides.
+			"the vendor's 1308 stamp wins over omp's requested wait",
+			time.Date(2026, 10, 28, 11, 0, 0, 0, time.UTC), []string{ompAutoRetryEndUsage1308, ompAgentEndUsage1308},
+			[]string{"turn_end", "schedule_usage_limit@2026-10-28T12:06:01Z", "cancel_server_error"},
+		},
+		{"a stream that dropped schedules a server-error retry", probeClock, []string{ompAgentEndDrop}, []string{"turn_end", "schedule_server_error"}},
+		{
+			// The reviewed collision: a 429 rate limit with a requested wait is
+			// a usage limit that lifts when the wait ends. The frame states no
+			// time, so the wait counts from the moment the worker reads it.
+			"a 429 with a requested wait schedules a usage-limit retry when the wait ends",
+			probeClock, []string{ompAutoRetryEnd429, ompAgentEnd429},
+			[]string{"turn_end", "schedule_usage_limit@" + probeClock.Add(time.Hour).Format(time.RFC3339Nano), "cancel_server_error"},
+		},
+		{"a 429 with no requested wait schedules a server-error retry", probeClock, []string{ompAgentEnd429}, []string{"turn_end", "schedule_server_error"}},
+		{"a MiMo connection failure sent as a 400 schedules a server-error retry", probeClock, []string{ompAgentEndMiMo400}, []string{"turn_end", "schedule_server_error"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := newRig(t)
+			r.clock.Set(tc.clock).MustWait(testutil.DeadlineContext(t))
+			r.emit(`{"type":"agent_start"}`)
+			r.emit(tc.frames...)
+			assert.Equal(t, tc.want, providerkittest.TurnEndAndRetryOpNames(r.sink.Timeline()))
+			require.Positive(t, r.sink.AutoScheduleCount())
+			assert.JSONEq(t, tc.frames[len(tc.frames)-1], string(r.sink.LastAutoSchedule().SourcePayload), "the retry carries the agent_end")
+		})
+	}
+}
+
+// A requested wait belongs to the run that failed. A later run, a wait that
+// does not parse, and a wait out of range state no reset.
+func TestARequestedWaitAppliesOnlyToTheRunThatFailed(t *testing.T) {
+	t.Parallel()
+	probeClock := time.UnixMilli(1793150801200).UTC()
+	for _, tc := range []struct {
+		name   string
+		frames []string
+	}{
+		{"a run that starts after the wait clears it", []string{ompAutoRetryEnd429, `{"type":"agent_start"}`, ompAgentEnd429}},
+		{"a later turn end does not inherit the wait", []string{ompAutoRetryEnd429, ompAgentEnd500, ompAgentEnd429}},
+		{"a successful retry states no wait", []string{`{"type":"auto_retry_end","success":true,"attempt":1,"finalError":"Provider requested 3600000ms wait, exceeds retry.maxDelayMs (300000ms)."}`, ompAgentEnd429}},
+		{"a wait of 0 ms states no reset", []string{`{"type":"auto_retry_end","success":false,"attempt":1,"finalError":"Provider requested 0ms wait, exceeds retry.maxDelayMs (300000ms)."}`, ompAgentEnd429}},
+		{"a wait beyond 31 days states no reset", []string{`{"type":"auto_retry_end","success":false,"attempt":1,"finalError":"Provider requested 2678400001ms wait, exceeds retry.maxDelayMs (300000ms)."}`, ompAgentEnd429}},
+		{"a wait that overflows states no reset", []string{`{"type":"auto_retry_end","success":false,"attempt":1,"finalError":"Provider requested 99999999999999999999ms wait, exceeds retry.maxDelayMs (300000ms)."}`, ompAgentEnd429}},
+		{"a final error of another shape states no wait", []string{`{"type":"auto_retry_end","success":false,"attempt":3,"finalError":"500 Internal server error"}`, ompAgentEnd429}},
+		{"a malformed retry end states no wait", []string{`{"type":"auto_retry_end","success":"no","finalError":7}`, ompAgentEnd429}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := newRig(t)
+			r.clock.Set(probeClock).MustWait(testutil.DeadlineContext(t))
+			r.emit(`{"type":"agent_start"}`)
+			r.emit(tc.frames...)
+			ops := providerkittest.TurnEndAndRetryOpNames(r.sink.Timeline())
+			require.NotEmpty(t, ops)
+			assert.Equal(t, []string{"turn_end", "schedule_server_error"}, ops[len(ops)-2:], "the 429 schedules a server-error retry")
+			assert.NotContains(t, strings.Join(ops, " "), "schedule_usage_limit")
+		})
+	}
+}
+
+// A turn end that is not a final failure of omp's applies the default verdict.
+func TestANonRetryableAgentEndCancelsTheServerErrorRetry(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		setup func(r *rig)
+		frame string
+	}{
+		{"a run that omp continues", nil, `{"type":"agent_end","isTerminal":false,"messages":[{"role":"assistant","stopReason":"error","errorId":135168,"errorStatus":500,"errorMessage":"500 Internal server error"}]}`},
+		{"an interrupted turn", func(r *rig) {
+			r.agent.Mu.Lock()
+			r.agent.turn.interruptRequested = true
+			r.agent.Mu.Unlock()
+		}, ompAgentEnd500},
+		{"a turn that ends while the agent stops", func(r *rig) { r.agent.NoteIntentionalStop() }, ompAgentEnd500},
+		{"an aborted run", nil, `{"type":"agent_end","isTerminal":true,"messages":[{"role":"assistant","stopReason":"aborted","errorId":135168,"errorMessage":"Request was aborted"}]}`},
+		{"a completed run", nil, frameAgentEnd},
+		{"a run with no message", nil, `{"type":"agent_end","isTerminal":true,"messages":[]}`},
+		{"a malformed frame", nil, `{"type":"agent_end","isTerminal":true,"messages":"none"}`},
+		{"an authentication failure", nil, ompAgentEndWithError(0x1000|0x20000|0x1000000, 401)},
+		{"an exceeded context", nil, ompAgentEndWithError(0x1000|0x20000|0x800000, 400)},
+		{"a blocked content", nil, ompAgentEndWithError(0x1000|0x20000|0x8000, 400)},
+		{"an account policy", nil, ompAgentEndWithError(0x1000|0x20000|0x4000, 403)},
+		// omp sends errorId as a signed 32-bit integer, so the top bit reads
+		// as a negative number: PayloadRejected|Transient|Class.
+		{"a rejected payload", nil, ompAgentEndWithError(int64(int32(-0x80000000|0x20000|0x1000)), 413)},
+		{"a raw HTTP status in errorId", nil, ompAgentEndWithError(503, 0)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := newRig(t)
+			r.emit(`{"type":"agent_start"}`)
+			if tc.setup != nil {
+				tc.setup(r)
+			}
+			r.emit(tc.frame)
+			require.Equal(t, []string{"turn_end", "cancel_server_error"}, providerkittest.TurnEndAndRetryOpNames(r.sink.Timeline()))
+			assert.Equal(t, providerkit.TurnEndedWithoutRetryableFailure, r.sink.LastAutoCancelReason())
+		})
+	}
+}
+
+// The Transient and Timeout bits schedule a server-error retry, and the
+// UsageLimit bit is a usage limit with no stated window.
+func TestTheErrorIDClassOfAFailedTurn(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		frame string
+		want  []string
+	}{
+		{"the transient bit", ompAgentEndWithError(0x1000|0x20000, 0), []string{"turn_end", "schedule_server_error"}},
+		{"the timeout bit", ompAgentEndWithError(0x1000|0x40000, 0), []string{"turn_end", "schedule_server_error"}},
+		{"the usage-limit bit", ompAgentEndWithError(0x1000|0x80000, 0), []string{"turn_end", "cancel_server_error"}},
+		{"the usage-limit bit with the transient bit", ompAgentEndWithError(0x1000|0x80000|0x20000, 0), []string{"turn_end", "cancel_server_error"}},
+		{"a 429 with no class", ompAgentEndWithError(0, 429), []string{"turn_end", "schedule_server_error"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := newRig(t)
+			r.emit(`{"type":"agent_start"}`, tc.frame)
+			assert.Equal(t, tc.want, providerkittest.TurnEndAndRetryOpNames(r.sink.Timeline()))
+		})
+	}
+}
+
+// ompTurnFailure reads the captured failures in the order of the classifier
+// recipe, and a requested wait completes the verdict.
+func TestOmpTurnFailure(t *testing.T) {
+	t.Parallel()
+	fallback := time.Date(2026, 10, 28, 11, 0, 0, 0, time.UTC)
+	failedAt429 := time.UnixMilli(1793150801117).UTC()
+	for _, tc := range []struct {
+		name     string
+		frame    string
+		stopped  bool
+		deadline time.Time
+		kind     providerkit.TurnFailureKind
+		window   providerkit.UsageWindow
+		resetAt  time.Time
+	}{
+		{"a 500 is transient", ompAgentEnd500, false, time.Time{}, providerkit.TurnFailureTransient, 0, time.Time{}},
+		{"a dated 1308 lifts at its stamp", ompAgentEndUsage1308, false, time.Time{}, providerkit.TurnFailureUsageLimited, 0, time.Date(2026, 10, 28, 12, 6, 1, 0, time.UTC)},
+		{
+			"a requested wait does not replace the 1308 stamp", ompAgentEndUsage1308, false, fallback.Add(67156270 * time.Millisecond),
+			providerkit.TurnFailureUsageLimited, 0, time.Date(2026, 10, 28, 12, 6, 1, 0, time.UTC),
+		},
+		{"a dropped stream is transient", ompAgentEndDrop, false, time.Time{}, providerkit.TurnFailureTransient, 0, time.Time{}},
+		{"a 429 is a rate limit", ompAgentEnd429, false, time.Time{}, providerkit.TurnFailureRateLimited, 0, time.Time{}},
+		{
+			"a 429 with a requested wait lifts at the deadline", ompAgentEnd429, false, failedAt429.Add(time.Hour),
+			providerkit.TurnFailureUsageLimited, 0, failedAt429.Add(time.Hour),
+		},
+		{
+			"a requested wait in the past leaves the rate limit", ompAgentEnd429, false, failedAt429.Add(-time.Second),
+			providerkit.TurnFailureRateLimited, 0, time.Time{},
+		},
+		{
+			"a requested wait beyond 31 days leaves the rate limit", ompAgentEnd429, false, failedAt429.Add(32 * 24 * time.Hour),
+			providerkit.TurnFailureRateLimited, 0, time.Time{},
+		},
+		{
+			"a requested wait completes a usage limit with no reset", ompAgentEndWithError(0x1000|0x80000, 0), false, fallback.Add(30 * time.Minute),
+			providerkit.TurnFailureUsageLimited, 0, fallback.Add(30 * time.Minute),
+		},
+		{
+			"the usage-limit flag is a usage limit with no stated window", ompAgentEndWithError(0x1000|0x80000|0x20000, 429), false, time.Time{},
+			providerkit.TurnFailureUsageLimited, providerkit.UsageWindowUnstated, time.Time{},
+		},
+		{"a requested wait does not make a transient failure a usage limit", ompAgentEnd500, false, fallback.Add(time.Hour), providerkit.TurnFailureTransient, 0, time.Time{}},
+		{"a MiMo connection failure sent as a 400 is transient", ompAgentEndMiMo400, false, time.Time{}, providerkit.TurnFailureTransient, 0, time.Time{}},
+		{"a stop is not retryable", ompAgentEnd500, true, time.Time{}, providerkit.TurnFailureNotRetryable, 0, time.Time{}},
+		{"a stop is not retryable with a requested wait", ompAgentEnd429, true, failedAt429.Add(time.Hour), providerkit.TurnFailureNotRetryable, 0, time.Time{}},
+		{"the auth flag is not retryable", ompAgentEndWithError(0x1000|0x20000|0x1000000, 401), false, time.Time{}, providerkit.TurnFailureNotRetryable, 0, time.Time{}},
+		{
+			"a run that omp continues is not retryable",
+			`{"type":"agent_end","isTerminal":false,"messages":[{"role":"assistant","stopReason":"error","errorId":135168,"errorStatus":500,"errorMessage":"500 Internal server error"}]}`,
+			false, time.Time{}, providerkit.TurnFailureNotRetryable, 0, time.Time{},
+		},
+		{
+			"an absent isTerminal reads as terminal",
+			`{"type":"agent_end","messages":[{"role":"assistant","stopReason":"error","errorId":135168,"errorStatus":500,"errorMessage":"500 Internal server error"}]}`,
+			false, time.Time{}, providerkit.TurnFailureTransient, 0, time.Time{},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var env agentEndEnvelope
+			require.NoError(t, json.Unmarshal([]byte(tc.frame), &env))
+			failure := ompTurnFailure(env, tc.stopped, tc.deadline, fallback)
+			assert.Equal(t, tc.kind, failure.Kind)
+			assert.Equal(t, tc.window, failure.Window)
+			assert.True(t, tc.resetAt.Equal(failure.ResetAt), "reset %v, want %v", failure.ResetAt, tc.resetAt)
+		})
+	}
+}
+
+// The flags of errorId keep the values that omp declares.
+func TestOmpErrorFlagsMatchOmp(t *testing.T) {
+	t.Parallel()
+	// Flag in packages/ai/src/error/flags.ts of omp 18.12.6.
+	assert.Equal(t, uint32(0x0000_4000), ompErrorAccountPolicy)
+	assert.Equal(t, uint32(0x0000_8000), ompErrorContentBlocked)
+	assert.Equal(t, uint32(0x0002_0000), ompErrorTransient)
+	assert.Equal(t, uint32(0x0004_0000), ompErrorTimeout)
+	assert.Equal(t, uint32(0x0008_0000), ompErrorUsageLimit)
+	assert.Equal(t, uint32(0x0080_0000), ompErrorContextOverflow)
+	assert.Equal(t, uint32(0x0100_0000), ompErrorAuthFailed)
+	assert.Equal(t, uint32(0x8000_0000), ompErrorPayloadRejected)
+	// The probes: 135168 is Transient|Class, and 659456 is
+	// UsageLimit|Transient|Class.
+	assert.Equal(t, ompErrorTransient|0x1000, ompErrorFlags(&agentEndMessage{ErrorID: 135168}))
+	assert.Equal(t, ompErrorUsageLimit|ompErrorTransient|0x1000, ompErrorFlags(&agentEndMessage{ErrorID: 659456}))
+	assert.Equal(t, ompErrorPayloadRejected|ompErrorTransient, ompErrorFlags(&agentEndMessage{ErrorID: int64(int32(-0x80000000 | 0x20000))}),
+		"a negative errorId keeps its top flag")
 }
 
 func TestAnAgentEndThatOmpContinuesStillEndsTheTurn(t *testing.T) {

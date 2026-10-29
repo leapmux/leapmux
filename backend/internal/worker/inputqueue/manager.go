@@ -141,6 +141,7 @@ func (m *Manager) drainPublications(c *coordinator) {
 			continue
 		}
 		for _, accepted := range publication.accepted {
+			logDeliveredAutoRetry(accepted)
 			m.observer.InputAccepted(accepted)
 		}
 		m.observer.QueueChanged(publication.snapshot)
@@ -422,6 +423,8 @@ func (m *Manager) mutateLocked(agentID string, mutate func() (Snapshot, bool, er
 
 // mutateAdmitted keeps a captured provider owner current through the commit.
 // Observer delivery runs after both the coordinator and owner lease release.
+// An owner that is no longer current admits nothing: the mutation does not
+// run, and the call returns errProviderOwnerReplaced.
 func (m *Manager) mutateAdmitted(agentID string, admission agent.AutoRetryAdmission, mutate func() (Snapshot, bool, error)) (Snapshot, error) {
 	if !m.beginActivity() {
 		return Snapshot{}, ErrManagerStopped
@@ -431,7 +434,7 @@ func (m *Manager) mutateAdmitted(agentID string, admission agent.AutoRetryAdmiss
 	if admission != nil {
 		lease = admission.Acquire()
 		if lease == nil {
-			return Snapshot{}, nil
+			return Snapshot{}, errProviderOwnerReplaced
 		}
 	}
 	c := m.coordinator(agentID)
@@ -543,10 +546,20 @@ func (m *Manager) CancelEdit(ctx context.Context, agentID, inputID, clientID str
 	}))
 }
 
+// Delete removes one item at the user's request: the composer's delete is its
+// only caller, so the log states the user as the cause of a removed retry.
 func (m *Manager) Delete(ctx context.Context, agentID, inputID string) (Snapshot, error) {
-	return m.mutateAndDrain(agentID, alwaysChanged(func() (Snapshot, error) {
-		return m.store.Delete(ctx, agentID, inputID)
+	var deleted StoredItem
+	snapshot, err := m.mutateAndDrain(agentID, alwaysChanged(func() (Snapshot, error) {
+		var snapshot Snapshot
+		var err error
+		snapshot, deleted, err = m.store.Delete(ctx, agentID, inputID)
+		return snapshot, err
 	}))
+	if err == nil && IsAutoRetryKind(deleted.Kind) {
+		logRemovedAutoRetries(agentID, autoRetryReasonUserDeleted, []autoRetryRow{autoRetryRowOf(deleted)})
+	}
+	return snapshot, err
 }
 
 func (m *Manager) Move(ctx context.Context, agentID, inputID, beforeInputID string) (Snapshot, error) {
@@ -1086,12 +1099,16 @@ func (m *Manager) RetireAgent(ctx context.Context, agentID string) error {
 	c.mu.Lock()
 	c.retired = true
 	stopMaturityLocked(c)
-	snapshot, changed, err := m.store.cancelAutoRetries(ctx, agentID, autoRetryKinds...)
-	if err == nil && changed {
+	snapshot, removed, err := m.store.cancelAutoRetries(ctx, agentID, autoRetryKinds...)
+	if err == nil && len(removed) > 0 {
 		m.enqueueSnapshotLocked(c, snapshot)
 	}
 	m.unlockAndPublish(c)
-	return err
+	if err != nil {
+		return err
+	}
+	logRemovedAutoRetries(agentID, autoRetryReasonAgentClosed, removed)
+	return nil
 }
 
 // RecoverState reconciles interrupted persisted state without dispatching

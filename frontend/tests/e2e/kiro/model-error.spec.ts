@@ -1,8 +1,10 @@
 import { expect } from '@playwright/test'
+import { deleteAutoRetryRow, pauseQueueUnlessPaused } from '../helpers/autoRetry'
 import { sendNativeAnswer } from '../helpers/nativeConversation'
+import { exerciseTransientModelFailure } from '../helpers/nativeModelError'
 import { currentNativeAgent } from '../helpers/nativeScenario'
 import { expectRateLimitNotice } from '../helpers/rateLimit'
-import { messageContents, resumeQueueAfterFailure, sendMessage, waitForAgentIdle } from '../helpers/ui'
+import { messageContents, resumePausedQueue, resumeQueueAfterFailure, sendMessage, waitForAgentIdle } from '../helpers/ui'
 import { kiroTest } from '../kiro-fixtures'
 
 /**
@@ -27,6 +29,11 @@ kiroTest.describe('Kiro basic chat', () => {
     expect((await modelScript.status()).requests.length, 'Kiro made the model call').toBeGreaterThan(0)
     // Kiro fails the prompt and ends its turn, and its process keeps running, so the queue keeps running.
     await resumeQueueAfterFailure(page, 'running')
+    // The throttle outlasted Kiro's own retries and states no reset instant, so LeapMux schedules its own
+    // server-error retry. Delete it while the queue is paused, so it cannot send an unscripted request.
+    expect(await pauseQueueUnlessPaused(page), 'this check paused the running queue').toBe(true)
+    await deleteAutoRetryRow(page, 'server error')
+    await resumePausedQueue(page)
     const recovered = await sendNativeAnswer(native, 'Reply once after the native throttled turn ends.', 'The native Kiro session recovered after its service failure.')
     expect(recovered.protocol).toBe('aws-event-stream')
     expect((await currentNativeAgent(native)).id).toBe(before.id)
@@ -44,5 +51,17 @@ kiroTest.describe('Kiro basic chat', () => {
     await waitForAgentIdle(native.page)
     await expect(messageContents(native.page).filter({ hasText: 'The model refused this request (CYBER)' })).toHaveCount(1)
     await expect(messageContents(native.page).filter({ hasText: 'Recommended model: kiro-probe-alt' })).toHaveCount(1)
+  })
+
+  // The service answers a 500 as `InternalServerException`, which Kiro states as
+  // an `InternalServerError` that it classifies as TRANSIENT. Kiro 2.24.0 sends
+  // the request three times in each of four rounds, about 10, 22, and 40 s
+  // apart, so the twelfth request comes 82 to 93 s after the prompt. That fits
+  // the test budget with little room to spare.
+  kiroTest('schedules LeapMux\'s own server-error retry after the native client gives up', async ({ native }) => {
+    await exerciseTransientModelFailure(native, {
+      error: { status: 500, code: 'InternalServerException', message: 'The model service returned a temporary error.' },
+      attempts: 12,
+    })
   })
 })

@@ -10,9 +10,11 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/coder/quartz"
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	agentapi "github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -190,9 +192,16 @@ func (s *notificationPersistGuardSink) PersistMessage(source leapmuxv1.MessageSo
 }
 
 func newCodexAgentWithSink(sink agentapi.ProviderServices) *Agent {
+	return newCodexAgentWithSinkAndClock(sink, nil)
+}
+
+// newCodexAgentWithSinkAndClock builds the agent of newCodexAgentWithSink on
+// clock. A nil clock selects the real clock.
+func newCodexAgentWithSinkAndClock(sink agentapi.ProviderServices, clock quartz.Clock) *Agent {
 	a := &Agent{
 		JSONRPCProcess: providerkit.JSONRPCProcess{Process: providerkit.NewProcessFrom(providerkit.ProcessConfig{
 			AgentID: "test-agent",
+			Clock:   clock,
 		})},
 		sink:               sink,
 		threadID:           "main-thread",
@@ -1245,21 +1254,363 @@ func TestHandleCodexOutput_ThreadNameUpdatedPersistsRawAsAgent(t *testing.T) {
 		"raw envelope must be preserved so future renderers can read every field")
 }
 
+// --- Rate-limit snapshots and the automatic-retry verdict ---
+
+// codexRateLimitTestNow precedes the January 2030 resets of the snapshot
+// fixtures below by one to seven days, so every one of those resets can
+// schedule a retry.
+var codexRateLimitTestNow = time.Date(2029, 12, 31, 0, 0, 0, 0, time.UTC)
+
+// newCodexAgentAt builds the agent of newCodexAgentWithSink on a mock clock
+// set to now, so a verdict reads every reset against a fixed instant.
+func newCodexAgentAt(t *testing.T, sink agentapi.ProviderServices, now time.Time) *Agent {
+	t.Helper()
+	clock := testutil.NewQuartzMock(t)
+	clock.Set(now).MustWait(testutil.DeadlineContext(t))
+	return newCodexAgentWithSinkAndClock(sink, clock)
+}
+
+var (
+	codexTurnEndRow           = agenttest.TimelineEntry{Op: "turn_end"}
+	codexServerErrorScheduled = agenttest.TimelineEntry{
+		Op: "schedule_server_error", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR,
+	}
+	codexServerErrorCancelled = agenttest.TimelineEntry{
+		Op: "cancel_server_error", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR,
+		Reason: providerkit.TurnEndedWithoutRetryableFailure,
+	}
+	// codexServerErrorCancelledForAStatedReset follows a usage-limit schedule
+	// at a stated reset.
+	codexServerErrorCancelledForAStatedReset = agenttest.TimelineEntry{
+		Op: "cancel_server_error", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR,
+		Reason: "the turn ended on a usage limit that lifts at a stated time",
+	}
+	// codexServerErrorCancelledForNoReset ends a usage-limit turn whose reset
+	// nothing states. It makes no usage-limit call.
+	codexServerErrorCancelledForNoReset = agenttest.TimelineEntry{
+		Op: "cancel_server_error", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR,
+		Reason: "the turn ended on a usage limit that states no reset within a week",
+	}
+)
+
+func codexUsageLimitScheduledAt(resetAt time.Time) agenttest.TimelineEntry {
+	return agenttest.TimelineEntry{
+		Op: "schedule_usage_limit", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, ResetAt: resetAt,
+	}
+}
+
+func codexUsageLimitCancelled(reason string) agenttest.TimelineEntry {
+	return agenttest.TimelineEntry{
+		Op: "cancel_usage_limit", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, Reason: reason,
+	}
+}
+
+// codexCodexWindowCleared is the reason of a cancel by a `codex` snapshot
+// whose windows are all below their limits.
+const codexCodexWindowCleared = `Codex reported that no usage window of the "codex" limit is exceeded`
+
+// codexRateLimitValues returns the values of the last rate-limit broadcast.
+func codexRateLimitValues(t *testing.T, sink *agenttest.Sink) map[string]interface{} {
+	t.Helper()
+	rateLimits, ok := sink.LastSessionInfo()["rate_limits"].(map[string]interface{})
+	require.True(t, ok, "the broadcast carries rate_limits")
+	values, ok := rateLimits["values"].(map[string]interface{})
+	require.True(t, ok, "rate_limits carries a values map")
+	return values
+}
+
+// codexBlockedSnapshot is a `codex` snapshot whose weekly window is used up
+// while the credits serve no request.
+const codexBlockedSnapshot = `{"method":"account/rateLimits/updated","params":{"rateLimits":{"limitId":"codex","primary":{"usedPercent":100,"windowDurationMins":10080,"resetsAt":1893456000},"secondary":null,"credits":{"hasCredits":false,"unlimited":false,"balance":"0"},"rateLimitReachedType":null}}}`
+
+var codexBlockedSnapshotReset = time.Unix(1893456000, 0).UTC()
+
+// The real usage-limit sequence of 2026-10-28 03:09:07 KST: rollout 6f1e64 of
+// R/transcripts-codex-leapmuxdb.md (.tmp/transcripts/codex/timeline_run1.log).
+// The rollout stores each snapshot in its snake_case form. The app server
+// sends the same values in the camelCase form of DB #5, so the two snapshot
+// frames carry the rollout values in that form.
+const (
+	codexRealCodexSnapshot   = `{"method":"account/rateLimits/updated","params":{"rateLimits":{"limitId":"codex","limitName":null,"normalModelSlug":null,"primary":{"usedPercent":100,"windowDurationMins":10080,"resetsAt":1793599238},"secondary":null,"credits":{"hasCredits":true,"unlimited":false,"balance":"0.5712300000"},"individualLimit":null,"spendControlReached":null,"planType":"prolite","rateLimitReachedType":null}}}`
+	codexRealPremiumSnapshot = `{"method":"account/rateLimits/updated","params":{"rateLimits":{"limitId":"premium","limitName":null,"normalModelSlug":null,"primary":null,"secondary":null,"credits":{"hasCredits":false,"unlimited":false,"balance":"0"},"individualLimit":null,"spendControlReached":null,"planType":"prolite","rateLimitReachedType":null}}}`
+	// DB #4 of R/transcripts-codex-leapmuxdb.md, verbatim, in its notification.
+	codexRealUsageLimitTurn = `{"method":"turn/completed","params":{"threadId": "01a1793c-17f5-7a53-ab3c-da74216f1e64", "turn": {"id": "01a1793c-7ca1-7d00-a9ad-019d20f7ee9d", "rootTurnId": "01a1793c-7ca1-7d00-a9ad-019d20f7ee9d", "items": [], "itemsView": "notLoaded", "status": "failed", "error": {"message": "You’ve hit your usage limit. Visit https://chatgpt.com/settings/usage to purchase more credits or try again at Nov 2nd, 2026 3:00 PM.", "codexErrorInfo": "usageLimitExceeded", "additionalDetails": null, "misalignment": null}, "startedAt": 1793035369, "completedAt": 1793124547, "durationMs": 89177771}}}`
+	codexRealThreadID       = "01a1793c-17f5-7a53-ab3c-da74216f1e64"
+)
+
+var (
+	// codexRealUsageLimitAt is the completedAt of the turn.
+	codexRealUsageLimitAt = time.Unix(1793124547, 0).UTC()
+	// codexRealCodexReset is 2026-11-02 15:00:38 KST. The message truncates it
+	// to "3:00 PM".
+	codexRealCodexReset = time.Unix(1793599238, 0).UTC()
+)
+
+// At the real usage limit, the `codex` window read 100% while credits still
+// served requests, and the `premium` snapshot carried no window. Neither
+// snapshot blocks or clears anything. The turn then failed, and its one usage
+// schedule lands at the `codex` reset, which is more exact than the minute in
+// the message.
+func TestHandleCodexOutput_TheRealUsageLimitSequenceSchedulesOnceAtTheCodexReset(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	a := newCodexAgentAt(t, agentapi.NewProviderServices(sink), codexRealUsageLimitAt)
+	a.threadID = codexRealThreadID
+
+	handleCodexOutput(a, providerkit.ParseLine([]byte(codexRealCodexSnapshot)))
+	handleCodexOutput(a, providerkit.ParseLine([]byte(codexRealPremiumSnapshot)))
+	require.Empty(t, sink.Timeline(), "credits served the used-up window, and the premium snapshot carries no window")
+	seven, ok := codexRateLimitValues(t, sink)["seven_day"].(map[string]interface{})
+	require.True(t, ok, "the display keeps the codex bucket after the premium snapshot")
+	assert.Equal(t, 1.0, seven["utilization"])
+
+	handleCodexOutput(a, providerkit.ParseLine([]byte(codexRealUsageLimitTurn)))
+
+	assert.Equal(t, []agenttest.TimelineEntry{
+		codexTurnEndRow, codexUsageLimitScheduledAt(codexRealCodexReset), codexServerErrorCancelledForAStatedReset,
+	}, sink.Timeline())
+}
+
 func TestHandleCodexOutput_RateLimitExceededSchedulesResume(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+	a := newCodexAgentAt(t, agentapi.NewProviderServices(sink), codexRateLimitTestNow)
 
-	input := `{"method":"account/rateLimits/updated","params":{"rateLimits":{"primary":{"usedPercent":100,"windowDurationMins":300,"resetsAt":1893456000},"secondary":{"usedPercent":20,"windowDurationMins":10080,"resetsAt":1894000000}}}}`
+	input := `{"method":"account/rateLimits/updated","params":{"rateLimits":{"primary":{"usedPercent":100,"windowDurationMins":300,"resetsAt":1893456000},"secondary":{"usedPercent":20,"windowDurationMins":10080,"resetsAt":1894000000},"credits":{"hasCredits":false,"unlimited":false,"balance":"0"}}}}`
 	handleCodexOutput(a, providerkit.ParseLine([]byte(input)))
 
 	require.Equal(t, 1, sink.AutoScheduleCount())
 	schedule := sink.LastAutoSchedule()
 	require.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, schedule.Kind)
 	require.True(t, schedule.ResetAt.Equal(time.Unix(1893456000, 0).UTC()))
+	assert.JSONEq(t, input, string(schedule.SourcePayload), "the retry carries the snapshot")
 
 	assert.Zero(t, sink.NotificationCount(), "account state must not become transcript history")
+}
+
+// A used-up window blocks only when the bucket's credits serve no request.
+func TestHandleCodexOutput_AUsedUpWindowBlocksOnlyWithoutCredits(t *testing.T) {
+	t.Parallel()
+
+	window := `"primary":{"usedPercent":100,"windowDurationMins":10080,"resetsAt":1893456000}`
+	for _, tc := range []struct {
+		name    string
+		credits string
+		want    []agenttest.TimelineEntry
+	}{
+		{"credits that hold a balance serve the request", `,"credits":{"hasCredits":true,"unlimited":false,"balance":"52.15"}`, nil},
+		{"unlimited credits serve the request", `,"credits":{"hasCredits":false,"unlimited":true,"balance":null}`, nil},
+		{"credits that no snapshot stated prove no block", ``, nil},
+		{"credits that state no balance block", `,"credits":{"hasCredits":false,"unlimited":false,"balance":"0"}`, []agenttest.TimelineEntry{codexUsageLimitScheduledAt(codexBlockedSnapshotReset)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := newCodexAgentAt(t, agentapi.NewProviderServices(sink), codexRateLimitTestNow)
+
+			handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"account/rateLimits/updated","params":{"rateLimits":{"limitId":"codex",`+window+tc.credits+`}}}`)))
+
+			assert.Equal(t, tc.want, sink.Timeline())
+		})
+	}
+}
+
+// Codex states that a null in an update does not clear a value that an
+// earlier update gave. A snapshot without the window therefore keeps the
+// earlier window and its credits: it never cancels, and the merged block
+// states the same reset again.
+func TestHandleCodexOutput_ASparseUpdateKeepsTheEarlierWindow(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	a := newCodexAgentAt(t, agentapi.NewProviderServices(sink), codexRateLimitTestNow)
+	scheduled := codexUsageLimitScheduledAt(codexBlockedSnapshotReset)
+
+	handleCodexOutput(a, providerkit.ParseLine([]byte(codexBlockedSnapshot)))
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"account/rateLimits/updated","params":{"rateLimits":{"limitId":"codex","primary":null,"secondary":null,"credits":null,"rateLimitReachedType":null}}}`)))
+	require.Equal(t, []agenttest.TimelineEntry{scheduled, scheduled}, sink.Timeline(),
+		"a snapshot without the window cancels nothing")
+	seven, ok := codexRateLimitValues(t, sink)["seven_day"].(map[string]interface{})
+	require.True(t, ok, "the display keeps the merged window")
+	assert.Equal(t, int64(1893456000), seven["resets_at"])
+
+	// A window without its reset keeps the merged reset, and the merged credits
+	// still block.
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"account/rateLimits/updated","params":{"rateLimits":{"limitId":"codex","primary":{"usedPercent":100,"windowDurationMins":10080,"resetsAt":null},"secondary":null,"credits":null}}}`)))
+
+	assert.Equal(t, []agenttest.TimelineEntry{scheduled, scheduled, scheduled}, sink.Timeline())
+}
+
+// Credits that an earlier snapshot stated still decide a later window of the
+// same bucket.
+func TestHandleCodexOutput_MergedCreditsDecideALaterWindow(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	a := newCodexAgentAt(t, agentapi.NewProviderServices(sink), codexRateLimitTestNow)
+
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"account/rateLimits/updated","params":{"rateLimits":{"limitId":"codex","primary":{"usedPercent":50,"windowDurationMins":10080,"resetsAt":1893456000},"credits":{"hasCredits":false,"unlimited":false,"balance":"0"}}}}`)))
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"account/rateLimits/updated","params":{"rateLimits":{"limitId":"codex","primary":{"usedPercent":100,"windowDurationMins":10080,"resetsAt":1893456000}}}}`)))
+
+	assert.Equal(t, []agenttest.TimelineEntry{
+		codexUsageLimitCancelled(codexCodexWindowCleared), codexUsageLimitScheduledAt(codexBlockedSnapshotReset),
+	}, sink.Timeline())
+}
+
+// A window of another duration in the same slot is another window, so it
+// does not inherit the merged reset.
+func TestHandleCodexOutput_AWindowOfAnotherDurationReplacesTheMergedOne(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	a := newCodexAgentAt(t, agentapi.NewProviderServices(sink), codexRateLimitTestNow)
+
+	handleCodexOutput(a, providerkit.ParseLine([]byte(codexBlockedSnapshot)))
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"account/rateLimits/updated","params":{"rateLimits":{"limitId":"codex","primary":{"usedPercent":100,"windowDurationMins":300,"resetsAt":null}}}}`)))
+
+	assert.Equal(t, []agenttest.TimelineEntry{codexUsageLimitScheduledAt(codexBlockedSnapshotReset)}, sink.Timeline(),
+		"the five-hour window states no reset, so it schedules nothing")
+	values := codexRateLimitValues(t, sink)
+	five, ok := values["five_hour"].(map[string]interface{})
+	require.True(t, ok)
+	assert.NotContains(t, five, "resets_at", "the weekly reset does not move to the five-hour window")
+	assert.NotContains(t, values, "seven_day", "the five-hour window replaced the weekly one in the slot")
+}
+
+// A reset that already passed would schedule a retry that fires at once and
+// fails again, and one more than 31 days ahead is not plausible.
+func TestHandleCodexOutput_AnUnusableResetSchedulesNothing(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		now  time.Time
+	}{
+		{"a reset in the past", codexBlockedSnapshotReset.Add(time.Hour)},
+		{"a reset at now", codexBlockedSnapshotReset},
+		{"a reset more than 31 days ahead", codexBlockedSnapshotReset.Add(-32 * 24 * time.Hour)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := newCodexAgentAt(t, agentapi.NewProviderServices(sink), tc.now)
+
+			handleCodexOutput(a, providerkit.ParseLine([]byte(codexBlockedSnapshot)))
+			handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"account/rateLimits/updated","params":{"rateLimits":{"limitId":"codex","rateLimitReachedType":"rate_limit_reached"}}}`)))
+
+			assert.Empty(t, sink.Timeline(), "the block keeps whatever retry is pending")
+		})
+	}
+}
+
+// A snapshot cancels only for its own bucket: a clear of another limit does
+// not lift the block of `codex`.
+func TestHandleCodexOutput_OnlyAClearOfTheBlockedBucketCancels(t *testing.T) {
+	t.Parallel()
+
+	t.Run("a clear of the same bucket cancels", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a := newCodexAgentAt(t, agentapi.NewProviderServices(sink), codexRateLimitTestNow)
+
+		handleCodexOutput(a, providerkit.ParseLine([]byte(codexBlockedSnapshot)))
+		handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"account/rateLimits/updated","params":{"rateLimits":{"limitId":"codex","primary":{"usedPercent":0,"windowDurationMins":10080,"resetsAt":1894000000},"secondary":null,"credits":null}}}`)))
+
+		assert.Equal(t, []agenttest.TimelineEntry{
+			codexUsageLimitScheduledAt(codexBlockedSnapshotReset), codexUsageLimitCancelled(codexCodexWindowCleared),
+		}, sink.Timeline())
+	})
+	t.Run("a clear of another bucket does not cancel", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a := newCodexAgentAt(t, agentapi.NewProviderServices(sink), codexRateLimitTestNow)
+
+		handleCodexOutput(a, providerkit.ParseLine([]byte(codexBlockedSnapshot)))
+		handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"account/rateLimits/updated","params":{"rateLimits":{"limitId":"premium","primary":{"usedPercent":0,"windowDurationMins":10080,"resetsAt":1894000000},"secondary":null,"credits":{"hasCredits":false,"unlimited":false,"balance":"0"}}}}`)))
+
+		assert.Equal(t, []agenttest.TimelineEntry{codexUsageLimitScheduledAt(codexBlockedSnapshotReset)}, sink.Timeline())
+	})
+	t.Run("a clear of another bucket keeps a retry while codex is used up with credits", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a := newCodexAgentAt(t, agentapi.NewProviderServices(sink), codexRateLimitTestNow)
+
+		// The real sequence reads `codex` at 100% with credits, and the turn then
+		// fails on that limit and schedules its retry. A third bucket that clears
+		// must not cancel it.
+		handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"account/rateLimits/updated","params":{"rateLimits":{"limitId":"codex","primary":{"usedPercent":100,"windowDurationMins":10080,"resetsAt":1893456000},"credits":{"hasCredits":true,"unlimited":false,"balance":"0.4"}}}}`)))
+		handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"account/rateLimits/updated","params":{"rateLimits":{"limitId":"codex_spark","primary":{"usedPercent":3,"windowDurationMins":10080,"resetsAt":1894000000}}}}`)))
+
+		assert.Empty(t, sink.Timeline())
+	})
+	t.Run("a clear of another bucket cancels once no bucket blocks", func(t *testing.T) {
+		t.Parallel()
+		sink := &agenttest.Sink{}
+		a := newCodexAgentAt(t, agentapi.NewProviderServices(sink), codexRateLimitTestNow)
+
+		handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"account/rateLimits/updated","params":{"rateLimits":{"limitId":"codex","primary":{"usedPercent":40,"windowDurationMins":10080,"resetsAt":1893456000}}}}`)))
+		handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"account/rateLimits/updated","params":{"rateLimits":{"limitId":"premium","primary":{"usedPercent":0,"windowDurationMins":10080,"resetsAt":1894000000}}}}`)))
+
+		assert.Equal(t, []agenttest.TimelineEntry{
+			codexUsageLimitCancelled(codexCodexWindowCleared),
+			codexUsageLimitCancelled(`Codex reported that no usage window of the "premium" limit is exceeded`),
+		}, sink.Timeline())
+	})
+}
+
+// A snapshot without a `limitId`, or with an empty one, describes the `codex`
+// limit.
+func TestHandleCodexOutput_ASnapshotWithoutALimitIDUpdatesTheCodexBucket(t *testing.T) {
+	t.Parallel()
+
+	for name, blocked := range map[string]string{
+		"an absent ID": `{"method":"account/rateLimits/updated","params":{"rateLimits":{"primary":{"usedPercent":100,"windowDurationMins":10080,"resetsAt":1893456000},"credits":{"hasCredits":false,"unlimited":false}}}}`,
+		"a null ID":    `{"method":"account/rateLimits/updated","params":{"rateLimits":{"limitId":null,"primary":{"usedPercent":100,"windowDurationMins":10080,"resetsAt":1893456000},"credits":{"hasCredits":false,"unlimited":false}}}}`,
+		"an empty ID":  `{"method":"account/rateLimits/updated","params":{"rateLimits":{"limitId":"","primary":{"usedPercent":100,"windowDurationMins":10080,"resetsAt":1893456000},"credits":{"hasCredits":false,"unlimited":false}}}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := newCodexAgentAt(t, agentapi.NewProviderServices(sink), codexRateLimitTestNow)
+
+			handleCodexOutput(a, providerkit.ParseLine([]byte(blocked)))
+			handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"account/rateLimits/updated","params":{"rateLimits":{"limitId":"codex","primary":{"usedPercent":5,"windowDurationMins":10080}}}}`)))
+
+			assert.Equal(t, []agenttest.TimelineEntry{
+				codexUsageLimitScheduledAt(codexBlockedSnapshotReset), codexUsageLimitCancelled(codexCodexWindowCleared),
+			}, sink.Timeline())
+		})
+	}
+}
+
+// The display shows the `codex` bucket when it holds a window, or else the
+// first bucket seen that holds one.
+func TestHandleCodexOutput_TheDisplayShowsTheCodexBucketFirst(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	a := newCodexAgentAt(t, agentapi.NewProviderServices(sink), codexRateLimitTestNow)
+	displayedUtilization := func() interface{} {
+		seven, ok := codexRateLimitValues(t, sink)["seven_day"].(map[string]interface{})
+		require.True(t, ok)
+		return seven["utilization"]
+	}
+
+	handleCodexOutput(a, providerkit.ParseLine([]byte(codexRealPremiumSnapshot)))
+	assert.Equal(t, map[string]interface{}{"account_block": map[string]interface{}{}}, codexRateLimitValues(t, sink),
+		"no bucket holds a window yet")
+
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"account/rateLimits/updated","params":{"rateLimits":{"limitId":"alpha","primary":{"usedPercent":30,"windowDurationMins":10080}}}}`)))
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"account/rateLimits/updated","params":{"rateLimits":{"limitId":"beta","primary":{"usedPercent":60,"windowDurationMins":10080}}}}`)))
+	assert.Equal(t, 0.3, displayedUtilization(), "the first bucket seen with a window")
+
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"account/rateLimits/updated","params":{"rateLimits":{"limitId":"codex","primary":{"usedPercent":10,"windowDurationMins":10080}}}}`)))
+	assert.Equal(t, 0.1, displayedUtilization(), "the codex bucket")
+
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"account/rateLimits/updated","params":{"rateLimits":{"limitId":"beta","primary":{"usedPercent":90,"windowDurationMins":10080}}}}`)))
+	assert.Equal(t, 0.1, displayedUtilization(), "another bucket's update keeps the codex bucket on display")
 }
 
 // Codex reports account rate limits after every model call.
@@ -1316,17 +1667,34 @@ func TestHandleCodexOutput_RateLimitBroadcastsSnakeCaseWire(t *testing.T) {
 	assert.Equal(t, "seven_day", secondary["rate_limit_type"])
 }
 
-func TestHandleCodexOutput_RateLimitClearCancelsResume(t *testing.T) {
+// A window that states no duration keeps a display key of its own.
+func TestHandleCodexOutput_AWindowWithoutADurationKeepsItsOwnKey(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
 	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
-	input := `{"method":"account/rateLimits/updated","params":{"rateLimits":{"primary":{"usedPercent":75,"windowDurationMins":300,"resetsAt":1893456000},"secondary":{"usedPercent":10,"windowDurationMins":10080,"resetsAt":1894000000}}}}`
-	handleCodexOutput(a, providerkit.ParseLine([]byte(input)))
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"account/rateLimits/updated","params":{"rateLimits":{"primary":{"usedPercent":10,"windowDurationMins":null},"secondary":{"usedPercent":20}}}}`)))
 
-	require.Equal(t, 1, sink.AutoCancelCount())
-	require.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, sink.LastAutoCancel())
+	values := codexRateLimitValues(t, sink)
+	assert.Contains(t, values, "window_1")
+	assert.Contains(t, values, "window_2")
+}
+
+// A clear cancels the resume that an earlier block of the same bucket
+// scheduled.
+func TestHandleCodexOutput_RateLimitClearCancelsResume(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	a := newCodexAgentAt(t, agentapi.NewProviderServices(sink), codexRateLimitTestNow)
+
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"account/rateLimits/updated","params":{"rateLimits":{"primary":{"usedPercent":100,"windowDurationMins":300,"resetsAt":1893456000},"secondary":{"usedPercent":10,"windowDurationMins":10080,"resetsAt":1894000000},"credits":{"hasCredits":false,"unlimited":false}}}}`)))
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"account/rateLimits/updated","params":{"rateLimits":{"primary":{"usedPercent":75,"windowDurationMins":300,"resetsAt":1893456000},"secondary":{"usedPercent":10,"windowDurationMins":10080,"resetsAt":1894000000}}}}`)))
+
+	assert.Equal(t, []agenttest.TimelineEntry{
+		codexUsageLimitScheduledAt(time.Unix(1893456000, 0).UTC()), codexUsageLimitCancelled(codexCodexWindowCleared),
+	}, sink.Timeline())
 }
 
 // TestHandleCodexOutput_ReachedTypeRateLimitReachedSchedules covers a native rateLimitReachedType that confirms a timed rate-limit window.
@@ -1335,7 +1703,7 @@ func TestHandleCodexOutput_ReachedTypeRateLimitReachedSchedules(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+	agent := newCodexAgentAt(t, agentapi.NewProviderServices(sink), codexRateLimitTestNow)
 
 	input := `{"method":"account/rateLimits/updated","params":{"rateLimits":{"rateLimitReachedType":"rate_limit_reached","primary":{"usedPercent":100,"windowDurationMins":300,"resetsAt":1893456000},"secondary":{"usedPercent":20,"windowDurationMins":10080,"resetsAt":1894000000}}}}`
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(input)))
@@ -1358,6 +1726,8 @@ func TestHandleCodexOutput_ReachedTypeCreditsDepletedCancels(t *testing.T) {
 	assert.Equal(t, 0, sink.AutoScheduleCount(), "credit depletion must not schedule an automatic retry")
 	require.Equal(t, 1, sink.AutoCancelCount())
 	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, sink.LastAutoCancel())
+	assert.Equal(t, `Codex reported the block "workspace_owner_credits_depleted", which only a billing or usage change lifts`,
+		sink.LastAutoCancelReason())
 	require.Equal(t, 1, sink.SessionInfoCount())
 	rateLimits, ok := sink.LastSessionInfo()["rate_limits"].(map[string]interface{})
 	require.True(t, ok)
@@ -1382,6 +1752,8 @@ func TestHandleCodexOutput_ReachedTypeUsageLimitReachedCancels(t *testing.T) {
 
 	assert.Equal(t, 0, sink.AutoScheduleCount())
 	require.Equal(t, 1, sink.AutoCancelCount())
+	assert.Equal(t, `Codex reported the block "workspace_member_usage_limit_reached", which only a billing or usage change lifts`,
+		sink.LastAutoCancelReason())
 }
 
 // TestHandleCodexOutput_ReachedTypeRoundingElevatesAndSchedules covers a confirmed native rate limit while rounded usedPercent remains below 100.
@@ -1390,7 +1762,7 @@ func TestHandleCodexOutput_ReachedTypeRoundingElevatesAndSchedules(t *testing.T)
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+	agent := newCodexAgentAt(t, agentapi.NewProviderServices(sink), codexRateLimitTestNow)
 
 	input := `{"method":"account/rateLimits/updated","params":{"rateLimits":{"rateLimitReachedType":"rate_limit_reached","primary":{"usedPercent":99,"windowDurationMins":300,"resetsAt":1893456000},"secondary":{"usedPercent":20,"windowDurationMins":10080,"resetsAt":1894000000}}}}`
 	handleCodexOutput(agent, providerkit.ParseLine([]byte(input)))
@@ -1400,13 +1772,29 @@ func TestHandleCodexOutput_ReachedTypeRoundingElevatesAndSchedules(t *testing.T)
 		"resume should bind to the most-utilized window's reset")
 
 	require.Equal(t, 1, sink.SessionInfoCount())
-	rateLimits, ok := sink.LastSessionInfo()["rate_limits"].(map[string]interface{})
-	require.True(t, ok)
-	rateLimits, ok = rateLimits["values"].(map[string]interface{})
-	require.True(t, ok)
-	primary, ok := rateLimits["five_hour"].(map[string]interface{})
+	primary, ok := codexRateLimitValues(t, sink)["five_hour"].(map[string]interface{})
 	require.True(t, ok)
 	assert.Equal(t, "exceeded", primary["status"], "binding window must show as exceeded despite 99%%")
+}
+
+// The reached type confirms the most-used window of its own bucket only. A
+// `premium` snapshot that reaches its limit does not mark the displayed `codex`
+// window.
+func TestHandleCodexOutput_AReachedTypeOfAnotherBucketMarksNoDisplayedWindow(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	a := newCodexAgentAt(t, agentapi.NewProviderServices(sink), codexRateLimitTestNow)
+
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"account/rateLimits/updated","params":{"rateLimits":{"limitId":"codex","primary":{"usedPercent":40,"windowDurationMins":10080,"resetsAt":1893456000}}}}`)))
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"account/rateLimits/updated","params":{"rateLimits":{"limitId":"premium","rateLimitReachedType":"rate_limit_reached","primary":{"usedPercent":99,"windowDurationMins":300,"resetsAt":1893456000}}}}`)))
+
+	seven, ok := codexRateLimitValues(t, sink)["seven_day"].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, "allowed", seven["status"])
+	assert.Equal(t, []agenttest.TimelineEntry{
+		codexUsageLimitCancelled(codexCodexWindowCleared), codexUsageLimitScheduledAt(time.Unix(1893456000, 0).UTC()),
+	}, sink.Timeline(), "the premium block still schedules at its own reset")
 }
 
 // TestHandleCodexOutput_ReachedTypeBindingWindowMissingResetFallsBack covers a timed block whose highest-usage window omits resetsAt while another window supplies it.
@@ -1415,7 +1803,7 @@ func TestHandleCodexOutput_ReachedTypeBindingWindowMissingResetFallsBack(t *test
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
-	agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+	agent := newCodexAgentAt(t, agentapi.NewProviderServices(sink), codexRateLimitTestNow)
 
 	// primary, the five_hour window, has highest usage but no resetsAt.
 	// secondary, the seven_day window, supplies a reset.
@@ -1429,48 +1817,201 @@ func TestHandleCodexOutput_ReachedTypeBindingWindowMissingResetFallsBack(t *test
 		"resume falls back to the latest available window reset")
 }
 
-// TestSummarizeCodexRateLimits_ResumeFallsBackToLatestReset directly exercises status elevation and resume selection without an agent.
-// It covers the missing selected-window reset that the handler test exercises through output handling.
-func TestSummarizeCodexRateLimits_ResumeFallsBackToLatestReset(t *testing.T) {
+// TestHandleCodexOutput_BlockWithoutAResetKeepsThePendingResume covers a
+// snapshot that reports a timed block but gives no reset instant. The account
+// is still blocked, so the snapshot supplies no new deadline, and the retry
+// that an earlier snapshot scheduled keeps its own. Claude keeps a pending
+// resume for an undated block by the same rule.
+func TestHandleCodexOutput_BlockWithoutAResetKeepsThePendingResume(t *testing.T) {
 	t.Parallel()
+	for name, input := range map[string]string{
+		"a reached time window": `{"method":"account/rateLimits/updated","params":{"rateLimits":{"rateLimitReachedType":"rate_limit_reached","primary":{"usedPercent":99,"windowDurationMins":300},"secondary":{"usedPercent":20,"windowDurationMins":10080}}}}`,
+		"an exhausted window":   `{"method":"account/rateLimits/updated","params":{"rateLimits":{"primary":{"usedPercent":100,"windowDurationMins":300},"secondary":{"usedPercent":20,"windowDurationMins":10080},"credits":{"hasCredits":false,"unlimited":false}}}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			agent := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
-	resetSecondary := int64(1894000000)
-	tiers := []*codexRateLimitTier{
-		{UsedPercent: 99, WindowDurationMins: 300},                              // binding, no reset
-		{UsedPercent: 20, WindowDurationMins: 10080, ResetsAt: &resetSecondary}, // sibling, has reset
+			handleCodexOutput(agent, providerkit.ParseLine([]byte(input)))
+
+			assert.Zero(t, sink.AutoScheduleCount(), "a block without a reset instant supplies no deadline")
+			assert.Zero(t, sink.AutoCancelCount(), "a block without a reset instant must not cancel the pending resume")
+		})
 	}
-	s := summarizeCodexRateLimits(tiers, codexRateLimitReachedTimeWindow)
-
-	require.Nil(t, s.bindingReset, "the most-utilized window carries no reset")
-	require.NotNil(t, s.latestReset)
-	assert.True(t, s.latestReset.Equal(time.Unix(resetSecondary, 0).UTC()))
-
-	resume := codexRateLimitResumeReset(codexRateLimitReachedTimeWindow, s)
-	require.NotNil(t, resume, "must resume via the sibling reset, not cancel")
-	assert.True(t, resume.Equal(time.Unix(resetSecondary, 0).UTC()))
-
-	// The rounded-limit correction still marks the highest-usage window exceeded.
-	five, ok := s.rateLimits["five_hour"].(map[string]interface{})
-	require.True(t, ok)
-	assert.Equal(t, "exceeded", five["status"])
 }
 
-// TestSummarizeCodexRateLimits_ExceededWindowPreventsElevation verifies that any window at or above 100% suppresses additional elevation.
-// The frontend replay applies the same rule, keeping its popover consistent with live broadcasts.
-// Preserve the already-exceeded window's status and never raise a lower-usage sibling's status.
-func TestSummarizeCodexRateLimits_ExceededWindowGatesElevate(t *testing.T) {
+// TestReadCodexRateLimitBucket reads the resets that the decisions use from
+// one merged bucket, without an agent.
+func TestReadCodexRateLimitBucket(t *testing.T) {
 	t.Parallel()
 
-	tiers := []*codexRateLimitTier{
+	now := codexRateLimitTestNow
+	soon := now.Add(time.Hour).Unix()
+	later := now.Add(2 * time.Hour).Unix()
+	past := now.Add(-time.Hour).Unix()
+	at := func(unix int64) *time.Time {
+		instant := time.Unix(unix, 0).UTC()
+		return &instant
+	}
+	for _, tc := range []struct {
+		name   string
+		bucket codexRateLimitBucket
+		want   codexRateLimitReading
+	}{
+		{
+			name: "the most-used window binds, and a window without a reset gives none",
+			bucket: codexRateLimitBucket{
+				primary:   &codexRateLimitTier{UsedPercent: 99, WindowDurationMins: 300},
+				secondary: &codexRateLimitTier{UsedPercent: 20, WindowDurationMins: 10080, ResetsAt: &later},
+			},
+			want: codexRateLimitReading{latestReset: at(later)},
+		},
+		{
+			name: "a used-up window gives the exceeded reset",
+			bucket: codexRateLimitBucket{
+				primary:   &codexRateLimitTier{UsedPercent: 100, WindowDurationMins: 300, ResetsAt: &soon},
+				secondary: &codexRateLimitTier{UsedPercent: 20, WindowDurationMins: 10080, ResetsAt: &later},
+				credits:   &codexRateLimitCredits{},
+			},
+			want: codexRateLimitReading{
+				latestExceededReset: at(soon), bindingReset: at(soon), latestReset: at(later),
+				anyExceeded: true, creditsBlock: true,
+			},
+		},
+		{
+			name: "a past reset reads as absent",
+			bucket: codexRateLimitBucket{
+				primary: &codexRateLimitTier{UsedPercent: 100, WindowDurationMins: 300, ResetsAt: &past},
+			},
+			want: codexRateLimitReading{anyExceeded: true},
+		},
+		{
+			name:   "an empty bucket reads nothing",
+			bucket: codexRateLimitBucket{},
+			want:   codexRateLimitReading{},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, readCodexRateLimitBucket(&tc.bucket, now))
+		})
+	}
+}
+
+// TestCodexUsageLimitRetryFor states what each kind of snapshot does to the
+// pending usage-limit retry: which reset it resumes at, when it keeps the
+// retry, and the reason of each cancellation.
+func TestCodexUsageLimitRetryFor(t *testing.T) {
+	t.Parallel()
+	exceededReset := time.Unix(1894000300, 0).UTC()
+	bindingReset := time.Unix(1894000200, 0).UTC()
+	latestReset := time.Unix(1894000100, 0).UTC()
+	for _, tc := range []struct {
+		name              string
+		reachedType       string
+		carriedWindow     bool
+		reading           codexRateLimitReading
+		otherBucketBlocks bool
+		resumeAt          *time.Time
+		cancelReason      string
+	}{
+		{
+			name:          "a window that blocks resumes at its reset",
+			carriedWindow: true,
+			reading:       codexRateLimitReading{anyExceeded: true, creditsBlock: true, latestExceededReset: &exceededReset, bindingReset: &bindingReset, latestReset: &latestReset},
+			resumeAt:      &exceededReset,
+		},
+		{
+			name:          "a used-up window that credits serve keeps the retry",
+			carriedWindow: true,
+			reading:       codexRateLimitReading{anyExceeded: true, latestExceededReset: &exceededReset},
+		},
+		{
+			name:          "a window that blocks without a reset keeps the retry",
+			carriedWindow: true,
+			reading:       codexRateLimitReading{anyExceeded: true, creditsBlock: true, bindingReset: &bindingReset, latestReset: &latestReset},
+		},
+		{
+			name:          "no used-up window cancels, whatever the other windows reset at",
+			carriedWindow: true,
+			reading:       codexRateLimitReading{bindingReset: &bindingReset, latestReset: &latestReset},
+			cancelReason:  codexCodexWindowCleared,
+		},
+		{
+			name:              "a clear keeps the retry while another bucket blocks",
+			carriedWindow:     true,
+			reading:           codexRateLimitReading{bindingReset: &bindingReset, latestReset: &latestReset},
+			otherBucketBlocks: true,
+		},
+		{
+			name:    "a snapshot without a window keeps the retry",
+			reading: codexRateLimitReading{bindingReset: &bindingReset, latestReset: &latestReset},
+		},
+		{
+			name:        "a reached time window resumes at the exceeded reset first",
+			reachedType: codexRateLimitReachedTimeWindow,
+			reading:     codexRateLimitReading{latestExceededReset: &exceededReset, bindingReset: &bindingReset, latestReset: &latestReset},
+			resumeAt:    &exceededReset,
+		},
+		{
+			name:        "a reached time window resumes at the binding reset next",
+			reachedType: codexRateLimitReachedTimeWindow,
+			reading:     codexRateLimitReading{bindingReset: &bindingReset, latestReset: &latestReset},
+			resumeAt:    &bindingReset,
+		},
+		{
+			name:        "a reached time window resumes at the latest reset last",
+			reachedType: codexRateLimitReachedTimeWindow,
+			reading:     codexRateLimitReading{latestReset: &latestReset},
+			resumeAt:    &latestReset,
+		},
+		{
+			name:          "a reached time window without any reset keeps the retry",
+			reachedType:   codexRateLimitReachedTimeWindow,
+			carriedWindow: true,
+		},
+		{
+			name:          "a billing block cancels, even with a window that blocks and its reset",
+			reachedType:   "workspace_owner_credits_depleted",
+			carriedWindow: true,
+			reading:       codexRateLimitReading{anyExceeded: true, creditsBlock: true, latestExceededReset: &exceededReset},
+			cancelReason:  `Codex reported the block "workspace_owner_credits_depleted", which only a billing or usage change lifts`,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			retry := codexUsageLimitRetryFor(codexRateLimitUpdate{
+				bucketID: codexDefaultRateLimitID, reachedType: tc.reachedType, carriedWindow: tc.carriedWindow,
+				bucket: tc.reading, otherBucketBlocks: tc.otherBucketBlocks,
+			})
+			if tc.resumeAt == nil {
+				assert.Nil(t, retry.resumeAt)
+			} else if assert.NotNil(t, retry.resumeAt) {
+				assert.True(t, retry.resumeAt.Equal(*tc.resumeAt), "resumes at %v, want %v", *retry.resumeAt, *tc.resumeAt)
+			}
+			assert.Equal(t, tc.cancelReason, retry.cancelReason)
+		})
+	}
+}
+
+// TestCodexRateLimitDisplay_AnExceededWindowPreventsElevation verifies that
+// any window at or above 100% suppresses additional elevation. The frontend
+// replay applies the same rule, keeping its popover consistent with live
+// broadcasts. Preserve the already-exceeded window's status and never raise a
+// lower-usage sibling's status.
+func TestCodexRateLimitDisplay_AnExceededWindowPreventsElevation(t *testing.T) {
+	t.Parallel()
+
+	values := codexRateLimitDisplay([]*codexRateLimitTier{
 		{UsedPercent: 100, WindowDurationMins: 300},  // exceeded by status, no reset
 		{UsedPercent: 20, WindowDurationMins: 10080}, // low sibling
-	}
-	s := summarizeCodexRateLimits(tiers, codexRateLimitReachedTimeWindow)
+	}, codexRateLimitReachedTimeWindow, true)
 
-	five, ok := s.rateLimits["five_hour"].(map[string]interface{})
+	five, ok := values["five_hour"].(map[string]interface{})
 	require.True(t, ok)
 	assert.Equal(t, "exceeded", five["status"])
-	seven, ok := s.rateLimits["seven_day"].(map[string]interface{})
+	seven, ok := values["seven_day"].(map[string]interface{})
 	require.True(t, ok)
 	assert.Equal(t, "allowed", seven["status"], "a low sibling must not be elevated when another window is already exceeded")
 }
@@ -1522,28 +2063,66 @@ func TestHandleCodexOutput_TurnCompletedFailedRetryableSchedulesAPIError(t *test
 	require.Equal(t, 0, sink.AutoCancelCount())
 }
 
-func TestIsRetryableCodexTurnFailure(t *testing.T) {
+// An object variant of codexErrorInfo carries the upstream HTTP status. A
+// field that decoded only a string failed the whole decode, so the turn read
+// as one without a status and its retry decision never ran.
+func TestHandleCodexOutput_AnObjectErrorInfoDecidesTheRetry(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
-		name    string
-		message string
-		want    bool
+	for _, tc := range []struct {
+		name string
+		info string
+		want agenttest.TimelineEntry
 	}{
-		{"exact phrase", "stream disconnected before completion", true},
-		{"colon suffix", "stream disconnected before completion: An error occurred while processing your request.", true},
-		{"dash suffix", "stream disconnected before completion - upstream connection closed", true},
-		{"double punctuation", "stream disconnected before completion:: retry later", true},
-		{"alphanumeric suffix not matched", "stream disconnected before completionX", false},
-		{"different message", "Request was aborted by the user.", false},
-	}
+		{"a disconnected stream with a 502 schedules", `{"responseStreamDisconnected":{"httpStatusCode":502}}`, codexServerErrorScheduled},
+		{"a failed connection with no status schedules", `{"httpConnectionFailed":{"httpStatusCode":null}}`, codexServerErrorScheduled},
+		{"a failed connection with a 401 cancels", `{"httpConnectionFailed":{"httpStatusCode":401}}`, codexServerErrorCancelled},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := isRetryableCodexTurnFailure(tt.message)
-			assert.Equal(t, tt.want, got)
+			input := `{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"failed","items":[],"error":{"message":"error sending request","codexErrorInfo":` + tc.info + `,"additionalDetails":null}}}}`
+			handleCodexOutput(a, providerkit.ParseLine([]byte(input)))
+
+			assert.Equal(t, []agenttest.TimelineEntry{codexTurnEndRow, tc.want}, sink.Timeline())
 		})
 	}
+}
+
+// A rate limit that outlasted Codex's own retries states no reset, so it
+// schedules a server-error retry (decision 3).
+func TestHandleCodexOutput_ARateLimitExceededTurnSchedulesAServerErrorRetry(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+
+	input := `{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"failed","items":[],"error":{"message":"exceeded retry limit, last status: 429 Too Many Requests","codexErrorInfo":"rateLimitExceeded","additionalDetails":null}}}}`
+	handleCodexOutput(a, providerkit.ParseLine([]byte(input)))
+
+	assert.Equal(t, []agenttest.TimelineEntry{codexTurnEndRow, codexServerErrorScheduled}, sink.Timeline())
+	require.Equal(t, 1, sink.AutoScheduleCount())
+	assert.JSONEq(t, string(sink.Messages()[0].Content), string(sink.LastAutoSchedule().SourcePayload), "the retry carries the turn end")
+}
+
+// The plan prompt reads the same decode, so an object variant must not hide
+// it.
+func TestHandleCodexOutput_AnObjectErrorInfoStillPublishesThePlanPrompt(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.ControlSink{}
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+	a.collaborationMode = CollaborationPlan
+
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"turn-1","item":{"type":"plan","id":"plan-1"}}}`)))
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn-1","item":{"type":"plan","id":"plan-1","text":"# Plan\n\n- step\n"}}}`)))
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"completed","items":[],"error":{"message":"","codexErrorInfo":{"activeTurnNotSteerable":{"turnKind":"review"}}}}}}`)))
+
+	require.Equal(t, 1, sink.PublishedControlCount(), "the plan prompt fires")
+	assert.Equal(t, "codex-plan-prompt-turn-1", sink.LastPublishedControl().RequestID)
+	assert.Equal(t, 1, sink.PlanUpdateCount())
 }
 
 func TestHandleCodexOutput_TurnCompletedFailedNonRetryableCancelsAPIError(t *testing.T) {
@@ -1574,6 +2153,393 @@ func TestHandleCodexOutput_TurnCompletedSuccessCancelsAPIError(t *testing.T) {
 	require.Equal(t, 0, sink.AutoScheduleCount())
 	require.Equal(t, 1, sink.AutoCancelCount())
 	require.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, sink.LastAutoCancel())
+	assert.Equal(t, providerkit.TurnEndedWithoutRetryableFailure, sink.LastAutoCancelReason())
+}
+
+// Every turn end applies one verdict. A turn/completed whose turn the decode
+// cannot read still ends the turn, so it still cancels the server-error retry.
+func TestHandleCodexOutput_AnUnreadableTurnEndStillAppliesOneVerdict(t *testing.T) {
+	t.Parallel()
+
+	for name, input := range map[string]string{
+		"no turn":           `{"method":"turn/completed","params":{"threadId":"main-thread"}}`,
+		"a turn of strings": `{"method":"turn/completed","params":{"threadId":"main-thread","turn":"failed"}}`,
+		"no status":         `{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","items":[],"error":{"message":"Selected model is at capacity. Please try a different model.","codexErrorInfo":"serverOverloaded"}}}}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+
+			handleCodexOutput(a, providerkit.ParseLine([]byte(input)))
+
+			assert.Equal(t, []agenttest.TimelineEntry{codexTurnEndRow, codexServerErrorCancelled}, sink.Timeline())
+		})
+	}
+}
+
+// A turn that LeapMux asked Codex to interrupt is never retried, even when
+// Codex states that it failed on a retryable error before it read the stop.
+func TestHandleCodexOutput_AStoppedTurnCancelsTheServerErrorRetry(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+	a.interruptCalls = map[codexInterruptKey]*codexInterruptCall{
+		{threadID: "main-thread", turnID: "turn-1"}: {done: make(chan struct{})},
+	}
+
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"failed","items":[],"error":{"message":"Selected model is at capacity. Please try a different model.","codexErrorInfo":"serverOverloaded"}}}}`)))
+
+	assert.Equal(t, []agenttest.TimelineEntry{codexTurnEndRow, codexServerErrorCancelled}, sink.Timeline())
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	assert.Empty(t, a.interruptCalls, "the turn end still clears the interrupt")
+}
+
+// An interrupt of an earlier turn does not mark this one.
+func TestHandleCodexOutput_AnInterruptOfAnotherTurnKeepsTheRetry(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+	a.interruptCalls = map[codexInterruptKey]*codexInterruptCall{
+		{threadID: "main-thread", turnID: "turn-0"}: {done: make(chan struct{})},
+	}
+
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"failed","items":[],"error":{"message":"Selected model is at capacity. Please try a different model.","codexErrorInfo":"serverOverloaded"}}}}`)))
+
+	assert.Equal(t, []agenttest.TimelineEntry{codexTurnEndRow, codexServerErrorScheduled}, sink.Timeline())
+}
+
+// A child thread's turn end is not a turn end of the session, so it applies
+// no verdict.
+func TestHandleCodexOutput_AChildTurnFailureAppliesNoVerdict(t *testing.T) {
+	t.Parallel()
+
+	sink := &agenttest.Sink{}
+	a := newCodexAgentWithSink(agentapi.NewProviderServices(sink))
+
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"item/started","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"call-spawn","kind":"started","agentThreadId":"child-thread","agentPath":"/root/probe_child"}}}`)))
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"item/completed","params":{"threadId":"main-thread","turnId":"root-turn","item":{"type":"subAgentActivity","id":"call-spawn","kind":"started","agentThreadId":"child-thread","agentPath":"/root/probe_child"}}}`)))
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"turn/started","params":{"threadId":"child-thread","turn":{"id":"child-turn"}}}`)))
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"turn/completed","params":{"threadId":"child-thread","turn":{"id":"child-turn","status":"failed","items":[],"error":{"message":"Selected model is at capacity. Please try a different model.","codexErrorInfo":"serverOverloaded"}}}}`)))
+
+	assert.Contains(t, sink.Child("child-of-call-spawn").Timeline(), codexTurnEndRow, "the child transcript records its turn end")
+	assert.Zero(t, sink.AutoScheduleCount())
+	assert.Zero(t, sink.AutoCancelCount())
+	assert.Zero(t, sink.Child("child-of-call-spawn").AutoScheduleCount())
+	assert.Zero(t, sink.Child("child-of-call-spawn").AutoCancelCount())
+}
+
+// A turn that fails on a usage limit is not a server error. The turn end
+// schedules the usage-limit retry at the time in the message, and it cancels
+// only the server-error retry. A command whose completion arrives after that
+// turn ended cancels nothing, so the usage-limit retry survives both.
+func TestHandleCodexOutput_UsageLimitTurnFailureAndALateCommandLeaveTheUsageLimitRetry(t *testing.T) {
+	t.Parallel()
+
+	seoul, err := time.LoadLocation("Asia/Seoul")
+	require.NoError(t, err)
+	sink := &agenttest.Sink{}
+	a := newCodexAgentAt(t, agentapi.NewProviderServices(sink), codexRealUsageLimitAt)
+	a.threadID = "main-thread"
+	a.retryTextLocation = seoul
+
+	failed := `{"method":"turn/completed","params":{"threadId":"main-thread","turn":{"id":"turn-1","status":"failed","items":[],"error":{"message":"You've hit your usage limit. Try again at Nov 2nd, 2026 3:00 PM.","codexErrorInfo":"usageLimitExceeded","additionalDetails":null}}}}`
+	handleCodexOutput(a, providerkit.ParseLine([]byte(failed)))
+
+	late := `{"method":"item/completed","params":{"threadId":"main-thread","turnId":"turn-1","item":{"type":"commandExecution","id":"exec-1","status":"completed","command":"gh run watch","cwd":"/tmp","processId":"123","commandActions":[],"aggregatedOutput":"EXIT: 1","exitCode":0,"durationMs":5754717}}}`
+	handleCodexOutput(a, providerkit.ParseLine([]byte(late)))
+
+	timeline := sink.Timeline()
+	require.NotEmpty(t, timeline)
+	assert.Equal(t, []agenttest.TimelineEntry{
+		codexTurnEndRow,
+		codexUsageLimitScheduledAt(time.Date(2026, 11, 2, 6, 1, 0, 0, time.UTC)),
+		codexServerErrorCancelledForAStatedReset,
+	}, timeline[:3])
+	for _, entry := range timeline[3:] {
+		assert.NotContains(t, entry.Op, "_usage_limit", "a late command completion schedules or cancels no retry")
+		assert.NotContains(t, entry.Op, "_server_error", "a late command completion schedules or cancels no retry")
+	}
+}
+
+// Without a usable reset in the `codex` bucket, the turn reads the local time
+// in the message. Codex writes that time in its own process's zone, so the
+// test pins the zone. The test stays parallel because it sets the agent's own
+// field, not time.Local.
+func TestHandleCodexOutput_AUsageLimitTurnReadsTheTimeInTheMessage(t *testing.T) {
+	t.Parallel()
+
+	seoul, err := time.LoadLocation("Asia/Seoul")
+	require.NoError(t, err)
+	for _, tc := range []struct {
+		name    string
+		now     time.Time
+		message string
+		want    []agenttest.TimelineEntry
+	}{
+		{
+			name:    "the dated form with a typographic apostrophe",
+			now:     codexRealUsageLimitAt,
+			message: "You’ve hit your usage limit. Visit https://chatgpt.com/settings/usage to purchase more credits or try again at Nov 2nd, 2026 3:00 PM.",
+			want: []agenttest.TimelineEntry{
+				codexTurnEndRow, codexUsageLimitScheduledAt(time.Date(2026, 11, 2, 6, 1, 0, 0, time.UTC)), codexServerErrorCancelledForAStatedReset,
+			},
+		},
+		{
+			// The text of Codex 0.153.1. Its clock is shifted to the day before
+			// the stated time.
+			name:    "the dated form with an ASCII apostrophe",
+			now:     time.Date(2026, 9, 10, 12, 0, 0, 0, time.UTC),
+			message: "You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage to purchase more credits or try again at Sep 11th, 2026 10:18 PM.",
+			want: []agenttest.TimelineEntry{
+				codexTurnEndRow, codexUsageLimitScheduledAt(time.Date(2026, 9, 11, 13, 19, 0, 0, time.UTC)), codexServerErrorCancelledForAStatedReset,
+			},
+		},
+		{
+			// 10:00 in Seoul, so 3:00 PM is later on the same local day.
+			name:    "the same-day form",
+			now:     time.Date(2026, 10, 28, 1, 0, 0, 0, time.UTC),
+			message: "You’ve hit your usage limit. Visit https://chatgpt.com/settings/usage to purchase more credits or try again at 3:00 PM.",
+			want: []agenttest.TimelineEntry{
+				codexTurnEndRow, codexUsageLimitScheduledAt(time.Date(2026, 10, 28, 6, 1, 0, 0, time.UTC)), codexServerErrorCancelledForAStatedReset,
+			},
+		},
+		{
+			// 23:30 in Seoul on Oct 27, which is 14:30 UTC: the local day
+			// decides the date, not the UTC one.
+			name:    "the same-day form near midnight",
+			now:     time.Date(2026, 10, 27, 14, 30, 0, 0, time.UTC),
+			message: "You’ve hit your usage limit. Try again at 11:45 PM.",
+			want: []agenttest.TimelineEntry{
+				codexTurnEndRow, codexUsageLimitScheduledAt(time.Date(2026, 10, 27, 14, 46, 0, 0, time.UTC)), codexServerErrorCancelledForAStatedReset,
+			},
+		},
+		{
+			name:    "a time that already passed",
+			now:     time.Date(2026, 10, 28, 7, 0, 0, 0, time.UTC),
+			message: "You’ve hit your usage limit. Try again at 3:00 PM.",
+			want:    []agenttest.TimelineEntry{codexTurnEndRow, codexServerErrorCancelledForNoReset},
+		},
+		{
+			name:    "a time more than 31 days ahead",
+			now:     codexRealUsageLimitAt,
+			message: "You’ve hit your usage limit. Try again at Jan 2nd, 2027 3:00 PM.",
+			want:    []agenttest.TimelineEntry{codexTurnEndRow, codexServerErrorCancelledForNoReset},
+		},
+		{
+			name:    "a text without a time",
+			now:     codexRealUsageLimitAt,
+			message: "You’ve hit your usage limit. Upgrade to Pro to continue.",
+			want:    []agenttest.TimelineEntry{codexTurnEndRow, codexServerErrorCancelledForNoReset},
+		},
+		{
+			name:    "a day that the month lacks",
+			now:     time.Date(2027, 2, 1, 0, 0, 0, 0, time.UTC),
+			message: "You’ve hit your usage limit. Try again at Feb 30th, 2027 3:00 PM.",
+			want:    []agenttest.TimelineEntry{codexTurnEndRow, codexServerErrorCancelledForNoReset},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := newCodexAgentAt(t, agentapi.NewProviderServices(sink), tc.now)
+			a.retryTextLocation = seoul
+
+			frame, err := json.Marshal(map[string]any{
+				"method": "turn/completed",
+				"params": map[string]any{"threadId": "main-thread", "turn": map[string]any{
+					"id": "turn-1", "status": "failed", "items": []any{},
+					"error": map[string]any{"message": tc.message, "codexErrorInfo": "usageLimitExceeded", "additionalDetails": nil},
+				}},
+			})
+			require.NoError(t, err)
+			handleCodexOutput(a, providerkit.ParseLine(frame))
+
+			assert.Equal(t, tc.want, sink.Timeline())
+		})
+	}
+}
+
+// A reset of the `codex` bucket that already passed is not used: the turn
+// falls back to the time in its message.
+func TestHandleCodexOutput_AUsageLimitTurnSkipsAPastBucketReset(t *testing.T) {
+	t.Parallel()
+
+	seoul, err := time.LoadLocation("Asia/Seoul")
+	require.NoError(t, err)
+	sink := &agenttest.Sink{}
+	a := newCodexAgentAt(t, agentapi.NewProviderServices(sink), codexRealUsageLimitAt)
+	a.threadID = codexRealThreadID
+	a.retryTextLocation = seoul
+
+	handleCodexOutput(a, providerkit.ParseLine([]byte(`{"method":"account/rateLimits/updated","params":{"rateLimits":{"limitId":"codex","primary":{"usedPercent":100,"windowDurationMins":10080,"resetsAt":1792887890},"credits":{"hasCredits":true,"unlimited":false}}}}`)))
+	handleCodexOutput(a, providerkit.ParseLine([]byte(codexRealUsageLimitTurn)))
+
+	assert.Equal(t, []agenttest.TimelineEntry{
+		codexTurnEndRow, codexUsageLimitScheduledAt(time.Date(2026, 11, 2, 6, 1, 0, 0, time.UTC)), codexServerErrorCancelledForAStatedReset,
+	}, sink.Timeline())
+}
+
+// TestCodexTurnFailure classifies each failed turn that Codex can state, with
+// no usage-limit reset to find.
+func TestCodexTurnFailure(t *testing.T) {
+	t.Parallel()
+
+	now := codexRealUsageLimitAt
+	transient := providerkit.TurnFailureTransient
+	notRetryable := providerkit.TurnFailureNotRetryable
+	for _, tc := range []struct {
+		name    string
+		info    string
+		message string
+		want    providerkit.TurnFailureKind
+	}{
+		{"an overload", `"serverOverloaded"`, "Selected model is at capacity. Please try a different model.", transient},
+		{"an internal server error", `"internalServerError"`, "", transient},
+		{"an unavailable flex tier", `"flexUnavailable"`, "", transient},
+		{"a stream that disconnected, as a string", `"responseStreamDisconnected"`, "", transient},
+		{"a stream that disconnected with a 502", `{"responseStreamDisconnected":{"httpStatusCode":502}}`, "", transient},
+		{"a stream that disconnected with a 400", `{"responseStreamDisconnected":{"httpStatusCode":400}}`, "", transient},
+		{"a failed connection with a 503", `{"httpConnectionFailed":{"httpStatusCode":503}}`, "", transient},
+		{"a failed connection with a 429", `{"httpConnectionFailed":{"httpStatusCode":429}}`, "", transient},
+		{"a failed connection with a null status", `{"httpConnectionFailed":{"httpStatusCode":null}}`, "", transient},
+		{"a failed connection with no status", `{"httpConnectionFailed":{}}`, "", transient},
+		{"a failed connection with a 401", `{"httpConnectionFailed":{"httpStatusCode":401}}`, "", notRetryable},
+		{"a failed connection with a 499", `{"httpConnectionFailed":{"httpStatusCode":499}}`, "", notRetryable},
+		{"a failed connection with a 600", `{"httpConnectionFailed":{"httpStatusCode":600}}`, "", notRetryable},
+		{"a failed stream connection with a 500", `{"responseStreamConnectionFailed":{"httpStatusCode":500}}`, "", transient},
+		{"a failed stream connection with a 404", `{"responseStreamConnectionFailed":{"httpStatusCode":404}}`, "", notRetryable},
+		{"too many failed attempts with a 599", `{"responseTooManyFailedAttempts":{"httpStatusCode":599}}`, "", transient},
+		{"too many failed attempts with a 400", `{"responseTooManyFailedAttempts":{"httpStatusCode":400}}`, "", notRetryable},
+		{"a string form of a kind that carries a status", `"httpConnectionFailed"`, "", transient},
+		{"a rate limit", `"rateLimitExceeded"`, "", providerkit.TurnFailureRateLimited},
+		{"a usage limit without a reset", `"usageLimitExceeded"`, "You’ve hit your usage limit.", providerkit.TurnFailureUsageLimited},
+		// The real "other" texts of R/transcripts-codex-leapmuxdb.md.
+		{"a stream that disconnected, as other", `"other"`, "stream disconnected before completion: An error occurred while processing your request. You can retry your request, or contact us through our help center at help.openai.com if the error persists. Please include the request ID abc in your message.", transient},
+		{"the disconnect phrase alone", `"other"`, "stream disconnected before completion", transient},
+		{"the disconnect phrase with a dash", `"other"`, "stream disconnected before completion - upstream connection closed", transient},
+		{"the disconnect phrase with doubled punctuation", `"other"`, "stream disconnected before completion:: retry later", transient},
+		{"the disconnect phrase with an alphanumeric suffix", `"other"`, "stream disconnected before completionX", notRetryable},
+		{"a model at capacity, as other", `"other"`, "Selected model is at capacity. Please try a different model.", transient},
+		{"high demand, as other", `"other"`, "We're currently experiencing high demand, which may cause temporary errors.", transient},
+		{"an invalid request, as other", `"other"`, `{"type":"error","status":400,"error":{"type":"invalid_request_error","message":"The 'gpt-5.6-sol' model is not supported when using Codex with a ChatGPT account."}}`, notRetryable},
+		{"an abort, as other", `"other"`, "Request was aborted by the user.", notRetryable},
+		// A Codex without codexErrorInfo still retries a disconnect.
+		{"a disconnect without an error kind", `null`, "stream disconnected before completion: error decoding response body", transient},
+		{"a disconnect with an absent error kind", ``, "stream disconnected before completion: error decoding response body", transient},
+		{"an indicative vendor verdict, as other", `"other"`, `unexpected status 503: {"error":{"code":"1305","message":"The service may be temporarily overloaded, please try again later"}}`, transient},
+		{"a vendor billing block outranks the kind", `"serverOverloaded"`, `{"error":{"message":"You exceeded your current quota, please check your plan and billing details.","type":"insufficient_quota","code":"insufficient_quota"}}`, providerkit.TurnFailureBillingBlocked},
+		{"an expired refresh token", `"unauthorized"`, "Your access token could not be refreshed because your refresh token was revoked. Please log out and sign in again.", notRetryable},
+		{"a context window that is full", `"contextWindowExceeded"`, "", notRetryable},
+		{"a disconnect text of a kind that decides", `"badRequest"`, "stream disconnected before completion", notRetryable},
+		{"a kind that this build does not know", `"somethingNew"`, "stream disconnected before completion", notRetryable},
+		{"an object of two keys", `{"httpConnectionFailed":{},"other":{}}`, "", notRetryable},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			outcome := codexTurnOutcome{status: "failed", message: tc.message, errorInfo: decodeCodexErrorInfo(json.RawMessage(tc.info))}
+			assert.Equal(t, tc.want, codexTurnFailure(outcome, codexUsageLimitSources{}, now).Kind)
+		})
+	}
+
+	t.Run("a turn that did not fail is not retried", func(t *testing.T) {
+		t.Parallel()
+		for _, status := range []string{"completed", "interrupted", "inProgress", ""} {
+			outcome := codexTurnOutcome{status: status, message: "Selected model is at capacity.", errorInfo: codexErrorInfo{kind: "serverOverloaded"}}
+			assert.Equal(t, notRetryable, codexTurnFailure(outcome, codexUsageLimitSources{}, now).Kind, status)
+		}
+	})
+	t.Run("a stopped turn is not retried", func(t *testing.T) {
+		t.Parallel()
+		outcome := codexTurnOutcome{status: "failed", errorInfo: codexErrorInfo{kind: "serverOverloaded"}, stopRequested: true}
+		assert.Equal(t, notRetryable, codexTurnFailure(outcome, codexUsageLimitSources{}, now).Kind)
+	})
+	t.Run("a compaction turn ends on the compaction verdict, whatever its outcome", func(t *testing.T) {
+		t.Parallel()
+		reset := now.Add(time.Hour)
+		for _, outcome := range []codexTurnOutcome{
+			{status: "completed"},
+			{status: "interrupted"},
+			{status: "failed", errorInfo: codexErrorInfo{kind: "internalServerError"}},
+			{status: "failed", errorInfo: codexErrorInfo{kind: "rateLimitExceeded"}},
+			{status: "failed", errorInfo: codexErrorInfo{kind: "usageLimitExceeded"}, message: "You’ve hit your usage limit."},
+			{status: "failed", errorInfo: codexErrorInfo{kind: "serverOverloaded"}, stopRequested: true},
+		} {
+			outcome.compaction = true
+			assert.Equal(t, providerkit.CompactionEnd(), codexTurnFailure(outcome, codexUsageLimitSources{bucketReset: &reset}, now), "%+v", outcome)
+		}
+	})
+}
+
+func TestDecodeCodexErrorInfo(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		raw  string
+		want codexErrorInfo
+	}{
+		{"a string", `"serverOverloaded"`, codexErrorInfo{kind: "serverOverloaded"}},
+		{"an object with a status", `{"responseStreamDisconnected":{"httpStatusCode":502}}`, codexErrorInfo{kind: "responseStreamDisconnected", httpStatus: 502}},
+		{"an object with a null status", `{"httpConnectionFailed":{"httpStatusCode":null}}`, codexErrorInfo{kind: "httpConnectionFailed"}},
+		{"an object without a status", `{"activeTurnNotSteerable":{"turnKind":"review"}}`, codexErrorInfo{kind: "activeTurnNotSteerable"}},
+		{"an object whose value is not an object", `{"httpConnectionFailed":"502"}`, codexErrorInfo{}},
+		{"an object of two keys", `{"a":{},"b":{}}`, codexErrorInfo{}},
+		{"an empty object", `{}`, codexErrorInfo{}},
+		{"null", `null`, codexErrorInfo{}},
+		{"an absent field", ``, codexErrorInfo{}},
+		{"a number", `7`, codexErrorInfo{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			assert.Equal(t, tc.want, decodeCodexErrorInfo(json.RawMessage(tc.raw)))
+		})
+	}
+}
+
+func TestParseCodexRetryText(t *testing.T) {
+	t.Parallel()
+
+	seoul, err := time.LoadLocation("Asia/Seoul")
+	require.NoError(t, err)
+	now := time.Date(2026, 10, 28, 1, 0, 0, 0, time.UTC) // 10:00 in Seoul
+	for _, tc := range []struct {
+		name    string
+		message string
+		want    time.Time
+		ok      bool
+	}{
+		{"a dated PM time", "or try again at Nov 2nd, 2026 3:00 PM.", time.Date(2026, 11, 2, 6, 1, 0, 0, time.UTC), true},
+		{"a dated AM time", "or try again at Oct 25th, 2026 9:24 AM.", time.Date(2026, 10, 25, 0, 25, 0, 0, time.UTC), true},
+		{"the first of a month", "or try again at Dec 1st, 2026 1:05 PM.", time.Date(2026, 12, 1, 4, 6, 0, 0, time.UTC), true},
+		{"the third of a month", "or try again at Nov 3rd, 2026 12:00 PM.", time.Date(2026, 11, 3, 3, 1, 0, 0, time.UTC), true},
+		{"half past midnight", "or try again at Nov 3rd, 2026 12:30 AM.", time.Date(2026, 11, 2, 15, 31, 0, 0, time.UTC), true},
+		{"a same-day time", "or try again at 3:00 PM.", time.Date(2026, 10, 28, 6, 1, 0, 0, time.UTC), true},
+		{"a capitalized verb", "Try again at 11:59 PM.", time.Date(2026, 10, 28, 15, 0, 0, 0, time.UTC), true},
+		{"a day that the month lacks", "or try again at Feb 30th, 2027 3:00 PM.", time.Time{}, false},
+		{"a month that does not exist", "or try again at Foo 2nd, 2026 3:00 PM.", time.Time{}, false},
+		{"an hour of 13", "or try again at 13:00 PM.", time.Time{}, false},
+		{"a 24-hour time", "or try again at 15:00.", time.Time{}, false},
+		{"no time", "You’ve hit your usage limit.", time.Time{}, false},
+		{"an empty message", "", time.Time{}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got, ok := parseCodexRetryText(tc.message, seoul, now)
+			assert.Equal(t, tc.ok, ok)
+			assert.True(t, tc.want.Equal(got), "got %v, want %v", got, tc.want)
+		})
+	}
+
+	t.Run("a nil zone reads as the local zone", func(t *testing.T) {
+		t.Parallel()
+		got, ok := parseCodexRetryText("or try again at Nov 2nd, 2026 3:00 PM.", nil, now)
+		require.True(t, ok)
+		assert.True(t, time.Date(2026, 11, 2, 15, 1, 0, 0, time.Local).Equal(got))
+	})
 }
 
 // Current Codex models use Multi-Agent V2 without a spawnAgent collaboration item.

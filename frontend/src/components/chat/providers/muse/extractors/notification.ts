@@ -43,6 +43,24 @@ export function museCompactionBoundary(parsed: ParsedMessageContent): Compaction
       : {}),
   }
 }
+
+/**
+ * State the failure of a provider attempt that Muse retries: its error kind and
+ * its HTTP status, such as `rate_limited, HTTP 429`. A status outside 100 to 599
+ * is not a status, so the text omits it.
+ */
+function museModelRetryError(params: Record<string, unknown> | undefined): string {
+  const kind = pickString(params, 'errorKind').trim()
+  const status = pickNumber(params, 'httpStatus', undefined)
+  const hasStatus = status !== undefined && Number.isInteger(status) && status >= 100 && status <= 599
+  return [
+    kind,
+    hasStatus
+      ? `HTTP ${status}`
+      : '',
+  ].filter(Boolean).join(', ')
+}
+
 export function museNotificationEntry(payload: Record<string, unknown>): NotificationEntry[] {
   if (payload.method === MUSE_METHOD.SessionModelRouteUnserved) {
     const params = museParams(payload)
@@ -134,11 +152,16 @@ export function museNotificationEntry(payload: Record<string, unknown>): Notific
         ]
       : []
   }
-  if (payload.method === MUSE_METHOD.TurnRetryScheduled) {
+  if (payload.method === MUSE_METHOD.TurnRetryScheduled || payload.method === MUSE_METHOD.TurnModelRetryScheduled) {
     const params = museParams(payload)
-    const facts: RetryFacts = {
-      error: pickString(params, 'reason'),
-    }
+    // A turn retry states its reason. A retry of one provider attempt states the
+    // failure class and the HTTP status instead.
+    const error = payload.method === MUSE_METHOD.TurnRetryScheduled
+      ? pickString(params, 'reason')
+      : museModelRetryError(params)
+    const facts: RetryFacts = { error }
+    // Both notices count the attempt that runs next, so the row reads the same
+    // for both. The failed attempt is one less.
     assignDefined(facts, 'attempt', pickNumber(params, 'nextAttempt', undefined))
     assignDefined(facts, 'maxAttempts', pickNumber(params, 'maxAttempts', undefined))
     assignDefined(facts, 'delayMs', pickNumber(params, 'retryDelayMs', undefined))

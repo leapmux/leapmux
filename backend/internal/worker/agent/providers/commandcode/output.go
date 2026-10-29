@@ -94,9 +94,10 @@ func (a *Agent) handleMethod(line *providerkit.ParsedLine) {
 	}
 	var envelope struct {
 		Params struct {
-			TurnID     string `json:"turnId"`
-			StopReason string `json:"stopReason"`
-			Count      int    `json:"count"`
+			TurnID     string          `json:"turnId"`
+			StopReason string          `json:"stopReason"`
+			Count      int             `json:"count"`
+			Error      json.RawMessage `json:"error"`
 		} `json:"params"`
 	}
 	if json.Unmarshal(line.Raw, &envelope) != nil {
@@ -124,7 +125,7 @@ func (a *Agent) handleMethod(line *providerkit.ParsedLine) {
 	case methodTurnStarted:
 		a.startTurn(envelope.Params.TurnID)
 	case contracts.CommandCodeMethodTurnCompleted:
-		a.completeTurn(line.Raw, envelope.Params.TurnID, envelope.Params.StopReason, nil)
+		a.completeTurn(line.Raw, envelope.Params.TurnID, envelope.Params.StopReason, commandcodeRunErrorOf(envelope.Params.Error), nil)
 	}
 }
 
@@ -214,12 +215,17 @@ func (a *Agent) handleEvent(raw []byte) {
 		a.PublishTurnActive()
 	case contracts.CommandCodeEventCompactionDone:
 		a.Mu.Lock()
-		if event.Trigger == contracts.CommandCodeCompactionTriggerManual && a.manualCompaction != nil {
+		manualEnded := event.Trigger == contracts.CommandCodeCompactionTriggerManual && a.manualCompaction != nil
+		if manualEnded {
 			a.manualCompaction.finish()
 			a.manualCompaction = nil
 		}
 		a.Mu.Unlock()
 		a.endLiveCompaction()
+		if manualEnded {
+			// The manual compaction ends here, and it never retries, whatever its outcome.
+			providerkit.ApplyTurnFailure(a.sink, providerkit.CompactionEnd(), nil)
+		}
 		a.PublishTurnActive()
 	case contracts.CommandCodeEventCompactionOutcome:
 		a.persistNotification(raw)
@@ -309,7 +315,11 @@ func (a *Agent) finishTool(raw []byte, event nativeEvent) {
 	a.finishChildTool(event, opening)
 }
 
-func (a *Agent) completeTurn(raw []byte, turnID, stopReason string, compactionFailure error) {
+// completeTurn ends the turn turnID with the turn-end row raw, and then
+// applies the turn's automatic-retry verdict from stopReason, runError, and
+// the user's stop. runError is nil when the turn end states no error of
+// Command Code's.
+func (a *Agent) completeTurn(raw []byte, turnID, stopReason string, runError *commandcodeRunError, compactionFailure error) {
 	if turnID == "" {
 		return
 	}
@@ -323,6 +333,7 @@ func (a *Agent) completeTurn(raw []byte, turnID, stopReason string, compactionFa
 		a.finishedTurns = a.finishedTurns[len(a.finishedTurns)-32:]
 	}
 	active := a.turnID == turnID
+	interrupted := a.interruptRequestedTurnID == turnID
 	started, uses, usage := a.turnStarted, a.TurnToolUses, maps.Clone(a.usage)
 	a.Mu.Unlock()
 	if !active {
@@ -332,10 +343,10 @@ func (a *Agent) completeTurn(raw []byte, turnID, stopReason string, compactionFa
 	a.retryResolution.Reset()
 	a.steers.Reset()
 	completion := agent.MessageCompletionComplete
-	if stopReason == "interrupted" {
+	if stopReason == contracts.CommandCodeStopReasonInterrupted {
 		completion = agent.MessageCompletionInterrupted
 	}
-	if stopReason == "run_error" {
+	if stopReason == contracts.CommandCodeStopReasonRunError {
 		completion = agent.MessageCompletionError
 	}
 	if err := a.generation.PersistAllTo(completion, a.sink, agent.MessageContent{Completion: completion}, agent.SpanInfo{}); err != nil {
@@ -354,6 +365,7 @@ func (a *Agent) completeTurn(raw []byte, turnID, stopReason string, compactionFa
 	if err := a.sink.PersistTurnEnd(content, agent.SpanInfo{}); err != nil {
 		slog.Warn("persist the Command Code turn end", "agent_id", a.AgentID(), "error", err)
 	}
+	providerkit.ApplyTurnFailure(a.sink, commandcodeTurnFailure(stopReason, runError, interrupted, a.clock.Now()), raw)
 	a.Mu.Lock()
 	if a.turnID == turnID {
 		a.turnID = ""
@@ -388,8 +400,9 @@ func (a *Agent) finishStream() {
 	turnID := a.turnID
 	compacting := a.compacting
 	a.compacting = false
+	manualEnded := a.manualCompaction != nil
 	var compactionFailure error
-	if a.manualCompaction != nil {
+	if manualEnded {
 		compactionFailure = a.manualCompaction.failure
 		a.manualCompaction.outcome = contracts.CommandCodeCompactionOutcomeFailed
 		a.manualCompaction.finish()
@@ -397,20 +410,27 @@ func (a *Agent) finishStream() {
 	}
 	a.Mu.Unlock()
 	if turnID != "" {
-		stopReason := "run_error"
+		stopReason := contracts.CommandCodeStopReasonRunError
 		if a.ProcessExitCompletion() == agent.MessageCompletionInterrupted {
-			stopReason = "interrupted"
+			stopReason = contracts.CommandCodeStopReasonInterrupted
 		}
 		// A process exit needs a boundary even when the native host emitted none.
+		// The worker writes its error, so the row states no error of Command
+		// Code's for the retry verdict.
 		raw, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "method": contracts.CommandCodeMethodTurnCompleted, "params": map[string]any{"turnId": turnID, "stopReason": stopReason, "error": map[string]string{"message": "The Command Code process exited before the turn completed."}}})
 		if err == nil {
-			a.completeTurn(raw, turnID, stopReason, compactionFailure)
+			a.completeTurn(raw, turnID, stopReason, nil, compactionFailure)
 		}
 	} else {
 		a.endUnfinishedCompaction(compactionFailure)
 	}
 	if a.sink != nil {
-		if compacting && turnID == "" {
+		if manualEnded && turnID == "" {
+			// The reader end also ends a manual compaction, which never retries.
+			providerkit.ApplyTurnFailure(a.sink, providerkit.CompactionEnd(), nil)
+		}
+		// A manual compaction holds the turn after its native outcome clears compacting.
+		if (compacting || manualEnded) && turnID == "" {
 			a.PublishTurnActive()
 		}
 		a.closeChildren()

@@ -1,10 +1,12 @@
+import type { AutoRetryKind } from './autoRetry'
 import type { MockModelError, MockModelRequestRecord } from './mockModelScript'
 import type { NativeScenarioContext } from './nativeScenario'
 import type { QueueAfterFailure } from './ui'
 import { randomUUID } from 'node:crypto'
 import { expect } from '@playwright/test'
+import { deleteAutoRetryRow, pauseQueueUnlessPaused } from './autoRetry'
 import { sendNativeAnswer } from './nativeConversation'
-import { messageContents, resumeQueueAfterFailure, sendMessage, waitForAgentIdle } from './ui'
+import { messageContents, resumePausedQueue, resumeQueueAfterFailure, sendMessage, waitForAgentIdle } from './ui'
 
 interface NativeModelErrorOptions {
   /**
@@ -100,5 +102,51 @@ export async function exerciseModelError(
   await expect(messageContents(context.page).filter({ hasText: error.message })).toHaveCount(1)
   await resumeQueueAfterFailure(context.page, options.queueAfterFailure)
   await sendNativeAnswer(context, 'Reply once after the native service failure.', `RECOVERED${marker}`)
+  return failed
+}
+
+interface TransientModelFailureOptions {
+  /** The scripted error of every attempt: a failure that LeapMux retries, such as a 5xx, an overload, or a dropped stream. */
+  error: MockModelError
+  /**
+   * How many model requests the native client sends before it gives up on the turn.
+   * Every request receives `error`. The count must be exact: one request more receives the refusal of an
+   * unscripted request, and that refusal fails the spec.
+   */
+  attempts: number
+  prepare?: () => Promise<void>
+  /** Answer the question that the native client asks after its last failed attempt. See {@link NativeModelErrorOptions}. */
+  answerFailure?: (error: MockModelError) => Promise<void>
+  /** The kind of automatic retry that LeapMux schedules for the failure. The default is `server error`. */
+  retryKind?: AutoRetryKind
+}
+
+/**
+ * Verify that LeapMux schedules its own automatic retry when the native client gives up on a failure that LeapMux
+ * retries. Then delete that retry before it matures, and verify a successful later turn through the same tab.
+ * Return the requests of the failed turn in their step order.
+ *
+ * The queue is paused as soon as the last attempt is consumed, so the scheduled retry cannot mature while the checks
+ * run. The first server-error retry waits ten seconds, and a loaded run can take longer than that before the delete.
+ * The queue state that the failure itself leaves is the subject of {@link exerciseModelError}, not of this exercise.
+ */
+export async function exerciseTransientModelFailure(
+  context: NativeScenarioContext,
+  options: TransientModelFailureOptions,
+): Promise<MockModelRequestRecord[]> {
+  await options.prepare?.()
+  // Validate the count before the turn starts, so a bad count fails here and not in a native retry loop.
+  failedTurnRequests([], 0, options.attempts)
+  const stepIndex = await context.modelScript.queue(...Array.from({ length: options.attempts }, () => ({ error: options.error })))
+  await sendMessage(context.page, context.modelScript.prompt('Run the native transient failure probe.'))
+  const status = await context.modelScript.waitForSteps(stepIndex + options.attempts)
+  const failed = failedTurnRequests(status.requests, stepIndex, options.attempts)
+  expect(failed.map(request => request.stepIndex)).toEqual(Array.from({ length: options.attempts }, (_, offset) => stepIndex + offset))
+  await pauseQueueUnlessPaused(context.page)
+  await options.answerFailure?.(options.error)
+  await waitForAgentIdle(context.page)
+  await deleteAutoRetryRow(context.page, options.retryKind ?? 'server error')
+  await resumePausedQueue(context.page)
+  await sendNativeAnswer(context, 'Reply once after the native transient failure.', `RECOVERED${nativeErrorMarker()}`)
   return failed
 }

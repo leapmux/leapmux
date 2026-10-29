@@ -94,7 +94,9 @@ func (a *Agent) handleEvent(line *providerkit.ParsedLine, state *sessionState) {
 		if current {
 			a.handleUsage(line.Params, state.sink)
 		}
-	case contracts.MuseMethodTurnRetryScheduled:
+	case contracts.MuseMethodTurnRetryScheduled, contracts.MuseMethodTurnModelRetryScheduled:
+		// Muse retries a turn and, below it, each provider attempt. Both notices
+		// describe a failed attempt, so both wait for that attempt's text.
 		if current {
 			a.holdRetryNotice(line, state)
 		}

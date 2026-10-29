@@ -75,6 +75,33 @@ func TestGooseGoalKeepsAfterAnErrorFinalMessage(t *testing.T) {
 	assert.Zero(t, sink.GoalClears())
 }
 
+// Every error message that Goose 1.56.0 prints in place of an answer keeps the
+// goal, not only the one on the contract's error prefix. Before this rule, a
+// round that ended on a network error completed the goal. The texts are the
+// probe captures of .tmp/probe/goose/out, except the refusal, which no probe
+// produced: it follows the format of conversation/message.rs.
+func TestGooseGoalKeepsAfterEveryGooseErrorFinalMessage(t *testing.T) {
+	t.Parallel()
+	for name, text := range map[string]string{
+		"a network error":         "Network error: Could not connect to 127.0.0.1:18999 — check your network connection and try again.\n\nPlease resend your message to try again.",
+		"a stream decode error":   "Network error: Stream decode error: error decoding response body\n\nPlease resend your message to try again.",
+		"an exceeded context":     "Context length exceeded: prompt is too long: 250000 tokens > 200000 maximum (provider request id: req_fake_1793148817393)\n\nThe conversation is too long for the model's context window.",
+		"a refusal":               "The provider refused this request.\n\nThe request was flagged.\n\nPlease start a new session to continue — resending this conversation is likely to be refused again.",
+		"an empty model response": "The model returned an empty response. Please resend your message to continue.",
+		"a failed compaction":     "Ran into this error trying to compact: Failed to compact: the base prompt (system prompt, tool schemas, and conversation) exceeds the model's effective context window, and there are no tool responses to remove. Use a model or configuration with a larger usable context, disable some extensions to reduce the tool-schema payload, or start a new session..\n\nPlease try again or create a new session",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := newGooseOutputAgent(agent.NewProviderServices(sink))
+			a.SetPromptActiveForTest(true)
+			gooseGoalPrompt(t, a, true, "msg_err", text, false)
+			assert.Empty(t, sink.Goals(), "a Goose error message keeps the goal")
+			assert.Zero(t, sink.GoalClears())
+		})
+	}
+}
+
 // r2-goal-maxturns-1.log line 36: Goose asks the user whether to continue, so
 // the goal stays.
 func TestGooseGoalKeepsAfterAMaxTurnsFinalMessage(t *testing.T) {

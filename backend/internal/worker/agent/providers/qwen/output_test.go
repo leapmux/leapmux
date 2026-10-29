@@ -170,14 +170,23 @@ func qwenExecutionChunk(t *testing.T, phase, outcome string) []byte {
 	}})
 }
 
+// retryFailedRequest feeds one failed attempt that Qwen retries: the request
+// ends with an error, and the next request of the same prompt starts.
+func retryFailedRequest(t *testing.T, a *Agent) {
+	t.Helper()
+	a.HandleOutput(qwenExecutionChunk(t, "ended", "error"))
+	a.HandleOutput(qwenExecutionChunk(t, "started", ""))
+}
+
 func TestQwenRetryRoundsFoldIntoOneRow(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newQwenAgent(t, nil, nil)
+	a.HandleOutput(qwenExecutionChunk(t, "started", ""))
 	for range 3 {
-		a.HandleOutput(qwenExecutionChunk(t, "started", ""))
-		a.HandleOutput(qwenExecutionChunk(t, "ended", "error"))
+		retryFailedRequest(t, a)
 	}
-	require.Len(t, sink.Notifications(), 3)
+	a.HandleOutput(qwenExecutionChunk(t, "ended", "error"))
+	require.Len(t, sink.Notifications(), 3, "the last failed attempt states no retry")
 	for index, notice := range sink.Notifications() {
 		assert.Equal(t, map[string]any{"type": "api_retry", "count": int64(index + 1)}, notice)
 	}
@@ -185,15 +194,79 @@ func TestQwenRetryRoundsFoldIntoOneRow(t *testing.T) {
 	assert.Empty(t, sink.PersistedNotifications())
 }
 
+// Qwen ends the last attempt of a request with an error too, and a fail-fast
+// error such as a 401 is that last attempt. The error alone therefore states
+// no retry: only a later start of a request of the same prompt does.
+func TestQwenFailedRequestWithoutARetryWritesNoAPIRetryRow(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newQwenAgent(t, nil, nil)
+	a.SetSessionIDForTest(qwenFixtureSession)
+	a.SetPromptActiveForTest(true)
+
+	a.HandleOutput([]byte(qwenFixtureRequestStarted))
+	a.HandleOutput([]byte(qwenFixtureRequestFailed))
+	assert.Empty(t, apiRetryRows(sink), "the failed attempt can be the last one")
+
+	a.FinishPromptRequestForTest(qwenFixtureSession, nil, qwenResponseError(t, qwenFixture401Error))
+	assert.Empty(t, apiRetryRows(sink), "the prompt failed without a retry")
+	assert.Equal(t, []string{"prompt failed: json-rpc error -32603: Internal error: {\"details\":\"401 Incorrect API key provided.\"}"},
+		agenttest.AgentErrorTexts(sink.Notifications()))
+}
+
+func TestQwenRequestStartAfterAFailureWritesOneAPIRetryRow(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newQwenAgent(t, nil, nil)
+	a.SetSessionIDForTest(qwenFixtureSession)
+	a.SetPromptActiveForTest(true)
+
+	a.HandleOutput([]byte(qwenFixtureRequestStarted))
+	a.HandleOutput([]byte(qwenFixtureRequestFailed))
+	a.HandleOutput([]byte(qwenFixtureRetryStarted))
+
+	assert.Equal(t, []map[string]any{{"type": "api_retry", "count": int64(1)}}, apiRetryRows(sink))
+	a.HandleOutput([]byte(qwenFixtureRetryStarted))
+	assert.Len(t, apiRetryRows(sink), 1, "a second start of the retry states no second retry")
+}
+
+// A start of the next prompt's request is no retry of the failed request.
+func TestQwenRequestStartOfAnotherPromptWritesNoAPIRetryRow(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newQwenAgent(t, nil, nil)
+	a.SetSessionIDForTest(qwenFixtureSession)
+
+	a.HandleOutput([]byte(qwenFixtureRequestStarted))
+	a.HandleOutput([]byte(qwenFixtureRequestFailed))
+	a.HandleOutput([]byte(qwenFixtureNextPromptStarted))
+
+	assert.Empty(t, apiRetryRows(sink))
+}
+
+// The end of a prompt forgets its failed request, so the first request of the
+// next prompt, which Qwen can number like the last one after a restart, states
+// no retry.
+func TestQwenPromptEndForgetsTheFailedRequest(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newQwenAgent(t, nil, nil)
+	a.SetSessionIDForTest(qwenFixtureSession)
+	a.SetPromptActiveForTest(true)
+	a.HandleOutput([]byte(qwenFixtureRequestStarted))
+	a.HandleOutput([]byte(qwenFixtureRequestFailed))
+	a.FinishPromptRequestForTest(qwenFixtureSession, nil, qwenResponseError(t, qwenFixture401Error))
+
+	a.HandleOutput([]byte(qwenFixtureRetryStarted))
+
+	assert.Empty(t, apiRetryRows(sink))
+}
+
 func TestQwenRetryResolvesOnSuccess(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newQwenAgent(t, nil, nil)
-	a.HandleOutput(qwenExecutionChunk(t, "ended", "error"))
+	retryFailedRequest(t, a)
 	a.HandleOutput(qwenExecutionChunk(t, "ended", "success"))
 	a.HandleOutput(qwenExecutionChunk(t, "ended", "success"))
 	require.Len(t, sink.Notifications(), 2)
 	assert.Equal(t, map[string]any{"type": "api_retry_resolved"}, sink.Notifications()[1])
-	a.HandleOutput(qwenExecutionChunk(t, "ended", "error"))
+	retryFailedRequest(t, a)
 	assert.Equal(t, int64(1), sink.Notifications()[2]["count"])
 }
 
@@ -202,7 +275,7 @@ func TestQwenRetryResolvesBeforeModelOutput(t *testing.T) {
 	a, sink, _ := newQwenAgent(t, nil, nil)
 	ordered := &qwenNoticeOrderSink{ControlSink: sink}
 	a.SetSinkForTest(agent.NewProviderServices(ordered))
-	a.HandleOutput(qwenExecutionChunk(t, "ended", "error"))
+	retryFailedRequest(t, a)
 	a.HandleOutput(sessionUpdate(t, map[string]any{
 		"sessionUpdate": "agent_thought_chunk", "content": map[string]any{"type": "text", "text": "working"},
 	}))
@@ -232,11 +305,11 @@ func TestQwenRetryResetAtPromptEnd(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newQwenAgent(t, nil, nil)
 	a.SetPromptActiveForTest(true)
-	a.HandleOutput(qwenExecutionChunk(t, "ended", "error"))
+	retryFailedRequest(t, a)
 	a.FinishPromptRequestForTest(qwenTestSession, []byte(`{"stopReason":"end_turn"}`), nil)
 	a.HandleOutput(metaChunk(t, "new answer", nil))
 	require.Len(t, sink.Notifications(), 1)
-	a.HandleOutput(qwenExecutionChunk(t, "ended", "error"))
+	retryFailedRequest(t, a)
 	require.Len(t, sink.Notifications(), 2)
 	assert.Equal(t, int64(1), sink.Notifications()[1]["count"])
 }
@@ -246,11 +319,11 @@ func TestQwenRetryCancellationDoesNotResolve(t *testing.T) {
 	for _, outcome := range []string{"cancelled", "interrupted"} {
 		t.Run(outcome, func(t *testing.T) {
 			a, sink, _ := newQwenAgent(t, nil, nil)
-			a.HandleOutput(qwenExecutionChunk(t, "ended", "error"))
+			retryFailedRequest(t, a)
 			a.HandleOutput(qwenExecutionChunk(t, "ended", outcome))
 			a.HandleOutput(metaChunk(t, "next request", nil))
 			require.Len(t, sink.Notifications(), 1)
-			a.HandleOutput(qwenExecutionChunk(t, "ended", "error"))
+			retryFailedRequest(t, a)
 			assert.Equal(t, int64(1), sink.Notifications()[1]["count"])
 		})
 	}
@@ -259,7 +332,7 @@ func TestQwenRetryCancellationDoesNotResolve(t *testing.T) {
 func TestQwenRetryUnknownOutcomeKeepsThePendingRetry(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newQwenAgent(t, nil, nil)
-	a.HandleOutput(qwenExecutionChunk(t, "ended", "error"))
+	retryFailedRequest(t, a)
 	for _, outcome := range []string{"", "future"} {
 		a.HandleOutput(qwenExecutionChunk(t, "ended", outcome))
 	}
@@ -273,7 +346,7 @@ func TestQwenRetryResetAtNativeTurnEnd(t *testing.T) {
 	t.Parallel()
 	a, sink, _ := newQwenAgent(t, nil, nil)
 	require.True(t, a.BeginAgentTurn())
-	a.HandleOutput(qwenExecutionChunk(t, "ended", "error"))
+	retryFailedRequest(t, a)
 	a.HandleOutput(frame(t, map[string]any{"method": contracts.QwenMethodEndTurn, "params": map[string]any{"sessionId": qwenTestSession}}))
 	a.HandleOutput(metaChunk(t, "next request", nil))
 	require.Len(t, sink.Notifications(), 1)

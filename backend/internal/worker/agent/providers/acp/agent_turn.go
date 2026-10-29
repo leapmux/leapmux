@@ -8,6 +8,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 // PrepareSteer stores buffered output before the queue reserves the steer's position.
@@ -197,6 +198,14 @@ func (b *Base) persistUnownedText(turn acpTurnSnapshot) {
 	}
 }
 
+// InterruptRequested reports whether the reader stopped the running turn. A
+// provider that ends an agent turn by itself reads it for the turn's retry
+// verdict, because a stopped turn is never retried. The turn's end removes
+// the note.
+func (b *Base) InterruptRequested() bool {
+	return b.acpInterruptRequested()
+}
+
 // AgentTurnActive reports whether the running turn is one that the agent
 // started by itself.
 func (b *Base) AgentTurnActive() bool {
@@ -205,15 +214,22 @@ func (b *Base) AgentTurnActive() bool {
 	return b.agentTurnActive
 }
 
-// EndAgentTurn ends the turn that BeginAgentTurn recorded. frame is the
-// agent's own record of that end, and it becomes the turn-end row, as the
-// session/prompt response does for a turn that LeapMux started. The provider
-// plugin of the browser reads that frame into the divider.
+// EndAgentTurn ends the turn that BeginAgentTurn recorded with a zero verdict
+// (NotRetryable). See EndAgentTurnWithVerdict.
+func (b *Base) EndAgentTurn(frame json.RawMessage) {
+	b.EndAgentTurnWithVerdict(frame, TurnVerdict{})
+}
+
+// EndAgentTurnWithVerdict ends the turn that BeginAgentTurn recorded. frame is
+// the agent's own record of that end, and it becomes the turn-end row, as the
+// session/prompt response does for a turn that LeapMux started. verdict is the
+// retry verdict of the turn.
 //
-// An agent turn that is still queued keeps the frame, and the end of the prompt
-// before it persists both ends in order. With no agent turn it does nothing:
-// an end frame that the agent sends for a turn that LeapMux started closes
-// nothing here, because the session/prompt response of that turn does.
+// An agent turn that is still queued keeps the frame and the verdict, and the
+// end of the prompt before it persists both ends in order. With no agent turn
+// it does nothing: an end frame that the agent sends for a turn that LeapMux
+// started closes nothing here, because the session/prompt response of that
+// turn does.
 //
 // It takes turnMu before b.Mu, and never takes sessionMu. A provider calls it from the reader
 // goroutine, and ClearContext holds sessionMu for the whole session/new round
@@ -221,14 +237,15 @@ func (b *Base) AgentTurnActive() bool {
 // stop the reader until the round trip timed out. The session swap resets
 // the agent turn under b.Mu, so a swap that wins the race leaves nothing for
 // this to end, and each drain of the turn output takes its own snapshot.
-func (b *Base) EndAgentTurn(frame json.RawMessage) {
+func (b *Base) EndAgentTurnWithVerdict(frame json.RawMessage, verdict TurnVerdict) (ended bool) {
 	b.turnMu.Lock()
 	b.Mu.Lock()
 	if b.agentTurnQueued {
 		b.queuedAgentTurnEnd = append(json.RawMessage(nil), frame...)
+		b.queuedAgentTurnVerdict = verdict
 		b.Mu.Unlock()
 		b.turnMu.Unlock()
-		return
+		return false
 	}
 	active := b.agentTurnActive
 	sessionID := b.sessionID
@@ -237,7 +254,7 @@ func (b *Base) EndAgentTurn(frame json.RawMessage) {
 	b.Mu.Unlock()
 	if !active {
 		b.turnMu.Unlock()
-		return
+		return false
 	}
 	turn, _ := b.drainPromptTurnLocked()
 	b.Mu.Lock()
@@ -251,12 +268,19 @@ func (b *Base) EndAgentTurn(frame json.RawMessage) {
 	b.finishRootSnapshot(turn, textCompletion, incomplete, RootTranscriptPromptEnded, func(writer agent.TranscriptServices, count int) {
 		b.persistPromptResponseTo(writer, frame, count, sessionID)
 	})
-	b.endTurn(sessionID)
+	b.endTurn(sessionID, verdict)
+	return true
 }
 
-// EndAgentTurnWithoutRow ends the turn that BeginAgentTurn recorded, for work
-// of the agent's own that is no conversation turn and keeps no record of its
-// end: Kiro compacts its context through a request, and the request's
+// EndAgentTurnWithoutRow ends the turn that BeginAgentTurn recorded with a
+// zero verdict (NotRetryable). See EndAgentTurnWithoutRowWithVerdict.
+func (b *Base) EndAgentTurnWithoutRow() {
+	b.EndAgentTurnWithoutRowWithVerdict(TurnVerdict{})
+}
+
+// EndAgentTurnWithoutRowWithVerdict ends the turn that BeginAgentTurn recorded,
+// for work of the agent's own that is no conversation turn and keeps no record
+// of its end: Kiro compacts its context through a request, and the request's
 // response is the only end. The turn state goes idle, so the worker's queue
 // releases the next message, but no turn-end row joins the transcript. The
 // text and the tool calls that the work left open are stored as a turn end
@@ -269,12 +293,16 @@ func (b *Base) EndAgentTurn(frame json.RawMessage) {
 // stores the whole output, with the prompt's own count of finished tools. When
 // the prompt's end already took its part of the output, the rest is the
 // work's, and this stores it. With no agent turn it does nothing.
-func (b *Base) EndAgentTurnWithoutRow() {
+//
+// A queued agent turn that it drops applies no verdict, because the prompt's
+// own end decides.
+func (b *Base) EndAgentTurnWithoutRowWithVerdict(verdict TurnVerdict) (ended bool) {
 	b.turnMu.Lock()
 	b.Mu.Lock()
 	if b.agentTurnQueued {
 		b.agentTurnQueued = false
 		b.queuedAgentTurnEnd = nil
+		b.queuedAgentTurnVerdict = TurnVerdict{}
 		b.Mu.Unlock()
 		drained := !b.dropPromptBoundaryLocked()
 		var turn acpTurnSnapshot
@@ -288,7 +316,7 @@ func (b *Base) EndAgentTurnWithoutRow() {
 		if drained {
 			b.storeWorkOutput(turn)
 		}
-		return
+		return false
 	}
 	active := b.agentTurnActive
 	sessionID := b.sessionID
@@ -296,7 +324,7 @@ func (b *Base) EndAgentTurnWithoutRow() {
 	b.Mu.Unlock()
 	if !active {
 		b.turnMu.Unlock()
-		return
+		return false
 	}
 	turn := b.drainTurnLocked()
 	b.Mu.Lock()
@@ -304,7 +332,8 @@ func (b *Base) EndAgentTurnWithoutRow() {
 	b.Mu.Unlock()
 	b.turnMu.Unlock()
 	b.storeWorkOutput(turn)
-	b.endTurn(sessionID)
+	b.endTurn(sessionID, verdict)
+	return true
 }
 
 // storeWorkOutput stores the output of agent work that ends with no turn-end
@@ -320,29 +349,33 @@ func (b *Base) storeWorkOutput(turn acpTurnSnapshot) {
 // agent turn queued behind it, and reports whether one was. The fields of the
 // ended turn go, as they go at any turn end, and promptActive stays, so no
 // idle state is published between the two turns. end is the queued turn's
-// own end frame when it arrived before this.
-func (b *Base) takeQueuedAgentTurn(sessionID string) (end json.RawMessage, queued bool) {
+// own end frame when it arrived before this. verdict is the retry verdict that
+// the queued turn's end carried.
+func (b *Base) takeQueuedAgentTurn(sessionID string) (end json.RawMessage, verdict TurnVerdict, queued bool) {
 	b.Mu.Lock()
 	defer b.Mu.Unlock()
 	if !b.agentTurnQueued || b.sessionID != sessionID {
-		return nil, false
+		return nil, TurnVerdict{}, false
 	}
 	end = b.queuedAgentTurnEnd
+	verdict = b.queuedAgentTurnVerdict
 	b.agentTurnQueued = false
 	b.queuedAgentTurnEnd = nil
+	b.queuedAgentTurnVerdict = TurnVerdict{}
 	b.agentTurnActive = true
 	b.promptOutputDrained = false
 	b.steerRunID = ""
 	b.interruptRequested = false
-	return end, true
+	return end, verdict, true
 }
 
-// endTurn reports the turn of sessionID as over. An agent turn queued behind
-// it takes the busy state over instead. Otherwise input that the provider
-// accepted for the turn and never read becomes the next prompt at once, and the
-// turn state stays active across the two, so no message that the worker queued
-// in the meantime can start a turn between them. The caller has persisted the
-// turn-end row.
+// endTurn reports the turn of sessionID as over, applying verdict to the
+// automatic-retry queue. An agent turn queued behind it takes the busy state
+// over instead, and the verdict of that turn's own end decides. Otherwise
+// input that the provider accepted for the turn and
+// never read becomes the next prompt at once, and the turn state stays active
+// across the two, so no message that the worker queued in the meantime can
+// start a turn between them. The caller has persisted the turn-end row.
 //
 // The next prompt goes out on its own goroutine. A provider ends an agent turn
 // on the reader goroutine (EndAgentTurn), and the send waits for its stdin
@@ -350,19 +383,17 @@ func (b *Base) takeQueuedAgentTurn(sessionID string) (end json.RawMessage, queue
 // reader drains it, so a send on the reader would stop both sides. The
 // providerkit frame queue for a reader-side write is no option either: it drops
 // a frame when the queue is full, and this frame is the reader's own message.
-func (b *Base) endTurn(sessionID string) {
+func (b *Base) endTurn(sessionID string, verdict TurnVerdict) {
 	b.Mu.Lock()
 	current := b.sessionID == sessionID
 	b.Mu.Unlock()
 	if !current {
 		return
 	}
-	if end, queued := b.takeQueuedAgentTurn(sessionID); queued {
-		if end != nil {
-			b.EndAgentTurn(end)
-		}
+	if b.handoffQueuedAgentTurn(sessionID) {
 		return
 	}
+	providerkit.ApplyTurnFailure(b.sink, verdict.Failure, verdict.Payload)
 	if b.schedulePendingFollowUp(sessionID) {
 		return
 	}
@@ -387,9 +418,7 @@ func (b *Base) endTurn(sessionID string) {
 		}
 	}
 	if !b.clearActivePromptForSession(sessionID) {
-		if end, queued := b.takeQueuedAgentTurn(sessionID); queued && end != nil {
-			b.EndAgentTurn(end)
-		}
+		b.handoffQueuedAgentTurn(sessionID)
 	}
 }
 

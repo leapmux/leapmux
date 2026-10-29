@@ -9,8 +9,6 @@ import (
 	"math"
 	"time"
 
-	"github.com/coder/quartz"
-
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
@@ -72,12 +70,8 @@ func (a *Agent) awaitCompactionResult(pending *droidCompaction) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	clock := a.clock
-	if clock == nil {
-		clock = quartz.NewReal()
-	}
 	timeout := max(droidCompactionTimeout, a.APITimeout())
-	timer := clock.NewTimer(timeout, "droid", "compaction")
+	timer := a.agentClock().NewTimer(timeout, "droid", "compaction")
 	defer timer.Stop()
 	select {
 	case <-pending.done:
@@ -111,6 +105,7 @@ func (a *Agent) endAbortedCompaction(pending *droidCompaction) {
 		endDroidCompaction(target)
 		providerkit.PersistCompactionEnded(target.sink, providerkit.CompactionEndAborted, "")
 	}
+	a.applyCompactionVerdict()
 }
 
 // finishCompactionAfterWait serializes a missing native result with reader frames.
@@ -133,7 +128,9 @@ func (a *Agent) finishCompactionAfterWait(pending *droidCompaction, reason error
 		phase = "completion"
 	}
 	a.endFailedCompaction(fmt.Errorf("droid compaction %s: %w", phase, reason))
-	a.finishCompaction(pending, false)
+	if a.finishCompaction(pending, false) {
+		a.applyCompactionVerdict()
+	}
 	a.DiscardOutput()
 	a.dispatchMu.Unlock()
 	a.Stop()
@@ -159,7 +156,9 @@ func (a *Agent) handleCompactionResponse(response droidEnvelope) bool {
 	}
 	if err := json.Unmarshal(response.Result, &result); err != nil || result.NewSessionID != pending.sessionID || result.RemovedCount == nil || *result.RemovedCount < 0 {
 		a.endFailedCompaction(errors.New("droid returned an invalid compaction result"))
-		a.finishCompaction(pending, false)
+		if a.finishCompaction(pending, false) {
+			a.applyCompactionVerdict()
+		}
 		a.DiscardOutput()
 		// Stop runs separately because child transcript tails can need dispatchMu.
 		go a.Stop()
@@ -190,10 +189,20 @@ func (a *Agent) finishCompaction(pending *droidCompaction, completed bool) bool 
 }
 
 // finishCompactionFromReader releases the input queue in native frame order.
+// The compaction's verdict precedes the release.
 func (a *Agent) finishCompactionFromReader(pending *droidCompaction, completed bool) {
 	if a.finishCompaction(pending, completed) {
+		a.applyCompactionVerdict()
 		a.PublishTurnActive()
 	}
+}
+
+// applyCompactionVerdict applies the retry verdict of a manual compaction that
+// ends now. A compaction never retries, whatever its outcome. Each end path
+// calls it once, after finishCompaction clears the guard and after the end row
+// that the path writes.
+func (a *Agent) applyCompactionVerdict() {
+	providerkit.ApplyTurnFailure(a.orderedSink(), providerkit.CompactionEnd(), nil)
 }
 
 // finishCompactionFromNotification accepts the native completed boundary.

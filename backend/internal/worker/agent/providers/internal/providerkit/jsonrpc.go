@@ -401,6 +401,31 @@ func (e *JSONRPCResponseError) dataText() string {
 	return compact.String()
 }
 
+// WireJSON restates the error as the JSON-RPC error object of the wire:
+// `{"code","message","data"}`, with no data member when the error has none.
+// It returns nil when the data is not valid JSON.
+func (e *JSONRPCResponseError) WireJSON() json.RawMessage {
+	payload, err := json.Marshal(struct {
+		Code    int             `json:"code"`
+		Message string          `json:"message"`
+		Data    json.RawMessage `json:"data,omitempty"`
+	}{e.Code, e.Message, e.Data})
+	if err != nil {
+		return nil
+	}
+	return payload
+}
+
+// AsJSONRPCResponseError returns the JSON-RPC error response that err holds,
+// through any wrapping.
+func AsJSONRPCResponseError(err error) (*JSONRPCResponseError, bool) {
+	var responseErr *JSONRPCResponseError
+	if errors.As(err, &responseErr) {
+		return responseErr, true
+	}
+	return nil, false
+}
+
 func HasJSONRPCErrorCode(err error, codes ...int) bool {
 	var responseErr *JSONRPCResponseError
 	return errors.As(err, &responseErr) && slices.Contains(codes, responseErr.Code)

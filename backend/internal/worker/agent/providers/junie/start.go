@@ -40,50 +40,66 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		NewAgent:      func() *Agent { return &Agent{} },
 		Base:          func(a *Agent) *acp.Base { return &a.Base },
 		Configure: func(a *Agent, sink agent.ProviderServices) acp.Hooks {
-			a.launchEffortOverride = opts.Effort()
-			a.goalStartedAt = time.Now()
-			a.homeDir = opts.HomeDir
-			a.workingDir = opts.WorkingDir
-			a.clock = quartz.NewReal()
-			transcript := newJunieToolTranscript(ctx, sink, junieHome(agent.StoredSessionQuery{HomeDir: opts.HomeDir}), opts.WorkingDir)
-			return acp.Hooks{
-				Sink: transcript,
-				ClientCapabilityMeta: map[string]any{
-					"jetbrains": map[string]any{"air": map[string]any{
-						"version": 1, "capabilities": []string{"nativeSubagentSessions"},
-					}},
-				},
-				InitialModel:     opts.Model(),
-				ModeChannel:      acp.ModeChannelPermissionMode,
-				SteersByOwnRoute: true,
-				// Junie rejects session/set_mode ("use session/set_config_option
-				// with configId=\"mode\""), so the mode write takes the config
-				// option route instead of the base session/set_mode write.
-				ModeSetter: a.SetModeViaConfigOption,
-				// Junie reports a custom profile by its decorated wire id. Reads
-				// use the plain profile id, and writes restore the decoration.
-				// Proxy model ids keep their provider-qualified wire form.
-				ModelIDNormalizer: normalizeJunieModelID,
-				ModelSetter:       a.setJunieModel,
-				// Junie reports its goal in session_info_update under _meta.goal.
-				// It reports child lifecycle through subagent_spawned and subagent_state_update.
-				SessionMetadataHandler: a.handleSessionMetadata,
-				// A turn that a steer's `startedNewTurn` began ends at one
-				// `_meta.lastRequestComplete` chunk and holds no end frame of
-				// its own (see observeJunieTurnEnd).
-				SessionNotificationMetadata: a.observeJunieTurnEnd,
-				// Junie streams the output of a running command in rawOutput.
-				ToolOutput: a.junieToolOutput,
-				ClearProviderState: func() {
-					a.stopChildTails()
-					transcript.Reset()
-				},
-			}
+			return a.configure(ctx, opts, sink, quartz.NewReal())
 		},
 		AfterHandshake: func(a *Agent, handshake *acp.SessionResult, opts agent.Options) error {
 			return a.ApplyPermissionModeStartup(handshake, opts, contracts.JunieModeDefault, junieStartupModelSelection(handshake, opts.Model()))
 		},
 	})
+}
+
+// configure returns the hooks of one agent. clock drives the reads of the
+// native child snapshots and dates a turn failure.
+func (a *Agent) configure(ctx context.Context, opts agent.Options, sink agent.ProviderServices, clock quartz.Clock) acp.Hooks {
+	a.launchEffortOverride = opts.Effort()
+	a.goalStartedAt = time.Now()
+	a.homeDir = opts.HomeDir
+	a.workingDir = opts.WorkingDir
+	a.clock = clock
+	transcript := newJunieToolTranscript(ctx, sink, junieHome(agent.StoredSessionQuery{HomeDir: opts.HomeDir}), opts.WorkingDir)
+	return acp.Hooks{
+		Sink: transcript,
+		// Junie sends the native child sessions and the structured
+		// sessionFailure updates only to a client that lists them. Without
+		// sessionFailure, Junie states a failure only as commentary text.
+		ClientCapabilityMeta: map[string]any{
+			"jetbrains": map[string]any{"air": map[string]any{
+				"version": 1, "capabilities": []string{"nativeSubagentSessions", "sessionFailure"},
+			}},
+		},
+		InitialModel:     opts.Model(),
+		ModeChannel:      acp.ModeChannelPermissionMode,
+		SteersByOwnRoute: true,
+		// Junie rejects session/set_mode ("use session/set_config_option
+		// with configId=\"mode\""), so the mode write takes the config
+		// option route instead of the base session/set_mode write.
+		ModeSetter: a.SetModeViaConfigOption,
+		// Junie reports a custom profile by its decorated wire id. Reads
+		// use the plain profile id, and writes restore the decoration.
+		// Proxy model ids keep their provider-qualified wire form.
+		ModelIDNormalizer: normalizeJunieModelID,
+		ModelSetter:       a.setJunieModel,
+		// Junie reports its goal and a session failure in
+		// session_info_update, under _meta.goal and
+		// _meta.jetbrains.air.sessionFailure. It reports child lifecycle
+		// through subagent_spawned and subagent_state_update.
+		SessionMetadataHandler: a.handleSessionMetadata,
+		// A turn that a steer's `startedNewTurn` began ends at one
+		// `_meta.lastRequestComplete` chunk and holds no end frame of
+		// its own (see observeJunieTurnEnd).
+		SessionNotificationMetadata: a.observeJunieTurnEnd,
+		// The session failure of a turn decides the retry verdict of its
+		// end. A new prompt forgets the failure of the last one.
+		PromptPrepared: a.clearJunieFailure,
+		PromptEnded:    a.finishJuniePrompt,
+		// Junie streams the output of a running command in rawOutput.
+		ToolOutput: a.junieToolOutput,
+		ClearProviderState: func() {
+			a.stopChildTails()
+			transcript.Reset()
+			a.clearJunieFailure()
+		},
+	}
 }
 
 // junieStartupModelSelection keeps Junie's selected provider when a bare CLI

@@ -10,6 +10,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 type pendingMessage struct {
@@ -28,13 +29,24 @@ type turnFinalization struct {
 	messages []pendingMessage
 	retries  []agent.CapturedTranscript
 	end      agent.MessageContent
+	// verdict is the retry verdict of a root turn, decided once when the
+	// finalization is captured. retryFinalizations applies it right after the
+	// turn-end row, so a replayed completion can neither decide again nor apply
+	// it before that row. A root turn that a host retirement ends takes
+	// NotRetryable, as every other turn end does. Nil applies none: a child
+	// turn.
+	verdict *providerkit.TurnFailure
 }
 
 func nativeItemKey(id string, revision int64) string {
 	return fmt.Sprintf("muse:item:%s:%d", id, revision)
 }
 
-func (a *Agent) captureFinalization(state *sessionState, id, turnID string, raw []byte, ended agent.MessageCompletion) *turnFinalization {
+// captureFinalization captures the output of a turn that ends, once per turn.
+// verdict is the retry verdict of a root turn, and nil for any other. A replay
+// of the same completion returns the finalization that the first one captured,
+// with its first verdict.
+func (a *Agent) captureFinalization(state *sessionState, id, turnID string, raw []byte, ended agent.MessageCompletion, verdict *providerkit.TurnFailure) *turnFinalization {
 	a.stateMu.Lock()
 	for _, pending := range state.finalizations {
 		if pending.turnID == turnID {
@@ -60,7 +72,7 @@ func (a *Agent) captureFinalization(state *sessionState, id, turnID string, raw 
 		}
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].order < items[j].order })
-	pending := &turnFinalization{turnID: turnID, retries: state.retryNotices}
+	pending := &turnFinalization{turnID: turnID, retries: state.retryNotices, verdict: verdict}
 	state.retryNotices = nil
 	state.retryItems = nil
 	for _, item := range items {
@@ -200,6 +212,12 @@ func (a *Agent) retryFinalizations(state *sessionState) {
 				return
 			}
 		}
+		// The turn-end row is written or retained in the shared queue, so the
+		// retry operations follow it. The finalization leaves the list below, so
+		// the verdict applies once.
+		if turn.verdict != nil {
+			providerkit.ApplyTurnFailure(state.sink, *turn.verdict, turn.end.Original)
+		}
 		a.stateMu.Lock()
 		state.finalizations[0] = nil
 		state.finalizations = state.finalizations[1:]
@@ -221,8 +239,9 @@ func (a *Agent) retireHost(ended agent.MessageCompletion) {
 				state.projection.signal()
 			}
 		}
+		rootID := a.sessionID
 		a.stateMu.Unlock()
-		a.retireSessionStates(states, ended)
+		a.retireSessionStates(states, rootID, ended)
 	}()
 	a.drainDeferredOutputActions()
 	a.drainControls()
@@ -230,7 +249,8 @@ func (a *Agent) retireHost(ended agent.MessageCompletion) {
 
 // retireSessionStates preserves every captured output before closing any child
 // registry row. The caller holds dispatcher.mu and has retired all supplied states.
-func (a *Agent) retireSessionStates(states map[string]*sessionState, ended agent.MessageCompletion) {
+// rootID identifies the root session, whose open turn ends with no retry.
+func (a *Agent) retireSessionStates(states map[string]*sessionState, rootID string, ended agent.MessageCompletion) {
 	for id, state := range states {
 		a.stateMu.Lock()
 		var bootstrap [][]byte
@@ -253,13 +273,22 @@ func (a *Agent) retireSessionStates(states map[string]*sessionState, ended agent
 		}
 		a.retireControlPublications(state)
 		a.endSessionCompactions(state)
+		if id == rootID {
+			// The retirement ends a manual compaction that still runs.
+			a.endManualCompaction(id, state.sink)
+		}
 		a.stateMu.Lock()
 		turnID := state.turnID
 		controls := state.controls
 		state.controls = nil
 		a.stateMu.Unlock()
 		if turnID != "" {
-			a.captureFinalization(state, id, turnID, nil, ended)
+			// The root's turn ends without a native end, so no retry follows it.
+			var verdict *providerkit.TurnFailure
+			if id == rootID {
+				verdict = &providerkit.TurnFailure{Kind: providerkit.TurnFailureNotRetryable}
+			}
+			a.captureFinalization(state, id, turnID, nil, ended, verdict)
 		}
 		a.retryFinalizations(state)
 		for _, control := range controls {

@@ -31,37 +31,7 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 		NewAgent:     func() *Agent { return &Agent{} },
 		Base:         func(a *Agent) *acp.Base { return &a.Base },
 		Configure: func(a *Agent, sink agent.ProviderServices) acp.Hooks {
-			storeQuery := agent.StoredSessionQuery{HomeDir: opts.HomeDir, WorkingDir: opts.WorkingDir}
-			transcript := newReasonixToolTranscript(ctx, sink, a.CurrentSessionID, storeQuery, opts.WorkingDir)
-			return acp.Hooks{
-				WithBypassPermission: func(claim func()) {
-					a.WithOptionValue(contracts.ReasonixConfigToolApproval, contracts.ReasonixApprovalYolo, claim)
-				},
-				PermissionAllowsBypass: permissionAllowsBypass,
-				Sink:                   transcript,
-				ClearProviderState: func() {
-					transcript.Reset()
-					a.resetPlanDraft()
-				},
-				AdvertisedSteerMethod: func(response []byte) string {
-					return acp.ParseAdvertisedMethod(response, reasonixSteerNamespace, reasonixSteerMethod)
-				},
-				// Keep the launch selection until the session reports its current model.
-				InitialModel:         model,
-				ModeChannel:          acp.ModeChannelPermissionMode,
-				ModeSetter:           a.setReasonixMode,
-				InitializeResponse:   a.observeReasonixCapabilities,
-				ClientCapabilityMeta: map[string]any{"reasonix.io": map[string]any{"statusUpdates": map[string]any{"supported": true}}},
-				// Task launches open no span. Final updates close the task registry row.
-				SubagentFromToolCall:       reasonixSubagentFromToolCall,
-				SubagentFromToolCallUpdate: reasonixSubagentFromToolCallUpdate,
-				// Reasonix sends goal state outside standard ACP session updates.
-				ExtraMethod:            a.handleExtraMethod,
-				ControlRequestObserver: a.observeControlRequest,
-				// A notice chunk splits from the model's own stream by its
-				// prefix.
-				SessionMetadataHandler: a.observeSessionMetadata,
-			}
+			return a.configure(ctx, opts, sink, model)
 		},
 		AfterHandshake: func(a *Agent, handshake *acp.SessionResult, opts agent.Options) error {
 			requestedModel := model
@@ -116,4 +86,49 @@ func (a *Agent) resumeReasonixModel(handshake *acp.SessionResult, model, working
 		return nil
 	})
 	return updated, err
+}
+
+// configure returns the hooks of one agent. model is the model that the
+// launch selects, which the base keeps until the session reports its own.
+func (a *Agent) configure(ctx context.Context, opts agent.Options, sink agent.ProviderServices, model string) acp.Hooks {
+	storeQuery := agent.StoredSessionQuery{HomeDir: opts.HomeDir, WorkingDir: opts.WorkingDir}
+	transcript := newReasonixToolTranscript(ctx, sink, a.CurrentSessionID, storeQuery, opts.WorkingDir)
+	return acp.Hooks{
+		WithBypassPermission: func(claim func()) {
+			a.WithOptionValue(contracts.ReasonixConfigToolApproval, contracts.ReasonixApprovalYolo, claim)
+		},
+		PermissionAllowsBypass: permissionAllowsBypass,
+		Sink:                   transcript,
+		ClearProviderState: func() {
+			transcript.Reset()
+			a.resetPlanDraft()
+			a.clearReasonixFailure()
+		},
+		AdvertisedSteerMethod: func(response []byte) string {
+			return acp.ParseAdvertisedMethod(response, reasonixSteerNamespace, reasonixSteerMethod)
+		},
+		// Keep the launch selection until the session reports its current model.
+		InitialModel:       model,
+		ModeChannel:        acp.ModeChannelPermissionMode,
+		ModeSetter:         a.setReasonixMode,
+		InitializeResponse: a.observeReasonixCapabilities,
+		// Reasonix sends _reasonix.io/session/status_update only to a client
+		// that declares statusUpdates. The goal state and the turn outcome of
+		// the retry verdict both ride on it.
+		ClientCapabilityMeta: map[string]any{"reasonix.io": map[string]any{"statusUpdates": map[string]any{"supported": true}}},
+		// Task launches open no span. Final updates close the task registry row.
+		SubagentFromToolCall:       reasonixSubagentFromToolCall,
+		SubagentFromToolCallUpdate: reasonixSubagentFromToolCallUpdate,
+		// Reasonix sends goal state outside standard ACP session updates.
+		ExtraMethod:            a.handleExtraMethod,
+		ControlRequestObserver: a.observeControlRequest,
+		// A notice chunk splits from the model's own stream by its
+		// prefix.
+		SessionMetadataHandler: a.observeSessionMetadata,
+		// The last status update of a failed turn states its failure, and
+		// the prompt's end decides from it. A new prompt forgets the failure
+		// of the last one.
+		PromptPrepared: a.clearReasonixFailure,
+		PromptEnded:    a.finishReasonixPrompt,
+	}
 }

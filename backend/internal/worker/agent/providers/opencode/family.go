@@ -104,7 +104,8 @@ func FamilyHooks(f *FamilyBase) acp.Hooks {
 			if f.TurnEnded != nil {
 				f.TurnEnded()
 			}
-			return acp.PromptEnding{}
+			verdict := f.TurnEndVerdict(err, stopped)
+			return acp.PromptEnding{Retry: &verdict}
 		},
 		ModeChannel:              acp.ModeChannelPrimaryAgent,
 		PrimaryAgentHiddenFilter: IsHiddenPrimaryAgent,

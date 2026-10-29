@@ -65,6 +65,15 @@ func ScheduleOrCancelServerErrorAutoRetry(sink agent.AutoRetryWriter, retry bool
 	sink.ScheduleServerErrorRetry(append([]byte(nil), payload...))
 }
 
+// TurnEndedWithoutRetryableFailure is the cancellation reason of a turn end
+// that leaves no retryable failure: a completed turn, an interrupted one, or a
+// failure that the provider does not mark as retryable.
+const TurnEndedWithoutRetryableFailure = "the turn ended without a retryable failure"
+
+// TurnEndedOnCompaction is the cancellation reason of a turn that a compaction
+// ended (CompactionEnd).
+const TurnEndedOnCompaction = "the turn ended on a compaction, which no retry resumes"
+
 // LogRegistryRefusal records a background-task write the registry REFUSED.
 //
 // `bgtask.ValidateRowKey` turned an unusable provider key from a silent rewrite

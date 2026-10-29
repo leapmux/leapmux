@@ -304,8 +304,8 @@ type OutputHandler struct {
 	// SetAutoRetryFuncs in service.New; nil in tests that build an
 	// OutputHandler directly, where a request is logged and dropped.
 	scheduleAutoRetry  func(agentID string, schedule agent.AutoRetrySchedule)
-	cancelAutoRetry    func(agentID string, kind leapmuxv1.AgentInputKind, admission agent.AutoRetryAdmission)
-	cancelAllAutoRetry func(agentID string)
+	cancelAutoRetry    func(agentID string, kind leapmuxv1.AgentInputKind, reason string, admission agent.AutoRetryAdmission)
+	cancelAllAutoRetry func(agentID string, reason string)
 
 	// supportsSteering answers whether the running provider can add the queue
 	// head to an active turn. Set via SetSupportsSteeringFunc in service.New;
@@ -434,11 +434,12 @@ func (h *OutputHandler) ResetSpanTracker(agentID string) {
 // SetAutoRetryFuncs wires the automatic-retry callbacks the input queue owns:
 // one schedule request per provider report, one kind-scoped cancellation for a
 // provider's own cancel, and one both-kinds cancellation for lifecycle
-// cleanup. Call before any agent output is processed.
+// cleanup. Each cancellation carries the reason that the queue logs for each
+// retry it removes. Call before any agent output is processed.
 func (h *OutputHandler) SetAutoRetryFuncs(
 	schedule func(agentID string, schedule agent.AutoRetrySchedule),
-	cancel func(agentID string, kind leapmuxv1.AgentInputKind, admission agent.AutoRetryAdmission),
-	cancelAll func(agentID string),
+	cancel func(agentID string, kind leapmuxv1.AgentInputKind, reason string, admission agent.AutoRetryAdmission),
+	cancelAll func(agentID string, reason string),
 ) {
 	h.scheduleAutoRetry = schedule
 	h.cancelAutoRetry = cancel
@@ -456,20 +457,20 @@ func (h *OutputHandler) scheduleAutoRetryRequest(agentID string, schedule agent.
 }
 
 // cancelAutoRetryKind forwards one provider cancellation of its retry kind.
-func (h *OutputHandler) cancelAutoRetryKind(agentID string, kind leapmuxv1.AgentInputKind, admission agent.AutoRetryAdmission) {
+func (h *OutputHandler) cancelAutoRetryKind(agentID string, kind leapmuxv1.AgentInputKind, reason string, admission agent.AutoRetryAdmission) {
 	if h.cancelAutoRetry == nil {
 		return
 	}
-	h.cancelAutoRetry(agentID, kind, admission)
+	h.cancelAutoRetry(agentID, kind, reason, admission)
 }
 
 // cancelAllAutoRetries removes every pending retry of one agent. Runtime
 // cleanup calls it after the transcript mutation lock is released.
-func (h *OutputHandler) cancelAllAutoRetries(agentID string) {
+func (h *OutputHandler) cancelAllAutoRetries(agentID string, reason RuntimeCleanupReason) {
 	if h.cancelAllAutoRetry == nil {
 		return
 	}
-	h.cancelAllAutoRetry(agentID)
+	h.cancelAllAutoRetry(agentID, string(reason))
 }
 
 // SetSupportsSteeringFunc wires the steering-capability answer that every
@@ -515,9 +516,37 @@ func (h *OutputHandler) SetSteerEchoFuncs(echoed func(agentID string, count int,
 	h.steersEchoed, h.steersDropped, h.steersUncertain = echoed, dropped, uncertain
 }
 
-// CleanupAgent removes all per-agent state from the handler's maps.
-// Call this when an agent is permanently closed.
-func (h *OutputHandler) CleanupAgent(agentID string) {
+// RuntimeCleanupReason states why the Worker removes an agent's runtime state.
+// The input queue logs it for each pending automatic retry that the cleanup
+// removes, so the log separates a close from a context clear or an archive.
+type RuntimeCleanupReason string
+
+const (
+	// CleanupTabClosed serves every close of an agent tab: the CloseAgent
+	// request, the orphan reap, and the cleanup of a deleted workspace.
+	CleanupTabClosed RuntimeCleanupReason = "the agent tab closed"
+	// CleanupWorkspaceArchived serves a workspace archive. The tab stays
+	// open, and an unarchive can start the agent again, without the retries.
+	CleanupWorkspaceArchived RuntimeCleanupReason = "the workspace was archived"
+	// CleanupContextCleared serves the dispatch of a /clear input.
+	CleanupContextCleared RuntimeCleanupReason = "the context was cleared"
+	// CleanupPlanContextReset serves a plan execution that restarts the agent
+	// with a fresh context.
+	CleanupPlanContextReset RuntimeCleanupReason = "plan execution restarted the agent with a fresh context"
+	// CleanupClosedAgentSwept serves the orphan sweep, which reclaims the
+	// state of an agent that the database lists as closed.
+	CleanupClosedAgentSwept RuntimeCleanupReason = "the sweep reclaimed the state of a closed agent"
+	// cleanupRootTabClosed serves the cleanup of each subagent when the tab
+	// of its root agent closes. The subagent's own end cleans up nothing in
+	// the queue.
+	cleanupRootTabClosed RuntimeCleanupReason = "the tab of its root agent closed"
+)
+
+// CleanupAgent removes all per-agent state from the handler's maps. Call it
+// when the agent's runtime ends: a close, a workspace archive, a context
+// clear, a plan restart, or the sweep of a closed agent. The reason states
+// which one.
+func (h *OutputHandler) CleanupAgent(agentID string, reason RuntimeCleanupReason) {
 	target := h.sinkForAgent(agentID)
 	rootID := h.resolveRoot(agentID, "")
 	if target != nil {
@@ -555,7 +584,7 @@ func (h *OutputHandler) CleanupAgent(agentID string) {
 		h.drainProgressClears(retiredIDs)
 		// Retries die with the agent. The queue's own coordinator and observer
 		// work must not run beneath the transcript mutation lock.
-		h.cancelAllAutoRetries(agentID)
+		h.cancelAllAutoRetries(agentID, reason)
 		return
 	}
 }
@@ -572,10 +601,12 @@ func (h *OutputHandler) CleanupChildAgents(childIDs []string) {
 	}
 }
 
-// cleanupChildMaps deletes the cheap per-agent maps for one child. Shared by
-// CleanupChildAgents (root close, many children) and CleanupChildAgent (a single
-// child's closing update driven from a provider's ProviderServices). Does NOT touch
-// rootSinks/bgtasks: those are keyed by root owner and are reaped on root close.
+// cleanupChildMaps deletes the cheap per-agent maps for one child.
+// CleanupChildAgents calls it for each descendant when the root's tab closes. A
+// single child's closing update (agentOutputSink.CleanupChildAgent) does not
+// call it: that update runs cleanupChildMapsLocked under its own parent check.
+// Does NOT touch rootSinks/bgtasks: those are keyed by root owner and are
+// reaped on root close.
 func (h *OutputHandler) cleanupChildMaps(childID string) {
 	target := h.sinkForAgent(childID)
 	rootID := h.resolveRoot(childID, "")
@@ -596,9 +627,11 @@ func (h *OutputHandler) cleanupChildMaps(childID string) {
 		}
 		mutation.Unlock()
 		h.watcher.DrainAgentEvents(childID)
-		// The child's retries die with its transcript, outside the
-		// transcript mutation lock like every queue operation here.
-		h.cancelAllAutoRetries(childID)
+		// The child's retries die with its root's tab, outside the
+		// transcript mutation lock like every queue operation here. The
+		// queue refuses a retry for a subagent, so this cancellation finds
+		// one only when that check could not read the child's row.
+		h.cancelAllAutoRetries(childID, cleanupRootTabClosed)
 		return
 	}
 }
@@ -822,15 +855,16 @@ func (h *OutputHandler) RetireNonBlockingControlRequestsOutsideSession(agentID, 
 // It leaves the durable control-response answer claims intact, so a duplicate answer
 // straddling a transient restart stays deduped.
 //
-// Call it when the current subprocess instance shuts down (close, context
-// clear, plan-exec restart) -- NOT from the per-exit onExit handler, which a
-// relaunch also triggers and which must keep the in-memory timeline state (see
-// ClearPendingControlRequests).
-func (h *OutputHandler) ClearAgentRuntimeState(agentID string) {
+// Call it when the current subprocess instance shuts down (close, workspace
+// archive, context clear, plan-exec restart) -- NOT from the per-exit onExit
+// handler, which a relaunch also triggers and which must keep the in-memory
+// timeline state (see ClearPendingControlRequests). The reason states which
+// shutdown it is.
+func (h *OutputHandler) ClearAgentRuntimeState(agentID string, reason RuntimeCleanupReason) {
 	h.clearControlRequests(agentID, "clear agent runtime state: delete control requests", false, func(ctx context.Context) ([]db.ControlRequest, error) {
 		return h.queries.DeleteControlRequestsByAgentID(ctx, agentID)
 	})
-	h.CleanupAgent(agentID)
+	h.CleanupAgent(agentID, reason)
 }
 
 // rootTracker returns the SpanTracker for a ROOT main agent, creating one if
@@ -1920,12 +1954,12 @@ func (s *agentOutputSink) ScheduleServerErrorRetry(sourcePayload []byte) {
 	s.CaptureAutoRetry().ScheduleServerErrorRetry(sourcePayload)
 }
 
-func (s *agentOutputSink) CancelUsageLimitRetry() {
-	s.CaptureAutoRetry().CancelUsageLimitRetry()
+func (s *agentOutputSink) CancelUsageLimitRetry(reason string) {
+	s.CaptureAutoRetry().CancelUsageLimitRetry(reason)
 }
 
-func (s *agentOutputSink) CancelServerErrorRetry() {
-	s.CaptureAutoRetry().CancelServerErrorRetry()
+func (s *agentOutputSink) CancelServerErrorRetry(reason string) {
+	s.CaptureAutoRetry().CancelServerErrorRetry(reason)
 }
 
 // --- Internal helpers ---

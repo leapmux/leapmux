@@ -1058,12 +1058,12 @@ func TestAutoRetryProducersUseGeneratedQueueKinds(t *testing.T) {
 	}
 
 	// Each cancel removes its own kind only.
-	sink.CancelServerErrorRetry()
+	sink.CancelServerErrorRetry("the turn ended")
 	snapshot, err = svc.InputQueue.Snapshot(ctx, "agent-1")
 	require.NoError(t, err)
 	require.Len(t, snapshot.Items, 1)
 	assert.Equal(t, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, snapshot.Items[0].Kind)
-	sink.CancelUsageLimitRetry()
+	sink.CancelUsageLimitRetry("the usage limit lifted")
 	snapshot, err = svc.InputQueue.Snapshot(ctx, "agent-1")
 	require.NoError(t, err)
 	assert.Empty(t, snapshot.Items)

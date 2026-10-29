@@ -647,13 +647,13 @@ func (services *orderedProviderServices) ScheduleServerErrorRetry(sourcePayload 
 	writer := services.CaptureAutoRetry()
 	services.after("schedule server-error retry", func() { writer.ScheduleServerErrorRetry(sourcePayload) })
 }
-func (services *orderedProviderServices) CancelUsageLimitRetry() {
+func (services *orderedProviderServices) CancelUsageLimitRetry(reason string) {
 	writer := services.CaptureAutoRetry()
-	services.after("cancel usage-limit retry", func() { writer.CancelUsageLimitRetry() })
+	services.after("cancel usage-limit retry", func() { writer.CancelUsageLimitRetry(reason) })
 }
-func (services *orderedProviderServices) CancelServerErrorRetry() {
+func (services *orderedProviderServices) CancelServerErrorRetry(reason string) {
 	writer := services.CaptureAutoRetry()
-	services.after("cancel server-error retry", func() { writer.CancelServerErrorRetry() })
+	services.after("cancel server-error retry", func() { writer.CancelServerErrorRetry(reason) })
 }
 
 // ChildSink gives each child a stable queue and retains the child's original writer.

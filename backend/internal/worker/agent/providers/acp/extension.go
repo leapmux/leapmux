@@ -15,10 +15,19 @@ import (
 // provider block that read two fields under one lock thus stays one atomic
 // read.
 
+// TurnVerdict is the retry verdict of one turn end. The zero value means
+// NotRetryable.
+type TurnVerdict struct {
+	Failure providerkit.TurnFailure
+	Payload []byte
+}
+
 // PromptEnding describes the native end frame and any failure note that the provider already wrote.
 type PromptEnding struct {
 	NoteWritten bool
 	EndFrame    json.RawMessage
+	// Retry is the turn's retry verdict. Nil means NotRetryable.
+	Retry *TurnVerdict
 }
 
 // Hooks is what one ACP provider changes about the shared base. The Configure
@@ -103,6 +112,14 @@ type Hooks struct {
 	// agent withdraws such a request by an event of its own, rather than by the
 	// protocol's cancel notification, records what identifies it here.
 	ControlRequestObserver func(line *providerkit.ParsedLine)
+	// AnswerControlRequest answers a control request that the provider's own
+	// logic can answer, before the request reaches the reader. It returns ok
+	// false for a request that stays under manual control. The base calls it
+	// after ControlRequestObserver and before the bypass branch.
+	AnswerControlRequest func(line *providerkit.ParsedLine) (answer any, ok bool)
+	// ControlRequestAnswered reports the outcome of AnswerControlRequest. queued
+	// is true when the base accepted the answer and did not publish the request.
+	ControlRequestAnswered func(line *providerkit.ParsedLine, queued bool)
 	// AnswerlessControlsOutliveTurns states that each control request which the
 	// provider publishes with no cancel answer asks about the session or the
 	// process, not about the running turn. A stop and a context clear then

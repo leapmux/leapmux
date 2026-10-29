@@ -2,6 +2,8 @@ package cline
 
 import (
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +13,8 @@ import (
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit/providerkittest"
 )
 
 // feedTurn starts a turn by hand, with no hub command, so a test drives every
@@ -585,7 +589,7 @@ func TestClineRunEndWithALiveCompactionWritesAFailedEnd(t *testing.T) {
 			r.feedTurn(t)
 			r.feed(t, contracts.ClineEventSessionNotice, compactionNotice(contracts.ClineNoticePhaseStarted))
 			r.agent.dispatchMu.Lock()
-			r.agent.endTurn(completion, runEndRow(r.sessionID(), runReasonError, "The turn ended."))
+			r.agent.endTurn(completion, runEndRow(r.sessionID(), runReasonError, "The turn ended."), providerkit.TurnFailure{})
 			r.agent.dispatchMu.Unlock()
 			value, exists := r.sink.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
 			require.True(t, exists)
@@ -610,7 +614,7 @@ func TestClineCompactionDiscardClearsLiveStateWithoutARow(t *testing.T) {
 	r.feed(t, contracts.ClineEventSessionNotice, compactionNotice(contracts.ClineNoticePhaseStarted))
 	r.agent.DiscardOutput()
 	r.agent.dispatchMu.Lock()
-	r.agent.endTurn(agent.MessageCompletionInterrupted, runEndRow(r.sessionID(), runReasonAborted, ""))
+	r.agent.endTurn(agent.MessageCompletionInterrupted, runEndRow(r.sessionID(), runReasonAborted, ""), providerkit.TurnFailure{})
 	r.agent.dispatchMu.Unlock()
 	assert.Empty(t, r.sink.Notifications())
 	assert.Empty(t, r.sink.Messages())
@@ -661,7 +665,7 @@ func TestClineRetryEndsWithoutResolvingOnTheNextTurn(t *testing.T) {
 	r.feedTurn(t)
 	r.feed(t, contracts.ClineEventSessionNotice, map[string]any{"message": "Retry the model.", "metadata": map[string]any{"kind": contracts.ClineNoticeKindProviderErrorRetry, "phase": contracts.ClineNoticePhaseStarted}})
 	r.agent.dispatchMu.Lock()
-	r.agent.endTurn(agent.MessageCompletionError, runEndRow(r.sessionID(), runReasonError, "The model failed."))
+	r.agent.endTurn(agent.MessageCompletionError, runEndRow(r.sessionID(), runReasonError, "The model failed."), providerkit.TurnFailure{})
 	r.agent.dispatchMu.Unlock()
 	r.feedTurn(t)
 	r.feed(t, eventAssistantDelta, map[string]any{"text": "The next turn."})
@@ -685,7 +689,7 @@ func TestClineMalformedFinalFrameKeepsItsBufferedOutput(t *testing.T) {
 				r.feed(t, delta, map[string]any{"text": "The buffered output."})
 				r.feed(t, event, invalid.payload)
 				r.agent.dispatchMu.Lock()
-				r.agent.endTurn(agent.MessageCompletionInterrupted, runEndRow(r.sessionID(), runReasonAborted, ""))
+				r.agent.endTurn(agent.MessageCompletionInterrupted, runEndRow(r.sessionID(), runReasonAborted, ""), providerkit.TurnFailure{})
 				r.agent.dispatchMu.Unlock()
 				rows := r.sink.Messages()
 				require.Len(t, rows, 2)
@@ -733,4 +737,309 @@ func TestClineMalformedRunStartDoesNotStartATurn(t *testing.T) {
 	r.feed(t, eventRunStarted, nil)
 	assert.False(t, r.turnActive())
 	assert.Empty(t, r.sink.Messages())
+}
+
+// --- Automatic retry ---
+
+// probeRunEnd returns the captured run-end frame with eventID from
+// testdata/probe_run_ends.jsonl: the end event of every run of Cline 3.0.73
+// in .tmp/probe/cline/runs. The capture's local directories read /probe.
+func probeRunEnd(t *testing.T, eventID string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("testdata", "probe_run_ends.jsonl"))
+	require.NoError(t, err)
+	for _, line := range strings.Split(strings.TrimSpace(string(data)), "\n") {
+		var event struct {
+			EventID string `json:"eventId"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(line), &event))
+		if event.EventID == eventID {
+			return line
+		}
+	}
+	t.Fatalf("no captured run end has the event id %s", eventID)
+	return ""
+}
+
+// feedRunEnd hands one captured run-end frame to the agent, moved into the
+// rig's session. A timestamp that is not zero replaces the event's own, and a
+// negative one removes it.
+func (r *rig) feedRunEnd(t *testing.T, line string, timestamp int64) {
+	t.Helper()
+	var event map[string]any
+	require.NoError(t, json.Unmarshal([]byte(line), &event))
+	event["sessionId"] = r.sessionID()
+	switch {
+	case timestamp < 0:
+		delete(event, "timestamp")
+	case timestamp > 0:
+		event["timestamp"] = timestamp
+	}
+	data, err := json.Marshal(event)
+	require.NoError(t, err)
+	r.agent.HandleOutput(data)
+}
+
+// shiftedZAITimestamp moves the Z.AI 1308 capture into its window. The capture
+// failed at 01:12:30Z, more than five hours before its stamp, 15:00:00 at
+// UTC+8, which a real 1308 never states. 03:00:00Z lies inside the window.
+var shiftedZAITimestamp = time.Date(2026, 10, 28, 3, 0, 0, 0, time.UTC).UnixMilli()
+
+// The classifier reads the research frames of Cline 3.0.73
+// (.tmp/retry-research/cline-dsh.md), copied verbatim. The Z.AI frame's
+// timestamp moves into its window (shiftedZAITimestamp).
+func TestRunEndFailure(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name        string
+		line        string
+		timestamp   int64
+		interrupted bool
+		want        providerkit.TurnFailure
+	}{
+		{
+			name:      "a Z.AI usage limit schedules at its stamp",
+			line:      `{"version":"v1","event":"run.failed","eventId":"hevt_1793149950647_zt72i","sessionId":"1793149888146_4cdoc","timestamp":1793149950647,"payload":{"reason":"error","error":"Usage limit reached for 5 hour. Your limit will reset at 2026-10-28 15:00:00 (Request ID: req-probe-1793149950605)","result":{"text":"Usage limit reached for 5 hour. Your limit will reset at 2026-10-28 15:00:00 (Request ID: req-probe-1793149950605)","finishReason":"error","iterations":1}},"sequence":13}`,
+			timestamp: shiftedZAITimestamp,
+			want:      providerkit.TurnFailure{Kind: providerkit.TurnFailureUsageLimited, ResetAt: time.Date(2026, 10, 28, 7, 0, 1, 0, time.UTC), Cause: "Z.AI reported a usage limit that lifts at a stated time"},
+		},
+		{
+			// At its own timestamp, the stamp lies more than five hours ahead,
+			// which the vendor rule rejects. The window of the text decides.
+			name: "a Z.AI usage limit with an implausible stamp falls back to its window",
+			line: `{"version":"v1","event":"run.failed","eventId":"hevt_1793149950647_zt72i","sessionId":"1793149888146_4cdoc","timestamp":1793149950647,"payload":{"reason":"error","error":"Usage limit reached for 5 hour. Your limit will reset at 2026-10-28 15:00:00 (Request ID: req-probe-1793149950605)","result":{"text":"Usage limit reached for 5 hour. Your limit will reset at 2026-10-28 15:00:00 (Request ID: req-probe-1793149950605)","finishReason":"error","iterations":1}},"sequence":13}`,
+			want: providerkit.TurnFailure{Kind: providerkit.TurnFailureUsageLimited, Window: providerkit.UsageWindowWeekOrLess, Cause: "Z.AI reported a usage limit with an implausible reset stamp"},
+		},
+		{
+			name: "a ClinePass limit lifts at the event timestamp plus its delay",
+			line: `{"version":"v1","event":"run.failed","eventId":"hevt_1793150051960_mjlgp","sessionId":"1793150051604_b875q","timestamp":1793150051960,"payload":{"reason":"error","error":"You have reached your 5-hour Clinepass limit. The limit resets in 5h, please try again later.","result":{"text":"You have reached your 5-hour Clinepass limit. The limit resets in 5h, please try again later.","finishReason":"error","iterations":1}},"sequence":11}`,
+			want: providerkit.TurnFailure{Kind: providerkit.TurnFailureUsageLimited, ResetAt: time.UnixMilli(1793150051960).UTC().Add(5 * time.Hour), Window: providerkit.UsageWindowWeekOrLess, Cause: "Cline reported its ClinePass limit (the provider states when to retry)"},
+		},
+		{
+			name: "an overload is transient",
+			line: `{"version":"v1","event":"run.failed","eventId":"hevt_1793149950642_s9w4g","sessionId":"1793149888084_v8mbd","timestamp":1793149950642,"payload":{"reason":"error","error":"Overloaded (Request ID: req-probe-1793149950598)","result":{"text":"Overloaded (Request ID: req-probe-1793149950598)","finishReason":"error","iterations":1}},"sequence":13}`,
+			want: providerkit.TurnFailure{Kind: providerkit.TurnFailureTransient, Cause: "Cline reported a transient failure"},
+		},
+		{
+			name:        "an interrupted overload is not retryable",
+			line:        `{"version":"v1","event":"run.failed","eventId":"hevt_1793149950642_s9w4g","sessionId":"1793149888084_v8mbd","timestamp":1793149950642,"payload":{"reason":"error","error":"Overloaded (Request ID: req-probe-1793149950598)","result":{"text":"Overloaded (Request ID: req-probe-1793149950598)","finishReason":"error","iterations":1}},"sequence":13}`,
+			interrupted: true,
+			want:        providerkit.TurnFailure{},
+		},
+		{
+			name: "a rejected key is not retryable",
+			line: `{"version":"v1","event":"run.failed","eventId":"hevt_1793150297680_zl9gi","sessionId":"1793150297365_47kg2","timestamp":1793150297680,"payload":{"reason":"error","error":"Authentication Fails, Your api key is invalid (Request ID: req-probe-1793150297659)","result":{"text":"Authentication Fails, Your api key is invalid (Request ID: req-probe-1793150297659)","finishReason":"error","iterations":1}},"sequence":11}`,
+			want: providerkit.TurnFailure{},
+		},
+		{
+			name: "a completed run is not retryable",
+			line: `{"version":"v1","event":"run.completed","eventId":"hevt_1793149873095_ixmed","sessionId":"1793149872764_qv231","timestamp":1793149873095,"payload":{"reason":"completed","result":{"text":"Hello from the probe.","finishReason":"completed","iterations":1}},"sequence":16}`,
+			want: providerkit.TurnFailure{},
+		},
+		{
+			name: "an overload that ends the run at its mistake limit is not retryable (synthetic)",
+			line: `{"event":"run.failed","timestamp":1793149950642,"payload":{"reason":"mistake_limit","error":"Overloaded"}}`,
+			want: providerkit.TurnFailure{},
+		},
+		{
+			name: "an error with no reason is not retryable (synthetic)",
+			line: `{"event":"run.failed","timestamp":1793149950642,"payload":{"error":"Overloaded"}}`,
+			want: providerkit.TurnFailure{},
+		},
+		{
+			name: "an empty error is not retryable (synthetic)",
+			line: `{"event":"run.failed","timestamp":1793149950642,"payload":{"reason":"error"}}`,
+			want: providerkit.TurnFailure{},
+		},
+		{
+			name: "a request ID inside the text is not removed (synthetic)",
+			line: `{"event":"run.failed","timestamp":1793149950642,"payload":{"reason":"error","error":"Gateway (Request ID: r-1) said: Overloaded"}}`,
+			want: providerkit.TurnFailure{},
+		},
+		{
+			name: "a free model delay with seconds lifts at the timestamp plus the whole delay (synthetic)",
+			line: `{"event":"run.failed","timestamp":1793150051960,"payload":{"reason":"error","error":"Error 429: Daily free limit reached on model m. Try again in 1h 2m 3s"}}`,
+			want: providerkit.TurnFailure{Kind: providerkit.TurnFailureUsageLimited, ResetAt: time.UnixMilli(1793150051960).UTC().Add(time.Hour + 2*time.Minute + 3*time.Second), Window: providerkit.UsageWindowWeekOrLess, Cause: "Cline reported the free limit of the model (the provider states when to retry)"},
+		},
+		{
+			name: "a free model delay that repeats a unit falls back to the window (synthetic)",
+			line: `{"event":"run.failed","timestamp":1793150051960,"payload":{"reason":"error","error":"Error 429: Daily free limit reached on model m. Try again in 1h 2h"}}`,
+			want: providerkit.TurnFailure{Kind: providerkit.TurnFailureUsageLimited, Window: providerkit.UsageWindowWeekOrLess, Cause: "Cline reported the free limit of the model"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			var event hubEvent
+			require.NoError(t, json.Unmarshal([]byte(tc.line), &event))
+			if tc.timestamp != 0 {
+				event.Timestamp = tc.timestamp
+			}
+			var end runEnd
+			require.NoError(t, json.Unmarshal(event.Payload, &end))
+			fallback := time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC)
+			assert.Equal(t, tc.want, runEndFailure(end, tc.interrupted, event.publishedAt(fallback)))
+		})
+	}
+}
+
+func TestHubEventPublishedAt(t *testing.T) {
+	t.Parallel()
+	fallback := time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC)
+	assert.Equal(t, time.UnixMilli(1793150051960).UTC(), hubEvent{Timestamp: 1793150051960}.publishedAt(fallback))
+	assert.Equal(t, fallback, hubEvent{}.publishedAt(fallback), "an absent timestamp reads the fallback")
+	assert.Equal(t, fallback, hubEvent{Timestamp: -5}.publishedAt(fallback), "a negative timestamp reads the fallback")
+}
+
+// The captured end of each run reaches the real handler, and its verdict
+// follows the turn-end row.
+func TestClineRunEndsApplyTheirVerdictAfterTheTurnEnd(t *testing.T) {
+	t.Parallel()
+	transient := providerkit.TurnFailure{Kind: providerkit.TurnFailureTransient, Cause: "Cline reported a transient failure"}
+	for _, tc := range []struct {
+		name      string
+		eventID   string
+		timestamp int64
+		want      providerkit.TurnFailure
+	}{
+		{
+			name: "a Z.AI usage limit schedules at its stamp", eventID: "hevt_1793149950647_zt72i", timestamp: shiftedZAITimestamp,
+			want: providerkit.TurnFailure{Kind: providerkit.TurnFailureUsageLimited, ResetAt: time.Date(2026, 10, 28, 7, 0, 1, 0, time.UTC), Cause: "Z.AI reported a usage limit that lifts at a stated time"},
+		},
+		{
+			name: "a Z.AI weekly limit schedules at its stamp", eventID: "hevt_1793149950688_fuo6o",
+			want: providerkit.TurnFailure{Kind: providerkit.TurnFailureUsageLimited, ResetAt: time.Date(2026, 11, 3, 2, 0, 1, 0, time.UTC), Cause: "Z.AI reported a usage limit that lifts at a stated time"},
+		},
+		{
+			name: "a ClinePass limit schedules at the event timestamp plus its delay", eventID: "hevt_1793150051960_mjlgp",
+			want: providerkit.TurnFailure{Kind: providerkit.TurnFailureUsageLimited, ResetAt: time.UnixMilli(1793150051960).UTC().Add(5 * time.Hour), Window: providerkit.UsageWindowWeekOrLess, Cause: "Cline reported its ClinePass limit (the provider states when to retry)"},
+		},
+		{
+			name: "a free model limit schedules at the event timestamp plus its delay", eventID: "hevt_1793150051960_atqa3",
+			want: providerkit.TurnFailure{Kind: providerkit.TurnFailureUsageLimited, ResetAt: time.UnixMilli(1793150051960).UTC().Add(23*time.Hour + 59*time.Minute), Window: providerkit.UsageWindowWeekOrLess, Cause: "Cline reported the free limit of the model (the provider states when to retry)"},
+		},
+		{
+			name: "no ClinePass subscription is a billing block", eventID: "hevt_1793150051960_bo7ah",
+			want: providerkit.TurnFailure{Kind: providerkit.TurnFailureBillingBlocked, Cause: "Cline reported that the account has no ClinePass access"},
+		},
+		{
+			name: "a Z.AI balance block is a billing block", eventID: "hevt_1793149950642_75pou",
+			want: providerkit.TurnFailure{Kind: providerkit.TurnFailureBillingBlocked, Cause: "the vendor reported a billing or plan block"},
+		},
+		{
+			name: "an expired Z.AI package is a billing block", eventID: "hevt_1793149950671_gs6pu",
+			want: providerkit.TurnFailure{Kind: providerkit.TurnFailureBillingBlocked, Cause: "the vendor reported a billing or plan block"},
+		},
+		{name: "an overload is transient", eventID: "hevt_1793149950642_s9w4g", want: transient},
+		{name: "a 502 page is transient", eventID: "hevt_1793150176243_6fwgg", want: transient},
+		{name: "a refused connection is transient", eventID: "hevt_1793150176243_uige4", want: transient},
+		{name: "a stream that ended early is transient", eventID: "hevt_1793149889511_oip01", want: transient},
+		{
+			name: "a Z.AI rate limit is rate limited", eventID: "hevt_1793149898680_ohi9z",
+			want: providerkit.TurnFailure{Kind: providerkit.TurnFailureRateLimited, Cause: "the vendor reported a rate limit"},
+		},
+		{name: "an unknown provider message is not retryable", eventID: "hevt_1793149950564_5qiqp", want: providerkit.TurnFailure{}},
+		{name: "a rejected key is not retryable", eventID: "hevt_1793150297680_zl9gi", want: providerkit.TurnFailure{}},
+		{name: "a full context is not retryable", eventID: "hevt_1793149888636_uapeu", want: providerkit.TurnFailure{}},
+		{name: "a completed run is not retryable", eventID: "hevt_1793149873095_ixmed", want: providerkit.TurnFailure{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := newRig(t)
+			r.feedTurn(t)
+			r.feedRunEnd(t, probeRunEnd(t, tc.eventID), tc.timestamp)
+			assert.False(t, r.turnActive())
+			assert.Equal(t, providerkittest.TurnEndThen(tc.want), providerkittest.TurnEndAndRetryOps(r.sink.Timeline()))
+		})
+	}
+}
+
+// A run that the user interrupted never retries, even when it failed.
+func TestClineInterruptedRunDoesNotRetry(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.feedTurn(t)
+	r.agent.Mu.Lock()
+	r.agent.turn.interruptRequested = true
+	r.agent.Mu.Unlock()
+	r.feedRunEnd(t, probeRunEnd(t, "hevt_1793149950642_s9w4g"), 0)
+	assert.Equal(t, providerkittest.TurnEndThen(providerkit.TurnFailure{}), providerkittest.TurnEndAndRetryOps(r.sink.Timeline()))
+}
+
+// A run end that states no timestamp reads the agent's clock instead.
+func TestClineRunEndWithNoTimestampReadsTheClock(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.feedTurn(t)
+	before := time.Now()
+	r.feedRunEnd(t, probeRunEnd(t, "hevt_1793150051960_mjlgp"), -1)
+	after := time.Now()
+	timeline := providerkittest.TurnEndAndRetryOps(r.sink.Timeline())
+	require.Len(t, timeline, 3)
+	assert.Equal(t, "turn_end", timeline[0].Op)
+	assert.Equal(t, "schedule_usage_limit", timeline[1].Op)
+	assert.False(t, timeline[1].ResetAt.Before(before.Add(5*time.Hour)))
+	assert.False(t, timeline[1].ResetAt.After(after.Add(5*time.Hour)))
+	assert.Equal(t, "cancel_server_error", timeline[2].Op)
+}
+
+// A ClinePass delay that is zero or more than 31 days never schedules a
+// usage-limit retry: zero would fire at once and repeat for ever. The window of
+// the limit decides instead. The texts are the captured ClinePass text with
+// another delay.
+func TestClinePassDelayOutsideTheLimitsFallsBackToTheWindow(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		error string
+		want  providerkit.TurnFailure
+	}{
+		{
+			name:  "a zero delay",
+			error: "You have reached your 5-hour Clinepass limit. The limit resets in 0h, please try again later.",
+			want:  providerkit.TurnFailure{Kind: providerkit.TurnFailureUsageLimited, Window: providerkit.UsageWindowWeekOrLess, Cause: "Cline reported its ClinePass limit"},
+		},
+		{
+			name:  "a delay of more than 31 days",
+			error: "You have reached your 40-day Clinepass limit. The limit resets in 40d, please try again later.",
+			want:  providerkit.TurnFailure{Kind: providerkit.TurnFailureUsageLimited, Window: providerkit.UsageWindowLonger, Cause: "Cline reported its ClinePass limit"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := newRig(t)
+			r.feedTurn(t)
+			r.feed(t, contracts.ClineEventRunFailed, map[string]any{"reason": contracts.ClineRunReasonError, "error": tc.error})
+			assert.Equal(t, providerkittest.TurnEndThen(tc.want), providerkittest.TurnEndAndRetryOps(r.sink.Timeline()))
+		})
+	}
+}
+
+// A turn end that the worker writes states the worker's own error, not
+// Cline's, so it never retries. A failed reply after the run started is one:
+// its message reads like a 503, and still nothing schedules.
+func TestClineWorkerWrittenTurnEndDoesNotRetry(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	requestID := r.startTurn(t, "Hello.")
+	r.hub.reply(requestID, fakeReply{Code: "runtime_error", Message: "Service Unavailable"})
+	waitFor(t, func() bool { return !r.turnActive() }, "the failed reply ends the turn")
+	assert.Equal(t, providerkittest.TurnEndThen(providerkit.TurnFailure{}), providerkittest.TurnEndAndRetryOps(r.sink.Timeline()))
+}
+
+// A run end with no turn running ends nothing, so it applies no verdict.
+func TestClineRunEndWithNoTurnAppliesNoVerdict(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.feedRunEnd(t, probeRunEnd(t, "hevt_1793149950642_s9w4g"), 0)
+	assert.Empty(t, providerkittest.TurnEndAndRetryOps(r.sink.Timeline()))
+}
+
+// A discarded turn writes no row, so it applies no verdict.
+func TestClineDiscardedRunEndAppliesNoVerdict(t *testing.T) {
+	t.Parallel()
+	r := newRig(t)
+	r.feedTurn(t)
+	r.agent.DiscardOutput()
+	r.feedRunEnd(t, probeRunEnd(t, "hevt_1793149950642_s9w4g"), 0)
+	assert.Empty(t, providerkittest.TurnEndAndRetryOps(r.sink.Timeline()))
 }

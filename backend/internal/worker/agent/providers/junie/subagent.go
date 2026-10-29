@@ -23,10 +23,13 @@ type junieSubagentUpdate struct {
 	State             string `json:"state"`
 }
 
-// handleSessionMetadata folds Junie's goal and child-session updates into the
-// Worker state. The base handles every other ACP update.
+// handleSessionMetadata folds Junie's goal, session failure, and child-session
+// updates into the Worker state. The base handles every other ACP update.
 func (a *Agent) handleSessionMetadata(updateType string, metadata map[string]json.RawMessage, update json.RawMessage) bool {
-	if a.handleGoalMeta(updateType, metadata, update) {
+	// An update that states both a goal and a failure gives each to its
+	// reader.
+	failure := a.observeJunieSessionFailure(updateType, metadata, update)
+	if a.handleGoalMeta(updateType, metadata, update) || failure {
 		return true
 	}
 	switch updateType {

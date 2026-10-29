@@ -121,6 +121,8 @@ func (a *Agent) ClearContext() (string, error) {
 	a.turnSteerable = false
 	a.manualCompactionActive = false
 	a.lastTurnError = ""
+	// A usage limit of the replaced session no longer applies to this one.
+	a.usageTurnSeq++
 	a.tasks = nil
 	a.goal = kimiGoalState{}
 	a.Mu.Unlock()

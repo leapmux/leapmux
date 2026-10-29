@@ -212,7 +212,10 @@ type cursorNativeTask struct {
 	status          bgtask.Status
 }
 
-// handleCursorSessionUpdate reads lifecycle updates from the actual parent conversation.
+// handleCursorSessionUpdate reads lifecycle updates from the actual parent
+// conversation. An update of the root session also reaches the turn-failure
+// record first, which claims nothing, so the return value stays the
+// lifecycle's.
 func (a *Agent) handleCursorSessionUpdate(sessionID string, owner agent.ProviderServices, update json.RawMessage) bool {
 	var header struct {
 		Type     string                     `json:"sessionUpdate"`
@@ -220,6 +223,9 @@ func (a *Agent) handleCursorSessionUpdate(sessionID string, owner agent.Provider
 	}
 	if json.Unmarshal(update, &header) != nil {
 		return false
+	}
+	if sessionID != "" && sessionID == a.CurrentSessionID() {
+		a.recordCursorRootUpdate(header.Type, update)
 	}
 	return a.applyCursorSubagentLifecycle(sessionID, owner, header.Type, header.Metadata, update)
 }

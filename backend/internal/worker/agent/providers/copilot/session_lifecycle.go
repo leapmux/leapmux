@@ -152,6 +152,9 @@ func (a *Agent) forgetNativeSessionState(nextSessionID string) {
 	// The tool calls that the outgoing turn counted end with that turn, so the first
 	// turn of the replacement starts from zero.
 	a.turnToolUses = 0
+	// The failure records belong to the outgoing turn too, so the first turn end of
+	// the replacement cannot read them.
+	a.clearNativeTurnFailure()
 	a.sqlTodos = nil
 	if nextSessionID != "" {
 		a.stateMu.Lock()

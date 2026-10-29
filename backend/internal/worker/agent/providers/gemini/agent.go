@@ -18,6 +18,20 @@ type Agent struct {
 	modeEchoes []*geminiModeEcho
 	childMu    sync.Mutex
 	children   *geminiChildTranscript
+	// retryMu guards longWait and userStopRequested, which the prompt's end
+	// reads for the retry verdict, and which the next prompt forgets.
+	retryMu sync.Mutex
+	// longWait is the retry wait of Gemini's own that made LeapMux stop the
+	// running turn (stopForLongRetryWait).
+	longWait *geminiLongWait
+	// userStopRequested records a stop that the reader asked for.
+	userStopRequested bool
+	// retryWarnings reads Gemini's retry warnings from its debug log. Only the
+	// debug log's follower goroutine uses it.
+	retryWarnings geminiRetryWarningReader
+	// debugLog is the debug log of the process, which Start creates. It is nil
+	// for an agent that a test builds without Start.
+	debugLog *geminiDebugLog
 }
 
 type geminiModeCall struct {

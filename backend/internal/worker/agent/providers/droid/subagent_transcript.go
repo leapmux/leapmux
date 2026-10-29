@@ -53,13 +53,9 @@ type droidChildTail struct {
 }
 
 func newDroidChildTail(a *Agent, sessionID, dataRoot string) *droidChildTail {
-	clock := a.clock
-	if clock == nil {
-		clock = quartz.NewReal()
-	}
 	return &droidChildTail{
 		agent: a, sessionID: sessionID, dataRoot: dataRoot,
-		workDir: a.workingDir, clock: clock,
+		workDir: a.workingDir, clock: a.agentClock(),
 		done: make(chan struct{}), stopped: make(chan struct{}),
 	}
 }

@@ -264,6 +264,13 @@ type mimoError struct {
 	Data struct {
 		Message     string `json:"message"`
 		IsRetryable bool   `json:"isRetryable"`
+		// StatusCode, ResponseHeaders, and ResponseBody are the HTTP answer of
+		// an APIError, which the retry verdict reads (responseOf). They keep
+		// their raw form, so a value of an unexpected type cannot fail the
+		// decode of the failure that the transcript records.
+		StatusCode      json.RawMessage `json:"statusCode"`
+		ResponseHeaders json.RawMessage `json:"responseHeaders"`
+		ResponseBody    json.RawMessage `json:"responseBody"`
 	} `json:"data"`
 }
 

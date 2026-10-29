@@ -334,7 +334,7 @@ func (a *Agent) watchTurnReply(sessionID, requestID string, replies <-chan hubRe
 	current := a.sessionID == sessionID && a.turn.active && a.turn.requestID == requestID
 	a.Mu.Unlock()
 	if current {
-		a.endTurn(agent.MessageCompletionError, runEndRow(sessionID, runReasonError, failure.Error()))
+		a.endTurn(agent.MessageCompletionError, runEndRow(sessionID, runReasonError, failure.Error()), providerkit.TurnFailure{Kind: providerkit.TurnFailureNotRetryable})
 	}
 }
 

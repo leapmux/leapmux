@@ -101,9 +101,11 @@ type Sink struct {
 	// the whole distinction the flag exists to carry.
 	goalClearSnapshots      []bool
 	goalCapabilityPublishes int
-	autoSchedules           []agent.AutoRetrySchedule
-	autoCancels             []leapmuxv1.AgentInputKind
-	planModeToolUses        sync.Map
+	// timeline records every persist and retry operation in call order.
+	timeline         []TimelineEntry
+	autoSchedules    []agent.AutoRetrySchedule
+	autoCancels      []autoRetryCancel
+	planModeToolUses sync.Map
 	// childSinkMu + children let Sink serve ChildSink as a per-child Sink
 	// so provider tests can assert what got routed into a subagent transcript.
 	childSinkMu sync.Mutex
@@ -163,6 +165,20 @@ type Sink struct {
 }
 
 type nativeMessageIdentity struct{ sessionID, key string }
+
+// TimelineEntry records one sink operation in call order.
+type TimelineEntry struct {
+	// Op names the operation: "message", "turn_end", "notification",
+	// "leapmux_notification", "schedule_usage_limit", "schedule_server_error",
+	// "cancel_usage_limit", or "cancel_server_error".
+	Op string
+	// Kind is the retry kind for retry operations, zero otherwise.
+	Kind leapmuxv1.AgentInputKind
+	// Reason is the cancellation reason, empty for non-cancel operations.
+	Reason string
+	// ResetAt is the reset instant for a usage-limit schedule, zero otherwise.
+	ResetAt time.Time
+}
 
 // Sink implements the service facets. A test passes it to a provider through
 // NewProviderServices, as the production sink does.
@@ -266,6 +282,11 @@ func (s *Sink) persistMessageLocked(source leapmuxv1.MessageSource, content agen
 		stored:   s.PersistErr == nil,
 		Metadata: append([]byte(nil), content.Metadata...), Completion: content.Completion, ParentSpanID: span.ParentSpanID, ConnectorSpanID: span.ConnectorSpanID, SpanID: span.SpanID, SpanType: span.SpanType, Closing: span.Closing, SpanColor: span.SpanColor, MarkType: span.MarkType, NoSpan: span.NoSpan, TurnEnd: turnEnd, SpansOpenAtPersist: spans,
 		TranscriptOnly: owner != nil && !owner.currentLocked()})
+	if turnEnd {
+		s.timeline = append(s.timeline, TimelineEntry{Op: "turn_end"})
+	} else {
+		s.timeline = append(s.timeline, TimelineEntry{Op: "message"})
+	}
 	if s.PersistErr == nil {
 		content.WriteReceipt.RecordStoredMessage(int64(len(s.messages)))
 		content.WriteReceipt.RecordStoredWrite(true)
@@ -664,6 +685,7 @@ func (s *Sink) PersistNotification(source leapmuxv1.MessageSource, content agent
 	if report {
 		s.leapMuxNotifications = append(s.leapMuxNotifications, payload)
 	}
+	s.timeline = append(s.timeline, TimelineEntry{Op: "notification"})
 	content.WriteReceipt.RecordStoredWrite(!s.SuppressNotificationBroadcast)
 	return !s.SuppressNotificationBroadcast, nil
 }
@@ -875,6 +897,7 @@ func (s *Sink) PersistLeapMuxNotification(info map[string]interface{}) {
 		cp[k] = v
 	}
 	s.leapMuxNotifications = append(s.leapMuxNotifications, cp)
+	s.timeline = append(s.timeline, TimelineEntry{Op: "leapmux_notification"})
 }
 
 func (s *Sink) PersistSubagentReport(write agent.SubagentReportWrite) (bool, error) {
@@ -1032,15 +1055,25 @@ func (writer *capturedAutoRetryWriter) schedule(kind leapmuxv1.AgentInputKind, r
 		sink.autoSchedules = append(sink.autoSchedules, agent.AutoRetrySchedule{
 			Kind: kind, ResetAt: resetAt, SourcePayload: slices.Clone(payload),
 		})
+		op := "schedule_server_error"
+		if kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT {
+			op = "schedule_usage_limit"
+		}
+		sink.timeline = append(sink.timeline, TimelineEntry{Op: op, Kind: kind, ResetAt: resetAt})
 	}
 }
 
-func (writer *capturedAutoRetryWriter) cancel(kind leapmuxv1.AgentInputKind) {
+func (writer *capturedAutoRetryWriter) cancel(kind leapmuxv1.AgentInputKind, reason string) {
 	sink := writer.owner.sink
 	sink.mu.Lock()
 	defer sink.mu.Unlock()
 	if writer.owner.currentLocked() {
-		sink.autoCancels = append(sink.autoCancels, kind)
+		sink.autoCancels = append(sink.autoCancels, autoRetryCancel{kind: kind, reason: reason})
+		op := "cancel_server_error"
+		if kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT {
+			op = "cancel_usage_limit"
+		}
+		sink.timeline = append(sink.timeline, TimelineEntry{Op: op, Kind: kind, Reason: reason})
 	}
 }
 
@@ -1052,16 +1085,17 @@ func (writer *capturedAutoRetryWriter) ScheduleServerErrorRetry(payload []byte) 
 	writer.schedule(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, time.Time{}, payload)
 }
 
-func (writer *capturedAutoRetryWriter) CancelUsageLimitRetry() {
-	writer.cancel(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT)
+func (writer *capturedAutoRetryWriter) CancelUsageLimitRetry(reason string) {
+	writer.cancel(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, reason)
 }
 
-func (writer *capturedAutoRetryWriter) CancelServerErrorRetry() {
-	writer.cancel(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR)
+func (writer *capturedAutoRetryWriter) CancelServerErrorRetry(reason string) {
+	writer.cancel(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, reason)
 }
 
 // The four retry methods record the request that the production sink sends,
-// so a provider test asserts the kind, the instant, and the payload.
+// so a provider test asserts the kind, the instant, the payload, and the
+// reason of a cancellation.
 func (s *Sink) ScheduleUsageLimitRetry(resetAt time.Time, sourcePayload []byte) {
 	s.recordAutoSchedule(agent.AutoRetrySchedule{
 		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, ResetAt: resetAt, SourcePayload: sourcePayload,
@@ -1072,21 +1106,38 @@ func (s *Sink) ScheduleServerErrorRetry(sourcePayload []byte) {
 		Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, SourcePayload: sourcePayload,
 	})
 }
-func (s *Sink) CancelUsageLimitRetry() {
-	s.recordAutoCancel(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT)
+func (s *Sink) CancelUsageLimitRetry(reason string) {
+	s.recordAutoCancel(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, reason)
 }
-func (s *Sink) CancelServerErrorRetry() {
-	s.recordAutoCancel(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR)
+func (s *Sink) CancelServerErrorRetry(reason string) {
+	s.recordAutoCancel(leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, reason)
 }
 func (s *Sink) recordAutoSchedule(schedule agent.AutoRetrySchedule) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.autoSchedules = append(s.autoSchedules, schedule)
+	op := "schedule_server_error"
+	if schedule.Kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT {
+		op = "schedule_usage_limit"
+	}
+	s.timeline = append(s.timeline, TimelineEntry{Op: op, Kind: schedule.Kind, ResetAt: schedule.ResetAt})
 }
-func (s *Sink) recordAutoCancel(kind leapmuxv1.AgentInputKind) {
+func (s *Sink) recordAutoCancel(kind leapmuxv1.AgentInputKind, reason string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.autoCancels = append(s.autoCancels, kind)
+	s.autoCancels = append(s.autoCancels, autoRetryCancel{kind: kind, reason: reason})
+	op := "cancel_server_error"
+	if kind == leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT {
+		op = "cancel_usage_limit"
+	}
+	s.timeline = append(s.timeline, TimelineEntry{Op: op, Kind: kind, Reason: reason})
+}
+
+// autoRetryCancel records one cancellation request: the retry kind and the
+// reason that the provider gave for the log.
+type autoRetryCancel struct {
+	kind   leapmuxv1.AgentInputKind
+	reason string
 }
 
 // --- Subagent transcripts and the background-task registry (test recording) ---
@@ -1604,6 +1655,21 @@ func (s *Sink) BackgroundTasks() []bgtask.Item {
 	return out
 }
 
+// appendTimeline records one operation of a sink that wraps this one and keeps
+// its own record of it, as ControlSink does for LeapMux notifications.
+func (s *Sink) appendTimeline(entry TimelineEntry) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.timeline = append(s.timeline, entry)
+}
+
+// Timeline returns every persist and retry operation in call order.
+func (s *Sink) Timeline() []TimelineEntry {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return slices.Clone(s.timeline)
+}
+
 // MessageCount returns the number of recorded message attempts.
 func (s *Sink) MessageCount() int {
 	s.mu.Lock()
@@ -1792,7 +1858,14 @@ func (s *Sink) AutoCancelCount() int {
 func (s *Sink) LastAutoCancel() leapmuxv1.AgentInputKind {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.autoCancels[len(s.autoCancels)-1]
+	return s.autoCancels[len(s.autoCancels)-1].kind
+}
+
+// LastAutoCancelReason returns the reason of the last cancellation request.
+func (s *Sink) LastAutoCancelReason() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.autoCancels[len(s.autoCancels)-1].reason
 }
 
 // nop is a no-op implementation of ServiceFacets.
@@ -1873,8 +1946,8 @@ func (nop) GoalWriterFor(agent.CapturedTranscript) (agent.CapturedGoalWriter, er
 func (nop) CaptureAutoRetry() agent.AutoRetryWriter               { return nop{} }
 func (nop) ScheduleUsageLimitRetry(time.Time, []byte)             {}
 func (nop) ScheduleServerErrorRetry([]byte)                       {}
-func (nop) CancelUsageLimitRetry()                                {}
-func (nop) CancelServerErrorRetry()                               {}
+func (nop) CancelUsageLimitRetry(string)                          {}
+func (nop) CancelServerErrorRetry(string)                         {}
 func (nop) EnsureChildAgent(agent.ChildAgentSpec) (string, error) { return "", nil }
 func (nop) ChildSpawnSpan(string) (string, error)                 { return "", nil }
 func (nop) ChildSink(string) agent.ProviderServices               { return Nop() }

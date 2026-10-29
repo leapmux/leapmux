@@ -811,6 +811,53 @@ describe('parseScenarioSpec', () => {
       .toThrow('midStream must be a boolean')
   })
 
+  it('keeps the retry-after seconds of an error and refuses a value that states no instant', () => {
+    expect(parseScenarioSpec({
+      steps: [
+        {
+          error: { status: 429, message: 'limit', retryAfterSeconds: 18000 },
+        },
+      ],
+    }).steps[0]?.error)
+      .toEqual({ status: 429, message: 'limit', retryAfterSeconds: 18000 })
+    for (const retryAfterSeconds of [0, -1, 1.5, '60', Number.NaN]) {
+      expect(() => parseScenarioSpec({
+        steps: [
+          {
+            error: { status: 429, message: 'limit', retryAfterSeconds },
+          },
+        ],
+      }))
+        .toThrow('retryAfterSeconds must be a positive integer')
+    }
+    expect(() => parseScenarioSpec({
+      steps: [
+        {
+          error: {
+            status: 429,
+            message: 'limit',
+            retryAfterSeconds: 60,
+            midStream: true,
+          },
+        },
+      ],
+    }))
+      .toThrow('cannot combine retryAfterSeconds with a mid-stream failure')
+    expect(parseScenarioSpec({
+      steps: [
+        {
+          error: {
+            status: 429,
+            message: 'limit',
+            retryAfterSeconds: 60,
+            midStream: false,
+          },
+        },
+      ],
+    }).steps[0]?.error)
+      .toEqual({ status: 429, message: 'limit', retryAfterSeconds: 60 })
+  })
+
   it('keeps an incomplete-stream error option', () => {
     expect(parseScenarioSpec({
       steps: [

@@ -24,11 +24,13 @@ type Agent struct {
 // constructor binds the native session-metadata reader before the daemon
 // bridge starts, so every start path reports the session goal that Kilo itself
 // holds. Once the daemon answers, it reads Kilo's configuration and the plan
-// usage, and it reads the usage again after each turn.
+// usage, and it reads the usage again after each turn. The verdict of a failed
+// turn reads the Kilo gateway's own codes first.
 func newAgent(swarm bool) *Agent {
 	a := &Agent{usageRefresh: make(chan struct{}, 1), swarm: swarm}
 	a.MemberEvents = a.observeKiloGoal
 	a.MemberOptionGroups = a.swarmOptionGroups
+	a.MemberFailure = kiloMemberFailure
 	a.DaemonReady = func(ctx context.Context) {
 		a.requestUsageRefresh()
 		// The bridge calls this before it reads events, so the read goes on its own goroutine.

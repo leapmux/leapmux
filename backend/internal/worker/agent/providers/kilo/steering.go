@@ -71,9 +71,15 @@ func (a *Agent) finishKiloSteer(sessionID string, response json.RawMessage, err 
 	if !last || !ownsTurn || a.CurrentSessionID() != sessionID {
 		return
 	}
+	// The steer's end is the turn's end when the prompt ended first, so it
+	// decides the turn's verdict as a prompt end does. While the prompt still
+	// runs, the base keeps the verdict with the queued turn, or drops it with a
+	// turn that left no row, and the prompt's own end decides. Either response
+	// order thus applies one verdict.
+	verdict := a.TurnEndVerdict(err, a.IsStopped())
 	if len(end) == 0 {
-		a.EndAgentTurnWithoutRow()
+		a.EndAgentTurnWithoutRowWithVerdict(verdict)
 		return
 	}
-	a.EndAgentTurn(end)
+	a.EndAgentTurnWithVerdict(end, verdict)
 }

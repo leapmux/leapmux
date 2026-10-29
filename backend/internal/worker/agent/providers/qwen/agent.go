@@ -18,6 +18,9 @@ import (
 // it as a turn of its own and reports its progress on the turn's messages.
 const qwenCompressCommand = "/compress"
 
+// qwenSummarizeAlias is the other name of Qwen Code's compress command.
+const qwenSummarizeAlias = "summarize"
+
 // Agent manages a single Qwen Code process.
 type Agent struct {
 	acp.Base
@@ -31,8 +34,16 @@ type Agent struct {
 	discreteMessageID uint64
 	retryCount        int64
 	requestHasText    bool
-	retryResolution   providerkit.RetryResolution
-	compressPending   *qwenCompactionRequest
+	// failedPromptID is the promptId of the main-session request that last
+	// ended with an error. It is nil when no request failed after the last
+	// request start or reset. The next start of a request of that prompt is
+	// the retry of the failed request.
+	failedPromptID  *string
+	retryResolution providerkit.RetryResolution
+	// compressPending identifies the running prompt when it runs Qwen's
+	// compaction, from its preparation (prepareCompressPrompt) to its end
+	// (handlePromptEnded). The next prompt's start clears it.
+	compressPending *qwenCompactionRequest
 	// outputStyle is the launch value of the Output Style axis. Qwen reads it
 	// only at start, so a change restarts the process.
 	outputStyle string
@@ -162,13 +173,47 @@ func pluralMessages(n int) string {
 // `/compress` makes the summary turn, and states its result on the turn's
 // messages.
 func (a *Agent) CompactContext() error {
+	return a.sendCompressPrompt(nil, qwenCompressCommand)
+}
+
+// SendInput starts one prompt. Qwen runs a typed compaction command as the
+// turn of CompactContext, so such a prompt starts the same compaction turn.
+func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
+	if !qwenStartsCompaction(content, attachments) {
+		return a.Base.SendInput(content, attachments)
+	}
+	return a.sendCompressPrompt(nil, content)
+}
+
+// SendInputForSession is SendInput for the session that the caller validated.
+func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
+	if !qwenStartsCompaction(content, attachments) {
+		return a.Base.SendInputForSession(sessionID, content, attachments)
+	}
+	return a.sendCompressPrompt(&sessionID, content)
+}
+
+// qwenStartsCompaction reports whether Qwen runs a prompt of content and
+// attachments as its compaction. Qwen Code 0.26.0 runs /compress and its
+// alias /summarize, and reads their arguments as instructions for the summary
+// (compressCommand). A message with an attachment is a conversation turn.
+func qwenStartsCompaction(content string, attachments []*leapmuxv1.Attachment) bool {
+	name, _, ok := providerkit.SlashCommand(content)
+	return ok && len(attachments) == 0 && (name == strings.TrimPrefix(qwenCompressCommand, "/") || name == qwenSummarizeAlias)
+}
+
+// sendCompressPrompt sends content as a prompt that runs Qwen's compaction
+// turn. expected is the session that the input was written for, or nil for the
+// current session. The base offers the prompt's preparation for the current
+// session only, so the preparation checks expected against the prompt's
+// session itself. The check before the send refuses another session before the
+// base claims the turn, as the base's own check does.
+func (a *Agent) sendCompressPrompt(expected *string, content string) error {
+	if err := providerkit.CheckInputSession(expected, a.CurrentSessionID()); err != nil {
+		return err
+	}
 	request := &qwenCompactionRequest{}
-	err := a.SendPreparedPrompt(qwenCompressCommand, nil, func(string) error {
-		a.stateMu.Lock()
-		a.compressPending = request
-		a.stateMu.Unlock()
-		return nil
-	})
+	err := a.SendPreparedPrompt(content, nil, a.prepareCompressPrompt(expected, request))
 	if err == nil {
 		return nil
 	}
@@ -184,4 +229,20 @@ func (a *Agent) CompactContext() error {
 		}
 		return err
 	})
+}
+
+// prepareCompressPrompt returns the preparation of the compaction prompt that
+// request identifies, for the session expected, or for any session when
+// expected is nil. It receives the session of the prompt, refuses another
+// session than expected, and otherwise marks the prompt with request.
+func (a *Agent) prepareCompressPrompt(expected *string, request *qwenCompactionRequest) func(sessionID string) error {
+	return func(sessionID string) error {
+		if err := providerkit.CheckInputSession(expected, sessionID); err != nil {
+			return err
+		}
+		a.stateMu.Lock()
+		a.compressPending = request
+		a.stateMu.Unlock()
+		return nil
+	}
 }

@@ -14,6 +14,7 @@
     "tools",
     "compactionOutcomes",
     "compactionTriggers",
+    "stopReasons",
     "notificationEvents"
   ],
   "$defs": {
@@ -145,6 +146,9 @@
       "$ref": "#/$defs/table"
     },
     "compactionTriggers": {
+      "$ref": "#/$defs/table"
+    },
+    "stopReasons": {
       "$ref": "#/$defs/table"
     },
     "notificationEvents": {

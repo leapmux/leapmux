@@ -12,6 +12,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
 type sessionStream struct {
@@ -434,6 +435,13 @@ func (a *Agent) reportStreamFailure(err error) {
 		a.Mu.Unlock()
 		return
 	}
+	turnRunning := a.active
+	// A failure that ends a compaction turn applies the compaction's verdict in
+	// place of compact.
+	compactionTurn := turnRunning && a.compactionTurn
+	if compactionTurn {
+		a.compactionTurn = false
+	}
 	a.streamFailure = err
 	stopDone := make(chan struct{})
 	a.failureStopDone = stopDone
@@ -468,6 +476,17 @@ func (a *Agent) reportStreamFailure(err error) {
 	slog.Warn("DeepSeek Harness Remote stream failed", "agent_id", a.AgentID(), "error", err)
 	a.flushPendingErrors(err.Error())
 	a.persistAgentError(err.Error())
+	if turnRunning {
+		// The failure ends the running turn with no turn/end, so the turn states
+		// no retryable failure. A failure while idle ends no turn, and it keeps
+		// the retry that an earlier turn scheduled. A compaction turn never
+		// retries either.
+		failure := providerkit.TurnFailure{Kind: providerkit.TurnFailureNotRetryable}
+		if compactionTurn {
+			failure = providerkit.CompactionEnd()
+		}
+		providerkit.ApplyTurnFailure(a.sink, failure, nil)
+	}
 	a.setTurnState(false)
 	// Stop can wait for the process. Keep the Remote reader free to finish during that wait.
 	// Wait joins this owned stop operation before it removes the private output files.

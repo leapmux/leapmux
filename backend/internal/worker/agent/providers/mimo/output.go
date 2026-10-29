@@ -1518,18 +1518,21 @@ func (a *Agent) handleCompactionPart(event mimoEvent, sessionID string, part mim
 	state.phase, state.live = phase, phase == compactionStarted
 	a.compactions[part.ID] = state
 	var ack chan struct{}
-	var releaseManual bool
+	var releaseManual, verdictDue bool
+	var verdictEpoch uint64
 	if actorID == mainActorID {
 		if phase == compactionStarted {
 			ack = a.compactionAck
 			a.compactionAck = nil
 			if ack != nil {
 				a.manualCompactionID = part.ID
+				a.manualCompactionVerdictDue = true
 			}
 		} else if part.ID == a.manualCompactionID {
 			a.manualCompactionID = ""
 			a.manualCompactionReady = true
 			releaseManual = true
+			verdictDue, verdictEpoch = a.takeManualCompactionVerdictLocked()
 		}
 	}
 	a.Mu.Unlock()
@@ -1544,6 +1547,11 @@ func (a *Agent) handleCompactionPart(event mimoEvent, sessionID string, part mim
 		close(ack)
 	}
 	if releaseManual {
+		// The summary ends the compaction, and its verdict follows the stored
+		// end and precedes the release, as a turn end's does.
+		if verdictDue {
+			a.applyCompactionVerdict(verdictEpoch)
+		}
 		a.Mu.Lock()
 		a.turnActive = false
 		a.Mu.Unlock()
@@ -1572,6 +1580,7 @@ func (a *Agent) handleMessageRemoved(event mimoEvent) {
 		return
 	}
 	var ended []*mimoCompaction
+	var verdictDue bool
 	for partID, state := range a.compactions {
 		if state.messageID != payload.MessageID || state.phase == compactionEnded {
 			continue
@@ -1581,6 +1590,12 @@ func (a *Agent) handleMessageRemoved(event mimoEvent) {
 		if partID == a.manualCompactionID {
 			a.manualCompactionID = ""
 			a.manualCompactionReady = false
+			// A running turn holds the compaction until its idle, and endTurn
+			// spends the mark there. With no turn running, the rollback ends
+			// the compaction.
+			if !a.turnActive {
+				verdictDue, _ = a.takeManualCompactionVerdictLocked()
+			}
 		}
 	}
 	detail := a.compactionErrors[payload.MessageID]
@@ -1590,6 +1605,9 @@ func (a *Agent) handleMessageRemoved(event mimoEvent) {
 	for _, state := range ended {
 		providerkit.EndCompaction(state.sink)
 		providerkit.PersistCompactionEnded(mimoWorkerNotifications{agent: a, sink: state.sink, main: state.actorID == mainActorID}, providerkit.CompactionEndFailed, detail)
+	}
+	if verdictDue {
+		a.applyCompactionVerdict(0)
 	}
 }
 
@@ -1688,11 +1706,14 @@ func (a *Agent) beginTurn() {
 	a.sink.ReportProgress(agent.ResetModelProgress())
 }
 
-// endTurn persists unfinished root output, then the divider, then clears the active flag.
+// endTurn persists unfinished root output, then the divider, then applies the
+// automatic-retry verdict, then clears the active flag.
 //
 // The divider is the event that ended the turn: the failure when one failed it,
 // else the idle status. PersistTurnEnd reads the turn's tool count before the
-// active flag clears. That clear releases the Worker input queue.
+// active flag clears. That clear releases the Worker input queue. The verdict
+// classifies the failure of the divider (mimoTurnFailure). A turn that ended
+// well or by a stop is NotRetryable.
 //
 // An idle with no active turn persists nothing and republishes the idle turn.
 // The Worker can hold an active turn before this agent starts one.
@@ -1722,6 +1743,9 @@ func (a *Agent) endTurn(idle []byte) {
 	}
 	a.manualCompactionID = ""
 	a.manualCompactionReady = false
+	// The mark stands here only for a compaction that a rollback ended inside
+	// this turn, so this turn is the compaction's.
+	compaction, _ := a.takeManualCompactionVerdictLocked()
 	if a.turnFailure == nil && a.runningActorsLocked() == 0 {
 		// With no live child, an unclaimed current failure belongs to the main prompt.
 		for _, failure := range a.pendingFailures {
@@ -1733,6 +1757,7 @@ func (a *Agent) endTurn(idle []byte) {
 		}
 	}
 	selected := a.turnFailure
+	epoch := a.turnEpoch
 	completion := agent.MessageCompletionComplete
 	divider := idle
 	switch {
@@ -1779,6 +1804,18 @@ func (a *Agent) endTurn(idle []byte) {
 		a.Mu.Lock()
 		a.removeFailureLocked(selected)
 		a.Mu.Unlock()
+	}
+	// The verdict follows the divider's write attempt. A divider whose write
+	// failed keeps the verdict that this end applied, and the retry of the
+	// write (retryRetainedTurnEnd) decides nothing.
+	reported := selected
+	if !reportsFailure {
+		reported = nil
+	}
+	if compaction {
+		a.applyCompactionVerdict(epoch)
+	} else {
+		a.applyTurnVerdict(epoch, reported)
 	}
 	a.resetUnownedRootSpans()
 

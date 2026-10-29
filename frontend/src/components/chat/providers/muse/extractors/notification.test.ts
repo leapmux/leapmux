@@ -526,3 +526,120 @@ describe('museNotificationEntry retry', () => {
     ])
   })
 })
+
+describe('museNotificationEntry model retry', () => {
+  // The first provider-attempt retry of Muse's s500many probe run.
+  const probed = {
+    jsonrpc: '2.0',
+    method: 'turn/modelRetryScheduled',
+    params: {
+      sessionId: '01a18014-aa0a-7ea1-9852-8bc110159315',
+      viewCursor: 'v4:01a18014-aa0a-7ea1-9852-8bc110159315:7',
+      sourceRange: {
+        stream: { kind: 'session', id: '01a18014-aa0a-7ea1-9852-8bc110159315' },
+        first: { id: '01a18014-ad28-7350-a33c-4e6ecdb8d22d', sequence: 53 },
+        last: { id: '01a18014-ad28-7350-a33c-4e6ecdb8d22d', sequence: 53 },
+      },
+      turnId: '01a18014-abb6-7342-b725-deb73957d6bb',
+      attempt: 1,
+      nextAttempt: 2,
+      maxAttempts: 10,
+      retryDelayMs: 20,
+      system: 'meta',
+      errorKind: 'server',
+      httpStatus: 500,
+    },
+    emittedAtMs: 1793150201136,
+  }
+
+  it('reads the native model retry fields', () => {
+    expect(museNotificationEntry(probed)).toEqual([
+      {
+        kind: 'retry',
+        scope: 'api',
+        attempt: 2,
+        maxAttempts: 10,
+        delayMs: 20,
+        error: 'server, HTTP 500',
+      },
+    ])
+  })
+
+  it('counts the attempt that runs next, as the turn retry does', () => {
+    const [entry] = museNotificationEntry({
+      method: 'turn/modelRetryScheduled',
+      params: { attempt: 9, nextAttempt: 10, maxAttempts: 10 },
+    })
+    expect(entry).toEqual({
+      kind: 'retry',
+      scope: 'api',
+      attempt: 10,
+      maxAttempts: 10,
+    })
+  })
+
+  it('states the error kind alone when no status is present', () => {
+    expect(museNotificationEntry({
+      method: 'turn/modelRetryScheduled',
+      params: { nextAttempt: 2, errorKind: 'transport' },
+    })).toEqual([
+      {
+        kind: 'retry',
+        scope: 'api',
+        attempt: 2,
+        error: 'transport',
+      },
+    ])
+  })
+
+  it('states the status alone when no error kind is present', () => {
+    expect(museNotificationEntry({
+      method: 'turn/modelRetryScheduled',
+      params: { nextAttempt: 2, httpStatus: 429 },
+    })).toEqual([
+      {
+        kind: 'retry',
+        scope: 'api',
+        attempt: 2,
+        error: 'HTTP 429',
+      },
+    ])
+  })
+
+  it.each([
+    { label: '99', httpStatus: 99 },
+    { label: '600', httpStatus: 600 },
+    { label: '4.5', httpStatus: 4.5 },
+    { label: '-429', httpStatus: -429 },
+    { label: 'the string "500"', httpStatus: '500' },
+    { label: 'null', httpStatus: null },
+    { label: 'NaN', httpStatus: Number.NaN },
+  ])('omits an HTTP status that is not one: $label', ({ httpStatus }) => {
+    expect(museNotificationEntry({
+      method: 'turn/modelRetryScheduled',
+      params: { errorKind: 'rate_limited', httpStatus },
+    })).toEqual([
+      { kind: 'retry', scope: 'api', error: 'rate_limited' },
+    ])
+  })
+
+  it('omits invalid counters and a blank error kind', () => {
+    expect(museNotificationEntry({
+      method: 'turn/modelRetryScheduled',
+      params: {
+        nextAttempt: -1,
+        maxAttempts: 1.5,
+        retryDelayMs: Infinity,
+        errorKind: '  ',
+      },
+    })).toEqual([
+      { kind: 'retry', scope: 'api' },
+    ])
+  })
+
+  it('reads a notice without params as a bare retry', () => {
+    expect(museNotificationEntry({ method: 'turn/modelRetryScheduled' })).toEqual([
+      { kind: 'retry', scope: 'api' },
+    ])
+  })
+})

@@ -106,7 +106,7 @@ func (a *Agent) observeChildCard(rowKey, title string, rawInput, rawOutput json.
 	if final {
 		state.finalStatus = acp.FinalStatus(status)
 		state.finalSeen = true
-		state.deadline = a.archiveClock().Now().Add(diracArchiveDeadline)
+		state.deadline = a.agentClock().Now().Add(diracArchiveDeadline)
 		// The archive reader keeps identity and replay position. The last live
 		// delta is already in newEvents, so no cumulative card must stay here.
 		state.trajectory = nil

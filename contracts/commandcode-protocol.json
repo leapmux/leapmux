@@ -1,5 +1,5 @@
 {
-  "_readme": "Command Code native JSON-RPC events come from `command-code --experimental --rpc`. Every event frame holds its native event under `event`. The backend keeps original provider bytes. Both languages read these event types and tool names. Permission modes are native state values.\n\nThe Worker preserves each native event. The browser shows reported output file paths beside the original inline preview. LeapMux reads no output file. The official mod bridge calls native session compaction through an authenticated local endpoint.\n\ncompactionOutcomes holds the outcomes that both sides read. Only the Worker compares compactionTriggers. notificationEvents lists the events that the Worker persists as notifications. The browser threads them. A compaction start is live session state. The Worker consumes compaction_done.",
+  "_readme": "Command Code native JSON-RPC events come from `command-code --experimental --rpc`. Every event frame holds its native event under `event`. The backend keeps original provider bytes. Both languages read these event types and tool names. Permission modes are native state values.\n\nThe Worker preserves each native event. The browser shows reported output file paths beside the original inline preview. LeapMux reads no output file. The official mod bridge calls native session compaction through an authenticated local endpoint.\n\ncompactionOutcomes holds the outcomes that both sides read. Only the Worker compares compactionTriggers. stopReasons holds the `stopReason` values of `turn/completed` that a reader compares. The Worker reads them to record an interrupted or a failed turn and to decide the automatic retry of a failed turn. It also writes them on the turn end of a process that exits during a turn. The browser draws the turn-end divider from them. notificationEvents lists the events that the Worker persists as notifications. The browser threads them. A compaction start is live session state. The Worker consumes compaction_done.",
   "frameKinds": {
     "Event": "event"
   },
@@ -60,6 +60,11 @@
     "Manual": "manual",
     "Overflow": "overflow"
   },
+  "stopReasons": {
+    "Interrupted": "interrupted",
+    "RunError": "run_error",
+    "MaxTurns": "max_turns"
+  },
   "notificationEvents": [
     "CompactionOutcome",
     "Notice",
@@ -86,6 +91,14 @@
           "go"
         ],
         "why": "The Worker preserves this trigger without a separate comparison."
+      }
+    },
+    "stopReasons": {
+      "MaxTurns": {
+        "sides": [
+          "go"
+        ],
+        "why": "The Worker records a turn that reached its turn limit as a completed turn without a separate comparison."
       }
     },
     "events": {

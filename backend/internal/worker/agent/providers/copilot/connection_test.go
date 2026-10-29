@@ -268,6 +268,9 @@ func TestHelperCopilotNativeConnection(t *testing.T) {
 				RequireAvailable bool            `json:"requireAvailable"`
 				WorkingDirectory string          `json:"workingDirectory"`
 				Result           json.RawMessage `json:"result"`
+				// Response is the answer field of the question kinds, the
+				// auto-mode switch included.
+				Response json.RawMessage `json:"response"`
 			}
 			require.NoError(t, json.Unmarshal(request.Params, &params))
 			if request.Method != "session.suspend" {
@@ -405,7 +408,13 @@ func TestHelperCopilotNativeConnection(t *testing.T) {
 						"session.ui.handlePendingAutoModeSwitch":             "auto_mode_switch.completed",
 						"session.ui.handlePendingSampling":                   "sampling.completed",
 					}[request.Method]
-					event, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "method": "session.event", "params": map[string]any{"sessionId": sessionID, "event": map[string]any{"type": kind, "data": map[string]any{"requestId": params.RequestID}}}})
+					data := map[string]any{"requestId": params.RequestID}
+					// Copilot 1.0.87 and 1.0.103 repeat the answer in the completion of
+					// an auto-mode switch.
+					if request.Method == "session.ui.handlePendingAutoModeSwitch" {
+						data["response"] = params.Response
+					}
+					event, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "method": "session.event", "params": map[string]any{"sessionId": sessionID, "event": map[string]any{"type": kind, "data": data}}})
 					require.NoError(t, err)
 					send(event)
 				}

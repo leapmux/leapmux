@@ -258,8 +258,24 @@ const OfficialAuthUnavailable = "official_auth_unavailable"
 
 // CauseProviderNotConfigured is the `turn.failed` cause for a session whose
 // model provider carries no usable credential. It is NOT retryable: retrying
-// re-reads the same empty configuration.
+// re-reads the same empty configuration. ZCode states it as `error.type`,
+// `error.code`, or `error.attribution.reason`.
 const CauseProviderNotConfigured = "provider_not_configured"
+
+// The `error.attribution.reason` words of `turn.failed` that the
+// automatic-retry verdict reads (ModelFailureReason in the ZCode 3.16.3
+// bundle).
+const (
+	zcodeFailureReasonRateLimited        = "rate_limited"
+	zcodeFailureReasonCancelled          = "cancelled"
+	zcodeFailureReasonServerError        = "server_error"
+	zcodeFailureReasonProviderOverloaded = "provider_overloaded"
+	zcodeFailureReasonNetworkError       = "network_error"
+	zcodeFailureReasonTimeout            = "timeout"
+	zcodeFailureReasonStreamIdleTimeout  = "stream_idle_timeout"
+	zcodeFailureReasonStaleConnection    = "stale_connection"
+	zcodeFailureReasonProxyError         = "proxy_error"
+)
 
 // zcodeMessageKind is what classifyZCodeMessage answers.
 type zcodeMessageKind int

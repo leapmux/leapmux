@@ -32,6 +32,17 @@ type Agent struct {
 	// observer consumed (see observeDiracNotice).
 	claimedMu    sync.Mutex
 	claimedCards map[string]struct{}
+	// retryMu guards the cards of a failed model request that the
+	// turn-failure verdict reads (see observeDiracFailure): the failed-request
+	// card of the running prompt, and the sibling card that no failed-request
+	// card has taken yet. It also guards compactionPrompt.
+	retryMu        sync.Mutex
+	failedRequest  *diracFailedRequest
+	pendingSibling diracSiblingCard
+	// compactionPrompt states that the running prompt runs Dirac's condense
+	// action (sendCompactionPrompt). The prompt's end takes it, and the start
+	// of the next prompt clears it.
+	compactionPrompt bool
 }
 
 // This assertion makes a missing Agent method a compile error.
@@ -81,4 +92,68 @@ func (a *Agent) SteerInput(content string, attachments []*leapmuxv1.Attachment) 
 		return agent.ErrNoActiveTurn
 	}
 	return nil
+}
+
+// The commands that Dirac 0.5.23 runs as its condense action, with or without
+// arguments (BuiltinCommandExecutor.ts). Dirac then goes on to a model request
+// in the same prompt, with the arguments as its text.
+const (
+	diracCompactCommand = "compact"
+	diracSmolCommand    = "smol"
+)
+
+// SendInput starts one prompt. A /smol or /compact command runs Dirac's
+// condense action, so the prompt carries the compaction's mark.
+func (a *Agent) SendInput(content string, attachments []*leapmuxv1.Attachment) error {
+	if !diracStartsCompaction(content, attachments) {
+		return a.Base.SendInput(content, attachments)
+	}
+	return a.sendCompactionPrompt(nil, content)
+}
+
+// SendInputForSession is SendInput for the session that the caller validated.
+func (a *Agent) SendInputForSession(sessionID, content string, attachments []*leapmuxv1.Attachment) error {
+	if !diracStartsCompaction(content, attachments) {
+		return a.Base.SendInputForSession(sessionID, content, attachments)
+	}
+	return a.sendCompactionPrompt(&sessionID, content)
+}
+
+// diracStartsCompaction reports whether a prompt of content and attachments
+// opens with a command that Dirac runs as its condense action. A message with
+// an attachment is a conversation turn.
+func diracStartsCompaction(content string, attachments []*leapmuxv1.Attachment) bool {
+	name, _, ok := providerkit.SlashCommand(content)
+	return ok && len(attachments) == 0 && (name == diracCompactCommand || name == diracSmolCommand)
+}
+
+// sendCompactionPrompt sends content as a prompt that carries the compaction's
+// mark. expected is the session that the input was written for, or nil for the
+// current session. The base offers the prompt's preparation for the current
+// session only, so the preparation checks expected against the prompt's
+// session itself. The check before the send refuses another session before the
+// base claims the turn, as the base's own check does. A failed native write
+// leaves the mark on the prompt that never ran, and the start of the next
+// prompt clears it.
+func (a *Agent) sendCompactionPrompt(expected *string, content string) error {
+	if err := providerkit.CheckInputSession(expected, a.CurrentSessionID()); err != nil {
+		return err
+	}
+	return a.SendPreparedPrompt(content, nil, a.prepareCompactionPrompt(expected))
+}
+
+// prepareCompactionPrompt returns the preparation of a compaction prompt for
+// the session expected, or for any session when expected is nil. It receives
+// the session of the prompt, refuses another session than expected, and
+// otherwise marks the prompt as a compaction.
+func (a *Agent) prepareCompactionPrompt(expected *string) func(sessionID string) error {
+	return func(sessionID string) error {
+		if err := providerkit.CheckInputSession(expected, sessionID); err != nil {
+			return err
+		}
+		a.retryMu.Lock()
+		a.compactionPrompt = true
+		a.retryMu.Unlock()
+		return nil
+	}
 }

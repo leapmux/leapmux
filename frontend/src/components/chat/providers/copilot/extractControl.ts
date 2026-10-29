@@ -1,9 +1,9 @@
 import type { ControlQuestion } from '../../model/question'
 import type { ControlExtractionInput, ExtractedControlRequest } from '../registry'
-import { COPILOT_EVENT } from '~/generated/contracts/copilot-protocol'
+import { COPILOT_ERROR_CODE, COPILOT_EVENT } from '~/generated/contracts/copilot-protocol'
 import { pickObject, pickString } from '~/lib/jsonPick'
 import { copilotPermission, copilotPermissionOptions } from './permissionOptions'
-import { COPILOT_AUTO_SWITCH_RATE_LIMIT_CODE, copilotEvent } from './protocol'
+import { copilotEvent } from './protocol'
 
 /** The title and the detail a permission request shows. */
 export function copilotPermissionSource(payload: Record<string, unknown>) {
@@ -11,7 +11,7 @@ export function copilotPermissionSource(payload: Record<string, unknown>) {
   if (event?.type === COPILOT_EVENT.AutoModeSwitchRequested) {
     return {
       title: 'Copilot asks to switch to Auto',
-      ...(event.data.errorCode === COPILOT_AUTO_SWITCH_RATE_LIMIT_CODE
+      ...(event.data.errorCode === COPILOT_ERROR_CODE.UserModelRateLimited
         ? { reason: 'The current model reached its rate limit.' }
         : {}),
     }

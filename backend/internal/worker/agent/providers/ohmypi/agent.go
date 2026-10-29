@@ -74,6 +74,10 @@ type Agent struct {
 
 	// model is the selected primary model in the form `<provider>/<id>`.
 	model string
+	// retryDeadline is the end of the wait that the provider requested when
+	// omp gave up its own retry (the root auto_retry_end). agent_start clears
+	// it, and the agent_end that ends the turn takes it. See handleAutoRetryEnd.
+	retryDeadline time.Time
 	// fallbackModel identifies the temporary model that must not replace the primary.
 	fallbackModel string
 	// effectiveModel is the model that the latest native state reports.
@@ -168,9 +172,16 @@ func (a *Agent) SendInputForSession(sessionID, content string, attachments []*le
 	return a.sendInput(&sessionID, content, attachments, false)
 }
 
-// SupportsSteering always reports true. omp accepts a steering message during any
-// run, so the capability needs no handshake discovery.
-func (a *Agent) SupportsSteering() bool { return true }
+// SupportsSteering reports true outside a manual compaction. omp accepts a
+// steering message during any run, so the capability needs no handshake
+// discovery. A manual compaction turn accepts no steer, as Copilot's does: the
+// compaction's end applies its own verdict, so a steered message would lose the
+// verdict of its run. The queue holds the message for a turn of its own.
+func (a *Agent) SupportsSteering() bool {
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	return !a.turn.compaction
+}
 
 // SteerInput adds a message to the running turn. omp checks for steering between
 // tool calls, and it moves a long `bash` call to the background to take it.
@@ -250,7 +261,7 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 			a.steers.Settle(a.sink)
 		}
 	} else {
-		a.armTurn(pending.id)
+		a.armTurn(pending.id, ompRunsCompaction(content, attachments))
 		release = func() { a.disarmTurn(pending.id) }
 	}
 	if err := pending.write(); err != nil {
@@ -278,7 +289,7 @@ func (a *Agent) sendInput(expected *string, content string, attachments []*leapm
 				a.steers.Echo(ticket)
 				a.steers.Settle(a.sink)
 			} else {
-				release()
+				a.endArmedTurn(pending.id)
 			}
 		case steer:
 			a.acceptSteer(pending.id)
@@ -516,9 +527,11 @@ func (a *Agent) CompactContext() error {
 	a.Mu.Unlock()
 
 	providerkit.PublishCompaction(root.sink, "manual")
-	a.armTurn(compactionTurnID)
+	a.armTurn(compactionTurnID, true)
 	wait, err := a.beginCommandFrame(contracts.OhMyPiCommandCompact, nil)
 	if err != nil {
+		// omp did not take the command, so no compaction turn started, and the
+		// dispatcher receives the error.
 		a.endCompaction(root)
 		a.disarmTurn(compactionTurnID)
 		return err
@@ -526,7 +539,8 @@ func (a *Agent) CompactContext() error {
 	go func() {
 		frame, err := wait(0)
 		a.recordCompactionResult(frame, err)
-		a.disarmTurn(compactionTurnID)
+		// The verdict follows the stored end of the compaction.
+		a.endArmedTurn(compactionTurnID)
 	}()
 	return nil
 }
@@ -534,6 +548,26 @@ func (a *Agent) CompactContext() error {
 // compactionTurnID arms the turn for a `compact` command. A prompt arms it under
 // its command id, which starts "leapmux-", so the two cannot collide.
 const compactionTurnID = "compaction"
+
+// ompCompactSlashCommand is the name of omp's built-in slash command that
+// compacts the session.
+const ompCompactSlashCommand = "compact"
+
+// ompRunsCompaction reports whether omp runs a prompt as its built-in /compact.
+// omp reads a slash command only at the first byte of the message, and the
+// command name ends at white space or a colon ("/compact:soft"). A message with
+// attachments is not a compaction.
+func ompRunsCompaction(content string, attachments []*leapmuxv1.Attachment) bool {
+	if len(attachments) > 0 || !strings.HasPrefix(content, "/") {
+		return false
+	}
+	name, _, ok := providerkit.SlashCommand(content)
+	if !ok {
+		return false
+	}
+	name, _, _ = strings.Cut(name, ":")
+	return name == ompCompactSlashCommand
+}
 
 // recordCompactionResult persists the outcome of a `compact` command: omp's
 // response frame, or the transport failure that left no response.
@@ -564,10 +598,12 @@ func (a *Agent) recordCompactionResult(frame json.RawMessage, err error) {
 // It re-reads rather than taking a value, so a caller cannot publish something the
 // field does not say. Never called with a.Mu held: the sink broadcasts, and a
 // broadcast can block on a slow transport.
+//
+// A manual compaction turn is active but accepts no steer (SupportsSteering).
 func (a *Agent) PublishTurnActive() agent.TurnState {
 	a.Mu.Lock()
-	active := a.turn.active
+	state := agent.TurnState{Active: a.turn.active, Steerable: a.turn.active && !a.turn.compaction}
 	seq := a.NextTurnSeq()
 	a.Mu.Unlock()
-	return providerkit.PublishSteerableTurnActiveTo(a.sink, active, seq)
+	return providerkit.PublishTurnStateTo(a.sink, state, seq)
 }

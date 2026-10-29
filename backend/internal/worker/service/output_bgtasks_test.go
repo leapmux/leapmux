@@ -1009,7 +1009,7 @@ func TestBgTask_CleanupDropsCache(t *testing.T) {
 	_, loaded := svc.Output.bgtasks.Load("agent-1")
 	assert.True(t, loaded, "cache populated after upsert")
 
-	svc.Output.CleanupAgent("agent-1")
+	svc.Output.CleanupAgent("agent-1", CleanupTabClosed)
 	_, loaded = svc.Output.bgtasks.Load("agent-1")
 	assert.False(t, loaded, "cache dropped after CleanupAgent")
 }
@@ -1266,7 +1266,7 @@ func TestBgTask_SeedLoadsEveryKindPool(t *testing.T) {
 	}
 
 	// Drop the warm cache so the next read seeds from the DB.
-	svc.Output.CleanupAgent("agent-1")
+	svc.Output.CleanupAgent("agent-1", CleanupTabClosed)
 	loaded, err := svc.Output.LoadBackgroundTasks(ctx, "agent-1")
 	require.NoError(t, err)
 	assert.Len(t, loaded, bgtask.MaxTasks*len(bgtask.Kinds), "the seed covers every pool, each to its own cap")
@@ -1305,7 +1305,7 @@ func TestBgTask_SeedFillsEachPoolDespiteSkew(t *testing.T) {
 	}
 
 	// Drop the warm cache so the next read seeds from the DB.
-	svc.Output.CleanupAgent("agent-1")
+	svc.Output.CleanupAgent("agent-1", CleanupTabClosed)
 	loaded, err := svc.Output.LoadBackgroundTasks(ctx, "agent-1")
 	require.NoError(t, err)
 
@@ -1445,7 +1445,7 @@ func TestBgTask_SeedKeepsTheNewestRowsPastTheCap(t *testing.T) {
 		"the display list holds the cap all the same")
 
 	// Drop the warm cache so the next read seeds from the DB.
-	svc.Output.CleanupAgent("agent-1")
+	svc.Output.CleanupAgent("agent-1", CleanupTabClosed)
 	loaded, err := svc.Output.LoadBackgroundTasks(ctx, "agent-1")
 	require.NoError(t, err)
 	require.Len(t, loaded, bgtask.MaxTasks)

@@ -90,6 +90,69 @@ func TestStartChangesModelsThroughTheNativeModelRoute(t *testing.T) {
 	assert.NotContains(t, strings.Split(strings.TrimSpace(string(methods)), "\n"), acp.MethodSessionSetConfigOption)
 }
 
+const geminiDebugLogHelperEnv = "LEAPMUX_GEMINI_DEBUG_LOG_HELPER"
+const geminiDebugLogRecordEnv = "LEAPMUX_GEMINI_DEBUG_LOG_RECORD"
+
+// TestHelperProcessGeminiDebugLog records the debug log file that the process
+// receives at its start, and then answers as Gemini CLI does.
+func TestHelperProcessGeminiDebugLog(*testing.T) {
+	if os.Getenv(geminiDebugLogHelperEnv) == "1" {
+		if os.WriteFile(os.Getenv(geminiDebugLogRecordEnv), []byte(os.Getenv(geminiDebugLogEnv)), 0o600) != nil {
+			os.Exit(2)
+		}
+	}
+	agenttest.ServeFakeJSONRPC(geminiDebugLogHelperEnv, func(method string) (string, bool, bool) {
+		switch method {
+		case "initialize":
+			return `{"protocolVersion":1,"agentInfo":{"name":"gemini-cli","version":"0.65.0"},"agentCapabilities":{"loadSession":true}}`, false, true
+		case "session/new":
+			return `{"sessionId":"gemini-debug-log-session","modes":{"currentModeId":"default","availableModes":[{"id":"default","name":"Default"}]}}`, false, true
+		case "session/set_model", "session/set_mode":
+			return `{}`, false, true
+		case "session/cancel":
+			return "", false, false
+		default:
+			return `{"code":-32601,"message":"Method not found"}`, true, true
+		}
+	})
+}
+
+// Gemini CLI states its own retry waits only in its debug log, so Start points
+// the process at a log in a private directory, and the process's end removes
+// that directory.
+func TestStartGivesGeminiAPrivateDebugLogThatItsEndRemoves(t *testing.T) {
+	home := t.TempDir()
+	work := filepath.Join(home, "work")
+	require.NoError(t, os.MkdirAll(work, 0o700))
+	recordPath := filepath.Join(home, "debug-log-path.txt")
+	t.Setenv("GEMINI_CLI_HOME", home)
+	agenttest.InstallFakeCLI(t, agenttest.FakeCLI{
+		Binary: "gemini", HelperRun: "TestHelperProcessGeminiDebugLog", WantEnv: geminiDebugLogHelperEnv,
+		Env: []string{geminiDebugLogRecordEnv + "=" + recordPath},
+	})
+	started, err := Start(t.Context(), agent.Options{
+		AgentID: "gemini-debug-log", HomeDir: home, WorkingDir: work,
+		// A plain shell keeps the private PATH instead of loading a user's zsh startup configuration.
+		Shell: "/bin/sh", StartupTimeout: 30 * time.Second,
+		Options: optionmap.Map{agent.OptionIDModel: "gemini-2.5-pro", agent.OptionIDPermissionMode: "default"},
+	}, agent.NewProviderServices(&agenttest.Sink{}))
+	require.NoError(t, err)
+	recorded, err := os.ReadFile(recordPath)
+	require.NoError(t, err)
+	logPath := string(recorded)
+	require.NotEmpty(t, logPath, "the process receives the debug log file")
+	logDir := filepath.Dir(logPath)
+	assert.True(t, strings.HasPrefix(filepath.Base(logDir), "leapmux-gemini-"), "the log lives in the agent's private directory: %s", logDir)
+	info, err := os.Stat(logDir)
+	require.NoError(t, err, "the directory exists while the process runs")
+	assert.Equal(t, os.FileMode(0o700), info.Mode().Perm())
+
+	started.Stop()
+	require.True(t, expectedGeminiStopError(started.Wait()))
+	_, err = os.Stat(logDir)
+	assert.True(t, os.IsNotExist(err), "the process's end removes the directory: %v", err)
+}
+
 const geminiCapabilitiesHelperEnv = "LEAPMUX_GEMINI_CAPABILITIES_HELPER"
 const geminiCapabilitiesPathEnv = "LEAPMUX_GEMINI_CAPABILITIES_PATH"
 

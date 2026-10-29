@@ -12,6 +12,8 @@ import (
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit/providerkittest"
 )
 
 func TestCompactContextReportsNativeRefusalAndReleasesTurn(t *testing.T) {
@@ -269,6 +271,7 @@ func TestCompactContextStopsWhenTheNativeResultStalls(t *testing.T) {
 	nativeRows := len(sink.PersistedNotifications())
 	sendDroidCompactedNotification(t, a)
 	assert.Len(t, sink.PersistedNotifications(), nativeRows, "a late completion cannot follow the timeout error")
+	assert.Equal(t, compactionVerdictOps(), providerkittest.TurnEndAndRetryOps(sink.Timeline()), "the timeout applies the compaction's verdict once")
 }
 
 func TestCompactContextPublishesLiveState(t *testing.T) {
@@ -354,7 +357,14 @@ func TestProcessExitDuringACompactWritesCompactionEndedAborted(t *testing.T) {
 	a, sink, _ := newSteerAgentWithProcessDone(t, done)
 	require.NoError(t, a.CompactContext())
 	close(done)
-	testutil.RequireEventually(t, func() bool { return len(sink.LeapMuxNotifications()) == 1 }, "process exit ends the compaction")
+	testutil.RequireEventually(t, func() bool { return len(providerkittest.TurnEndAndRetryOps(sink.Timeline())) > 0 }, "process exit ends the compaction")
+	assert.Equal(t, compactionVerdictOps(), providerkittest.TurnEndAndRetryOps(sink.Timeline()))
+	ops := make([]string, 0, len(sink.Timeline()))
+	for _, entry := range sink.Timeline() {
+		ops = append(ops, entry.Op)
+	}
+	assert.Equal(t, []string{"leapmux_notification", "cancel_server_error"}, ops, "the end row precedes the compaction's verdict")
+	require.Len(t, sink.LeapMuxNotifications(), 1)
 	assert.Equal(t, contracts.NotificationTypeCompactionEnded, sink.LeapMuxNotifications()[0][contracts.NotificationFieldType])
 	assert.Equal(t, contracts.CompactionEndOutcomeAborted, sink.LeapMuxNotifications()[0][contracts.NotificationFieldOutcome])
 	value, exists := sink.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
@@ -375,4 +385,112 @@ func TestCompactEndDuringTheWriteDoesNotPublishALateStart(t *testing.T) {
 		assert.Nil(t, value)
 	}
 	require.Len(t, sink.PersistedNotifications(), 1)
+}
+
+// compactionVerdictOps is the retry operation that the end of one manual
+// compaction applies: CompactionEnd's cancellation of the server-error retry.
+func compactionVerdictOps() []agenttest.TimelineEntry {
+	reference := &agenttest.Sink{}
+	providerkit.ApplyTurnFailure(reference, providerkit.CompactionEnd(), nil)
+	return reference.Timeline()
+}
+
+// compactRequestID returns the ID of the compact_session request that
+// CompactContext wrote first.
+func compactRequestID(t *testing.T, stdin *bufferStdin) string {
+	t.Helper()
+	frames := stdin.frames()
+	require.NotEmpty(t, frames)
+	var request droidEnvelope
+	require.NoError(t, json.Unmarshal([]byte(frames[0]), &request))
+	require.Equal(t, droidMethodCompactSession, request.Method)
+	return request.ID
+}
+
+// answerCompaction feeds the reply to the compact_session request id: the
+// error when rpcError is set, the result otherwise.
+func answerCompaction(t *testing.T, a *Agent, id string, result string, rpcError *droidRPCError) {
+	t.Helper()
+	reply := newDroidEnvelope(droidTypeResponse)
+	reply.ID = id
+	if rpcError != nil {
+		reply.Error = rpcError
+	} else {
+		reply.Result = json.RawMessage(result)
+	}
+	line, err := reply.Marshal()
+	require.NoError(t, err)
+	a.HandleOutput(line)
+}
+
+// A manual compaction applies CompactionEnd once when it ends, whatever its
+// outcome. A repeated or late native end applies no second verdict.
+func TestCompactContextEndAppliesTheCompactionVerdictOnce(t *testing.T) {
+	t.Parallel()
+	const compacted = `{"newSessionId":"main-session","removedCount":1}`
+	refusal := &droidRPCError{Code: -32000, Message: "Nothing to compact"}
+	for _, tc := range []struct {
+		name string
+		end  func(t *testing.T, a *Agent, id string)
+	}{
+		{name: "a native refusal", end: func(t *testing.T, a *Agent, id string) {
+			answerCompaction(t, a, id, "", refusal)
+			answerCompaction(t, a, id, "", refusal)
+		}},
+		{name: "a native completion", end: func(t *testing.T, a *Agent, id string) {
+			answerCompaction(t, a, id, compacted, nil)
+			sendDroidCompactedNotification(t, a)
+			sendDroidCompactedNotification(t, a)
+		}},
+		{name: "a native completion before its reply", end: func(t *testing.T, a *Agent, id string) {
+			sendDroidCompactedNotification(t, a)
+			answerCompaction(t, a, id, compacted, nil)
+		}},
+		{name: "an invalid native success", end: func(t *testing.T, a *Agent, id string) {
+			answerCompaction(t, a, id, `{"newSessionId":"main-session"}`, nil)
+			require.Eventually(t, a.IsStopped, 30*time.Second, 10*time.Millisecond)
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a, sink, stdin := newSteerAgent(t)
+			require.NoError(t, a.CompactContext())
+			assert.Empty(t, providerkittest.TurnEndAndRetryOps(sink.Timeline()), "a running compaction applies no verdict")
+			tc.end(t, a, compactRequestID(t, stdin))
+			assert.Equal(t, compactionVerdictOps(), providerkittest.TurnEndAndRetryOps(sink.Timeline()))
+		})
+	}
+}
+
+// A compaction that Droid never reaches applies no verdict: the write fails,
+// CompactContext returns the error, and no turn starts.
+func TestCompactContextWriteFailureAppliesNoVerdict(t *testing.T) {
+	t.Parallel()
+	a, sink, _ := newSteerAgent(t)
+	a.SetStdinForTest(agenttest.FailingStdin{})
+	require.Error(t, a.CompactContext())
+	assert.Empty(t, providerkittest.TurnEndAndRetryOps(sink.Timeline()))
+}
+
+// The compaction's verdict belongs to the compaction alone. The next turn
+// takes the classifier's verdict again.
+func TestTurnAfterACompactionTakesItsOwnVerdict(t *testing.T) {
+	t.Parallel()
+	a, sink := newDroidRetryAgent(t, "8d96b98f-856e-4f8e-8784-0144e850c3fa", zaiUsageLimitObservedAt)
+	stdin := &bufferStdin{written: make(chan struct{}, 1)}
+	stdin.respond = func(request droidEnvelope) {
+		if request.Method == droidMethodAddUserMessage {
+			answerDroidInput(t, a, request.ID, false)
+		}
+	}
+	a.SetStdinForTest(stdin)
+	require.NoError(t, a.CompactContext())
+	answerCompaction(t, a, compactRequestID(t, stdin), "", &droidRPCError{Code: -32000, Message: "Nothing to compact"})
+	require.NoError(t, a.SendInput("continue", nil))
+	a.HandleOutput([]byte(droidOverloadedError))
+	a.HandleOutput([]byte(droidUnavailableTurnEnd))
+	want := append(compactionVerdictOps(), providerkittest.TurnEndThen(providerkit.TurnFailure{
+		Kind: providerkit.TurnFailureTransient, Cause: "Droid reported that the model provider is unavailable",
+	})...)
+	assert.Equal(t, want, providerkittest.TurnEndAndRetryOps(sink.Timeline()))
 }

@@ -144,6 +144,9 @@ type resultMessage struct {
 	// AbortReason is set by CodeBuddy 2.158.0 and later on the `result` of an
 	// aborted turn, and on no other `result`.
 	AbortReason string `json:"terminal_reason"`
+	// ErrorsInfo holds the structured error of each entry of Errors. An entry
+	// that CodeBuddy could not structure is null.
+	ErrorsInfo []*codebuddyErrorInfo `json:"errors_info"`
 }
 
 // The `terminal_reason` values that state a turn ended in an abort, as CodeBuddy

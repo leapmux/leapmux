@@ -17,6 +17,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit/providerkittest"
 )
 
 type failingZCodeNotificationSink struct {
@@ -258,6 +259,12 @@ func TestZCodeStoppedTurn_WritesARowForTheStop(t *testing.T) {
 	assert.Equal(t, leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, notifications[0].Source,
 		"LeapMux wrote this row, so it carries LeapMux's source rather than the agent's")
 	assert.JSONEq(t, `{"type":"`+contracts.NotificationTypeInterrupted+`"}`, string(notifications[0].Content))
+	// The stopped turn applies the one verdict of a turn end, after its row.
+	timeline := sink.Timeline()
+	require.GreaterOrEqual(t, len(timeline), 2)
+	assert.Equal(t, "notification", timeline[len(timeline)-2].Op)
+	assert.Equal(t, []string{"cancel_server_error"}, providerkittest.TurnEndAndRetryOpNames(timeline), "a stop is never retried")
+	assert.Equal(t, providerkit.TurnEndedWithoutRetryableFailure, sink.LastAutoCancelReason())
 }
 
 // The spans stay OPEN, because the abort reaches the model stream and not a command

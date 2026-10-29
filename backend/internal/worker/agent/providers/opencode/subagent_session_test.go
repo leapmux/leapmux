@@ -147,6 +147,101 @@ func TestOpenCodeChildLoadPrecedesTheRootReplacement(t *testing.T) {
 	})
 }
 
+// childLoaded reports whether the follower marked the child session of
+// callID as loaded, whatever its root.
+func childLoaded(a *Agent, callID string) bool {
+	a.childSessionsMu.Lock()
+	defer a.childSessionsMu.Unlock()
+	child := a.childSessions[callID]
+	return child != nil && child.loaded
+}
+
+// A root replacement takes the session lock as soon as the admitted load
+// ends, and holds it through its session/new round trip. The follower marks
+// its loaded child without that lock. A follower that waited for it stayed
+// blocked on a mutex, which a synctest bubble does not count as durable, so
+// TestOpenCodeChildLoadPrecedesTheRootReplacement could not advance its clock
+// and hung.
+func TestOpenCodeChildLoadMarksTheChildWhileAReplacementHoldsTheSessionLock(t *testing.T) {
+	t.Parallel()
+	a, _, stdin := newChildSessionAgent(t)
+	a.HandleToolCallForTest(openCodeTaskRequest(t, "call-1", "", "Count."))
+	a.handleDaemonEvent(taskPartEvent(t, "session-1", "call-1", "task", "running", "ses-child"))
+	load := awaitRequest(t, stdin, "session/load", 1)
+
+	sessionMu := a.SessionMuForTest()
+	held := make(chan struct{})
+	release := make(chan struct{})
+	go func() {
+		sessionMu.Lock()
+		close(held)
+		<-release
+		sessionMu.Unlock()
+	}()
+	t.Cleanup(func() { close(release) })
+	// The writer waits behind the load, which holds the lock for reading.
+	testutil.RequireEventually(t, func() bool {
+		if sessionMu.TryRLock() {
+			sessionMu.RUnlock()
+			return false
+		}
+		return true
+	}, "the replacement waits for the admitted load")
+	require.True(t, a.Deliver(load.ID, agenttest.JSONRPCResponse(load.ID, agenttest.RPCReply{Result: json.RawMessage(`{}`)})))
+	<-held
+
+	testutil.RequireEventually(t, func() bool { return childLoaded(a, "call-1") },
+		"the follower marks its loaded child while the replacement holds the session lock")
+}
+
+// The mark applies only to a child of the current root that still follows its
+// call. A replacement swaps the root first and removes the outgoing root's
+// children after, so each step of it leaves no child to mark.
+func TestOpenCodeMarkChildSessionLoaded(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name       string
+		currentID  string
+		followed   bool
+		wantLoaded bool
+	}{
+		{name: "a child of the current root", currentID: "session-1", followed: true, wantLoaded: true},
+		{name: "a child whose root a replacement swapped out", currentID: "session-2", followed: true},
+		{name: "a child that the replacement removed", currentID: "session-1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a, _, _ := newChildSessionAgent(t)
+			child := &openCodeChildSession{id: "ses-child", rootSessionID: "session-1"}
+			if tc.followed {
+				a.childSessions = map[string]*openCodeChildSession{"call-1": child}
+			}
+			a.SetSessionIDForTest(tc.currentID)
+
+			a.markChildSessionLoaded("session-1", "call-1", child, "provider/model")
+
+			assert.Equal(t, tc.wantLoaded, child.loaded)
+			if tc.wantLoaded {
+				assert.Equal(t, "provider/model", child.modelID)
+			} else {
+				assert.Empty(t, child.modelID)
+			}
+		})
+	}
+
+	t.Run("a call that a newer child follows", func(t *testing.T) {
+		t.Parallel()
+		a, _, _ := newChildSessionAgent(t)
+		stale := &openCodeChildSession{id: "ses-old", rootSessionID: "session-1"}
+		a.childSessions = map[string]*openCodeChildSession{"call-1": {id: "ses-new", rootSessionID: "session-1"}}
+
+		a.markChildSessionLoaded("session-1", "call-1", stale, "provider/model")
+
+		assert.False(t, stale.loaded)
+		assert.False(t, a.childSessions["call-1"].loaded, "the newer child keeps its own state")
+	})
+}
+
 func TestOpenCodeOutgoingFollowerCannotLoadAfterRootReplacement(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		a, _, stdin := newChildSessionAgent(t)

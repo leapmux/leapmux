@@ -4,11 +4,13 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
@@ -1038,4 +1040,171 @@ func TestStaleContinuationFailurePreservesTheReplacementPrompt(t *testing.T) {
 	b.sendFollowUpPrompt("retired-session", "old input", nil)
 	assert.True(t, b.PromptActive(), "the replacement prompt must remain active")
 	assert.Zero(t, sink.NotificationCount(), "a retired turn must not report an error in the replacement session")
+}
+
+// retryOps returns the retry operations of a timeline, and the index of the
+// last turn-end row before the first of them.
+func retryOps(timeline []agenttest.TimelineEntry) (ops []agenttest.TimelineEntry, lastTurnEndBefore int) {
+	lastTurnEndBefore = -1
+	for i, entry := range timeline {
+		switch entry.Op {
+		case "turn_end":
+			if len(ops) == 0 {
+				lastTurnEndBefore = i
+			}
+		case "schedule_usage_limit", "schedule_server_error", "cancel_usage_limit", "cancel_server_error":
+			ops = append(ops, entry)
+		}
+	}
+	return ops, lastTurnEndBefore
+}
+
+func transientVerdict() TurnVerdict {
+	return TurnVerdict{Failure: providerkit.TurnFailure{Kind: providerkit.TurnFailureTransient, Cause: "503"}, Payload: []byte(`{"error":"503"}`)}
+}
+
+func billingVerdict() TurnVerdict {
+	return TurnVerdict{Failure: providerkit.TurnFailure{Kind: providerkit.TurnFailureBillingBlocked, Cause: "billing"}}
+}
+
+func usageVerdict(resetAt time.Time) TurnVerdict {
+	return TurnVerdict{Failure: providerkit.TurnFailure{Kind: providerkit.TurnFailureUsageLimited, ResetAt: resetAt, Cause: "usage"}}
+}
+
+func TestTurnVerdict_TheAgentTurnVerdictDecidesWhenItsEndArrivesBeforeThePromptEnd(t *testing.T) {
+	t.Parallel()
+	out := &agenttest.Stdin{}
+	b, sink := newACPTurnBase(t, out)
+	b.hooks.PromptEnded = func(error, bool) PromptEnding {
+		retry := usageVerdict(time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC))
+		return PromptEnding{Retry: &retry}
+	}
+	require.NoError(t, b.SendInput("hi", nil))
+	require.True(t, b.BeginAgentTurn())
+
+	assert.False(t, b.EndAgentTurnWithVerdict(json.RawMessage(agentTurnEndFrame), billingVerdict()),
+		"a queued agent turn does not end before the prompt")
+	ops, _ := retryOps(sink.Timeline())
+	assert.Empty(t, ops, "nothing is applied while the agent turn waits")
+
+	b.HandleJSONRPCResponseForTest(promptResponse(1))
+	testutil.RequireEventually(t, func() bool { return !b.PromptActive() })
+
+	ops, lastTurnEnd := retryOps(sink.Timeline())
+	require.Len(t, turnEndContents(sink), 2)
+	assert.Equal(t, []string{"cancel_usage_limit", "cancel_server_error"}, opNames(ops),
+		"only the agent turn's billing verdict applies; the prompt's usage verdict is dropped at the handover")
+	assert.Equal(t, len(sink.Timeline())-len(ops)-1, lastTurnEnd, "the verdict follows the second turn-end row")
+}
+
+// A prompt that never reached the agent hands the busy state to the agent turn
+// queued behind it. An end that the queued turn already sent ends it there,
+// with the verdict that the end carried.
+func TestTurnVerdict_AnUnsentPromptEndsTheQueuedAgentTurnWithItsVerdict(t *testing.T) {
+	t.Parallel()
+	b, sink := newACPTurnBase(t, &agenttest.Stdin{})
+	refused := errors.New("the preparation refused the prompt")
+
+	err := b.SendPreparedPrompt("hi", nil, func(string) error {
+		require.True(t, b.BeginAgentTurn())
+		require.False(t, b.EndAgentTurnWithVerdict(json.RawMessage(agentTurnEndFrame), billingVerdict()),
+			"the agent turn waits behind the prompt")
+		return refused
+	})
+
+	require.ErrorIs(t, err, refused)
+	assert.False(t, b.PromptActive())
+	assert.False(t, b.AgentTurnActive())
+	ops, lastTurnEnd := retryOps(sink.Timeline())
+	assert.Equal(t, []string{"cancel_usage_limit", "cancel_server_error"}, opNames(ops), "the agent turn's billing verdict applies")
+	assert.Equal(t, len(sink.Timeline())-len(ops)-1, lastTurnEnd, "the verdict follows the agent turn's end row")
+}
+
+func TestTurnVerdict_TheAgentTurnVerdictDecidesWhenItsEndArrivesAfterThePromptEnd(t *testing.T) {
+	t.Parallel()
+	out := &agenttest.Stdin{}
+	b, sink := newACPTurnBase(t, out)
+	b.hooks.PromptEnded = func(error, bool) PromptEnding {
+		retry := usageVerdict(time.Date(2026, 7, 14, 12, 0, 0, 0, time.UTC))
+		return PromptEnding{Retry: &retry}
+	}
+	require.NoError(t, b.SendInput("hi", nil))
+	require.True(t, b.BeginAgentTurn())
+
+	b.HandleJSONRPCResponseForTest(promptResponse(1))
+	testutil.RequireEventually(t, func() bool { return b.AgentTurnActive() })
+	ops, _ := retryOps(sink.Timeline())
+	assert.Empty(t, ops, "the handover to the agent turn applies no verdict")
+
+	assert.True(t, b.EndAgentTurnWithVerdict(json.RawMessage(agentTurnEndFrame), transientVerdict()))
+	ops, lastTurnEnd := retryOps(sink.Timeline())
+	assert.Equal(t, []string{"schedule_server_error"}, opNames(ops), "the agent turn's verdict applies once")
+	assert.Equal(t, len(sink.Timeline())-2, lastTurnEnd, "the verdict directly follows the agent turn's row")
+	assert.False(t, b.PromptActive())
+}
+
+func TestTurnVerdict_EndWithNoAgentTurnAppliesNothing(t *testing.T) {
+	t.Parallel()
+	b, sink := newACPTurnBase(t, &agenttest.Stdin{})
+
+	assert.False(t, b.EndAgentTurnWithVerdict(json.RawMessage(agentTurnEndFrame), transientVerdict()))
+	assert.False(t, b.EndAgentTurnWithoutRowWithVerdict(transientVerdict()))
+
+	assert.Empty(t, sink.Timeline())
+}
+
+func TestTurnVerdict_EndWithoutRowAppliesTheVerdictOfAnActiveAgentTurn(t *testing.T) {
+	t.Parallel()
+	b, sink := newACPTurnBase(t, &agenttest.Stdin{})
+	require.True(t, b.AdmitAgentTurn())
+
+	assert.True(t, b.EndAgentTurnWithoutRowWithVerdict(transientVerdict()))
+
+	ops, _ := retryOps(sink.Timeline())
+	assert.Equal(t, []string{"schedule_server_error"}, opNames(ops))
+	assert.Empty(t, turnEndContents(sink), "the work writes no turn-end row")
+}
+
+func TestTurnVerdict_EndWithoutRowThatDropsAQueuedTurnLeavesThePromptToDecide(t *testing.T) {
+	t.Parallel()
+	out := &agenttest.Stdin{}
+	b, sink := newACPTurnBase(t, out)
+	b.hooks.PromptEnded = func(error, bool) PromptEnding {
+		retry := transientVerdict()
+		return PromptEnding{Retry: &retry}
+	}
+	require.NoError(t, b.SendInput("hi", nil))
+	require.True(t, b.BeginAgentTurn())
+
+	assert.False(t, b.EndAgentTurnWithoutRowWithVerdict(billingVerdict()), "dropping a queued turn ends nothing")
+	ops, _ := retryOps(sink.Timeline())
+	assert.Empty(t, ops)
+
+	b.HandleJSONRPCResponseForTest(promptResponse(1))
+	testutil.RequireEventually(t, func() bool { return !b.PromptActive() })
+	ops, _ = retryOps(sink.Timeline())
+	assert.Equal(t, []string{"schedule_server_error"}, opNames(ops), "the prompt's own verdict decides")
+}
+
+func opNames(ops []agenttest.TimelineEntry) []string {
+	names := make([]string, 0, len(ops))
+	for _, op := range ops {
+		names = append(names, op.Op)
+	}
+	return names
+}
+
+func TestTurnVerdict_InterruptRequestedHoldsUntilTheAgentTurnEnds(t *testing.T) {
+	t.Parallel()
+	b, _ := newACPTurnBase(t, &agenttest.Stdin{})
+	assert.False(t, b.InterruptRequested(), "an idle agent holds no stop")
+	b.noteACPInterruptRequested()
+	assert.False(t, b.InterruptRequested(), "a stop of an idle agent records nothing")
+
+	require.True(t, b.AdmitAgentTurn())
+	b.noteACPInterruptRequested()
+	assert.True(t, b.InterruptRequested(), "the stop of the agent turn holds while it runs")
+
+	assert.True(t, b.EndAgentTurnWithoutRowWithVerdict(TurnVerdict{}))
+	assert.False(t, b.InterruptRequested(), "the turn's end removes the note")
 }

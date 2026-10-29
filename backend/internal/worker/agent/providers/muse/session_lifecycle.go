@@ -161,7 +161,7 @@ func (a *Agent) ClearContext() (string, error) {
 		retired = a.retireSessionTreeLocked(old)
 	}
 	a.stateMu.Unlock()
-	a.retireSessionStates(retired, agent.MessageCompletionInterrupted)
+	a.retireSessionStates(retired, old, agent.MessageCompletionInterrupted)
 	a.dispatcher.mu.Unlock()
 	a.drainDeferredOutputActions()
 	a.drainControls()
@@ -227,18 +227,29 @@ func (a *Agent) CompactContext() error {
 	id := a.sessionID
 	state := a.sessions[id]
 	busy := state != nil && state.turnID != ""
+	if !busy {
+		// Mark the compaction before the request, because its item can end
+		// before the acknowledgement arrives.
+		a.manualCompactionSession = id
+	}
 	a.stateMu.Unlock()
 	if busy {
 		return agent.ErrAgentBusy
 	}
 	raw, err := a.command(methodSessionCompact, map[string]any{"sessionId": id}, a.APITimeout(), nil)
-	if err == nil {
+	if err != nil {
+		// Muse did not accept the compaction, so no end of it follows.
+		a.stateMu.Lock()
+		a.takeManualCompactionLocked(id)
+		a.stateMu.Unlock()
+	} else {
 		// A noop compaction changes no context and emits no item.
 		// Its acknowledgement ends the worker's compaction turn.
 		var reply struct {
 			Status string `json:"status"`
 		}
 		if json.Unmarshal(raw, &reply) == nil && reply.Status == contracts.MuseCompactionOutcomeNoop {
+			a.endManualCompaction(id, a.sink)
 			a.PublishTurnActive()
 		}
 	}
@@ -249,4 +260,27 @@ func (a *Agent) CompactContext() error {
 		return agent.ErrCompactionUnsupported
 	}
 	return err
+}
+
+// endManualCompaction applies the retry verdict of the manual compaction of
+// sessionID when that compaction is still pending. A compaction never retries,
+// whatever its outcome. Each end of one compaction calls it, and only the first
+// call applies the verdict.
+func (a *Agent) endManualCompaction(sessionID string, sink agent.ProviderServices) {
+	a.stateMu.Lock()
+	pending := a.takeManualCompactionLocked(sessionID)
+	a.stateMu.Unlock()
+	if pending {
+		providerkit.ApplyTurnFailure(sink, providerkit.CompactionEnd(), nil)
+	}
+}
+
+// takeManualCompactionLocked reports whether a manual compaction of sessionID is
+// pending, and clears the mark. The caller holds stateMu.
+func (a *Agent) takeManualCompactionLocked(sessionID string) bool {
+	if sessionID == "" || a.manualCompactionSession != sessionID {
+		return false
+	}
+	a.manualCompactionSession = ""
+	return true
 }

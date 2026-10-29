@@ -372,9 +372,11 @@ func TestFinishStartupPreservesBindingContextCancellation(t *testing.T) {
 const kiroFakeDisplayError = "Too many requests, please wait before trying again. (Request ID: c791fc4e)"
 
 // kiroFakeErrorData is the `data` member of the JSON-RPC error that the fake
-// answers, as the probe recorded it. The failure note states it after the
-// message, because a JSON-RPC error can state its cause only there.
-const kiroFakeErrorData = `{"errorType":"ServiceThrottleError"}`
+// answers, in the shape that Kiro CLI 2.24.0 sends for a throttled model call
+// (.tmp/probe/kiro/run-throttle.summary), with the request ID of the message.
+// The failure note states it after the message, because a JSON-RPC error can
+// state its cause only there.
+const kiroFakeErrorData = `{"errorType":"ServiceThrottleError","retryErrorType":"THROTTLING","requestId":"c791fc4e"}`
 
 // failFakePrompt writes Kiro's failure of one prompt, in the probed order: the
 // turn starts, Kiro states the display error, the turn ends with the stop
@@ -485,7 +487,8 @@ func TestStartKiroCompactionOfAStoppedAgentEndsQuietly(t *testing.T) {
 // A prompt that the model service throttles ends with a JSON-RPC error that
 // states the display error's text, as the probe showed. The transcript states
 // the reason once. A prompt whose error states another text keeps the display
-// error beside it.
+// error beside it. Either way the throttle schedules one server-error retry,
+// after every row of the failed prompt.
 func TestStartKiroStatesTheReasonOfAFailedPrompt(t *testing.T) {
 	for _, tc := range []struct {
 		name         string
@@ -510,6 +513,10 @@ func TestStartKiroStatesTheReasonOfAFailedPrompt(t *testing.T) {
 			require.Eventually(t, func() bool { return !a.PromptActive() }, 30*time.Second, 10*time.Millisecond)
 
 			assert.Equal(t, tc.wantMessages, agenttest.AgentErrorTexts(sink.LeapMuxNotifications()))
+			timeline := sink.Timeline()
+			require.NotEmpty(t, timeline)
+			assert.Equal(t, "schedule_server_error", timeline[len(timeline)-1].Op)
+			assert.Equal(t, 1, sink.AutoScheduleCount())
 		})
 	}
 }

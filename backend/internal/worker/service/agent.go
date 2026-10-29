@@ -3559,7 +3559,7 @@ func (svc *Service) prepareClearContext(agentID string) (func(), error) {
 	// StartAgent below doesn't fail with "agent already running".
 	svc.Agents.StopAndWaitAgent(agentID)
 
-	svc.Output.ClearAgentRuntimeState(agentID)
+	svc.Output.ClearAgentRuntimeState(agentID, CleanupContextCleared)
 
 	// Clear span tracking state from the previous session.
 	svc.Output.ResetSpanTracker(agentID)
@@ -4233,7 +4233,7 @@ func (svc *Service) restartPlanContextLocked(agentID, targetMode string, dbAgent
 	// land in the persisted chat history.
 	svc.Agents.DiscardOutputAndStopAgent(agentID)
 
-	svc.Output.ClearAgentRuntimeState(agentID)
+	svc.Output.ClearAgentRuntimeState(agentID, CleanupPlanContextReset)
 
 	// Clear span tracking state from the previous session.
 	svc.Output.ResetSpanTracker(agentID)

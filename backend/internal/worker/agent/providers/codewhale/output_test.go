@@ -1,17 +1,23 @@
 package codewhale
 
 import (
+	"encoding/json"
 	"errors"
+	"net/http"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit/providerkittest"
 )
 
 // messagesWithSpan returns the persisted rows of one span.
@@ -716,4 +722,369 @@ func TestCodewhaleInvalidRequestSnapshotKeepsOpenOutput(t *testing.T) {
 		assert.Equal(t, "The open answer.", text)
 		assert.Empty(t, sink.Messages())
 	}
+}
+
+// A turn that did not fail cancels the pending server-error retry once, after
+// its turn-end row. A failed turn whose error states nothing retryable does too.
+func TestATurnEndCancelsThePendingServerErrorRetry(t *testing.T) {
+	t.Parallel()
+	for _, status := range []string{
+		contracts.CodewhaleTurnStatusCompleted, contracts.CodewhaleTurnStatusFailed,
+		contracts.CodewhaleTurnStatusInterrupted, contracts.CodewhaleTurnStatusCanceled,
+	} {
+		t.Run(status, func(t *testing.T) {
+			t.Parallel()
+			a, sink := newTestAgent(t, nil)
+			a.HandleOutput(turnStartedEvent(1, testTurnID))
+			assert.Zero(t, sink.AutoCancelCount(), "a turn start cancels nothing")
+
+			a.HandleOutput(turnCompletedEvent(2, testTurnID, status))
+
+			require.Equal(t, []string{"turn_end", "cancel_server_error"}, providerkittest.TurnEndAndRetryOpNames(sink.Timeline()))
+			assert.Equal(t, providerkit.TurnEndedWithoutRetryableFailure, sink.LastAutoCancelReason())
+		})
+	}
+}
+
+// Captured turn.completed frames of Codewhale 0.10.1. The first four are the
+// fixtures of .tmp/retry-research/partial-providers.md (section 5). The 529 and
+// the 1308 come from .tmp/probe/codewhale/run2-m529.jsonl and
+// run2-glm1308.jsonl, trimmed to the same fields as those fixtures.
+const (
+	codewhaleTurnFailed500          = `{"event":"turn.completed","turn_id":"turn_1ce987c70ec44e9fbbc63a1212534da9","payload":{"turn":{"id":"turn_1ce987c70ec44e9fbbc63a1212534da9","status":"failed","error":"Server error (500): Internal server error","modelRequestDiagnostics":{"modelRequestsStarted":1,"transportRetries":2,"transparentStreamRetries":0,"streamResumes":0,"reasoningOnlyReprompts":0,"emptyStopRetries":0}}}}`
+	codewhaleTurnFailedNetwork      = `{"event":"turn.completed","turn_id":"turn_c6e78e2e0d064f2f97f8d080a72f8559","payload":{"turn":{"id":"turn_c6e78e2e0d064f2f97f8d080a72f8559","status":"failed","error":"Network error: Cannot reach 127.0.0.1:18999 (connection refused): error sending request for url (http://127.0.0.1:18999/v1/chat/completions): client error (Connect): tcp connect error: Connection refused (os error 61)","modelRequestDiagnostics":{"modelRequestsStarted":4,"transportRetries":8,"transparentStreamRetries":0,"streamResumes":3,"reasoningOnlyReprompts":0,"emptyStopRetries":0}}}}`
+	codewhaleTurnFailedStreamClosed = `{"event":"turn.completed","turn_id":"turn_ced05a34dd16451b9275a9163032a808","payload":{"turn":{"id":"turn_ced05a34dd16451b9275a9163032a808","status":"failed","error":"Chat Completions stream closed before [DONE] or finish_reason","modelRequestDiagnostics":{"modelRequestsStarted":1,"transportRetries":0,"transparentStreamRetries":0,"streamResumes":0,"reasoningOnlyReprompts":0,"emptyStopRetries":0}}}}`
+	codewhaleTurnFailedRateLimit    = `{"event":"turn.completed","turn_id":"turn_658b36f448674ae4be9693f23d5a820a","payload":{"turn":{"id":"turn_658b36f448674ae4be9693f23d5a820a","status":"failed","error":"Rate limit exceeded: Rate limit reached for requests","modelRequestDiagnostics":{"modelRequestsStarted":1,"transportRetries":2,"transparentStreamRetries":0,"streamResumes":0,"reasoningOnlyReprompts":0,"emptyStopRetries":0}}}}`
+	codewhaleTurnFailed529          = `{"event":"turn.completed","turn_id":"turn_8abcfeae2e5740c5b3fd9139a1022501","payload":{"turn":{"id":"turn_8abcfeae2e5740c5b3fd9139a1022501","status":"failed","error":"Server error (529): Overloaded","modelRequestDiagnostics":{"modelRequestsStarted":1,"transportRetries":2,"transparentStreamRetries":0,"streamResumes":0,"reasoningOnlyReprompts":0,"emptyStopRetries":0}}}}`
+	codewhaleTurnFailedUsage1308    = `{"event":"turn.completed","turn_id":"turn_7c137a1405fc4127b1b557198ecb5445","payload":{"turn":{"id":"turn_7c137a1405fc4127b1b557198ecb5445","status":"failed","error":"Rate limit exceeded: Usage limit reached for 5 hour. Your limit will reset at 2026-10-28 20:06:00","modelRequestDiagnostics":{"modelRequestsStarted":1,"transportRetries":2,"transparentStreamRetries":0,"streamResumes":0,"reasoningOnlyReprompts":0,"emptyStopRetries":0}}}}`
+)
+
+// codewhaleInsideTheStampWindow is a clock inside the 5-hour window of the
+// 1308 stamp, which reads 2026-10-28 12:06:00 UTC. The probe itself ran at
+// 01:31 UTC against a fake server, more than five hours before its stamp.
+var codewhaleInsideTheStampWindow = time.Date(2026, 10, 28, 11, 0, 0, 0, time.UTC)
+
+// codewhaleFrameTurnID reads the turn of a captured turn.completed frame.
+func codewhaleFrameTurnID(t *testing.T, frame string) string {
+	t.Helper()
+	var env struct {
+		TurnID string `json:"turn_id"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(frame), &env))
+	return env.TurnID
+}
+
+// A failed turn applies the verdict of its error text once, after its turn-end
+// row, and the retry carries the turn's own frame.
+func TestAFailedTurnAppliesItsVerdictAfterTheTurnEnd(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		frame string
+		now   time.Time
+		want  []string
+	}{
+		{"a 500 schedules a server-error retry", codewhaleTurnFailed500, codewhaleInsideTheStampWindow, []string{"turn_end", "schedule_server_error"}},
+		{"a refused connection schedules a server-error retry", codewhaleTurnFailedNetwork, codewhaleInsideTheStampWindow, []string{"turn_end", "schedule_server_error"}},
+		{"a closed stream schedules a server-error retry", codewhaleTurnFailedStreamClosed, codewhaleInsideTheStampWindow, []string{"turn_end", "schedule_server_error"}},
+		{"a rate limit schedules a server-error retry", codewhaleTurnFailedRateLimit, codewhaleInsideTheStampWindow, []string{"turn_end", "schedule_server_error"}},
+		{"a 529 schedules a server-error retry", codewhaleTurnFailed529, codewhaleInsideTheStampWindow, []string{"turn_end", "schedule_server_error"}},
+		{
+			"a dated 1308 schedules a usage-limit retry at its stamp", codewhaleTurnFailedUsage1308, codewhaleInsideTheStampWindow,
+			[]string{"turn_end", "schedule_usage_limit@2026-10-28T12:06:01Z", "cancel_server_error"},
+		},
+		{
+			// The stamp lies outside its stated window, so the window wording
+			// decides: a limit of a week or less.
+			"a 1308 stamp outside its window schedules a server-error retry", codewhaleTurnFailedUsage1308,
+			time.Date(2026, 10, 28, 1, 31, 40, 0, time.UTC), []string{"turn_end", "schedule_server_error"},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			clock := testutil.NewQuartzMock(t)
+			clock.Set(tc.now).MustWait(testutil.DeadlineContext(t))
+			a, sink := newTestAgentWithClock(t, nil, clock)
+			a.HandleOutput(turnStartedEvent(1, codewhaleFrameTurnID(t, tc.frame)))
+
+			a.HandleOutput([]byte(tc.frame))
+
+			assert.Equal(t, tc.want, providerkittest.TurnEndAndRetryOpNames(sink.Timeline()))
+			require.Positive(t, sink.AutoScheduleCount())
+			assert.Equal(t, []byte(tc.frame), sink.LastAutoSchedule().SourcePayload, "the retry carries the turn's own frame")
+		})
+	}
+}
+
+// A failed turn that ends while the agent stops is not retried.
+func TestAFailedTurnDuringAStopIsNotRetryable(t *testing.T) {
+	t.Parallel()
+	a, sink := newTestAgent(t, nil)
+	a.HandleOutput(turnStartedEvent(1, codewhaleFrameTurnID(t, codewhaleTurnFailed500)))
+	a.NoteIntentionalStop()
+
+	a.HandleOutput([]byte(codewhaleTurnFailed500))
+
+	require.Equal(t, []string{"turn_end", "cancel_server_error"}, providerkittest.TurnEndAndRetryOpNames(sink.Timeline()))
+	assert.Equal(t, providerkit.TurnEndedWithoutRetryableFailure, sink.LastAutoCancelReason())
+}
+
+// codewhaleTurnFailure reads Codewhale's error text in the order of the
+// classifier recipe.
+func TestCodewhaleTurnFailure(t *testing.T) {
+	t.Parallel()
+	errorOf := func(t *testing.T, frame string) string {
+		t.Helper()
+		var env struct {
+			Payload turnEventPayload `json:"payload"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(frame), &env))
+		text, _ := providerkit.RawString(env.Payload.Turn.Error)
+		return text
+	}
+	failed := contracts.CodewhaleTurnStatusFailed
+	for _, tc := range []struct {
+		name    string
+		status  string
+		failure string
+		kind    providerkit.TurnFailureKind
+		window  providerkit.UsageWindow
+		resetAt time.Time
+	}{
+		{"a 500 is transient", failed, errorOf(t, codewhaleTurnFailed500), providerkit.TurnFailureTransient, 0, time.Time{}},
+		{"a 529 is transient", failed, errorOf(t, codewhaleTurnFailed529), providerkit.TurnFailureTransient, 0, time.Time{}},
+		{"a network failure is transient", failed, errorOf(t, codewhaleTurnFailedNetwork), providerkit.TurnFailureTransient, 0, time.Time{}},
+		{"a closed stream is transient", failed, errorOf(t, codewhaleTurnFailedStreamClosed), providerkit.TurnFailureTransient, 0, time.Time{}},
+		{"a rate limit is a rate limit", failed, errorOf(t, codewhaleTurnFailedRateLimit), providerkit.TurnFailureRateLimited, 0, time.Time{}},
+		{
+			"a dated 1308 lifts at its stamp", failed, errorOf(t, codewhaleTurnFailedUsage1308),
+			providerkit.TurnFailureUsageLimited, 0, time.Date(2026, 10, 28, 12, 6, 1, 0, time.UTC),
+		},
+		// The texts below are constructed from LlmError's Display forms
+		// (llm_client/mod.rs in Codewhale 0.10.1).
+		{"a timeout is transient", failed, "Request timed out after 120s", providerkit.TurnFailureTransient, 0, time.Time{}},
+		{"a responses stream that closed is transient", failed, "Responses stream closed before a successful completion event", providerkit.TurnFailureTransient, 0, time.Time{}},
+		{"a stalled stream is transient", failed, "Stream stalled for 300 seconds", providerkit.TurnFailureTransient, 0, time.Time{}},
+		{"a rate limit with an unknown body is a rate limit", failed, "Rate limit exceeded: Too Many Requests", providerkit.TurnFailureRateLimited, 0, time.Time{}},
+		{
+			"a plan quota with an unknown body is a usage limit with no stated window", failed, "Provider plan quota exhausted: quota exceeded",
+			providerkit.TurnFailureUsageLimited, providerkit.UsageWindowUnstated, time.Time{},
+		},
+		{
+			"a plan quota with a billing body is a billing block", failed, `Provider plan quota exhausted: {"error":{"code":"insufficient_quota","message":"You exceeded your current quota"}}`,
+			providerkit.TurnFailureBillingBlocked, 0, time.Time{},
+		},
+		{"a 4xx-class server error is not retryable", failed, "Server error (499): Client closed request", providerkit.TurnFailureNotRetryable, 0, time.Time{}},
+		{"a prefix in another case is not retryable", failed, "server error (500): Internal server error", providerkit.TurnFailureNotRetryable, 0, time.Time{}},
+		{"a prefix inside the text is not retryable", failed, "Model error: Network error: refused", providerkit.TurnFailureNotRetryable, 0, time.Time{}},
+		{"an authentication failure is not retryable", failed, "Authentication failed: invalid API key", providerkit.TurnFailureNotRetryable, 0, time.Time{}},
+		{"an exceeded context is not retryable", failed, "Context length exceeded: 300000 tokens", providerkit.TurnFailureNotRetryable, 0, time.Time{}},
+		{"an empty error is not retryable", failed, "", providerkit.TurnFailureNotRetryable, 0, time.Time{}},
+		{"a completed turn is not retryable", contracts.CodewhaleTurnStatusCompleted, "Server error (500): Internal server error", providerkit.TurnFailureNotRetryable, 0, time.Time{}},
+		{"an interrupted turn is not retryable", contracts.CodewhaleTurnStatusInterrupted, "Network error: refused", providerkit.TurnFailureNotRetryable, 0, time.Time{}},
+		{"a canceled turn is not retryable", contracts.CodewhaleTurnStatusCanceled, "Network error: refused", providerkit.TurnFailureNotRetryable, 0, time.Time{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			failure := codewhaleTurnFailure(tc.status, tc.failure, false, codewhaleInsideTheStampWindow)
+			assert.Equal(t, tc.kind, failure.Kind)
+			assert.Equal(t, tc.window, failure.Window)
+			assert.True(t, tc.resetAt.Equal(failure.ResetAt), "reset %v, want %v", failure.ResetAt, tc.resetAt)
+		})
+	}
+	t.Run("a stop is not retryable", func(t *testing.T) {
+		t.Parallel()
+		failure := codewhaleTurnFailure(failed, errorOf(t, codewhaleTurnFailed500), true, codewhaleInsideTheStampWindow)
+		assert.Equal(t, providerkit.TurnFailureNotRetryable, failure.Kind)
+	})
+}
+
+// --- The automatic-retry verdict of a compaction turn ---
+
+// codewhaleCompactionEnd is the turn end of a compaction turn: its turn-end
+// row, then the verdict that cancels the server-error retry.
+var codewhaleCompactionEnd = []agenttest.TimelineEntry{
+	{Op: "turn_end"},
+	{Op: "cancel_server_error", Kind: leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, Reason: providerkit.TurnEndedOnCompaction},
+}
+
+// manualCompactionStartedEvent is the turn.started of a manual compaction. The
+// runtime marks it with `manual_compaction` (runtime_threads.rs
+// emit_claimed_turn_started, from Codewhale 0.9.13).
+func manualCompactionStartedEvent(seq uint64, turnID string) []byte {
+	return runtimeEvent(seq, "turn.started", turnID, "", map[string]any{
+		"turn":              map[string]any{"id": turnID, "status": "in_progress", "input_summary": "Manual context compaction"},
+		"manual_compaction": true,
+	})
+}
+
+// failedTurnCompletedEvent is the turn.completed of a turn that failed with the
+// error text failure.
+func failedTurnCompletedEvent(seq uint64, turnID, failure string) []byte {
+	return runtimeEvent(seq, "turn.completed", turnID, "", map[string]any{
+		"turn": map[string]any{"id": turnID, "status": contracts.CodewhaleTurnStatusFailed, "error": failure},
+	})
+}
+
+// codewhaleServerError is a failure text that the classifier reads as
+// transient.
+const codewhaleServerError = "Server error (500): Internal server error"
+
+// A manual compaction that fails on an error that the classifier reads as
+// retryable schedules no retry. The reply of the compaction request states the
+// turn, and the runtime marks the turn's start.
+func TestCodewhaleCompactionAFailedManualCompactionSchedulesNoRetry(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name  string
+		frame string
+	}{
+		{"a 500", codewhaleTurnFailed500},
+		{"a refused connection", codewhaleTurnFailedNetwork},
+		{"a closed stream", codewhaleTurnFailedStreamClosed},
+		{"a rate limit", codewhaleTurnFailedRateLimit},
+		{"a 529", codewhaleTurnFailed529},
+		{"a dated 1308 usage limit", codewhaleTurnFailedUsage1308},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			turnID := codewhaleFrameTurnID(t, tc.frame)
+			rt := newFakeRuntime(t)
+			rt.respondJSON(http.MethodPost, threadPath(testThreadID, threadRouteCompact), http.StatusOK, map[string]any{"turn": map[string]any{"id": turnID}})
+			clock := testutil.NewQuartzMock(t)
+			clock.Set(codewhaleInsideTheStampWindow).MustWait(testutil.DeadlineContext(t))
+			a, sink := newTestAgentWithClock(t, rt, clock)
+			require.NoError(t, a.CompactContext())
+			a.HandleOutput(manualCompactionStartedEvent(1, turnID))
+
+			a.HandleOutput([]byte(tc.frame))
+
+			assert.Equal(t, codewhaleCompactionEnd, providerkittest.TurnEndAndRetryOps(sink.Timeline()))
+		})
+	}
+}
+
+// A compaction ends on the compaction verdict whatever its outcome.
+func TestCodewhaleCompactionEveryOutcomeAppliesTheCompactionVerdict(t *testing.T) {
+	t.Parallel()
+	for _, status := range []string{
+		contracts.CodewhaleTurnStatusCompleted, contracts.CodewhaleTurnStatusFailed,
+		contracts.CodewhaleTurnStatusInterrupted, contracts.CodewhaleTurnStatusCanceled,
+	} {
+		t.Run(status, func(t *testing.T) {
+			t.Parallel()
+			a, sink := newTestAgent(t, nil)
+			a.HandleOutput(manualCompactionStartedEvent(1, testTurnID))
+			a.HandleOutput(itemEvent(2, contracts.CodewhaleEventItemStarted, "compact", contracts.CodewhaleItemKindContextCompaction, "", nil))
+
+			a.HandleOutput(turnCompletedEvent(3, testTurnID, status))
+
+			assert.Equal(t, codewhaleCompactionEnd, providerkittest.TurnEndAndRetryOps(sink.Timeline()))
+		})
+	}
+}
+
+// The runtime marks a compaction turn that another client of the runtime
+// requested, so that turn is a compaction turn too.
+func TestCodewhaleCompactionAMarkedTurnStartIsACompactionTurnWithoutARequest(t *testing.T) {
+	t.Parallel()
+	a, sink := newTestAgent(t, nil)
+	a.HandleOutput(manualCompactionStartedEvent(1, testTurnID))
+
+	a.HandleOutput(failedTurnCompletedEvent(2, testTurnID, codewhaleServerError))
+
+	assert.Equal(t, codewhaleCompactionEnd, providerkittest.TurnEndAndRetryOps(sink.Timeline()))
+}
+
+// The reply of the compaction request states the turn by itself, so a turn
+// start without the runtime's mark is still the compaction's.
+func TestCodewhaleCompactionTheReplyMarksTheTurnThatItStates(t *testing.T) {
+	t.Parallel()
+	rt := newFakeRuntime(t)
+	rt.respondJSON(http.MethodPost, threadPath(testThreadID, threadRouteCompact), http.StatusOK, map[string]any{"turn": map[string]any{"id": testTurnID}})
+	a, sink := newTestAgent(t, rt)
+	require.NoError(t, a.CompactContext())
+	a.HandleOutput(turnStartedEvent(1, testTurnID))
+
+	a.HandleOutput(failedTurnCompletedEvent(2, testTurnID, codewhaleServerError))
+
+	assert.Equal(t, codewhaleCompactionEnd, providerkittest.TurnEndAndRetryOps(sink.Timeline()))
+}
+
+// The reply can arrive after the compaction's turn ended. The marked start
+// already decided the verdict, and the late reply marks no later turn.
+func TestCodewhaleCompactionALateReplyAppliesTheCompactionVerdictOnce(t *testing.T) {
+	t.Parallel()
+	rt := newFakeRuntime(t)
+	a, sink := newTestAgent(t, rt)
+	rt.handle(http.MethodPost, threadPath(testThreadID, threadRouteCompact), func(w http.ResponseWriter, _ *http.Request) {
+		a.HandleOutput(manualCompactionStartedEvent(1, testTurnID))
+		a.HandleOutput(failedTurnCompletedEvent(2, testTurnID, codewhaleServerError))
+		writeFakeJSON(w, http.StatusOK, map[string]any{"turn": map[string]any{"id": testTurnID}})
+	})
+	require.NoError(t, a.CompactContext())
+	assert.Equal(t, codewhaleCompactionEnd, providerkittest.TurnEndAndRetryOps(sink.Timeline()))
+
+	a.HandleOutput(turnStartedEvent(3, "turn_next"))
+	a.HandleOutput(failedTurnCompletedEvent(4, "turn_next", codewhaleServerError))
+
+	assert.Equal(t, []string{"turn_end", "cancel_server_error", "turn_end", "schedule_server_error"}, providerkittest.TurnEndAndRetryOpNames(sink.Timeline()))
+}
+
+// The end of a compaction turn spends the mark, so the next conversation turn
+// applies its own verdict.
+func TestCodewhaleCompactionTheTurnAfterACompactionAppliesItsOwnVerdict(t *testing.T) {
+	t.Parallel()
+	a, sink := newTestAgent(t, nil)
+	a.HandleOutput(manualCompactionStartedEvent(1, testTurnID))
+	a.HandleOutput(turnCompletedEvent(2, testTurnID, contracts.CodewhaleTurnStatusCompleted))
+
+	a.HandleOutput(turnStartedEvent(3, "turn_next"))
+	a.HandleOutput(failedTurnCompletedEvent(4, "turn_next", codewhaleServerError))
+
+	timeline := providerkittest.TurnEndAndRetryOps(sink.Timeline())
+	require.Len(t, timeline, 4)
+	assert.Equal(t, codewhaleCompactionEnd, timeline[:2])
+	assert.Equal(t, []string{"turn_end", "schedule_server_error"}, providerkittest.TurnEndAndRetryOpNames(timeline[2:]))
+}
+
+// An automatic compaction inside a conversation turn ends no turn. A failed
+// conversation turn keeps its own verdict, also when the compaction failed it.
+func TestCodewhaleAnAutomaticCompactionLeavesTheConversationTurnItsOwnVerdict(t *testing.T) {
+	t.Parallel()
+	a, sink := newTestAgent(t, nil)
+	a.HandleOutput(turnStartedEvent(1, testTurnID))
+	a.HandleOutput(itemEvent(2, contracts.CodewhaleEventItemStarted, "compact", contracts.CodewhaleItemKindContextCompaction, "", nil))
+
+	a.HandleOutput(failedTurnCompletedEvent(3, testTurnID, codewhaleServerError))
+
+	assert.Equal(t, []string{"turn_end", "schedule_server_error"}, providerkittest.TurnEndAndRetryOpNames(sink.Timeline()))
+}
+
+// The runtime can repeat a turn end, and the repeat applies no second verdict.
+func TestCodewhaleCompactionARepeatedTurnEndAppliesTheCompactionVerdictOnce(t *testing.T) {
+	t.Parallel()
+	a, sink := newTestAgent(t, nil)
+	a.HandleOutput(manualCompactionStartedEvent(1, testTurnID))
+	a.HandleOutput(failedTurnCompletedEvent(2, testTurnID, codewhaleServerError))
+
+	a.HandleOutput(failedTurnCompletedEvent(3, testTurnID, codewhaleServerError))
+
+	assert.Equal(t, codewhaleCompactionEnd, providerkittest.TurnEndAndRetryOps(sink.Timeline()))
+}
+
+// A steer call holds the compaction's turn end. The held end runs once, after
+// the call, and it applies the compaction verdict once.
+func TestCodewhaleCompactionAHeldTurnEndAppliesTheCompactionVerdictOnce(t *testing.T) {
+	t.Parallel()
+	a, sink := newTestAgent(t, nil)
+	a.HandleOutput(manualCompactionStartedEvent(1, testTurnID))
+	current := a.steers.begin(testTurnID, "Also this.", nil, false)
+	a.steerCall = current
+	a.HandleOutput(failedTurnCompletedEvent(2, testTurnID, codewhaleServerError))
+	assert.Empty(t, providerkittest.TurnEndAndRetryOps(sink.Timeline()), "the steer call holds the turn end")
+
+	a.finishSteerCall(current)
+
+	assert.Equal(t, codewhaleCompactionEnd, providerkittest.TurnEndAndRetryOps(sink.Timeline()))
 }

@@ -41,6 +41,8 @@ func (a *Agent) settleHeldPiTurnAt(completion agent.MessageCompletion, settledAt
 	a.turnStartedAt = time.Time{}
 	a.TurnToolUses = 0
 	a.interruptRequests = nil
+	// A turn that ends while the agent stops is not retried.
+	stopping := a.StoppedLocked() || a.IntentionalStopRequested()
 	a.Mu.Unlock()
 	if held != nil {
 		content := piAgentEndContent(held.raw, a.currentPiUsageSnapshot(), piTurnDurationMs(startedAt, settledAt))
@@ -48,8 +50,20 @@ func (a *Agent) settleHeldPiTurnAt(completion agent.MessageCompletion, settledAt
 			content.Completion = agent.MessageCompletionInterrupted
 		}
 		a.persistPiAgentEnd(agent.WithToolUseCount(content, toolUses))
-		providerkit.ScheduleOrCancelServerErrorAutoRetry(a.orderedSink(), !held.willRetry && held.env.isRetryableFailure(), held.raw)
+		if held.willRetry {
+			// Pi retries this failure itself, so LeapMux schedules no
+			// continuation of its own, and a pending one is cancelled.
+			a.orderedSink().CancelServerErrorRetry(piRetriesFailedRequestReason)
+		} else {
+			failure := piTurnFailure(held.env, held.interrupted || stopping, held.env.failedAt(a.Clock().Now()))
+			providerkit.ApplyTurnFailure(a.orderedSink(), failure, held.raw)
+		}
 	}
 	a.sink.ReportProgress(agent.ResetProgress())
 	a.PublishTurnActive()
 }
+
+// piRetriesFailedRequestReason is the reason that a settled turn gives when
+// Pi announced its own retry and the turn cancels the pending server-error
+// retry.
+const piRetriesFailedRequestReason = "Pi retries the failed request itself"

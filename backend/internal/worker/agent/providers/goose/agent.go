@@ -27,14 +27,24 @@ func gooseSteeringMethod([]byte) string {
 type Agent struct {
 	acp.Base
 	gooseOutput map[string]gooseOutputState
-	// The goal-end rule reads the last agent message of the running prompt.
 	// goalArmed is set by the goal notice and consumed at PromptEnded.
-	goalArmed           bool
-	goalObjective       string
-	goalLastMessageID   string
-	goalLastMessageText string
-	// compactPending states that the running prompt is a manual /compact turn.
-	compactPending bool
+	goalArmed     bool
+	goalObjective string
+	// The last agent message of the running prompt, which the goal-end rule
+	// and the turn-failure verdict read (see observeGooseSessionUpdate).
+	// lastMessageInference states that a chunk of the message carried
+	// `_meta.goose.inference`, the model that wrote it. Goose's own error
+	// messages never carry it.
+	// lastMessageUpdate is the raw update of its last chunk. PromptPrepared
+	// and PromptEnded clear all four (takeGooseLastMessage).
+	lastMessageID        string
+	lastMessageText      string
+	lastMessageInference bool
+	lastMessageUpdate    json.RawMessage
+	// compaction marks the running prompt when it runs Goose's compaction, and
+	// is nil for every other prompt. The compaction prompt's preparation sets
+	// it, and the prompt's end takes it (finishGoosePrompt). Guarded by Mu.
+	compaction *gooseCompactionMark
 	// nativeCommands states the launch value of the Native Commands axis.
 	// Goose reads the terminal capability only in the initialize handshake,
 	// so a change restarts the process.

@@ -47,6 +47,7 @@ func (a *Agent) handleExtraMethod(line *providerkit.ParsedLine) bool {
 type reasonixStatusUpdate struct {
 	SessionID string                 `json:"sessionId"`
 	Sequence  uint64                 `json:"sequence"`
+	Event     string                 `json:"event"`
 	Status    *reasonixSessionStatus `json:"status"`
 }
 
@@ -64,6 +65,9 @@ type reasonixSessionStatus struct {
 	Usage *struct {
 		Cumulative *reasonixUsage `json:"cumulative"`
 	} `json:"usage"`
+	// TurnOutcome states how the turn ended. The update of an `error` event
+	// classifies the failure in it (see observeReasonixFailure).
+	TurnOutcome *reasonixTurnOutcome `json:"turnOutcome"`
 }
 
 // reasonixUsage holds the cumulative cost. ACP usage_update owns the current context gauge.
@@ -98,6 +102,9 @@ func (a *Agent) handleReasonixStatusUpdate(params json.RawMessage) {
 	if !a.applyReasonixStatusGoal(update.SessionID, update.Sequence, update.Status) {
 		return
 	}
+	// The session and sequence checks above also keep the failure of an old
+	// session's turn, and a stale restatement, out of the record.
+	a.observeReasonixFailure(update, params)
 	if status := update.Status; status != nil {
 		a.reportReasonixUsage(status.Usage)
 		a.reportReasonixPhase(status.Phase)

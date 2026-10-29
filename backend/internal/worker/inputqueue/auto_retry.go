@@ -3,6 +3,7 @@ package inputqueue
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"math"
@@ -142,21 +143,21 @@ func (m *Manager) ScheduleAutoRetry(ctx context.Context, agentID string, schedul
 		return err
 	}
 	schedule.SourcePayload = storableSourcePayload(agentID, schedule)
+	var scheduled scheduledAutoRetry
 	snapshot, err := m.mutateAdmitted(agentID, schedule.Admission, func() (Snapshot, bool, error) {
-		snapshot, err := m.store.scheduleAutoRetry(ctx, agentID, schedule)
+		var snapshot Snapshot
+		var err error
+		snapshot, scheduled, err = m.store.scheduleAutoRetry(ctx, agentID, schedule)
 		return snapshot, true, err
 	})
+	if errors.Is(err, errProviderOwnerReplaced) {
+		logIgnoredAutoRetryRequest(agentID, "schedule", schedule.Kind)
+		return nil
+	}
 	if err != nil {
 		return err
 	}
-	for i := range snapshot.Items {
-		item := snapshot.Items[i]
-		if item.Kind == schedule.Kind && item.State == leapmuxv1.AgentInputState_AGENT_INPUT_STATE_QUEUED && item.ScheduledAt != nil {
-			slog.Info("automatic retry scheduled", "agent_id", agentID, "kind", schedule.Kind.String(),
-				"input_id", item.ID, "scheduled_at", timefmt.Format(*item.ScheduledAt))
-			break
-		}
-	}
+	logScheduledAutoRetry(agentID, scheduled)
 	// A schedule whose deadline already passed (a provider reset instant in
 	// the past) joins the immediate group and may dispatch at once.
 	m.drainIfReleased(agentID, snapshot)
@@ -165,25 +166,138 @@ func (m *Manager) ScheduleAutoRetry(ctx context.Context, agentID string, schedul
 
 // CancelAutoRetry removes the pending retry of one kind. A server-error
 // cancellation also resets the backoff: the provider cancels exactly when the
-// cycle ended without another retryable failure.
-func (m *Manager) CancelAutoRetry(ctx context.Context, agentID string, kind leapmuxv1.AgentInputKind, admission agent.AutoRetryAdmission) error {
+// cycle ended without another retryable failure. The reason is the provider's,
+// and the log states it for the retry that the cancellation removes.
+func (m *Manager) CancelAutoRetry(ctx context.Context, agentID string, kind leapmuxv1.AgentInputKind, reason string, admission agent.AutoRetryAdmission) error {
+	var removed []autoRetryRow
 	snapshot, err := m.mutateAdmitted(agentID, admission, func() (Snapshot, bool, error) {
-		return m.store.cancelAutoRetries(ctx, agentID, kind)
+		var snapshot Snapshot
+		var err error
+		snapshot, removed, err = m.store.cancelAutoRetries(ctx, agentID, kind)
+		return snapshot, len(removed) > 0, err
 	})
-	if err == nil {
-		m.drainIfReleased(agentID, snapshot)
+	if errors.Is(err, errProviderOwnerReplaced) {
+		logIgnoredAutoRetryRequest(agentID, "cancel", kind)
+		return nil
 	}
-	return err
+	if err != nil {
+		return err
+	}
+	logRemovedAutoRetries(agentID, reason, removed)
+	m.drainIfReleased(agentID, snapshot)
+	return nil
 }
 
 // CancelAutoRetries removes the pending items of both retry kinds and resets
 // the backoff, in one transaction. Runtime cleanup (an agent close, a
 // workspace archive, a context clear) calls it, so no schedule outlives the
-// lifecycle that created it. It drains nothing because cleanup must not
-// dispatch another item while an agent closes or replaces its context.
-func (m *Manager) CancelAutoRetries(ctx context.Context, agentID string) error {
+// lifecycle that created it, and the reason states which cleanup it is. It
+// drains nothing because cleanup must not dispatch another item while an
+// agent closes or replaces its context.
+func (m *Manager) CancelAutoRetries(ctx context.Context, agentID string, reason string) error {
+	var removed []autoRetryRow
 	_, err := m.mutateLocked(agentID, func() (Snapshot, bool, error) {
-		return m.store.cancelAutoRetries(ctx, agentID, autoRetryKinds...)
+		var snapshot Snapshot
+		var err error
+		snapshot, removed, err = m.store.cancelAutoRetries(ctx, agentID, autoRetryKinds...)
+		return snapshot, len(removed) > 0, err
 	})
-	return err
+	if err != nil {
+		return err
+	}
+	logRemovedAutoRetries(agentID, reason, removed)
+	return nil
+}
+
+// The log states each event in the life of an automatic retry with its own
+// message, so one search finds every event of one kind:
+//
+//   - "automatic retry scheduled": a schedule created the pending row of a
+//     new retry cycle.
+//   - "automatic retry rescheduled": a schedule gave the pending row of its
+//     kind a new deadline. The line states the deadline that it replaced.
+//   - "automatic retry removed": a row left the queue without a delivery. The
+//     reason states who removed it and why.
+//   - "automatic retry delivered": the provider accepted the retry, and its
+//     row became the transcript message with the stated seq.
+//
+// A deadline of "none" states a row with no schedule, which dispatches as
+// soon as the queue reaches it.
+
+// Reasons that the queue itself gives for a removal.
+const (
+	autoRetryReasonAgentClosed = "the agent closed"
+	autoRetryReasonUserDeleted = "the user deleted the retry"
+)
+
+// autoRetryRow is what the log states about one automatic-retry row.
+type autoRetryRow struct {
+	id          string
+	kind        leapmuxv1.AgentInputKind
+	state       leapmuxv1.AgentInputState
+	scheduledAt *time.Time
+}
+
+func autoRetryRowOf(item StoredItem) autoRetryRow {
+	return autoRetryRow{id: item.ID, kind: item.Kind, state: item.State, scheduledAt: item.ScheduledAt}
+}
+
+// scheduledAutoRetry states what one schedule did to the pending row of its
+// kind. row is the pending row after the schedule. rescheduled reports that
+// the schedule moved the existing pending row; otherwise it created the row
+// of a new cycle. previousScheduledAt is the deadline that a reschedule
+// replaced: nil for a new row, and for a pending row whose edit cleared its
+// schedule.
+type scheduledAutoRetry struct {
+	row                 autoRetryRow
+	rescheduled         bool
+	previousScheduledAt *time.Time
+}
+
+// errProviderOwnerReplaced reports that the provider owner that asked for a
+// retry operation was replaced before the queue admitted the operation, as a
+// process restart replaces it. The queue changes nothing for such a request.
+var errProviderOwnerReplaced = errors.New("the provider owner that asked was replaced")
+
+func logScheduledAutoRetry(agentID string, scheduled scheduledAutoRetry) {
+	attributes := []any{"agent_id", agentID, "kind", scheduled.row.kind.String(), "input_id", scheduled.row.id,
+		"scheduled_at", formatAutoRetryDeadline(scheduled.row.scheduledAt)}
+	if !scheduled.rescheduled {
+		slog.Info("automatic retry scheduled", attributes...)
+		return
+	}
+	slog.Info("automatic retry rescheduled",
+		append(attributes, "previous_scheduled_at", formatAutoRetryDeadline(scheduled.previousScheduledAt))...)
+}
+
+func logRemovedAutoRetries(agentID, reason string, removed []autoRetryRow) {
+	for _, row := range removed {
+		slog.Info("automatic retry removed", "agent_id", agentID, "kind", row.kind.String(), "input_id", row.id,
+			"state", row.state.String(), "scheduled_at", formatAutoRetryDeadline(row.scheduledAt), "reason", reason)
+	}
+}
+
+// logDeliveredAutoRetry records the delivery of an accepted input that is an
+// automatic retry, and nothing for any other input.
+func logDeliveredAutoRetry(accepted AcceptedTranscript) {
+	if !IsAutoRetryKind(accepted.Kind) {
+		return
+	}
+	slog.Info("automatic retry delivered", "agent_id", accepted.AgentID, "kind", accepted.Kind.String(),
+		"input_id", accepted.ID, "seq", accepted.Seq)
+}
+
+// logIgnoredAutoRetryRequest records a provider request that the queue
+// dropped because its provider owner was replaced. The drop is the designed
+// outcome, so the line is a debug line.
+func logIgnoredAutoRetryRequest(agentID, operation string, kind leapmuxv1.AgentInputKind) {
+	slog.Debug("automatic retry request ignored", "agent_id", agentID, "operation", operation,
+		"kind", kind.String(), "reason", errProviderOwnerReplaced.Error())
+}
+
+func formatAutoRetryDeadline(at *time.Time) string {
+	if at == nil {
+		return "none"
+	}
+	return timefmt.Format(*at)
 }

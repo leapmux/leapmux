@@ -47,6 +47,10 @@ type Agent struct {
 	outputEnded     bool
 	finishedTurnIDs []string
 	compactionLive  map[string]bool
+	// rootErrorRetryable is the retryable flag of the last error_message delta
+	// of the root turn, or nil when the turn sent none. The output dispatcher
+	// owns it, and the root turn end reads and resets it.
+	rootErrorRetryable *bool
 
 	// --- guarded by Mu ---
 
@@ -69,6 +73,10 @@ type Agent struct {
 	modePending          *lettaModePending
 	permissions          map[string]*lettaPendingPermission
 	permissionDeliveries map[string]*lettaPermissionDelivery
+	// interruptRequested records that the user stopped the running root turn,
+	// so the failure that ends it does not retry. Interrupt sets it, and the
+	// next turn start clears it.
+	interruptRequested bool
 }
 
 var (
@@ -289,7 +297,7 @@ func buildUserMessages(content string, attachments []*leapmuxv1.Attachment) ([]a
 }
 
 // setTurnActive changes the turn flag and reserves its publication sequence under the same lock.
-// A repeated state produces no publication.
+// A repeated state produces no publication. A turn that starts clears the stop of the turn before it.
 func (a *Agent) setTurnActive(active bool) {
 	a.Mu.Lock()
 	if a.turnActive == active {
@@ -297,6 +305,9 @@ func (a *Agent) setTurnActive(active bool) {
 		return
 	}
 	a.turnActive = active
+	if active {
+		a.interruptRequested = false
+	}
 	seq := a.NextTurnSeq()
 	a.Mu.Unlock()
 	a.sink.SetTurnState(agent.TurnState{Active: active}, seq)
@@ -320,6 +331,11 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 	a.Mu.Lock()
 	active := a.turnActive
 	compacting := a.manualCompaction != nil
+	if active && !compacting {
+		// The note is set before the abort, so a failure that wins the race
+		// against the abort still reads it.
+		a.interruptRequested = true
+	}
 	a.Mu.Unlock()
 	if compacting && active {
 		// Native execute_command runs outside the loop that abort_message cancels.

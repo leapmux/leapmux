@@ -53,6 +53,11 @@ type Agent struct {
 	// Its result consumes the flag. A turn end without a result clears it also.
 	interruptRequested bool
 
+	// compactionTurn records that the active turn runs Qoder's native /compact
+	// command, under mu. Only an input that starts a turn sets it. Its result
+	// or the process exit consumes the flag, and every other turn end clears it.
+	compactionTurn bool
+
 	controls providerkit.Correlator[string]
 
 	// usageRefresh wakes refreshUsageLoop. Start creates it, so an agent built
@@ -90,6 +95,8 @@ func (a *Agent) setTurnActive(active bool) {
 		// An interrupt can also arrive after handleResult reads the flag.
 		// The next turn must not inherit the flag in any of these cases.
 		a.interruptRequested = false
+		// The next turn must not inherit the compaction mark either.
+		a.compactionTurn = false
 	}
 	a.activityRev++
 	seq := a.turnOrder.NextTurnSeq()
@@ -115,6 +122,10 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 	if err != nil {
 		return err
 	}
+	// Qoder runs a /compact prompt as its native compaction. An input with an
+	// attachment is an ordinary prompt.
+	command, _, slash := providerkit.SlashCommand(content)
+	compaction := slash && command == "compact" && len(attachments) == 0
 	a.mu.Lock()
 	if err := providerkit.CheckInputSession(expected, a.sessionID); err != nil {
 		a.mu.Unlock()
@@ -125,6 +136,7 @@ func (a *Agent) sendInputForSession(expected *string, content string, attachment
 		return agent.ErrAgentBusy
 	}
 	a.active = true
+	a.compactionTurn = compaction
 	a.activityRev++
 	a.mu.Unlock()
 	a.PublishTurnActive()
@@ -283,15 +295,30 @@ func (a *Agent) Stop() {
 	a.NoteIntentionalStop()
 	a.Process.Stop()
 	a.stopWorkflowArchiveRetries()
-	a.setTurnActive(false)
+	a.releaseTurnAfterExit()
 }
 
 // Wait waits for the process to exit.
 func (a *Agent) Wait() error {
 	err := a.Process.Wait()
 	a.stopWorkflowArchiveRetries()
-	a.setTurnActive(false)
+	a.releaseTurnAfterExit()
 	return err
+}
+
+// releaseTurnAfterExit releases the turn after the process exits. The exit
+// ends a /compact turn that is still running, and that compaction never
+// retries. Stop and Wait run it after the reader has drained, so no result
+// follows, and the first of them consumes the compaction mark.
+func (a *Agent) releaseTurnAfterExit() {
+	a.mu.Lock()
+	compaction := a.compactionTurn
+	a.compactionTurn = false
+	a.mu.Unlock()
+	if compaction {
+		providerkit.ApplyTurnFailure(a.sink, providerkit.CompactionEnd(), nil)
+	}
+	a.setTurnActive(false)
 }
 
 // ClearContext starts a fresh session. Qoder keeps no in-process clear, so the

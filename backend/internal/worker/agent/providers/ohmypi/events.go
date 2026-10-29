@@ -84,6 +84,9 @@ func (a *Agent) handleFrame(line *providerkit.ParsedLine) {
 	case contracts.OhMyPiEventRetryFallbackApplied:
 		a.handleRetryFallback(line.Raw)
 		a.persistConversationNotification(root, line.Raw)
+	case contracts.OhMyPiEventAutoRetryEnd:
+		a.handleAutoRetryEnd(line.Raw)
+		a.persistConversationNotification(root, line.Raw)
 	case contracts.OhMyPiEventTurnStart, contracts.OhMyPiEventTurnEnd, contracts.OhMyPiEventMessageStart:
 		// Lifecycle markers inside a run. agent_start and agent_end bracket the
 		// turn, and message_end carries each message whole.
@@ -162,7 +165,7 @@ func (a *Agent) handlePromptFailure(id, message string) {
 	a.dropSteer(id)
 	a.steers.DropID(id)
 	a.steers.Settle(a.sink)
-	a.disarmTurn(id)
+	a.endArmedTurn(id)
 	if message == "" {
 		message = "omp could not start the turn"
 	}
@@ -192,7 +195,7 @@ func (a *Agent) handlePromptResult(raw []byte) {
 		a.dropSteer(result.ID)
 		a.steers.EchoID(result.ID)
 		a.steers.Settle(a.sink)
-		a.disarmTurn(result.ID)
+		a.endArmedTurn(result.ID)
 	}
 }
 

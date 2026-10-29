@@ -46,12 +46,12 @@ func (writer *capturedAutoRetryWriter) ScheduleServerErrorRetry(sourcePayload []
 	})
 }
 
-func (writer *capturedAutoRetryWriter) CancelUsageLimitRetry() {
+func (writer *capturedAutoRetryWriter) CancelUsageLimitRetry(reason string) {
 	sink := writer.owner.sink
-	sink.h.cancelAutoRetryKind(sink.agentID, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, writer)
+	sink.h.cancelAutoRetryKind(sink.agentID, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_USAGE_LIMIT, reason, writer)
 }
 
-func (writer *capturedAutoRetryWriter) CancelServerErrorRetry() {
+func (writer *capturedAutoRetryWriter) CancelServerErrorRetry(reason string) {
 	sink := writer.owner.sink
-	sink.h.cancelAutoRetryKind(sink.agentID, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, writer)
+	sink.h.cancelAutoRetryKind(sink.agentID, leapmuxv1.AgentInputKind_AGENT_INPUT_KIND_AUTO_RETRY_SERVER_ERROR, reason, writer)
 }

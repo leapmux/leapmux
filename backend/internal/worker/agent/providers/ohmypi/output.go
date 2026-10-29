@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -12,6 +14,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/modelvendor"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
 
@@ -39,6 +42,11 @@ type turnState struct {
 	// is released only while it is false: once a run started, agent_end owns the
 	// turn.
 	runStarted bool
+	// compaction is true for a manual compaction turn: the compact command of
+	// CompactContext, or a prompt that omp runs as its built-in /compact. The
+	// end of that turn applies CompactionEnd, not the classifier's verdict. Only
+	// the arm sets it, so a steer never marks a running turn.
+	compaction bool
 	// startedAt marks when the turn began, so agent_end can report its wall time.
 	// omp's agent_end carries no duration of its own.
 	startedAt time.Time
@@ -72,20 +80,24 @@ func (t *turnState) clear() {
 }
 
 // armTurn marks the turn active before the prompt that starts it is written.
-// A turn that is already active keeps its own state: the arm is then a no-op.
-func (a *Agent) armTurn(id string) {
+// compaction marks the turn as a manual compaction (turnState.compaction). A
+// turn that is already active keeps its own state: the arm is then a no-op.
+func (a *Agent) armTurn(id string, compaction bool) {
 	startedAt := a.Clock().Now()
 	a.Mu.Lock()
 	if a.turn.active {
 		a.Mu.Unlock()
 		return
 	}
-	a.turn = turnState{active: true, armedBy: id, startedAt: startedAt}
+	a.turn = turnState{active: true, armedBy: id, startedAt: startedAt, compaction: compaction}
 	a.Mu.Unlock()
 	a.PublishTurnActive()
 }
 
-// disarmTurn releases an arm whose prompt started no run.
+// disarmTurn releases an arm whose prompt started no run, because omp did not
+// acknowledge that it took the command: the delivery failed, omp refused the
+// command, the acknowledgement timed out, or the process ended. The dispatcher
+// receives the error, so the release applies no verdict.
 //
 // It acts only while the SAME arm is pending and no run started. A run that did
 // start owns the turn until its agent_end, and an arm that a later prompt replaced
@@ -94,12 +106,50 @@ func (a *Agent) armTurn(id string) {
 // It publishes either way. A publish that repeats the current state is safe, and
 // the input queue needs one to settle a dispatch that started no turn.
 func (a *Agent) disarmTurn(id string) {
-	a.Mu.Lock()
-	if a.turn.armedBy == id && !a.turn.runStarted {
-		a.turn.clear()
-	}
-	a.Mu.Unlock()
+	a.takeArm(id)
 	a.PublishTurnActive()
+}
+
+// endArmedTurn releases an arm once omp reported the outcome of the command
+// that set it, and no run took the turn. It acts on the same arms as
+// disarmTurn. A manual compaction turn applies its one verdict before the
+// publish, as handleAgentEnd does. A compaction never schedules a retry,
+// whatever its outcome (CompactionEnd).
+func (a *Agent) endArmedTurn(id string) {
+	if a.takeArm(id) {
+		providerkit.ApplyTurnFailure(a.sink, providerkit.CompactionEnd(), nil)
+	}
+	a.PublishTurnActive()
+}
+
+// takeArm clears the turn while the arm of id is pending and no run started.
+// It reports whether the caller applies the compaction verdict: the cleared
+// turn was a manual compaction and the process still runs. A turn that ends
+// because the process stops, exits, or restarts applies no verdict, as
+// finishOutput applies none.
+func (a *Agent) takeArm(id string) (appliesCompactionVerdict bool) {
+	a.Mu.Lock()
+	defer a.Mu.Unlock()
+	if a.turn.armedBy != id || a.turn.runStarted {
+		return false
+	}
+	compaction := a.turn.compaction
+	a.turn.clear()
+	return compaction && !a.outputEndedLocked()
+}
+
+// outputEndedLocked reports whether the process stopped, exited, or discards
+// its output before a restart. The caller holds Mu.
+func (a *Agent) outputEndedLocked() bool {
+	if a.StoppedLocked() || a.IsDiscardingOutput() {
+		return true
+	}
+	select {
+	case <-a.ProcessDone():
+		return true
+	default:
+		return false
+	}
 }
 
 // conversation is the state that omp's session events drive for one transcript:
@@ -216,28 +266,92 @@ type contentBlock struct {
 // Other scheduled work can start much later, so its run starts a separate turn.
 // The native rule is in session/agent-session.ts, #flushPendingAgentEnd.
 type agentEndEnvelope struct {
-	Messages []struct {
-		Role         string `json:"role"`
-		StopReason   string `json:"stopReason"`
-		ErrorMessage string `json:"errorMessage"`
-	} `json:"messages"`
-	IsTerminal *bool `json:"isTerminal"`
+	Messages   []agentEndMessage `json:"messages"`
+	IsTerminal *bool             `json:"isTerminal"`
+}
+
+// agentEndMessage takes the outcome fields of one message of an agent_end.
+type agentEndMessage struct {
+	Role         string `json:"role"`
+	StopReason   string `json:"stopReason"`
+	ErrorMessage string `json:"errorMessage"`
+	// ErrorStatus is the HTTP status of a failed request, or zero.
+	ErrorStatus int `json:"errorStatus"`
+	// ErrorID is omp's class of a failure: a bitmask of the ompError* flags,
+	// or the HTTP status itself for a failure that omp did not classify. omp
+	// sends it as a signed 32-bit integer, so its top flag reads as a negative
+	// number. See ompErrorFlags.
+	ErrorID int64 `json:"errorId"`
+	// Timestamp is when omp created the message, in Unix milliseconds. Zero
+	// when the message states none.
+	Timestamp int64 `json:"timestamp"`
 }
 
 // completion reads how the run ended from its last assistant message: an error
 // stop reads as an error, and every other ending that left output unfinished
 // reads as an interruption.
 func (env agentEndEnvelope) completion() agent.MessageCompletion {
-	for i := len(env.Messages) - 1; i >= 0; i-- {
-		if env.Messages[i].Role != contracts.OhMyPiRoleAssistant {
-			continue
-		}
-		if env.Messages[i].StopReason == contracts.OhMyPiStopReasonError {
-			return agent.MessageCompletionError
-		}
-		break
+	if last := env.lastAssistantMessage(); last != nil && last.StopReason == contracts.OhMyPiStopReasonError {
+		return agent.MessageCompletionError
 	}
 	return agent.MessageCompletionInterrupted
+}
+
+// lastAssistantMessage returns the last assistant message, or nil.
+func (env agentEndEnvelope) lastAssistantMessage() *agentEndMessage {
+	for i := len(env.Messages) - 1; i >= 0; i-- {
+		if env.Messages[i].Role == contracts.OhMyPiRoleAssistant {
+			return &env.Messages[i]
+		}
+	}
+	return nil
+}
+
+// terminal reports whether the run is omp's last for the prompt. An absent
+// isTerminal reads as terminal.
+func (env agentEndEnvelope) terminal() bool {
+	return env.IsTerminal == nil || *env.IsTerminal
+}
+
+// autoRetryEndEnvelope takes the fields of an auto_retry_end frame that state
+// why omp gave up.
+type autoRetryEndEnvelope struct {
+	Success    *bool  `json:"success"`
+	FinalError string `json:"finalError"`
+}
+
+// ompRequestedWaitRe matches the final error of a retry that omp gave up on
+// because the provider asked for a longer wait than retry.maxDelayMs allows
+// (turn-recovery.ts in omp 18.12.6). The wait counts in milliseconds.
+var ompRequestedWaitRe = regexp.MustCompile(`^Provider requested (\d+)ms wait, exceeds retry\.maxDelayMs`)
+
+// handleAutoRetryEnd records the end of the requested wait that made omp give
+// up, for the terminal agent_end that follows. omp computes the wait when it
+// emits the frame, and the frame carries no time of its own, so the wait counts
+// from the moment the worker reads the frame.
+//
+// Without provider timing, omp requests its own 30-minute guess. LeapMux uses
+// it anyway: a retry that fails again schedules itself again.
+func (a *Agent) handleAutoRetryEnd(raw []byte) {
+	var env autoRetryEndEnvelope
+	if err := json.Unmarshal(raw, &env); err != nil || env.Success == nil || *env.Success {
+		return
+	}
+	match := ompRequestedWaitRe.FindStringSubmatch(env.FinalError)
+	if match == nil {
+		return
+	}
+	// ParseDuration fails on a wait that overflows a time.Duration, and
+	// WithResetHint later refuses a deadline more than 31 days ahead. A wait of
+	// zero states no deadline: a retry at once fails the same way.
+	wait, err := time.ParseDuration(match[1] + "ms")
+	if err != nil || wait <= 0 {
+		return
+	}
+	deadline := a.Clock().Now().Add(wait)
+	a.Mu.Lock()
+	a.retryDeadline = deadline
+	a.Mu.Unlock()
 }
 
 // handleAgentStart opens (or continues) the session's turn.
@@ -246,6 +360,8 @@ func (a *Agent) handleAgentStart() {
 	now := a.Clock().Now()
 	a.Mu.Lock()
 	a.rootConversationLocked().ttsrPending = false
+	// A wait that a failed run requested does not apply to the run that starts.
+	a.retryDeadline = time.Time{}
 	firstRun := !a.turn.runStarted
 	a.turn.active = true
 	a.turn.runStarted = true
@@ -324,6 +440,77 @@ func (a *Agent) takePendingSteer() {
 	a.Mu.Unlock()
 }
 
+// The errorId flags of a failed assistant message that the automatic-retry
+// verdict reads (Flag in packages/ai/src/error/flags.ts of omp 18.12.6). An
+// errorId that omp did not classify is the HTTP status itself, which stays
+// below 0x800 and so sets none of these flags.
+const (
+	ompErrorAccountPolicy   uint32 = 0x0000_4000
+	ompErrorContentBlocked  uint32 = 0x0000_8000
+	ompErrorTransient       uint32 = 0x0002_0000
+	ompErrorTimeout         uint32 = 0x0004_0000
+	ompErrorUsageLimit      uint32 = 0x0008_0000
+	ompErrorContextOverflow uint32 = 0x0080_0000
+	ompErrorAuthFailed      uint32 = 0x0100_0000
+	ompErrorPayloadRejected uint32 = 0x8000_0000
+)
+
+// ompErrorNotTransient are the flags that make a Transient or a Timeout flag
+// not retryable: the same request fails again until something else changes.
+const ompErrorNotTransient = ompErrorUsageLimit | ompErrorContextOverflow | ompErrorAuthFailed |
+	ompErrorContentBlocked | ompErrorAccountPolicy | ompErrorPayloadRejected
+
+// ompErrorFlags reads the errorId of a message as its 32 flag bits.
+func ompErrorFlags(message *agentEndMessage) uint32 {
+	return uint32(message.ErrorID)
+}
+
+// ompTurnFailure classifies the agent_end that ends a turn for the
+// automatic-retry queue. stopped reports a stop that the user or the worker
+// asked for. retryDeadline is the end of the wait that omp's give-up
+// requested, or zero. fallback is when the turn ended, for a message that
+// states no timestamp of its own.
+func ompTurnFailure(env agentEndEnvelope, stopped bool, retryDeadline, fallback time.Time) providerkit.TurnFailure {
+	last := env.lastAssistantMessage()
+	if stopped || !env.terminal() || last == nil || last.StopReason != contracts.OhMyPiStopReasonError {
+		return providerkit.TurnFailure{Kind: providerkit.TurnFailureNotRetryable}
+	}
+	observedAt := fallback
+	if last.Timestamp > 0 {
+		observedAt = time.UnixMilli(last.Timestamp).UTC()
+	}
+	failure := ompFailureClass(last, observedAt)
+	if !retryDeadline.IsZero() {
+		// The requested wait completes the verdict of the stages above: a rate
+		// limit or a usage limit with no reset then lifts at the deadline.
+		failure = providerkit.WithResetHint(failure, retryDeadline, observedAt)
+	}
+	return failure
+}
+
+// ompFailureClass reads a failed message in the order of the classifier
+// recipe, before a requested wait applies.
+func ompFailureClass(message *agentEndMessage, observedAt time.Time) providerkit.TurnFailure {
+	vendor, vendorStated := modelvendor.ClassifyError(message.ErrorMessage, observedAt)
+	if vendorStated && vendor.Definitive {
+		return vendor.Failure
+	}
+	flags := ompErrorFlags(message)
+	if flags&ompErrorUsageLimit != 0 {
+		return providerkit.TurnFailure{Kind: providerkit.TurnFailureUsageLimited, Cause: "Oh My Pi reported a usage limit"}
+	}
+	if message.ErrorStatus == http.StatusTooManyRequests {
+		return providerkit.TurnFailure{Kind: providerkit.TurnFailureRateLimited, Cause: "Oh My Pi reported the HTTP status 429"}
+	}
+	if vendorStated {
+		return vendor.Failure
+	}
+	if flags&(ompErrorTransient|ompErrorTimeout) != 0 && flags&ompErrorNotTransient == 0 {
+		return providerkit.TurnFailure{Kind: providerkit.TurnFailureTransient, Cause: "Oh My Pi reported a transient failure"}
+	}
+	return providerkit.TurnFailure{Kind: providerkit.TurnFailureNotRetryable}
+}
+
 // handleAgentEnd ends the session's turn and persists its divider. An end with
 // `isTerminal: false` that a pending steer continues only ends the run: the turn
 // stays open for the run that the steer starts. See agentEndEnvelope.
@@ -344,6 +531,9 @@ func (a *Agent) handleAgentEnd(raw []byte) {
 	}
 	turn := a.turn
 	a.turn.clear()
+	// The wait belongs to this turn's give-up, so the end takes it.
+	retryDeadline := a.retryDeadline
+	a.retryDeadline = time.Time{}
 	toolUses := a.TurnToolUses
 	a.TurnToolUses = 0
 	root := a.rootConversationLocked()
@@ -368,9 +558,15 @@ func (a *Agent) handleAgentEnd(raw []byte) {
 	if err := a.sink.PersistTurnEnd(agent.WithToolUseCount(content, toolUses), agent.SpanInfo{}); err != nil {
 		slog.Error("omp persist agent_end", "agent_id", a.AgentID(), "error", err)
 	}
-	// omp retries a failed request itself (auto_retry_*), so LeapMux schedules no
-	// continuation of its own, and a pending one is cancelled.
-	providerkit.ScheduleOrCancelServerErrorAutoRetry(a.sink, false, raw)
+	// Every turn end applies one verdict, after its divider. A run inside a
+	// manual compaction turn ends that turn, and a compaction never schedules a
+	// retry, whatever its outcome.
+	if turn.compaction {
+		providerkit.ApplyTurnFailure(a.sink, providerkit.CompactionEnd(), nil)
+	} else {
+		stopped := turn.interruptRequested || a.IntentionalStopRequested()
+		providerkit.ApplyTurnFailure(a.sink, ompTurnFailure(env, stopped, retryDeadline, endedAt), raw)
+	}
 	a.sink.ResetSpans()
 	a.refreshSessionStatsAsync()
 }

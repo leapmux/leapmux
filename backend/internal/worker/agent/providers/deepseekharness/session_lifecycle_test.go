@@ -3,6 +3,9 @@ package deepseekharness
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -10,6 +13,7 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit/providerkittest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -247,4 +251,140 @@ func TestCreateSessionReturnsAFailedStoreRead(t *testing.T) {
 	_, err := a.createSession(context.Background(), "stored")
 	require.ErrorContains(t, err, "the store is unavailable")
 	assert.Equal(t, []string{"session/projections"}, calls.methods())
+}
+
+// compactionVerdictOps is the retry operation that the end of one compaction
+// turn applies: CompactionEnd's cancellation of the server-error retry.
+func compactionVerdictOps() []agenttest.TimelineEntry {
+	reference := &agenttest.Sink{}
+	providerkit.ApplyTurnFailure(reference, providerkit.CompactionEnd(), nil)
+	return reference.Timeline()
+}
+
+// serveCommandReply stands in for `commands/execute` and lets reply write each
+// answer, so a test chooses the outcome of the command.
+func serveCommandReply(t *testing.T, a *Agent, reply func(w http.ResponseWriter, rpcID string)) {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var request struct {
+			ID string `json:"rpcId"`
+		}
+		if !assert.NoError(t, json.NewDecoder(r.Body).Decode(&request)) {
+			return
+		}
+		reply(w, request.ID)
+	}))
+	t.Cleanup(server.Close)
+	endpoint, err := providerkit.NewHTTPEndpoint(server.URL, nil)
+	require.NoError(t, err)
+	t.Cleanup(endpoint.Close)
+	a.rpc = remoteRPC{endpoint: endpoint}
+}
+
+// The compaction turn ends when the command returns, and that end applies
+// CompactionEnd once, whatever the command's outcome. No compaction retries.
+func TestCompactionTurnEndAppliesTheCompactionVerdictOnce(t *testing.T) {
+	t.Parallel()
+	commandReply := func(kind string) func(http.ResponseWriter, string) {
+		return func(w http.ResponseWriter, rpcID string) {
+			assert.NoError(t, json.NewEncoder(w).Encode(map[string]any{"type": "server-response", "rpcId": rpcID, "result": map[string]any{"ok": true, "value": map[string]any{"commandId": "cmd-1", "result": map[string]any{"kind": kind, "text": "done"}}}}))
+		}
+	}
+	for _, tc := range []struct {
+		name    string
+		run     func(a *Agent) error
+		reply   func(http.ResponseWriter, string)
+		success bool
+	}{
+		{name: "the compact context request", run: func(a *Agent) error { return a.CompactContext() }, reply: commandReply("success"), success: true},
+		{name: "a typed compact command", run: func(a *Agent) error { return a.SendInput("/compact", nil) }, reply: commandReply("success"), success: true},
+		{name: "a typed compact command with arguments", run: func(a *Agent) error { return a.SendInput("/compact keep the plan", nil) }, reply: commandReply("success"), success: true},
+		{name: "a compaction that the native process refuses", run: func(a *Agent) error { return a.CompactContext() }, reply: commandReply("failure")},
+		{
+			name: "a command request that fails", run: func(a *Agent) error { return a.CompactContext() },
+			reply: func(w http.ResponseWriter, _ string) { http.Error(w, "overloaded", http.StatusServiceUnavailable) },
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := newOfflineAgent(t, sink)
+			serveCommandReply(t, a, tc.reply)
+			err := tc.run(a)
+			if tc.success {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+			}
+			assert.Equal(t, compactionVerdictOps(), providerkittest.TurnEndAndRetryOps(sink.Timeline()))
+			assert.Equal(t, []string{"turn_active:true", "turn_active:false"}, sink.TurnLifecycle())
+		})
+	}
+}
+
+// A stream failure can end the compaction turn before or after the command
+// returns. Either way the compaction applies one verdict, CompactionEnd.
+func TestStreamFailureDuringACompactionAppliesOneCompactionVerdict(t *testing.T) {
+	t.Parallel()
+	for _, failureFirst := range []bool{true, false} {
+		t.Run(fmt.Sprint("the failure comes first: ", failureFirst), func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := newOfflineAgent(t, sink)
+			// The failure stops the process. This process has already ended, so
+			// the stop returns at once and keeps the command's request alive.
+			ended := make(chan struct{})
+			close(ended)
+			a.Process = providerkit.NewProcessFrom(providerkit.ProcessConfig{AgentID: "deepseek-test", ProviderName: "dsh", Ctx: t.Context(), Cancel: func() {}, ProcessDone: ended, Stdin: agenttest.NopStdin(io.Discard)})
+			started, release := make(chan struct{}), make(chan struct{})
+			serveCommands(t, a, func(string) {
+				close(started)
+				<-release
+			})
+			done := make(chan error, 1)
+			go func() { done <- a.CompactContext() }()
+			<-started
+			if failureFirst {
+				a.reportStreamFailure(errors.New("the native Remote connection failed"))
+				close(release)
+				require.NoError(t, <-done)
+			} else {
+				close(release)
+				require.NoError(t, <-done)
+				a.reportStreamFailure(errors.New("the native Remote connection failed"))
+			}
+			assert.Equal(t, compactionVerdictOps(), providerkittest.TurnEndAndRetryOps(sink.Timeline()))
+			active, known := sink.LastTurnActive()
+			require.True(t, known)
+			assert.False(t, active)
+		})
+	}
+}
+
+// A /compact steered into a running turn runs inside that turn, so it ends no
+// turn. The running turn keeps its own verdict.
+func TestSteeredCompactKeepsTheRunningTurnVerdict(t *testing.T) {
+	t.Parallel()
+	a, sink := newDSHRetryAgent(t)
+	serveCommands(t, a, func(line string) { assert.Equal(t, "/compact keep the plan", line) })
+	require.NoError(t, a.SteerInput("/compact keep the plan", nil))
+	assert.Empty(t, providerkittest.TurnEndAndRetryOps(sink.Timeline()))
+	require.NoError(t, a.handleSessionEvent(a.streams["root"], []byte(dshOverloadedEnd)))
+	assert.Equal(t, providerkittest.TurnEndThen(providerkit.TurnFailure{Kind: providerkit.TurnFailureTransient, Cause: "DeepSeek Harness reported a transient failure"}),
+		providerkittest.TurnEndAndRetryOps(sink.Timeline()))
+}
+
+// The compaction mark belongs to the compaction turn alone. The next turn
+// takes the classifier's verdict again.
+func TestTurnAfterACompactionTakesItsOwnVerdict(t *testing.T) {
+	t.Parallel()
+	a, sink := newDSHRetryAgent(t)
+	a.active = false
+	serveCommands(t, a, func(string) {})
+	require.NoError(t, a.CompactContext())
+	root := a.streams["root"]
+	require.NoError(t, a.handleSessionEvent(root, []byte(`{"type":"turn/start","seq":2,"time":1793150196000,"data":{"turn":2}}`)))
+	require.NoError(t, a.handleSessionEvent(root, []byte(dshOverloadedEnd)))
+	want := append(compactionVerdictOps(), providerkittest.TurnEndThen(providerkit.TurnFailure{Kind: providerkit.TurnFailureTransient, Cause: "DeepSeek Harness reported a transient failure"})...)
+	assert.Equal(t, want, providerkittest.TurnEndAndRetryOps(sink.Timeline()))
 }

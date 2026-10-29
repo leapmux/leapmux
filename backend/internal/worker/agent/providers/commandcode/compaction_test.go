@@ -14,22 +14,32 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit/providerkittest"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 func nativeCompactionEndpoint(t *testing.T, a *Agent, outcome string) *providerkit.HTTPEndpoint {
 	t.Helper()
-	return compactionEndpoint(t, func(w http.ResponseWriter, r *http.Request) {
+	return compactionEndpoint(t, nativeCompactionEndpointHandler(t, a, outcome, 1))
+}
+
+// nativeCompactionEndpointHandler answers /compact as the native host does: a
+// start, the outcome when one is given, and doneEvents done events.
+func nativeCompactionEndpointHandler(t *testing.T, a *Agent, outcome string, doneEvents int) http.HandlerFunc {
+	t.Helper()
+	return func(w http.ResponseWriter, r *http.Request) {
 		assert.Equal(t, "/compact", r.URL.Path)
 		a.HandleOutput([]byte(`{"type":"event","event":{"type":"compaction_start","trigger":"manual"}}`))
 		if outcome != "" {
 			a.HandleOutput([]byte(fmt.Sprintf(`{"type":"event","event":{"type":"compaction_outcome","trigger":"manual","outcome":%q,"tokensBefore":1000,"tokensAfter":1000}}`, outcome)))
 		}
-		a.HandleOutput([]byte(`{"type":"event","event":{"type":"compaction_done","trigger":"manual","tokensSaved":0}}`))
+		for range doneEvents {
+			a.HandleOutput([]byte(`{"type":"event","event":{"type":"compaction_done","trigger":"manual","tokensSaved":0}}`))
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"completed":true}`))
-	})
+	}
 }
 
 func compactionEndpoint(t *testing.T, handler http.HandlerFunc) *providerkit.HTTPEndpoint {
@@ -49,6 +59,7 @@ func TestFailedNativeManualCompactionDoesNotReportSuccess(t *testing.T) {
 	active, known := sink.LastTurnActive()
 	require.True(t, known)
 	assert.False(t, active)
+	assert.Equal(t, compactionVerdictOps(), providerkittest.TurnEndAndRetryOps(sink.Timeline()))
 }
 
 func TestNativeManualCompactionRequiresItsExactOutcome(t *testing.T) {
@@ -177,6 +188,7 @@ func TestBridgeWaitTimeoutAfterTheStartWritesCompactionEndedFailed(t *testing.T)
 	assert.Equal(t, contracts.CompactionEndOutcomeFailed, sink.LeapMuxNotifications()[0][contracts.NotificationFieldOutcome])
 	assert.False(t, a.PublishTurnActive().Active)
 	assert.Nil(t, a.manualCompaction)
+	assert.Equal(t, compactionVerdictOps(), providerkittest.TurnEndAndRetryOps(sink.Timeline()))
 }
 
 func TestBridgeFailureOnlyEndsAPublishedCompaction(t *testing.T) {
@@ -225,6 +237,7 @@ func TestCompactionNativeEndDuringStopKeepsItsOutcome(t *testing.T) {
 	require.Len(t, sink.PersistedNotifications(), 1)
 	assert.Contains(t, string(sink.PersistedNotifications()[0].Content), "compaction_outcome")
 	assert.Contains(t, string(sink.PersistedNotifications()[0].Content), "summarized")
+	assert.Equal(t, compactionVerdictOps(), providerkittest.TurnEndAndRetryOps(sink.Timeline()), "the native end and the reader end apply one verdict")
 }
 
 func TestClassifyNoticeKeepsEachNotice(t *testing.T) {
@@ -272,6 +285,7 @@ func TestCompactionShutdownLetsTheReaderDetermineTheOutcome(t *testing.T) {
 				assert.Equal(t, contracts.CompactionEndOutcomeAborted, sink.LeapMuxNotifications()[0][contracts.NotificationFieldOutcome])
 			}
 			assert.False(t, a.PublishTurnActive().Active)
+			assert.Equal(t, compactionVerdictOps(), providerkittest.TurnEndAndRetryOps(sink.Timeline()))
 		})
 	}
 }
@@ -324,6 +338,7 @@ func TestCompactionReplyFailureStopsOnlyUnresolvedNativeWork(t *testing.T) {
 			value, exists := sink.LastSessionInfoValue(contracts.SessionInfoKeyCompaction)
 			assert.True(t, exists)
 			assert.Nil(t, value)
+			assert.Equal(t, compactionVerdictOps(), providerkittest.TurnEndAndRetryOps(sink.Timeline()))
 		})
 	}
 }
@@ -361,4 +376,123 @@ func TestCompactionRequestTimeoutStopsUnresolvedNativeWork(t *testing.T) {
 	assert.False(t, a.PublishTurnActive().Active)
 	require.Len(t, sink.LeapMuxNotifications(), 1)
 	assert.Equal(t, contracts.CompactionEndOutcomeFailed, sink.LeapMuxNotifications()[0][contracts.NotificationFieldOutcome])
+	assert.Equal(t, compactionVerdictOps(), providerkittest.TurnEndAndRetryOps(sink.Timeline()))
+}
+
+// compactionVerdictOps is the retry operation that the end of one manual
+// compaction applies: CompactionEnd's cancellation of the server-error retry.
+func compactionVerdictOps() []agenttest.TimelineEntry {
+	reference := &agenttest.Sink{}
+	providerkit.ApplyTurnFailure(reference, providerkit.CompactionEnd(), nil)
+	return reference.Timeline()
+}
+
+// A manual compaction applies CompactionEnd once when it ends, whatever its
+// outcome: a native end, a bridge failure, a missing confirmation, or the end
+// of the reader. A replayed native end applies no second verdict.
+func TestManualCompactionEndAppliesTheCompactionVerdictOnce(t *testing.T) {
+	t.Parallel()
+	manualStart := map[string]any{"type": "compaction_start", "trigger": "manual"}
+	manualOutcome := func(outcome string) map[string]any {
+		return map[string]any{"type": "compaction_outcome", "trigger": "manual", "outcome": outcome}
+	}
+	manualDone := map[string]any{"type": "compaction_done", "trigger": "manual"}
+	for _, tc := range []struct {
+		name    string
+		handler func(*testing.T, *Agent) http.HandlerFunc
+		success bool
+	}{
+		{name: "a summarized compaction", handler: func(t *testing.T, a *Agent) http.HandlerFunc {
+			return nativeCompactionEndpointHandler(t, a, "summarized", 1)
+		}, success: true},
+		{name: "a failed native compaction", handler: func(t *testing.T, a *Agent) http.HandlerFunc {
+			return nativeCompactionEndpointHandler(t, a, "failed", 1)
+		}},
+		{name: "a replayed native end", handler: func(t *testing.T, a *Agent) http.HandlerFunc {
+			return nativeCompactionEndpointHandler(t, a, "summarized", 2)
+		}, success: true},
+		{name: "a bridge failure before the start", handler: func(*testing.T, *Agent) http.HandlerFunc {
+			return func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusServiceUnavailable) }
+		}},
+		{name: "a bridge failure after the start", handler: func(t *testing.T, a *Agent) http.HandlerFunc {
+			return func(w http.ResponseWriter, _ *http.Request) {
+				feedEvent(t, a, manualStart)
+				w.WriteHeader(http.StatusInternalServerError)
+			}
+		}},
+		{name: "a host that does not confirm the compaction", handler: func(t *testing.T, a *Agent) http.HandlerFunc {
+			return func(w http.ResponseWriter, _ *http.Request) {
+				feedEvent(t, a, manualStart)
+				w.Header().Set("Content-Type", "application/json")
+				_, err := w.Write([]byte(`{"completed":false}`))
+				assert.NoError(t, err)
+			}
+		}},
+		{name: "a reader that ends after the native outcome", handler: func(t *testing.T, a *Agent) http.HandlerFunc {
+			return func(w http.ResponseWriter, _ *http.Request) {
+				feedEvent(t, a, manualStart)
+				feedEvent(t, a, manualOutcome("summarized"))
+				a.finishStream()
+				w.Header().Set("Content-Type", "application/json")
+				_, err := w.Write([]byte(`{"completed":true}`))
+				assert.NoError(t, err)
+			}
+		}},
+		{name: "a reader that ends before a late native end", handler: func(t *testing.T, a *Agent) http.HandlerFunc {
+			return func(w http.ResponseWriter, _ *http.Request) {
+				feedEvent(t, a, manualStart)
+				a.finishStream()
+				// The reader already ended the attempt, so a late end changes nothing.
+				feedEvent(t, a, manualOutcome("summarized"))
+				feedEvent(t, a, manualDone)
+				w.Header().Set("Content-Type", "application/json")
+				_, err := w.Write([]byte(`{"completed":true}`))
+				assert.NoError(t, err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a, sink := testAgent(t)
+			a.bridge = compactionEndpoint(t, tc.handler(t, a))
+			err := a.CompactContext()
+			if tc.success {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+			}
+			assert.Equal(t, compactionVerdictOps(), providerkittest.TurnEndAndRetryOps(sink.Timeline()))
+			assert.Nil(t, a.manualCompaction)
+			active, known := sink.LastTurnActive()
+			require.True(t, known)
+			assert.False(t, active, "the end of the compaction publishes idle")
+		})
+	}
+}
+
+// An automatic compaction, outside LeapMux's CompactContext, ends no turn of
+// its own, so it applies no verdict.
+func TestAutomaticCompactionEndAppliesNoVerdict(t *testing.T) {
+	t.Parallel()
+	a, sink := testAgent(t)
+	feedEvent(t, a, map[string]any{"type": "compaction_start"})
+	feedEvent(t, a, map[string]any{"type": "compaction_outcome", "outcome": "summarized"})
+	feedEvent(t, a, map[string]any{"type": "compaction_done", "tokensSaved": 101})
+	a.finishStream()
+	assert.Empty(t, providerkittest.TurnEndAndRetryOps(sink.Timeline()))
+}
+
+// The compaction's verdict belongs to the compaction alone. The next turn
+// takes the classifier's verdict again.
+func TestTurnAfterManualCompactionTakesItsOwnVerdict(t *testing.T) {
+	t.Parallel()
+	a, sink := newCommandCodeRetryAgent(t)
+	a.HandleOutput([]byte(commandcodeSuccessEnd))
+	before := len(providerkittest.TurnEndAndRetryOps(sink.Timeline()))
+	a.bridge = nativeCompactionEndpoint(t, a, "summarized")
+	require.NoError(t, a.CompactContext())
+	a.startTurn("turn_2")
+	a.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"turn/completed","params":{"seq":16,"turnId":"turn_2","stopReason":"run_error","finalText":"","turnCount":1,"error":{"name":"TransportError","message":"POST /alpha/generate → 529 overloaded_error: Overloaded","status":529}}}`))
+	want := append(compactionVerdictOps(), providerkittest.TurnEndThen(commandcodeOverloadedFailure)...)
+	assert.Equal(t, want, providerkittest.TurnEndAndRetryOps(sink.Timeline())[before:])
 }

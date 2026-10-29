@@ -102,6 +102,11 @@ export interface MockModelError {
    * provider's message of this shape in its `result`.
    */
   midStream?: boolean | 'truncate'
+  /**
+   * Send a `retry-after` header with this many seconds, which states when the agent may retry.
+   * It must be a positive whole number. A mid-stream error cannot carry it, because that error answers 200 first.
+   */
+  retryAfterSeconds?: number
 }
 
 export interface MockModelDeliveredError {
@@ -1030,6 +1035,11 @@ function parseModelError(value: unknown, label: string): MockModelError {
     throw new Error(`Model ${label} error code must be a string`)
   if (value.midStream !== undefined && typeof value.midStream !== 'boolean' && value.midStream !== 'truncate')
     throw new Error(`Model ${label} error midStream must be a boolean or "truncate"`)
+  if (value.retryAfterSeconds !== undefined && (!Number.isInteger(value.retryAfterSeconds) || Number(value.retryAfterSeconds) <= 0))
+    throw new Error(`Model ${label} error retryAfterSeconds must be a positive integer`)
+  // A mid-stream error answers 200 before it fails, so no header can state a retry instant.
+  if (value.retryAfterSeconds !== undefined && value.midStream !== undefined && value.midStream !== false)
+    throw new Error(`Model ${label} error cannot combine retryAfterSeconds with a mid-stream failure`)
   return {
     status: Number(value.status),
     message: value.message,
@@ -1038,6 +1048,9 @@ function parseModelError(value: unknown, label: string): MockModelError {
       : {}),
     ...(value.midStream === true || value.midStream === 'truncate'
       ? { midStream: value.midStream }
+      : {}),
+    ...(typeof value.retryAfterSeconds === 'number'
+      ? { retryAfterSeconds: value.retryAfterSeconds }
       : {}),
   }
 }

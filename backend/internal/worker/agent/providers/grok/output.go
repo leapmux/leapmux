@@ -181,12 +181,25 @@ func (a *Agent) reportCompaction(updateType string, update json.RawMessage, raw 
 // row (observeRetryContent).
 //
 // Only a retry in progress is stated. An exhausted or failed retry ends the
-// turn with an error, which the turn's own end reports.
+// turn with an error, which the turn's own end reports. Its error_type stays
+// for the retry verdict of that end (finishGrokPrompt). The caller passes the
+// frames of the main session only, so a subagent's failure records nothing.
 func (a *Agent) reportRetry(update json.RawMessage, raw []byte) {
 	var retry struct {
-		Type string `json:"type"`
+		Type      string `json:"type"`
+		ErrorType string `json:"error_type"`
 	}
-	if err := json.Unmarshal(update, &retry); err != nil || retry.Type != "retrying" {
+	if err := json.Unmarshal(update, &retry); err != nil {
+		return
+	}
+	switch retry.Type {
+	case "failed", "exhausted":
+		a.stateMu.Lock()
+		a.lastFailureType = retry.ErrorType
+		a.stateMu.Unlock()
+		return
+	case "retrying":
+	default:
 		return
 	}
 	a.DiscardBufferedOutput()

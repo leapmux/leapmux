@@ -383,7 +383,7 @@ func (svc *Service) stopArchivedTabs(changed archiveTabSet) {
 		unlock := svc.Agents.LockAgent(agentID)
 		svc.Agents.StopAndWaitAgent(agentID)
 		unlock()
-		svc.Output.ClearAgentRuntimeState(agentID)
+		svc.Output.ClearAgentRuntimeState(agentID, CleanupWorkspaceArchived)
 		svc.agentCleanups.retire(agentID)
 		row, err := svc.Queries.GetAgentForInactiveBroadcast(bgCtx(), agentID)
 		if err == nil {

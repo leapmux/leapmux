@@ -591,6 +591,8 @@ func (a *Agent) endStoppedZCodeTurn(generation uint64) {
 		return
 	}
 	compacting := turnID == ""
+	foreground := owner != nil && !owner.background && a.foregroundTurnID == owner.id
+	retryWriter := a.sink.CaptureAutoRetry()
 	if owner != nil {
 		if owner.pendingNative == nil {
 			a.stopZCodeTurnWatcherLocked(owner)
@@ -626,6 +628,9 @@ func (a *Agent) endStoppedZCodeTurn(generation uint64) {
 		a.resetZCodeTurnProgress(owner)
 	}
 	a.persistZCodeStopRow()
+	if compacting || foreground {
+		a.finishStoppedZCodeRetry(owner, retryWriter, compacting)
+	}
 	if owner != nil {
 		a.Mu.Lock()
 		a.dropZCodeTurnLocked(owner)

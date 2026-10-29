@@ -1003,9 +1003,10 @@ func (a *Agent) resetZCodeSpansWhenIdle() {
 func (a *Agent) zcodeRecoverySettlement(owner *zcodeTurnState, completion agent.MessageCompletion, evidence []byte) zcodeTurnSettlement {
 	record := func(publish bool) { a.persistZCodeRecoveryEvidenceForOwner(owner, completion, evidence, publish) }
 	return zcodeTurnSettlement{
-		textCompletion: completion,
-		callCompletion: completion,
-		persistEnd:     func(_ int, publish bool) { record(publish) },
+		textCompletion:  completion,
+		callCompletion:  completion,
+		persistEnd:      func(_ int, publish bool) { record(publish) },
+		afterForeground: a.captureZCodeRetryVerdict(owner, providerkit.TurnFailure{}, evidence),
 	}
 }
 
@@ -1051,8 +1052,9 @@ func (a *Agent) settleZCodeTurnFromRecovery(owner *zcodeTurnState, state *zcodeT
 func (a *Agent) settleZCodeTurnLost(owner *zcodeTurnState, state *zcodeTurnRecoveryState) {
 	a.stopZCodeTurnWatcher(owner)
 	a.settleZCodeTurn(owner, zcodeTurnSettlement{
-		textCompletion: agent.MessageCompletionError,
-		callCompletion: agent.MessageCompletionError,
+		textCompletion:  agent.MessageCompletionError,
+		callCompletion:  agent.MessageCompletionError,
+		afterForeground: a.captureZCodeRetryVerdict(owner, providerkit.TurnFailure{}, nil),
 		persistEnd: func(int, bool) {
 			a.sink.PersistLeapMuxNotification(map[string]interface{}{
 				contracts.NotificationFieldType:  contracts.NotificationTypeAgentError,

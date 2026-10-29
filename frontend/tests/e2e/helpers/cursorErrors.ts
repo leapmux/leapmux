@@ -22,12 +22,35 @@ function connectErrorCode(status: number): string {
   }
 }
 
-/** End an actual Run with the installed native error details and an explicit no-retry flag. */
+/**
+ * The statuses that a gateway in front of Cursor's service answers when it cannot reach the service: a bad gateway,
+ * an unavailable upstream, and a gateway timeout. The gateway's Connect error carries no `aiserver.v1.ErrorDetails`,
+ * because only the service writes them.
+ */
+const GATEWAY_STATUSES: ReadonlySet<number> = new Set([502, 503, 504])
+
+/**
+ * End an actual Run with the native error of the HTTP status.
+ *
+ * A gateway status ends the Run with the gateway's bare Connect error. cursor-agent 2026.09.28 states that error as
+ * `Error: RetriableError: [<code>] <message>`. Every other status ends the Run with the service's error details and
+ * their explicit no-retry flag (`is_retryable` false), which cursor-agent states as `Error: NonRetriableError: ...`.
+ */
 export function cursorErrorResponse(error: MockModelError): { frame: Uint8Array, error: MockModelDeliveredError } {
   if (!Number.isInteger(error.status) || error.status < 400 || error.status > 599)
     throw new Error('The Cursor error requires an HTTP error status from 400 to 599.')
   if (typeof error.message !== 'string')
     throw new TypeError('The Cursor error requires a string message.')
+  const deliveredError = {
+    code: connectErrorCode(error.status),
+    message: error.message,
+  }
+  if (GATEWAY_STATUSES.has(error.status)) {
+    return {
+      frame: connectEndOfStream({ error: deliveredError }),
+      error: deliveredError,
+    }
+  }
   const quota = error.status === 429
   // ErrorDetails uses PRO_USER_USAGE_LIMIT=10 and CUSTOM_MESSAGE=29.
   const details = concatBytes([
@@ -39,10 +62,6 @@ export function cursorErrorResponse(error: MockModelError): { frame: Uint8Array,
     ])),
     encodeVarintField(3, 1),
   ])
-  const deliveredError = {
-    code: connectErrorCode(error.status),
-    message: error.message,
-  }
   return {
     frame: connectEndOfStream({
       error: {

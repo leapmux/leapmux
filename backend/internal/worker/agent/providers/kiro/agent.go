@@ -205,7 +205,7 @@ func (a *Agent) CompactContext() error {
 	})
 	if err != nil {
 		a.dropCompaction(id)
-		a.EndAgentTurnWithoutRow()
+		a.endCompactionTurn()
 		return err
 	}
 	return nil
@@ -227,7 +227,7 @@ func (a *Agent) Interrupt(stop agent.StopContext) error {
 	if a.dropCompaction(running) {
 		providerkit.EndCompaction(a.Sink())
 		a.persistStatus("Stopped waiting for the context compaction")
-		a.EndAgentTurnWithoutRow()
+		a.endCompactionTurn()
 	}
 	return err
 }
@@ -246,6 +246,14 @@ func (a *Agent) refreshContextUsage(sessionID string) {
 	if err := a.SendDetachedRequest(kiroContextShowMethod, params, func(json.RawMessage, error) {}); err != nil {
 		slog.Debug("kiro context show request failed", "agent_id", a.AgentID(), "error", err)
 	}
+}
+
+// endCompactionTurn ends the turn that a manual compaction held, with no
+// turn-end row. A compaction's end schedules no retry, whatever its outcome: a
+// failed compaction leaves the task where the last turn left it, so no retry
+// may resume it.
+func (a *Agent) endCompactionTurn() {
+	a.EndAgentTurnWithoutRowWithVerdict(acp.TurnVerdict{Failure: providerkit.CompactionEnd()})
 }
 
 // dropCompaction forgets the compaction id, and reports whether it was the
@@ -281,7 +289,7 @@ func (a *Agent) finishCompaction(id uint64, response json.RawMessage, err error)
 	a.compaction = compactionState{lastID: a.compaction.lastID}
 	sessionID := a.CurrentSessionID()
 	a.stateMu.Unlock()
-	defer a.EndAgentTurnWithoutRow()
+	defer a.endCompactionTurn()
 	// Every end of the manual compaction ends its live state first: Kiro
 	// answers with a bare result and sends no end frame of its own, so this
 	// row is the stored end.

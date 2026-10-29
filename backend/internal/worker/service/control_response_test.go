@@ -1403,7 +1403,7 @@ func TestSendControlResponse_DuplicateStraddlingRestartStillDeduped(t *testing.T
 	// The full restart the clear-context plan exit triggers (initiatePlanExecutionRestart ->
 	// ClearAgentRuntimeState = ClearPendingControlRequests + CleanupAgent). Neither touches the durable
 	// answer claim, so the claim survives and the duplicate below (same token) is deduped.
-	svc.Output.ClearAgentRuntimeState("agent-1")
+	svc.Output.ClearAgentRuntimeState("agent-1", CleanupTabClosed)
 	dispatch(d, "SendControlResponse", answer, w)
 	require.Empty(t, w.errors, "neither answer errors -- the winner forwards, the straddling duplicate is a deduped no-op")
 

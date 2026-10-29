@@ -87,6 +87,12 @@ type Agent struct {
 	compactionLive bool
 	// compactionEndedTurn prevents a delayed compact reply from restarting a completed indicator.
 	compactionEndedTurn string
+	// compactionTurnID is the turn that runs a manual compaction, or "". The
+	// runtime marks that turn's start, and the reply of LeapMux's own compact
+	// request states its id. The end of that turn spends the mark, so it
+	// applies the compaction verdict. Guarded by Mu, like the fields around
+	// it. See noteCompactionTurn.
+	compactionTurnID string
 	// finishedTurns remembers the turns that already ended, so a start that
 	// arrives after its own end -- the POST reply that raced the event stream --
 	// cannot open a turn that nothing will close.
@@ -383,6 +389,7 @@ func (a *Agent) CompactContext() error {
 	}
 	a.dispatchMu.Lock()
 	defer a.dispatchMu.Unlock()
+	a.noteCompactionTurn(turn.ID)
 	if a.markTurnStarted(turn.ID) {
 		a.PublishTurnActive()
 	}

@@ -264,7 +264,7 @@ func TestRelaunchOnExitPreservesNotificationThread(t *testing.T) {
 
 	// Contrast: the PERMANENT-teardown cleanup DOES clear the thread, so a later
 	// notification correctly starts a fresh standalone row.
-	svc.Output.ClearAgentRuntimeState("agent-1")
+	svc.Output.ClearAgentRuntimeState("agent-1", CleanupTabClosed)
 	persistNotif(t, sink, leapmuxv1.MessageSource_MESSAGE_SOURCE_LEAPMUX, raw(t, settingsChanged("opus[1m]", "haiku")))
 	assert.Len(t, listRows(), 2, "ClearAgentRuntimeState clears the thread, so the next notification is a new row")
 }

@@ -117,13 +117,15 @@ type Base struct {
 	// agentTurnQueued records an agent turn that starts before the base processes the preceding prompt's end.
 	// The prompt's end transfers the busy state to that turn. See BeginAgentTurn.
 	// queuedAgentTurnEnd holds the agent turn's end frame when that frame arrives before the prompt's end.
+	// queuedAgentTurnVerdict holds the retry verdict that the agent turn's end carried.
 	// b.Mu protects these fields.
-	agentTurnQueued    bool
-	queuedAgentTurnEnd json.RawMessage
-	publishTurnActive  func(active bool, seq uint64)
-	steerMethod        string
-	steerRunID         string
-	urlElicitations    map[string]acpURLElicitation
+	agentTurnQueued        bool
+	queuedAgentTurnEnd     json.RawMessage
+	queuedAgentTurnVerdict TurnVerdict
+	publishTurnActive      func(active bool, seq uint64)
+	steerMethod            string
+	steerRunID             string
+	urlElicitations        map[string]acpURLElicitation
 	// closesSessions records that the initialize response advertised
 	// session/close, which a context clear sends for the session that it
 	// replaced. Guarded by b.Mu.
@@ -1527,6 +1529,7 @@ func (b *Base) resetTurnStateLocked() {
 	b.agentTurnActive = false
 	b.agentTurnQueued = false
 	b.queuedAgentTurnEnd = nil
+	b.queuedAgentTurnVerdict = TurnVerdict{}
 	b.steerRunID = ""
 	b.interruptRequested = false
 }
