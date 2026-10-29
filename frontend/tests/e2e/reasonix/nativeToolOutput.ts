@@ -15,8 +15,8 @@ export interface ReasonixNativeOutput {
 
 /** Validate the complete native spill receipt and the exact stored record before a browser assertion. */
 export function reasonixNativeOutput(original: unknown, supplemental: unknown, callId: string): ReasonixNativeOutput {
-  if (!callId.trim() || !isObject(original) || !acpClosedToolCall(original, callId, ['completed']))
-    throw new Error('The native Reasonix output has no exact completed call.')
+  if (!callId.trim() || !isObject(original) || !acpClosedToolCall(original, callId, ['completed', 'failed']))
+    throw new Error('The native Reasonix output has no exact finished call.')
   const retained = isObject(supplemental) ? supplemental[MESSAGE_SUPPLEMENT_FIELD.Provider] : undefined
   if (!isObject(retained))
     throw new Error('The native Reasonix output has no stored provider record.')
@@ -32,11 +32,11 @@ export function reasonixNativeOutput(original: unknown, supplemental: unknown, c
   const block = isObject(first) && first.type === 'content' ? first.content : undefined
   const excerpt = isObject(block) && block.type === 'text' ? block.text : undefined
   const text = record[REASONIX_TOOL_RECORD.ContentField]
-  if (typeof excerpt !== 'string' || typeof text !== 'string' || excerpt !== text)
+  if (typeof excerpt !== 'string' || typeof text !== 'string' || (original.status === 'completed' ? excerpt !== text : !text.includes(`\n\nOpening lines:\nerror: ${excerpt}\n`)))
     throw new Error('The native Reasonix output does not match its stored receipt.')
-  const match = /^\[bash output kept out of context: [1-9]\d* lines, [^\]\n]+\]\nFull output: ([^\r\n]+)\nRead a window of it with read_file \(offset\/limit\), or search it with grep\. It is not in this conversation\.\n/u.exec(excerpt)
+  const match = /^\[bash output kept out of context: [1-9]\d* lines, [^\]\n]+\]\nFull output: ([^\r\n]+)\nRead a window of it with read_file \(offset\/limit\), or search it with grep\. It is not in this conversation\.\n/u.exec(text)
   const path = match?.[1]
   if (!path || !isAbsolute(path) || basename(path) !== `${callId}.txt`)
     throw new Error('The native Reasonix output has no exact filesystem receipt.')
-  return { callId, excerpt, text, previewText: text, path }
+  return { callId, excerpt, text, previewText: excerpt, path }
 }

@@ -1,3 +1,4 @@
+import type { McpProbeServer } from '../helpers/mcpProbeServer'
 import type { NativeContextFixtures } from '../helpers/nativeScenario'
 import { execFileSync } from 'node:child_process'
 import { writeFileSync } from 'node:fs'
@@ -17,26 +18,32 @@ import { waitForStoredEntry } from '../helpers/storage'
 import { openWorkspace } from '../helpers/ui'
 import { nativeContext } from './scenarios'
 
+/** Open a fresh native session with one explicitly enabled project MCP server. */
+export async function openReasonixMcpAgent(fixtures: NativeContextFixtures, prepare: (directory: string) => McpProbeServer) {
+  const context = await nativeContext(fixtures)
+  const directory = newNativeWorkingDir(context, 'reasonix-mcp-')
+  const server = prepare(directory)
+  writeFileSync(join(directory, '.mcp.json'), JSON.stringify(mcpServersConfig(server)))
+  const { leapmuxServer } = context
+  const enabled = execFileSync('reasonix', ['mcp', 'enable', server.name], {
+    cwd: directory,
+    env: hubSpawnEnv(leapmuxServer.agentEnv),
+    encoding: 'utf8',
+  })
+  expect(enabled).toContain(`enabled MCP server ${JSON.stringify(server.name)} in this project`)
+  await openAgentViaAPI(leapmuxServer, context.workspaceId, directory, agentOpenOptions(context.provider, {
+    optionValues: { tool_approval: 'yolo' },
+  }))
+  await openWorkspace(context.page, context.workspaceId)
+  return context
+}
+
 /**
  * Open a Reasonix agent whose project registers the probe form server, and answer the form through the browser after
  * a reload. The Yolo approval runs the MCP tool without a request, so the form is the only request of the call.
  */
 export async function exerciseReasonixMcpForm(fixtures: NativeContextFixtures): Promise<void> {
-  const context = await nativeContext(fixtures)
-  const directory = newNativeWorkingDir(context, 'reasonix-mcp-form-')
-  const formServer = writeMcpFormServer(directory, 'form-server.mjs')
-  writeFileSync(join(directory, '.mcp.json'), JSON.stringify(mcpServersConfig(formServer)))
-  const { leapmuxServer } = context
-  const enabled = execFileSync('reasonix', ['mcp', 'enable', formServer.name], {
-    cwd: directory,
-    env: hubSpawnEnv(leapmuxServer.agentEnv),
-    encoding: 'utf8',
-  })
-  expect(enabled).toContain(`enabled MCP server ${JSON.stringify(formServer.name)} in this project`)
-  await openAgentViaAPI(leapmuxServer, context.workspaceId, directory, agentOpenOptions(context.provider, {
-    optionValues: { tool_approval: 'yolo' },
-  }))
-  await openWorkspace(context.page, context.workspaceId)
+  const context = await openReasonixMcpAgent(fixtures, directory => writeMcpFormServer(directory, 'form-server.mjs'))
   await exerciseMcpProbeFormRoundTrip(context, {
     callId: 'mcp-form',
     reloadBeforeSubmit: true,

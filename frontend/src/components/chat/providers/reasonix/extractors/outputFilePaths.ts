@@ -1,30 +1,11 @@
 import type { ToolCall } from '../../../model/toolCall'
 import type { RowExtractionInput } from '../../../rowExtractionTypes'
-import { isObject, pickString } from '~/lib/jsonPick'
-import { isFilesystemPath } from '~/lib/paths'
+import { REASONIX_OUTPUT_RECEIPT, REASONIX_TOOL_RECORD } from '~/generated/contracts/reasonix-protocol'
+import { isObject, pickObject, pickString } from '~/lib/jsonPick'
+import { collectAcpToolText } from '../../acp/content'
 import { parsedACPToolCall } from '../../acp/extractors/toolCall'
-
-const OUTPUT_PREFIX = 'Full output: '
-const OUTPUT_INSTRUCTIONS = 'Read a window of it with read_file (offset/limit), or search it with grep. It is not in this conversation.'
-
-/** Read Reasonix's native spill receipt and bind its file to this exact tool call. */
-export function reasonixOutputFilePointer(text: unknown, toolName: string, callId: string): string | undefined {
-  if (typeof text !== 'string' || !toolName || !callId)
-    return undefined
-  const [header, location, instructions] = text.split('\n', 3)
-  const prefix = `[${toolName} output kept out of context: `
-  if (!header?.startsWith(prefix) || !/^[1-9]\d* lines, [^\]\r\n]+\]$/.test(header.slice(prefix.length))
-    || !location?.startsWith(OUTPUT_PREFIX) || instructions !== OUTPUT_INSTRUCTIONS) {
-    return undefined
-  }
-  const path = location.slice(OUTPUT_PREFIX.length)
-  if (!isFilesystemPath(path) || path.includes('\r'))
-    return undefined
-  // Reasonix's spillFileName replaces each non-ASCII filename character, trims hyphens,
-  // and caps the call identity at 96 characters before adding the extension.
-  const identity = callId.replace(/[^\w-]/gu, '-').replace(/^-+|-+$/g, '').slice(0, 96) || 'output'
-  return path.split(/[\\/]/u).at(-1) === `${identity}.txt` ? path : undefined
-}
+import { acpSupplementRawOutput, acpToolSupplement } from '../../acp/toolSupplement'
+import { reasonixAuthenticatedOutputFilePointer, reasonixOutputFilePointer } from './outputReceipt'
 
 /** Expose the saved output beside its original preview, without reading or replacing that preview. */
 export function reasonixOutputFilePaths(input: RowExtractionInput, call: ToolCall): readonly string[] {
@@ -42,5 +23,17 @@ export function reasonixOutputFilePaths(input: RowExtractionInput, call: ToolCal
     const path = reasonixOutputFilePointer(block.content.text, nativeName, call.id)
     return path === undefined ? [] : [path]
   })
-  return paths.length === 1 ? paths : []
+  if (paths.length > 0)
+    return paths.length === 1 ? paths : []
+  if (native.status !== 'failed')
+    return []
+  const output = acpSupplementRawOutput(acpToolSupplement(native, input.resolved.supplementalContent))
+  const saved = pickObject(output, REASONIX_TOOL_RECORD.Envelope)
+  if (saved?.[REASONIX_TOOL_RECORD.RoleField] !== REASONIX_TOOL_RECORD.ToolRole || saved[REASONIX_TOOL_RECORD.ToolCallIDField] !== call.id)
+    return []
+  const savedName = pickString(saved, REASONIX_TOOL_RECORD.NameField)
+  if (savedName && nativeName && savedName !== nativeName)
+    return []
+  const path = reasonixAuthenticatedOutputFilePointer(saved[REASONIX_TOOL_RECORD.ContentField], savedName || nativeName, call.id, collectAcpToolText(native), output?.[REASONIX_OUTPUT_RECEIPT.Envelope])
+  return path === undefined ? [] : [path]
 }

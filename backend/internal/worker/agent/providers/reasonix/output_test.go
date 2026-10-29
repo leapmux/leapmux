@@ -94,13 +94,23 @@ func TestReasonixNoticeRequiresThePrefix(t *testing.T) {
 	assert.True(t, strings.HasPrefix(texts[0], "A model answer"))
 }
 
-// A compaction notice persists its native frame and classifies as a boundary.
-
-func TestReasonixMCPHealthUpdateStaysOutOfTheConversation(t *testing.T) {
-	t.Parallel()
-	a, sink := newReasonixNoticeAgent(t)
-	a.HooksForTest().ExtraMethod = a.handleExtraMethod
-	a.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"_reasonix.io/session/mcpStatus_update","params":{"schemaVersion":1,"sessionId":"session-1","servers":[]}}`))
-	assert.Empty(t, sink.Messages(), "native MCP health is session metadata, not a chat row")
-	assert.Empty(t, sink.PersistedNotifications())
+func TestReasonixPlanDraftAmortizesChunkAllocations(t *testing.T) {
+	const chunks = 1000
+	update, err := json.Marshal(map[string]any{"content": map[string]string{"type": "text", "text": strings.Repeat("x", 100)}})
+	require.NoError(t, err)
+	measure := func(resetEach bool) float64 {
+		a := &Agent{}
+		return testing.AllocsPerRun(3, func() {
+			a.resetPlanDraft()
+			for range chunks {
+				if resetEach {
+					a.resetPlanDraft()
+				}
+				a.observeSessionMetadata("agent_message_chunk", nil, update)
+			}
+		})
+	}
+	independent := measure(true)
+	accumulated := measure(false)
+	assert.Less(t, accumulated-independent, float64(chunks/10), "retaining a response must not allocate another complete draft for every chunk")
 }

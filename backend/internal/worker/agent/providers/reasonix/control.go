@@ -90,7 +90,7 @@ func (a *Agent) observeControlRequest(line *providerkit.ParsedLine) {
 		return
 	}
 	a.Mu.Lock()
-	plan := a.planDraft
+	plan := a.planDraft.String()
 	a.Mu.Unlock()
 	if strings.TrimSpace(plan) == "" {
 		return

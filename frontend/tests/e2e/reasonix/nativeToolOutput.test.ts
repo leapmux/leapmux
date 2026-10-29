@@ -15,6 +15,18 @@ describe('reasonixNativeOutput', () => {
     expect(reasonixNativeOutput(original, supplemental, 'native-call')).toEqual({ callId: 'native-call', excerpt: text, text, previewText: text, path })
   })
 
+  it.each(['exit status 7', 'command exited: exit status 7'])('keeps the failed native %s preview beside the actual saved receipt', (headline) => {
+    const { original, supplemental, provider, text, path } = fixture()
+    original.status = 'failed'
+    provider.status = 'failed'
+    original.content[0]!.content.text = headline
+    const stored = text.replace('native head', `error: ${headline}\nnative head`)
+    provider.rawOutput.reasonix.content = stored
+    expect(reasonixNativeOutput(original, supplemental, 'native-call')).toEqual({ callId: 'native-call', excerpt: headline, text: stored, previewText: headline, path })
+    original.content[0]!.content.text = 'unrelated failure'
+    expect(() => reasonixNativeOutput(original, supplemental, 'native-call')).toThrow('does not match its stored receipt')
+  })
+
   it.each([
     ['call', 'belongs to another result'],
     ['status', 'belongs to another result'],

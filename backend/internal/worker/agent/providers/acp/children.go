@@ -450,7 +450,7 @@ func (b *Base) LoadChildSession(target ChildSessionTarget) (string, error) {
 		if err != nil {
 			return err
 		}
-		session, err := parseACPSessionResult(raw)
+		session, err := ParseSessionResult(raw)
 		if err != nil {
 			return fmt.Errorf("read ACP subagent settings: %w", err)
 		}

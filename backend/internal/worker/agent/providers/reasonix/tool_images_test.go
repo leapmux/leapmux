@@ -34,6 +34,42 @@ func TestReadReasonixImageBlobVerifiesThePayloadAndReadLimit(t *testing.T) {
 	assert.Empty(t, readReasonixImageBlob(directory, "sha256:"+hash, len(image)), "a valid filename cannot authenticate corrupted bytes")
 }
 
+func TestReadReasonixImageBlobRejectsSymlinksAndNonregularFiles(t *testing.T) {
+	t.Parallel()
+	const image = "data:image/png;base64,AQID"
+	digest := sha256.Sum256([]byte(image))
+	hash := hex.EncodeToString(digest[:])
+	directory := t.TempDir()
+	target := filepath.Join(t.TempDir(), "image")
+	require.NoError(t, os.WriteFile(target, []byte(image), 0o600))
+	t.Run("symlink", func(t *testing.T) {
+		if err := os.Symlink(target, filepath.Join(directory, hash)); err != nil {
+			t.Skipf("the test filesystem cannot create a symlink: %v", err)
+		}
+		assert.Empty(t, readReasonixImageBlob(directory, "sha256:"+hash, len(image)))
+		require.NoError(t, os.Remove(filepath.Join(directory, hash)))
+	})
+	assert.Empty(t, readReasonixImageBlob(directory, "sha256:"+hash, len(image)))
+	require.NoError(t, os.Mkdir(filepath.Join(directory, hash), 0o700))
+	assert.Empty(t, readReasonixImageBlob(directory, "sha256:"+hash, len(image)))
+	assert.Empty(t, readReasonixImageBlob(filepath.Join(directory, "missing"), "sha256:"+hash, len(image)))
+}
+
+func BenchmarkRestoreReasonixRecordImages(b *testing.B) {
+	const raw = `{"role":"tool","tool_call_id":"call","content":"image"}`
+	image := "data:image/png;base64," + strings.Repeat("A", 2<<20)
+	blobs, err := json.Marshal([]any{map[string]any{"message": 0, "slots": []any{map[string]any{"url": image}}}})
+	require.NoError(b, err)
+	b.ReportAllocs()
+	b.SetBytes(int64(len(image)))
+	b.ResetTimer()
+	for b.Loop() {
+		if len(restoreReasonixRecordImages("unused.events.jsonl", json.RawMessage(raw), blobs, 0)) <= len(raw) {
+			b.Fatal("the restored record must contain the image")
+		}
+	}
+}
+
 func TestRestoreReasonixRecordImagesKeepsMessageOwnership(t *testing.T) {
 	t.Parallel()
 	text := json.RawMessage(`{"role":"tool","tool_call_id":"call","content":"native text","custom":true}`)

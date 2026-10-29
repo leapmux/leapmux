@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -85,6 +86,33 @@ func TestReasonixGoalClearDoesNotSendAnObjective(t *testing.T) {
 	assert.Equal(t, "normal", requests()[0].Params["modeId"])
 	assert.Equal(t, 1, sink.GoalClears())
 	assert.Empty(t, sink.TurnActives())
+}
+
+func TestReasonixGoalClearKeepsANewerNativeModeReport(t *testing.T) {
+	t.Parallel()
+	for _, initial := range []string{"goal", "plan"} {
+		t.Run(initial, func(t *testing.T) {
+			t.Parallel()
+			var current atomic.Pointer[Agent]
+			a, sink, requests := reasonixGoalRPCFixture(t, func(request agenttest.RecordedRequest) agenttest.RPCReply {
+				if request.Method == acp.MethodSessionSetMode {
+					current.Load().HandleOutput([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"session-1","update":{"sessionUpdate":"current_mode_update","currentModeId":"plan"}}}`))
+				}
+				return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+			})
+			a.SetAvailableModesForTest([]*leapmuxv1.AvailableOption{{Id: "normal"}, {Id: "plan"}, {Id: "goal"}})
+			a.SetPermissionMode(initial)
+			current.Store(a)
+			_, err := a.PerformGoalAction(agent.GoalActionClear, "")
+			require.NoError(t, err)
+			require.Len(t, requests(), 1)
+			assert.Equal(t, "normal", requests()[0].Params["modeId"])
+			assert.Equal(t, "plan", a.PermissionModeForTest())
+			assert.Equal(t, "plan", agent.CurrentOptions(a.OptionGroups())[agent.OptionIDPermissionMode])
+			assert.Equal(t, "plan", sink.LastSettingsRefresh().PermissionMode)
+			assert.Equal(t, 1, sink.GoalClears())
+		})
+	}
 }
 
 func TestReasonixGoalSetRejectsBusyAndEmptyInputsBeforeChangingModes(t *testing.T) {
@@ -166,7 +194,7 @@ func TestReasonixGoalSetRejectsUnrelatedAndInvalidSnapshots(t *testing.T) {
 	t.Parallel()
 	for _, response := range []string{
 		`{"sessionId":"other-session","mode":"goal","goal":{"status":"running","objective":"Native objective"}}`,
-		`{"sessionId":"session-1","mode":"goal","goal":{"status":"running","objective":"Another objective"}}`,
+		`{"sessionId":"session-1","mode":"goal","goal":{"status":"running","objective":"  "}}`,
 		`{"sessionId":"session-1","mode":"goal","goal":{}}`,
 		`{"sessionId":"session-1","mode":"goal"}`,
 	} {
@@ -185,6 +213,80 @@ func TestReasonixGoalSetRejectsUnrelatedAndInvalidSnapshots(t *testing.T) {
 	}
 }
 
+func TestReasonixGoalSetAcceptsTheNativeObjectiveProjection(t *testing.T) {
+	t.Parallel()
+	const objective = "Remove the leaked key sk-real-secret-value-123456"
+	const projection = "Remove the leaked key sk-rea*****************3456"
+	a, sink, requests := reasonixGoalRPCFixture(t, func(request agenttest.RecordedRequest) agenttest.RPCReply {
+		if request.Method == reasonixMethodSessionStatus {
+			return agenttest.RPCReply{Result: json.RawMessage(`{"sessionId":"session-1","mode":"goal","goal":{"status":"running","objective":"` + projection + `"}}`)}
+		}
+		return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+	})
+	_, err := a.PerformGoalAction(agent.GoalActionSet, objective)
+	require.NoError(t, err)
+	actual := requests()
+	require.GreaterOrEqual(t, len(actual), 4)
+	assert.Equal(t, acp.MethodSessionSetMode, actual[0].Method)
+	assert.Equal(t, acp.MethodSessionSetMode, actual[1].Method)
+	assert.Equal(t, acp.MethodSessionPrompt, actual[2].Method)
+	assert.Equal(t, objective, actual[2].Params["prompt"].([]interface{})[0].(map[string]interface{})["text"])
+	goal, present := sink.LastGoal()
+	require.True(t, present)
+	assert.Equal(t, projection, goal.Objective)
+}
+
+func TestReasonixGoalConfirmationTracksTheNativeStatusSequence(t *testing.T) {
+	t.Parallel()
+	for _, starting := range []string{"11", "12"} {
+		t.Run(starting, func(t *testing.T) {
+			t.Parallel()
+			a, sink, _ := reasonixGoalRPCFixture(t, func(request agenttest.RecordedRequest) agenttest.RPCReply {
+				if request.Method == reasonixMethodSessionStatus {
+					return agenttest.RPCReply{Result: json.RawMessage(`{"sessionId":"session-1","sequence":12,"mode":"goal","goal":{"status":"running","objective":"Native objective"}}`)}
+				}
+				return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+			})
+			a.handleReasonixStatusUpdate(json.RawMessage(`{"sessionId":"session-1","sequence":` + starting + `,"status":{"mode":"goal","goal":{"status":"none"}}}`))
+			_, err := a.PerformGoalAction(agent.GoalActionSet, "Native objective")
+			require.NoError(t, err)
+			a.handleReasonixStatusUpdate(json.RawMessage(`{"sessionId":"session-1","sequence":11,"status":{"mode":"goal","goal":{"status":"running","objective":"Stale objective"}}}`))
+			goal, present := sink.LastGoal()
+			require.True(t, present)
+			assert.Equal(t, "Native objective", goal.Objective)
+		})
+	}
+}
+
+func TestReasonixModeClearKeepsStatusTelemetryBeforeTheModeReport(t *testing.T) {
+	t.Parallel()
+	var current atomic.Pointer[Agent]
+	a, _, _ := reasonixGoalRPCFixture(t, func(request agenttest.RecordedRequest) agenttest.RPCReply {
+		if request.Method == acp.MethodSessionSetMode {
+			current.Load().handleReasonixStatusUpdate(json.RawMessage(`{"sessionId":"session-1","sequence":2,"status":{"mode":"normal","phase":"paused","goal":{"status":"none"},"usage":{"cumulative":{"estimatedCost":0.42,"currency":"USD"}}}}`))
+			current.Load().HandleOutput([]byte(`{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"session-1","update":{"sessionUpdate":"current_mode_update","currentModeId":"normal"}}}`))
+		}
+		return agenttest.RPCReply{Result: json.RawMessage(`{}`)}
+	})
+	current.Store(a)
+	sink := &agenttest.ControlSink{}
+	a.SetSinkForTest(agent.NewProviderServices(sink))
+	a.ObserveCurrentMode("goal")
+	a.handleReasonixStatusUpdate(json.RawMessage(`{"sessionId":"session-1","sequence":1,"status":{"mode":"goal","goal":{"status":"running","objective":"Previous goal"}}}`))
+	a.goalStatusMu.Lock()
+	revision := a.goalStatusRevision
+	a.goalStatusMu.Unlock()
+	_, err := a.PerformGoalAction(agent.GoalActionClear, "")
+	require.NoError(t, err)
+	assert.Equal(t, 1, sink.GoalClears())
+	assert.Len(t, sink.Goals(), 1)
+	assert.Equal(t, 0.42, sink.LastSessionInfo()[contracts.SessionInfoKeyTotalCostUsd])
+	assert.Len(t, sink.Notifications(), 1)
+	a.goalStatusMu.Lock()
+	assert.Equal(t, revision+1, a.goalStatusRevision, "only the acknowledged clear changes the goal revision")
+	a.goalStatusMu.Unlock()
+}
+
 func TestReasonixGoalSetKeepsANewerNativeNotification(t *testing.T) {
 	t.Parallel()
 	var current atomic.Pointer[Agent]
@@ -193,7 +295,7 @@ func TestReasonixGoalSetKeepsANewerNativeNotification(t *testing.T) {
 	a, sink, _ := reasonixGoalRPCFixture(t, func(request agenttest.RecordedRequest) agenttest.RPCReply {
 		if request.Method == reasonixMethodSessionStatus {
 			if reads.Add(1) == 1 {
-				current.Load().handleReasonixStatusUpdate(blocked)
+				current.Load().handleReasonixStatusUpdate(json.RawMessage(`{"sessionId":"session-1","status":` + string(blocked) + `}`))
 				return agenttest.RPCReply{Result: json.RawMessage(`{"sessionId":"session-1","mode":"goal","goal":{"status":"running","objective":"Native objective"}}`)}
 			}
 			return agenttest.RPCReply{Result: blocked}
@@ -206,6 +308,35 @@ func TestReasonixGoalSetKeepsANewerNativeNotification(t *testing.T) {
 	require.NotEmpty(t, sink.Goals())
 	for _, goal := range sink.Goals() {
 		assert.Equal(t, agent.GoalStatusBlocked, goal.Status)
+	}
+}
+
+func TestReasonixGoalConfirmationRejectsSupersededOperations(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		action agent.GoalAction
+	}{{"replacement", agent.GoalActionSet}, {"clear", agent.GoalActionClear}} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a, sink, requests := reasonixGoalRPCFixture(t, nil)
+			_, err := a.PerformGoalAction(agent.GoalActionSet, "First objective")
+			require.NoError(t, err)
+			a.goalStatusMu.Lock()
+			generation := a.goalOperationGeneration
+			a.goalStatusMu.Unlock()
+			testutil.AssertEventually(t, func() bool {
+				active, present := sink.LastTurnActive()
+				return present && !active
+			}, "the first prompt must finish before another goal action")
+			_, err = a.PerformGoalAction(tc.action, "Next objective")
+			require.NoError(t, err)
+			beforeRequests, beforeGoals := len(requests()), len(sink.Goals())
+			err = a.confirmReasonixGoal("session-1", generation)
+			require.ErrorContains(t, err, "goal changed")
+			assert.Len(t, requests(), beforeRequests, "a superseded operation must not read a later goal")
+			assert.Len(t, sink.Goals(), beforeGoals, "a superseded operation must not publish another goal")
+		})
 	}
 }
 

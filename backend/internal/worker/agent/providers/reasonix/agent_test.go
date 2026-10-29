@@ -5,6 +5,7 @@ package reasonix
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -46,6 +47,40 @@ func installFakeReasonixCLI(t *testing.T, argsFile string) {
 // TestHelperProcessReasonixCLI supplies the advertised Reasonix session settings.
 func TestHelperProcessReasonixCLI(*testing.T) {
 	agenttest.ServeFakeJSONRPC("GO_WANT_HELPER_PROCESS_REASONIX", func(method string) (string, bool, bool) {
+		if scenario := os.Getenv("GO_REASONIX_TEST_RESUME_ALIAS"); scenario != "" && method != acp.MethodInitialize {
+			canonical := strings.NewReplacer("reasonix-new", "reasonix-resume", "deepseek-flash", "deepseek/deepseek-flash", "deepseek-pro", "deepseek/deepseek-pro").Replace(reasonixSessionFixture)
+			saved := strings.NewReplacer(`"currentModelId":"deepseek/deepseek-flash"`, `"currentModelId":"deepseek/deepseek-pro"`, `"currentValue":"deepseek/deepseek-flash"`, `"currentValue":"deepseek/deepseek-pro"`).Replace(canonical)
+			switch method {
+			case acp.MethodSessionLoad:
+				return saved, false, true
+			case acp.MethodSessionSetModel:
+				if scenario == "refused" {
+					return `{"code":-32602,"message":"unknown launch alias"}`, true, true
+				}
+				if scenario == "queued" {
+					var snapshot struct {
+						ConfigOptions json.RawMessage `json:"configOptions"`
+					}
+					if err := json.Unmarshal([]byte(canonical), &snapshot); err != nil {
+						panic(err)
+					}
+					_, _ = fmt.Fprintf(os.Stdout, `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"reasonix-resume","update":{"sessionUpdate":"config_option_update","configOptions":%s}}}`+"\n", snapshot.ConfigOptions)
+				}
+				return `{}`, false, true
+			case acp.MethodSessionResume:
+				if scenario == "invalid snapshot" {
+					return `null`, false, true
+				}
+				if scenario == "queued" {
+					return saved, false, true
+				}
+				return canonical, false, true
+			case acp.MethodSessionSetConfigOption:
+				return `{"code":-32602,"message":"the model selector requires a canonical model ID"}`, true, true
+			default:
+				return `{}`, false, true
+			}
+		}
 		switch method {
 		case acp.MethodInitialize:
 			return `{"protocolVersion":1,"agentCapabilities":{"loadSession":true,"promptCapabilities":{"image":true,"audio":false,"embeddedContext":true},"_meta":{"_reasonix.io/session/goal/pause":{"schemaVersion":1},"_reasonix.io/session/goal/resume":{"schemaVersion":1}}}}`, false, true
@@ -64,7 +99,9 @@ func TestHelperProcessReasonixCLI(*testing.T) {
 				return `{"code":-32602,"message":"the model selector requires a canonical model ID"}`, true, true
 			}
 			return reasonixSessionFixture, false, true
-		case acp.MethodSessionLoad, acp.MethodSessionPrompt:
+		case acp.MethodSessionLoad:
+			return strings.Replace(reasonixSessionFixture, `"sessionId":"reasonix-new",`, "", 1), false, true
+		case acp.MethodSessionPrompt:
 			return `{}`, false, true
 		default:
 			return "", false, false

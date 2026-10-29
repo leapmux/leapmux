@@ -93,6 +93,22 @@ func TestReasonixStatusUpdateAppliesTheGoalUnderTheRevisionLock(t *testing.T) {
 	}
 }
 
+func TestReasonixStatusPublicationExcludesSessionReplacement(t *testing.T) {
+	t.Parallel()
+	sink := &agenttest.Sink{}
+	a := &Agent{}
+	a.SetSessionIDForTest("session")
+	a.HooksForTest().ExtraMethod = a.handleExtraMethod
+	applies := 0
+	a.SetSinkForTest(&goalApplyProbe{ProviderServices: agent.NewProviderServices(sink), onApply: func() {
+		applies++
+		assert.True(t, a.SessionNotificationDispatchLockedForTest(), "identity validation and goal publication must exclude the session swap")
+	}})
+	a.HandleOutput([]byte(`{"jsonrpc":"2.0","method":"_reasonix.io/session/status_update","params":{"sessionId":"session","sequence":1,"status":{"mode":"goal","goal":{"status":"running","objective":"Previous session"}}}}`))
+	assert.Equal(t, 1, applies)
+	assert.Len(t, sink.Goals(), 1)
+}
+
 // The two reports that follow the goal stay OUTSIDE the lock. Each one reaches the
 // sink, and Reasonix restates its whole status on every turn tick, so holding the
 // mutex across them made every other reader of goalStatusMu wait on a database

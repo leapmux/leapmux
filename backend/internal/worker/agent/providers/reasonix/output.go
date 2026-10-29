@@ -8,24 +8,7 @@ import (
 	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
-	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/providerkit"
 )
-
-const reasonixMethodMCPStatusUpdate = "_reasonix.io/session/mcpStatus_update"
-
-// handleExtraMethod handles Reasonix session status and MCP health notifications.
-func (a *Agent) handleExtraMethod(line *providerkit.ParsedLine) bool {
-	switch line.Method {
-	case reasonixMethodStatusUpdate:
-		a.handleReasonixStatusUpdate(line.Params)
-	case reasonixMethodMCPStatusUpdate:
-		// The status subscription includes MCP health. It carries no conversation output.
-		return !line.HasID()
-	default:
-		return false
-	}
-	return true
-}
 
 // observeReasonixNotice reads one conversation update of the main session
 // (Hooks.SessionMetadataHandler). Reasonix emits its warnings and compaction
@@ -36,16 +19,12 @@ func (a *Agent) observeReasonixNotice(updateType string, metadata map[string]jso
 	if updateType != contracts.ACPUpdateAgentMessageChunk || len(metadata) != 0 {
 		return false
 	}
-	var chunk struct {
-		Content struct {
-			Text string `json:"text"`
-		} `json:"content"`
-	}
-	if json.Unmarshal(update, &chunk) != nil {
+	text, ok := reasonixChunkText(update)
+	if !ok {
 		return false
 	}
-	if !strings.HasPrefix(chunk.Content.Text, contracts.ReasonixNoticePrefixWarning) &&
-		!strings.HasPrefix(chunk.Content.Text, contracts.ReasonixNoticePrefixCompacted) {
+	if !strings.HasPrefix(text, contracts.ReasonixNoticePrefixWarning) &&
+		!strings.HasPrefix(text, contracts.ReasonixNoticePrefixCompacted) {
 		return false
 	}
 	a.FlushBufferedOutput(agent.MessageCompletionComplete)
@@ -65,19 +44,15 @@ func (a *Agent) observeSessionMetadata(updateType string, metadata map[string]js
 	if updateType != contracts.ACPUpdateUserMessageChunk && updateType != contracts.ACPUpdateAgentMessageChunk {
 		return false
 	}
-	var chunk struct {
-		Content struct {
-			Text string `json:"text"`
-		} `json:"content"`
-	}
-	if json.Unmarshal(update, &chunk) != nil {
+	text, ok := reasonixChunkText(update)
+	if !ok {
 		return false
 	}
 	a.Mu.Lock()
 	if updateType == contracts.ACPUpdateUserMessageChunk {
-		a.planDraft = ""
+		a.planDraft.Reset()
 	} else {
-		a.planDraft += chunk.Content.Text
+		a.planDraft.WriteString(text)
 	}
 	a.Mu.Unlock()
 	return false
@@ -86,6 +61,19 @@ func (a *Agent) observeSessionMetadata(updateType string, metadata map[string]js
 // resetPlanDraft drops the candidate of the session that ended.
 func (a *Agent) resetPlanDraft() {
 	a.Mu.Lock()
-	a.planDraft = ""
+	a.planDraft.Reset()
 	a.Mu.Unlock()
+}
+
+// reasonixChunkText reads the text projection shared by native conversation chunks and saved notices.
+func reasonixChunkText(raw json.RawMessage) (string, bool) {
+	var chunk struct {
+		Content struct {
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if json.Unmarshal(raw, &chunk) != nil {
+		return "", false
+	}
+	return chunk.Content.Text, true
 }

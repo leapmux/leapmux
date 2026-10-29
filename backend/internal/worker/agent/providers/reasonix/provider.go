@@ -21,12 +21,7 @@ type reasonixProvider struct {
 // The worker stores the notice chunk whole, so the classification reads the
 // chunk's text prefix.
 func (reasonixProvider) Classify(content json.RawMessage) agent.NotificationClassification {
-	var chunk struct {
-		Content struct {
-			Text string `json:"text"`
-		} `json:"content"`
-	}
-	if json.Unmarshal(content, &chunk) == nil && strings.HasPrefix(chunk.Content.Text, contracts.ReasonixNoticePrefixCompacted) {
+	if text, ok := reasonixChunkText(content); ok && strings.HasPrefix(text, contracts.ReasonixNoticePrefixCompacted) {
 		return agent.CompactionBoundaryNotification()
 	}
 	return agent.NotificationClassification{}

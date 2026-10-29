@@ -20,22 +20,25 @@ type Agent struct {
 	acp.Base
 	goalStatusMu       sync.Mutex
 	goalStatusRevision uint64
+	// goalOperationGeneration identifies the last explicit goal replacement or clear. Guarded by goalStatusMu.
+	goalOperationGeneration uint64
+	// statusCursor tracks native snapshot order within one session. Guarded by goalStatusMu.
+	statusCursor reasonixStatusCursor
 	// goalMethods holds the versioned goal requests that initialize advertises. Guarded by Base.Mu.
 	goalMethods map[agent.GoalAction]string
 	// lastStatusPhase is the phase the last status update reported. Reasonix
 	// restates its WHOLE status on every change, so the same phase arrives many
 	// times per turn and only a move to a new one says anything.
 	//
-	// No mutex guards it. The stdout reader goroutine owns it: handleOutput
-	// dispatches every notification, reportReasonixPhase is the one writer, and
+	// ACP's session notification mutex serializes dispatch on the stdout reader
+	// and during ordered replay. reportReasonixPhase is the one writer, and
 	// handleReasonixStatusUpdate is its one caller. The phase report runs outside
-	// goalStatusMu on purpose, because it writes a row and the lock protects the
-	// goal revision alone.
+	// goalStatusMu because it writes a row and that lock protects goal synchronization.
 	lastStatusPhase string
 	// planDraft is the assistant text of the current turn. Reasonix raises its
 	// plan approval after streaming the proposal, so the observer saves this text
 	// for a possible fresh-context execution. Guarded by Base.Mu.
-	planDraft string
+	planDraft strings.Builder
 }
 
 // Agent steers. Manager.SupportsSteering answers false, with no build error, for a

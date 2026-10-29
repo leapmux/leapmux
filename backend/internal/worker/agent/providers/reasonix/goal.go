@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
 	"slices"
 	"strings"
 	"time"
@@ -91,16 +90,23 @@ func (a *Agent) PerformGoalAction(action agent.GoalAction, objective string) (ag
 			return agent.GoalOutcome{}, fmt.Errorf("a goal objective must not be empty")
 		}
 		var goalSessionID string
+		var generation uint64
 		err := a.SendPreparedPrompt(objective, nil, func(sessionID string) error {
 			goalSessionID = sessionID
 			// Normal mode removes the previous objective before Goal mode accepts another one.
 			if err := a.setReasonixGoalMode(sessionID, contracts.ReasonixModeNormal); err != nil {
 				return err
 			}
-			return a.setReasonixGoalMode(sessionID, contracts.ReasonixModeGoal)
+			if err := a.setReasonixGoalMode(sessionID, contracts.ReasonixModeGoal); err != nil {
+				return err
+			}
+			a.goalStatusMu.Lock()
+			generation = a.goalOperationGeneration
+			a.goalStatusMu.Unlock()
+			return nil
 		})
 		if err == nil {
-			err = a.confirmReasonixGoal(goalSessionID, objective)
+			err = a.confirmReasonixGoal(goalSessionID, generation)
 		}
 		return agent.GoalOutcome{}, err
 	}
@@ -128,13 +134,9 @@ func (a *Agent) changeReasonixGoal(sessionID, method, pauseMethod string) error 
 	}
 	// Reasonix's failed status describes the last turn. The retained goal still runs,
 	// so its native resume refuses it. Pause that exact goal before resuming it.
-	raw, readErr := a.SendRequest(reasonixMethodSessionStatus, params, a.APITimeout())
+	status, readErr := a.readReasonixStatus(sessionID, a.APITimeout())
 	if readErr != nil {
-		return errors.Join(err, readErr)
-	}
-	var status reasonixStatusUpdate
-	if decodeErr := json.Unmarshal(raw, &status); decodeErr != nil {
-		return errors.Join(err, fmt.Errorf("read Reasonix goal after resume refusal: %w", decodeErr))
+		return errors.Join(err, fmt.Errorf("read Reasonix goal after resume refusal: %w", readErr))
 	}
 	if status.SessionID != sessionID || status.Mode != contracts.ReasonixModeGoal || status.Goal == nil ||
 		status.Goal.Status != reasonixGoalStatusFailed || strings.TrimSpace(status.Goal.Objective) == "" {
@@ -149,25 +151,22 @@ func (a *Agent) changeReasonixGoal(sessionID, method, pauseMethod string) error 
 
 // The caller holds the session lock. Do not use sendSessionRPC here because it takes that lock again.
 func (a *Agent) setReasonixGoalMode(sessionID, mode string) error {
-	if sessionID == "" || a.IsStopped() {
-		return fmt.Errorf("the Reasonix session is unavailable")
-	}
-	params, err := json.Marshal(map[string]string{"sessionId": sessionID, "modeId": mode})
-	if err != nil {
+	if err := a.WriteSecondarySetting(mode, func(value string, acknowledged func(string)) error {
+		return a.setReasonixSessionMode(sessionID, value, acknowledged)
+	}); err != nil {
 		return err
 	}
-	if _, err := a.SendRequest(acp.MethodSessionSetMode, params, a.APITimeout()); err != nil {
-		return err
-	}
-	a.SetPermissionMode(mode)
 	a.BroadcastSettingsRefresh()
-	if mode == contracts.ReasonixModeNormal {
-		a.goalStatusMu.Lock()
-		a.goalStatusRevision++
-		a.Sink().ClearGoal(false)
-		a.goalStatusMu.Unlock()
-	}
 	return nil
+}
+
+// acknowledgeReasonixGoalClear cancels older confirmations after a native mode change removes the goal.
+func (a *Agent) acknowledgeReasonixGoalClear() {
+	a.goalStatusMu.Lock()
+	defer a.goalStatusMu.Unlock()
+	a.goalStatusRevision++
+	a.goalOperationGeneration++
+	a.Sink().ClearGoal(false)
 }
 
 // Reasonix's session goal.
@@ -176,19 +175,17 @@ func (a *Agent) setReasonixGoalMode(sessionID, mode string) error {
 // a custom notification beside the standard ACP updates:
 //
 //	_reasonix.io/session/status_update
-//	  {schemaVersion, sequence, sessionId, state, mode, ...,
+//	  {schemaVersion, sequence, sessionId, status:{state, mode, ...,
 //	   goal:{status, objective?, runtime?:{turnsUsed, tokensUsed, requestsUsed,
-//	                                       workDurationMs, lastReason, stopCause}}}
+//	                                       workDurationMs, lastReason, stopCause}}}}
 //
 // Reasonix adopts the next prompt as its objective after entering goal mode.
 // Switching to normal or plan mode clears the goal.
-const reasonixMethodStatusUpdate = "_reasonix.io/session/status_update"
-
 const reasonixMethodSessionStatus = "_reasonix.io/session/status"
 
 // Reasonix publishes its starting status before SetGoal stores the objective.
 // Read the native status because another notification may not arrive until the model responds.
-func (a *Agent) confirmReasonixGoal(sessionID, objective string) error {
+func (a *Agent) confirmReasonixGoal(sessionID string, generation uint64) error {
 	window := min(a.APITimeout(), 5*time.Second)
 	expires := a.Process.Clock().Now().Add(window)
 	deadline := a.Process.Clock().NewTimer(window)
@@ -198,40 +195,39 @@ func (a *Agent) confirmReasonixGoal(sessionID, objective string) error {
 	for {
 		a.goalStatusMu.Lock()
 		revision := a.goalStatusRevision
+		superseded := generation != a.goalOperationGeneration
 		a.goalStatusMu.Unlock()
-		var raw json.RawMessage
+		if superseded {
+			return fmt.Errorf("the Reasonix goal changed before Set completed")
+		}
+		var status reasonixSessionStatus
 		err := a.WithSessionID(func(current string) error {
 			if current != sessionID {
 				return agent.ErrContextClearCancelled
-			}
-			params, err := json.Marshal(map[string]string{"sessionId": sessionID})
-			if err != nil {
-				return err
 			}
 			remaining := a.Process.Clock().Now().Sub(expires).Abs()
 			if a.Process.Clock().Now().After(expires) {
 				return agent.ErrDeliveryUncertain
 			}
-			raw, err = a.SendRequest(reasonixMethodSessionStatus, params, remaining)
+			var err error
+			status, err = a.readReasonixStatus(sessionID, remaining)
 			return err
 		})
 		if err != nil {
-			return err
-		}
-		var status reasonixStatusUpdate
-		if err := json.Unmarshal(raw, &status); err != nil {
 			return fmt.Errorf("read Reasonix goal status: %w", err)
 		}
 		if status.SessionID != sessionID || status.Goal == nil || status.Goal.Status == "" {
 			return fmt.Errorf("the Reasonix goal status is invalid")
 		}
 		a.goalStatusMu.Lock()
-		current := revision == a.goalStatusRevision && a.IsCurrentSession(sessionID)
-		if current && status.Goal.Objective != "" {
-			if status.Goal.Objective != objective {
-				a.goalStatusMu.Unlock()
-				return fmt.Errorf("the Reasonix goal objective differs from the request")
-			}
+		if generation != a.goalOperationGeneration {
+			a.goalStatusMu.Unlock()
+			return fmt.Errorf("the Reasonix goal changed before Set completed")
+		}
+		current := revision == a.goalStatusRevision && a.IsCurrentSession(sessionID) && a.reasonixStatusModeMatches(status.Mode)
+		if current && strings.TrimSpace(status.Goal.Objective) != "" && a.acceptReasonixStatusSequenceLocked(sessionID, status.Sequence) {
+			// Native status redacts secrets in the objective. The operation generation,
+			// session identity, and snapshot revision establish ownership instead of text equality.
 			a.applyReasonixGoal(status.Goal)
 			a.goalStatusRevision++
 			a.goalStatusMu.Unlock()
@@ -251,6 +247,23 @@ func (a *Agent) confirmReasonixGoal(sessionID, objective string) error {
 	}
 }
 
+// The caller owns the session lock. This reader neither changes goal state nor takes that lock again.
+func (a *Agent) readReasonixStatus(sessionID string, timeout time.Duration) (reasonixSessionStatus, error) {
+	var status reasonixSessionStatus
+	params, err := json.Marshal(map[string]string{"sessionId": sessionID})
+	if err != nil {
+		return status, err
+	}
+	raw, err := a.SendRequest(reasonixMethodSessionStatus, params, timeout)
+	if err != nil {
+		return status, err
+	}
+	if err := json.Unmarshal(raw, &status); err != nil {
+		return status, err
+	}
+	return status, nil
+}
+
 // Reasonix's own goal status words, as they reach the WIRE.
 //
 // Its Go enum also has `stopped`, but normalizeGoalStatus never emits it: the
@@ -267,37 +280,6 @@ const (
 	reasonixGoalStatusCancelled = "cancelled"
 	reasonixGoalStatusFailed    = "failed"
 )
-
-type reasonixStatusUpdate struct {
-	SessionID string `json:"sessionId"`
-	Mode      string `json:"mode"`
-	Status    *struct {
-		Goal *reasonixGoal `json:"goal"`
-		// Phase is the live state of the turn (`implementing`, `waiting_permission`,
-		// `review_ready`, ...). It is one word, not a sentence, so the row reads it
-		// through a table rather than printing the token.
-		Phase string `json:"phase"`
-		// Usage carries the turn's own totals and the session's cumulative ones.
-		// The meter reads the CUMULATIVE half: the turn half restarts, and a gauge
-		// that restarted with it would report a context that shrank.
-		Usage *struct {
-			Cumulative *reasonixUsage `json:"cumulative"`
-		} `json:"usage"`
-	} `json:"status"`
-	// Goal is the HOISTED shape, and it belongs to a different call: the
-	// `_reasonix.io/session/status` request answers with the status object
-	// flat, while this notification nests it under `status`. LeapMux reads only
-	// the notification, so this field is the tolerant path rather than a second
-	// observed shape of the same message -- it costs one struct field and
-	// removes a whole class of silent "no goal" if the two shapes ever converge.
-	Goal *reasonixGoal `json:"goal"`
-}
-
-// reasonixUsage holds the cumulative cost. ACP usage_update owns the current context gauge.
-type reasonixUsage struct {
-	EstimatedCost *float64 `json:"estimatedCost"`
-	Currency      string   `json:"currency"`
-}
 
 type reasonixGoal struct {
 	Status    string `json:"status"`
@@ -336,108 +318,53 @@ func reasonixGoalStatus(wire string) agent.GoalStatus {
 	}
 }
 
-func (a *Agent) handleReasonixStatusUpdate(params json.RawMessage) {
-	if len(params) == 0 {
-		return
-	}
-	var update reasonixStatusUpdate
-	if err := json.Unmarshal(params, &update); err != nil {
-		slog.Warn("reasonix status_update unmarshal failed", "agent_id", a.AgentID(), "error", err)
-		return
-	}
+// applyReasonixStatusGoal keeps notification ownership and goal publication in one critical section.
+func (a *Agent) applyReasonixStatusGoal(sessionID string, sequence uint64, status *reasonixSessionStatus) bool {
 	// The lock covers the DECISION and the goal write that follows it.
 	// goalStatusRevision is a completion mark, not a statistic: confirmReasonixGoal
 	// samples the counter, runs a status round trip, and stores the user's objective
 	// only when the counter did not move. An apply outside the section that bumps the
-	// counter makes that mark lie. This handler bumps 5 to 6, the scheduler stops it,
+	// counter makes that mark lie. This operation bumps 5 to 6, the scheduler stops it,
 	// confirmReasonixGoal samples 6, round-trips, reads 6 again and reports success --
-	// and then this handler resumes and ClearGoal removes the objective it just
+	// and then this operation resumes and ClearGoal removes the objective it just
 	// confirmed.
 	//
-	// The two reports below stay OUTSIDE the lock. Each one reaches the sink -- a
-	// fan-out to every watcher in reportReasonixUsage, an INSERT in
+	// Usage and phase reports stay outside this lock in handleReasonixStatusUpdate.
+	// Each one reaches the sink -- a fan-out to every watcher in reportReasonixUsage, an INSERT in
 	// reportReasonixPhase -- and Reasonix restates its whole status on every turn
 	// tick, so holding the mutex across them made each other reader of goalStatusMu
 	// wait on a database write and a broadcast to every connected tab. Neither one
 	// takes part in the revision protocol, which guards the goal alone.
 	a.goalStatusMu.Lock()
+	defer a.goalStatusMu.Unlock()
 	// The status bus is not per-connection by construction, and ClearContext
 	// mints a NEW sessionId. Without this check a notification still in flight
 	// for the old session would be applied to the new one, and a goal the user
 	// just cleared would come back.
-	if update.SessionID != "" && !a.IsCurrentSession(update.SessionID) {
-		a.goalStatusMu.Unlock()
-		return
+	currentSessionID := a.CurrentSessionID()
+	if sessionID != "" && sessionID != currentSessionID {
+		return false
 	}
-	goal := update.Goal
-	if update.Status != nil && update.Status.Goal != nil {
-		goal = update.Status.Goal
+	if !a.acceptReasonixStatusSequenceLocked(currentSessionID, sequence) {
+		return false
+	}
+	var goal *reasonixGoal
+	if status != nil {
+		if !a.reasonixStatusModeMatches(status.Mode) {
+			// A mode clear can overtake a goal snapshot without changing its sequence.
+			// The snapshot can still carry the final cost and phase, so reject only its goal.
+			return true
+		}
+		goal = status.Goal
 	}
 	a.goalStatusRevision++
-	status := update.Status
 	a.applyReasonixGoal(goal)
-	a.goalStatusMu.Unlock()
-
-	if status != nil {
-		a.reportReasonixUsage(status.Usage)
-		a.reportReasonixPhase(status.Phase)
-	}
+	return true
 }
 
-// The phase words Reasonix reports that a reader must see, and the sentence each
-// one becomes.
-//
-// A phase is one wire token, so a row that printed it would show
-// `waiting_permission`. Only the phases that state something a reader can ACT on
-// are here: the working phases (`starting`, `implementing`) say what every other
-// surface in the app already says, and repeating them would put a row in the
-// transcript for each step of every turn.
-var reasonixPhaseLabels = map[string]string{
-	"checking_readiness": "Checking whether the work is ready",
-	"readiness_paused":   "Paused: the work is not ready",
-	"review_ready":       "Ready for review",
-	"paused":             "Paused",
-}
-
-// reportReasonixPhase states one phase change, once.
-//
-// Reasonix restates its WHOLE status on every change, so the same phase arrives
-// many times per turn. Only a move to a new phase says anything.
-func (a *Agent) reportReasonixPhase(phase string) {
-	if phase == "" || phase == a.lastStatusPhase {
-		return
-	}
-	a.lastStatusPhase = phase
-	label, ok := reasonixPhaseLabels[phase]
-	if !ok {
-		return
-	}
-	a.Sink().PersistLeapMuxNotification(map[string]interface{}{
-		contracts.NotificationFieldType: contracts.NotificationTypeAgentStatus,
-		contracts.NotificationFieldText: label,
-	})
-}
-
-// reportReasonixUsage broadcasts a cumulative cost stated in US dollars.
-//
-// Ephemeral, like every other provider's usage report: the meter reads it live
-// and the transcript holds no row for it.
-func (a *Agent) reportReasonixUsage(usage *struct {
-	Cumulative *reasonixUsage `json:"cumulative"`
-}) {
-	if usage == nil || usage.Cumulative == nil {
-		return
-	}
-	total := usage.Cumulative
-	info := map[string]interface{}{}
-	// The CUMULATIVE cost, which is a total rather than a delta: a restatement
-	// carries the same number and cannot double it.
-	if total.EstimatedCost != nil && *total.EstimatedCost >= 0 && total.Currency == "USD" {
-		info[contracts.SessionInfoKeyTotalCostUsd] = *total.EstimatedCost
-	}
-	if len(info) > 0 {
-		a.Sink().BroadcastSessionInfo(info)
-	}
+func (a *Agent) reasonixStatusModeMatches(mode string) bool {
+	nativeMode := a.CurrentNativeMode()
+	return mode == "" || nativeMode == "" || mode == nativeMode
 }
 
 func (a *Agent) applyReasonixGoal(goal *reasonixGoal) {

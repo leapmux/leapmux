@@ -4,13 +4,12 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"io"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
+	"github.com/leapmux/leapmux/internal/worker/agent/providers/internal/sessionstore"
 )
 
 // Native 2.x stores image slots beside each event's messages. A blob contains the complete
@@ -52,7 +51,7 @@ func restoreReasonixRecordImages(eventPath string, raw, blobs json.RawMessage, i
 	}
 	directory := strings.TrimSuffix(eventPath, ".events.jsonl") + ".blobs"
 	remaining := agent.LiveMaxMessageSize() - len(raw) - len(contracts.ReasonixToolRecordImagesField) - 6
-	images := make([]string, 0, len(selected.Slots))
+	images := []byte{'['}
 	for _, slot := range selected.Slots {
 		if remaining <= 0 || (slot.Blob != "" && slot.URL != "") {
 			continue
@@ -69,16 +68,16 @@ func restoreReasonixRecordImages(eventPath string, raw, blobs json.RawMessage, i
 			continue
 		}
 		remaining -= len(encoded) + 1
-		images = append(images, url)
+		if len(images) > 1 {
+			images = append(images, ',')
+		}
+		images = append(images, encoded...)
 	}
-	if len(images) == 0 {
+	if len(images) == 1 {
 		return raw
 	}
-	encoded, err := json.Marshal(images)
-	if err != nil {
-		return raw
-	}
-	message[contracts.ReasonixToolRecordImagesField] = encoded
+	images = append(images, ']')
+	message[contracts.ReasonixToolRecordImagesField] = json.RawMessage(images)
 	restored, err := json.Marshal(message)
 	if err != nil || len(restored) > agent.LiveMaxMessageSize() {
 		return raw
@@ -97,17 +96,13 @@ func readReasonixImageBlob(directory, key string, maxBytes int) string {
 	if err != nil || hex.EncodeToString(decoded) != hash {
 		return ""
 	}
-	file, err := os.Open(filepath.Join(directory, hash))
+	root, err := os.OpenRoot(directory)
 	if err != nil {
 		return ""
 	}
-	defer func() { _ = file.Close() }()
-	info, err := file.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Size() > int64(maxBytes) {
-		return ""
-	}
-	data, err := io.ReadAll(io.LimitReader(file, int64(maxBytes)+1))
-	if err != nil || len(data) > maxBytes {
+	defer func() { _ = root.Close() }()
+	data, err := sessionstore.ReadRegularFile(root, hash, int64(maxBytes))
+	if err != nil {
 		return ""
 	}
 	actual := sha256.Sum256(data)

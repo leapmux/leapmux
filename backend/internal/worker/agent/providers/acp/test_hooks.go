@@ -240,6 +240,15 @@ func (b *Base) BeginSessionUpdatesForTest() {
 	b.beginSessionUpdates()
 }
 
+// SessionNotificationDispatchLockedForTest reports whether dispatch excludes a session swap.
+func (b *Base) SessionNotificationDispatchLockedForTest() bool {
+	if b.sessionUpdates.mu.TryLock() {
+		b.sessionUpdates.mu.Unlock()
+		return false
+	}
+	return true
+}
+
 // CancelSessionForTest sends session/cancel.
 func (b *Base) CancelSessionForTest() error {
 	return b.cancelSession()
@@ -370,5 +379,5 @@ func IsEffortConfigOptionForTest(option ConfigOption, effortConfigID string) boo
 
 // ParseSessionResultForTest parses the channels of a session response.
 func ParseSessionResultForTest(resp json.RawMessage) (*SessionResult, error) {
-	return parseACPSessionResult(resp)
+	return ParseSessionResult(resp)
 }

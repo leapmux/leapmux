@@ -2788,6 +2788,7 @@ export const PROVIDER_PROTOCOLS = [
       { key: 'capabilityActions', goTable: 'CapabilityAction', tsTable: 'CAPABILITY_ACTION', tsType: 'ReasonixCapabilityAction', doc: 'capability actions' },
       { key: 'capabilityPrefixes', goTable: 'CapabilityPrefix', tsTable: 'CAPABILITY_PREFIX', tsType: 'ReasonixCapabilityPrefix', doc: 'capability identifier prefixes' },
       { key: 'toolRecord', goTable: 'ToolRecord', tsTable: 'TOOL_RECORD', tsType: 'ReasonixToolRecordKey', doc: 'the supplement envelope key and the stored tool record\'s own fields' },
+      { key: 'outputReceipt', goTable: 'OutputReceipt', tsTable: 'OUTPUT_RECEIPT', tsType: 'ReasonixOutputReceiptKey', doc: 'the worker-authenticated failed spill receipt' },
       { key: 'noticePrefixes', frameKind: 'prefix', goTable: 'NoticePrefix', tsTable: 'NOTICE_PREFIX', tsType: 'ReasonixNoticePrefix', doc: 'the prefixes that mark a notice chunk Reasonix emits beside the model stream' },
     ],
   },
