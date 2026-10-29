@@ -342,7 +342,7 @@
       "reasonix": {
         "support": "supported",
         "userNote": "",
-        "detailNote": "",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/frontend/acp/prompt_attachments.go. Embedded text resources reach the current native user input.\n\nBrowser acceptance: all 1 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/text-attachments.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -612,11 +612,11 @@
         "verified": true
       },
       "reasonix": {
-        "support": "agent-limit",
-        "userNote": "Reasonix 1.38.7 advertises no image input and ignores image blocks that arrive over the connection that LeapMux uses ([issue](https://github.com/esengine/DeepSeek-Reasonix/issues/8271)). LeapMux refuses images before the turn starts.",
-        "detailNote": "Reasonix accepts text input on its ACP path. Its prompt converter drops image and binary blocks, so LeapMux refuses them before dispatch.\n\nClassified as an agent limit: Reasonix 1.38.7 initialize returns promptCapabilities image false, audio false, embeddedContext true, and FlattenPrompt keeps text blocks and embedded text only. Reasonix 2.x (pull request #10920, merged 2026-09-26 on the studio branch; docs at v2.28.0) saves images and blob resources as attachments, so a retest with 2.x would make this a LeapMux limit (checked 2026-10-05).\n\nSources fetched on 2026-10-05:\n- <https://github.com/esengine/DeepSeek-Reasonix/issues/8271> (closed): The issue reports that Reasonix silently discards image resources in ACP mode and declares image false. It closed with pull request #10920.",
+        "support": "supported",
+        "userNote": "Reasonix needs a model that supports images.",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/frontend/acp/prompt_attachments.go and internal/session/control/attachment_named.go. Native image blocks save the uploaded bytes, and the configured vision model receives a typed image. Acceptance covers both a typed prompt and an empty composer.\n\nBrowser acceptance: all 1 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/image-attachments.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
       },
@@ -884,11 +884,11 @@
         "verified": true
       },
       "reasonix": {
-        "support": "agent-limit",
-        "userNote": "Reasonix 1.38.7 reads only text over the connection that LeapMux uses. It drops a PDF ([issue](https://github.com/esengine/DeepSeek-Reasonix/issues/8271)), so LeapMux refuses a PDF before the turn starts.",
-        "detailNote": "Reasonix accepts text input on its ACP path. Its prompt converter drops image and binary blocks, so LeapMux refuses them before dispatch.\n\nClassified as an agent limit: Reasonix 1.38.7 FlattenPrompt keeps text blocks and the text of embedded resources, and drops every other block (source and documentation read 2026-10-05). Reasonix 2.x saves blob resources as attachments (pull request #10920), so a retest with 2.x would make this a LeapMux limit.\n\nSources fetched on 2026-10-05:\n- <https://github.com/esengine/DeepSeek-Reasonix/issues/8271> (closed): The issue reports that Reasonix silently discards embedded resource content in ACP mode. It closed with pull request #10920.",
+        "support": "supported",
+        "userNote": "Reasonix saves each PDF as an attachment that its tools can read.",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/frontend/acp/prompt_attachments.go. Native blob resources become workspace attachments. The current user input identifies the copy, and acceptance compares every uploaded PDF byte with that distinct native file.\n\nBrowser acceptance: all 1 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/pdf-attachments.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
       },
@@ -1158,7 +1158,7 @@
       "reasonix": {
         "support": "agent-limit",
         "userNote": "Audio file attachments are not supported by this agent.",
-        "detailNote": "Reasonix FlattenPrompt explicitly keeps text/text resources and ignores Audio and blob resources. All three native forms carry no typed audio in audit-8D7OZV, zero unexpected requests; protocol.go documents the accepted-but-ignored audio wire variant. Browser refusal passes in e2e-BOOBjz.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/498.",
+        "detailNote": "Re-evaluated on 2026-10-29 against Reasonix v2.53.1, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/frontend/acp/prompt_attachments.go. The native promptText converter accepts images and embedded blob resources, but does not advertise audio and ignores audio blocks. LeapMux refuses audio before dispatch and retains it for retry.\n\nTrack the native route and its LeapMux integration: https://github.com/leapmux/leapmux/issues/498.\n\nBrowser acceptance: all 1 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/audio-attachments.spec.ts",
         "audit": "unsupported",
         "verified": true,
@@ -1428,11 +1428,11 @@
         "verified": true
       },
       "reasonix": {
-        "support": "agent-limit",
-        "userNote": "Reasonix 1.38.7 reads only text over the connection that LeapMux uses. It drops a binary file ([issue](https://github.com/esengine/DeepSeek-Reasonix/issues/8271)), so LeapMux refuses a binary file before the turn starts.",
-        "detailNote": "Reasonix accepts text input on its ACP path. Its prompt converter drops image and binary blocks, so LeapMux refuses them before dispatch.\n\nClassified as an agent limit: Reasonix 1.38.7 FlattenPrompt keeps text blocks and the text of embedded resources, and drops every other block (source and documentation read 2026-10-05). Reasonix 2.x saves blob resources as attachments (pull request #10920), so a retest with 2.x would make this a LeapMux limit.\n\nSources fetched on 2026-10-05:\n- <https://github.com/esengine/DeepSeek-Reasonix/issues/8271> (closed): The issue reports that Reasonix silently discards embedded resource content in ACP mode. It closed with pull request #10920.",
+        "support": "supported",
+        "userNote": "Reasonix saves each binary attachment as a file that its tools can read.",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/frontend/acp/prompt_attachments.go. Native blob resources become workspace attachments. Acceptance validates the current input, confines the copied path to the workspace, and compares every binary byte with the upload.\n\nBrowser acceptance: all 1 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/other-binary-attachments.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
       },
@@ -1700,11 +1700,11 @@
         "verified": true
       },
       "reasonix": {
-        "support": "agent-limit",
-        "userNote": "Reasonix sends the picture from its image tool to the model, but its tool update to LeapMux holds text only. LeapMux cannot show the image.",
-        "detailNote": "Reasonix sends a `view_image` picture to its model, but its ACP tool update contains text only. LeapMux cannot show the image in that tool row.\n\nClassified as an agent limit: the Reasonix 1.38.7 dispatch code builds text content for a tool result and has no image block, although view_image returns image bytes to the model (source read 2026-10-05).",
+        "support": "supported",
+        "userNote": "Tool results show the saved image and retain it after reload.",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/frontend/acp/dispatch.go and internal/state/sessionstore/session_image_blobs.go. ACP emits text, while the native event log retains image slots and SHA-256-addressed blobs. LeapMux reconstructs the matching tool record, verifies each blob, and renders its stored image bytes before and after reload.\n\nBrowser acceptance: all 2 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/images-in-tool-results.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
       },
@@ -1974,7 +1974,7 @@
       "reasonix": {
         "support": "supported",
         "userNote": "",
-        "detailNote": "",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/frontend/acp/dispatch.go. Reasoning events become agent_thought_chunk updates and remain in the transcript after reload.\n\nBrowser acceptance: all 1 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/thinking-in-the-transcript.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -2246,7 +2246,7 @@
       "reasonix": {
         "support": "supported",
         "userNote": "",
-        "detailNote": "",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/frontend/acp/usage_update.go and status.go. The native usage_update reports current context size and the model window. LeapMux no longer overwrites that gauge with cumulative session totals. Cost enters the field for US dollars only when the native currency is USD.\n\nBrowser acceptance: all 1 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/context-usage.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -2517,8 +2517,8 @@
       },
       "reasonix": {
         "support": "supported",
-        "userNote": "Reasonix automatically summarizes older context and shows a compaction notice that remains after reload.",
-        "detailNote": "Verified against the installed Reasonix v1.38.7 binary and its embedded source revision 036c7c50c5c154f747419aee6b75667f9044c8fa. internal/acp/dispatch.go emits the native agent_message_chunk notice only when CompactionDone has a nonempty summary. LeapMux already extracts that provider notice as completed compaction. The former test exercised only /compact as ordinary prompt text and did not test automatic compaction.\n\nNative acceptance: all three tests in the complete compaction-notice and manual-compaction files passed in e2e-vQWSyB. A private 50000-token context window triggers an actual native summary request. The next model request contains the supplied summary and omits the oldest assistant answer. The native session remains unchanged, and the completed notice remains visible after reload. The separate manual-compaction limitation is unchanged.",
+        "userNote": "",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/frontend/acp/dispatch.go. CompactionDone emits the native compaction notice only with a nonempty summary. Acceptance triggers real automatic compaction, verifies the summary in subsequent context, and retains the notice after reload.\n\nBrowser acceptance: all 2 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/compaction-notice.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -2789,8 +2789,8 @@
       },
       "reasonix": {
         "support": "agent-limit",
-        "userNote": "Reasonix 1.38.7 runs `/compact` only in its own interfaces. Over the connection that LeapMux uses, Reasonix sends `/compact` to the model as plain text.",
-        "detailNote": "Reasonix sends `/compact` to the model as ordinary text on LeapMux's ACP path. Its desktop command is unavailable on that path.\n\nClassified as an agent limit: Reasonix 1.38.7 sessionPrompt calls ctrl.RunTurn with the text, and resolveSlashPrompt resolves only custom commands, skills, MCP prompts, and extension actions, while Controller.Submit (not used by ACP) is the code that routes /compact (source read 2026-10-05).",
+        "userNote": "Reasonix 2.53.1 sends `/compact` to the model as ordinary text over the connection that LeapMux uses.",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/frontend/acp/session.go. ACP session/prompt does not route the built-in /compact command through Controller.Submit. The native model receives /compact as ordinary input, and the browser verifies that no compaction notice appears.\n\nBrowser acceptance: all 1 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/manual-compaction.spec.ts",
         "audit": "unsupported",
         "testStatus": "passed",
@@ -3062,7 +3062,7 @@
       "reasonix": {
         "support": "agent-limit",
         "userNote": "Reasonix reports no quota window or reset time to LeapMux, so Agent info shows no rate limit.",
-        "detailNote": "Reasonix receives quota headers from the model service but reports no quota window through this LeapMux integration. The Agent info card shows no rate-limit state.\n\nClassified as an agent limit: the Reasonix 1.38.7 ACP session status and usage objects hold token counts and cost, with no quota window (source searched 2026-10-05). The source has no code that reads quota headers (it handles only HTTP 429 text). Receiving quota headers from the model service therefore does not mean that Reasonix uses them.",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/frontend/acp/status.go and usage_update.go. The native status and usage records carry tokens, cost, and context size, but no quota window, utilization, or reset time. Quota-bearing mock headers do not produce rate-limit UI.\n\nBrowser acceptance: all 1 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/rate-limit-state.spec.ts",
         "audit": "unsupported",
         "testStatus": "passed",
@@ -3334,7 +3334,7 @@
       "reasonix": {
         "support": "supported",
         "userNote": "",
-        "detailNote": "",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/frontend/acp/session.go. Loading the persisted native session restores model-visible conversation context rather than only Worker transcript rows.\n\nBrowser acceptance: all 1 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/model-context-on-resume.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -3606,7 +3606,7 @@
       "reasonix": {
         "support": "supported",
         "userNote": "",
-        "detailNote": "",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/frontend/acp/dispatch.go. Native session/request_permission controls ordinary tool execution. Acceptance covers allow, deny with feedback, and a session-scoped decision.\n\nBrowser acceptance: all 3 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/permission-prompts.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -3878,7 +3878,7 @@
       "reasonix": {
         "support": "supported",
         "userNote": "",
-        "detailNote": "",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/frontend/acp/session.go and internal/runtime/agent/planmode_gate.go. Plan mode refuses a declared writer before mutation. The same operation asks in Normal/Ask mode. The test verifies refusal bytes, unchanged files, and reload persistence.\n\nBrowser acceptance: all 1 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/plan-mode.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -4149,8 +4149,8 @@
       },
       "reasonix": {
         "support": "supported",
-        "userNote": "Reasonix shows its streamed plan in a plan-review banner. You can approve it for execution or reject it with revision feedback. Approval can also run the saved plan in a fresh context.",
-        "detailNote": "LeapMux recognizes Reasonix's native exit_plan_mode metadata and uses the shared plan-review surface. Approval selects allow_once and exits to Normal. Rejection selects reject_once, keeps Plan mode, and sends any revision text as follow-up input. The adapter saves the streamed proposal for fresh-context execution.\n\nInstalled Reasonix 1.38.7 revision 036c7c50c5c154f747419aee6b75667f9044c8fa supplies the native behavior. All 83 Reasonix browser cases passed with zero retries in e2e-hlrGTu, including ordinary approval, revision feedback and fresh-context execution. See https://github.com/leapmux/leapmux/issues/504.",
+        "userNote": "",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/frontend/acp/dispatch.go. The native exit_plan_mode approval follows the streamed proposal. LeapMux supports approval, revision feedback, and execution of the saved plan in a fresh context.\n\nBrowser acceptance: all 3 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/plan-approval-banner.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -4422,9 +4422,9 @@
       "reasonix": {
         "support": "supported",
         "userNote": "Choose an offered answer to continue. Canceling the question ends the turn.",
-        "detailNote": "Reasonix exposes the native ask tool. Its ACP transport sends each question through session/request_permission with one native option per choice. The complete spec verifies the selected second option after reload, cancellation without another model request, and the exact saved q1:cancel reply. Verified in the 2026-10-15 browser run e2e-OpyOls. The earlier test checked unrelated tool aliases and did not exercise ask.",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/frontend/acp/dispatch.go. Native ask questions use permission options. Acceptance covers selected answers, cancellation, multiple sequential questions, ownership, and reload.\n\nBrowser acceptance: all 5 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/agent-questions.spec.ts",
-        "audit": "covered",
+        "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
       },
@@ -4694,7 +4694,7 @@
       "reasonix": {
         "support": "supported",
         "userNote": "",
-        "detailNote": "",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/frontend/acp/service.go and internal/runtime/capability/catalog.go. Native project launch approval is recorded through reasonix mcp enable before the native capability route connects the configured MCP server and runs its real tool against the scripted local server.\n\nBrowser acceptance: all 1 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/mcp-tool-execution.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -4966,7 +4966,7 @@
       "reasonix": {
         "support": "supported",
         "userNote": "",
-        "detailNote": "",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/frontend/acp/elicitation.go. Reasonix 2.x uses standard elicitation/create and the client form capability. LeapMux already handles that ACP route. Reasonix converts the form to native text and display-label choices, then restores the original server types. Acceptance completes the form after reload and requires integer 0, boolean false, and the original enum value at the server.\n\nBrowser acceptance: all 1 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/mcp-input-request.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -5237,8 +5237,8 @@
       },
       "reasonix": {
         "support": "supported",
-        "userNote": "Smart selects Reasonix Auto. It approves ordinary tools while preserving configured ask and deny rules and native protected decisions.",
-        "detailNote": "Verified against Reasonix v1.38.7 and binary source revision 036c7c50c5c154f747419aee6b75667f9044c8fa. The native tool_approval option accepts auto. Its permission policy approves ordinary operations, blocks explicit deny rules, and asks for explicit ask rules or protected operations such as nested Bash. Auto uses native permission rules; this shortcut does not claim an AI risk classifier. The same canonical preset object supplies the browser plugin and the pure provider registry.\n\nNative acceptance: all 13 tests in five complete related browser files passed with zero retries in e2e-GvlwLu. The Smart test proves actual ordinary file writes, native deny results with the exact matched rule, explicit ask prompts, persistence after reload, nested Bash prompts, and restored ordinary prompts after returning to Ask. Native session, model, mode, and effort remain unchanged. All 46 related frontend unit tests passed.",
+        "userNote": "Smart selects Reasonix Auto. Ordinary tools run while configured ask and deny rules and protected decisions still apply.",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/frontend/acp/session_config.go. Smart selects native Auto. Actual writes, explicit ask and deny rules, protected nested-shell decisions, and restored Ask behavior remain covered.\n\nBrowser acceptance: all 2 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/smart-permissions-shortcut.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -5509,8 +5509,8 @@
       },
       "reasonix": {
         "support": "supported",
-        "userNote": "Bypass skips ordinary tool prompts. Native protected decisions, including access to a new writable directory, still require confirmation.",
-        "detailNote": "Reasonix v1.38.7 marks protected requests through fresh, the write_access kind, or a protected tool identity. LeapMux requires explicit fresh:false with no special kind before an ordinary pending request can receive an automatic reply. Questions, plan approval, memory decisions, sandbox escape, and managed configuration writes remain manual when the native runtime requests them. Native Yolo still decides which operations need no request at all.\n\nMatching binary source revision: 036c7c50c5c154f747419aee6b75667f9044c8fa, internal/acp/dispatch.go and internal/control/approval.go/write_access.go. Regression tests reproduced automatic reasonix_write_once replies both when Yolo was active and when Ask changed to Yolo. All 191 Reasonix backend tests and race tests passed after correction. All 8 tests in the complete Bypass and permission-prompts browser files passed with zero retries in e2e-dJYo25. The native protected-write cases retain the banner, reject access, inspect the declined-access result, and prove no file was written. The pending case also reloads before enabling Bypass. Existing ordinary pending-and-next-tool behavior remains covered and passed.",
+        "userNote": "Bypass skips ordinary tool prompts. Reasonix still refuses file writes outside its configured workspace scope, and protected decisions can still require approval.",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/frontend/acp/session_config.go and internal/tools/builtin/writefile.go. Bypass selects native Yolo and releases ordinary pending approvals. Reasonix 2.x refuses out-of-scope file writes before asking under both Ask and Yolo. Protected native decisions remain manual.\n\nBrowser acceptance: all 5 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/bypass-permissions-shortcut.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -5782,7 +5782,7 @@
       "reasonix": {
         "support": "supported",
         "userNote": "",
-        "detailNote": "",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/frontend/acp/session_config.go. The advertised model selector changes the next native request and survives reload.\n\nBrowser acceptance: all 1 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/model.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -6054,7 +6054,7 @@
       "reasonix": {
         "support": "supported",
         "userNote": "",
-        "detailNote": "",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/frontend/acp/session_config.go. The advertised effort selector changes reasoning_effort, survives model switches and reload, and disappears for a model without a reasoning protocol.\n\nBrowser acceptance: all 3 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/reasoning-effort.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -6326,7 +6326,7 @@
       "reasonix": {
         "support": "supported",
         "userNote": "",
-        "detailNote": "",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/frontend/acp/session.go. The advertised Normal, Plan, and Goal modes use session/set_mode independently of model, effort, and tool approval.\n\nBrowser acceptance: all 2 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/mode.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -6597,8 +6597,8 @@
       },
       "reasonix": {
         "support": "supported",
-        "userNote": "LeapMux sets a Reasonix goal by switching to Goal mode, and clears it by switching back to Normal mode. It needs a Reasonix that offers Goal mode.",
-        "detailNote": "Claude Code, Goose, Kilo, Qwen Code and Grok Build take a goal only when their CLI advertises its `goal` command. Kimi Code takes one only while the engine's goal feature runs. Reasonix sets a goal only in Goal mode; otherwise it can only clear one. Kiro needs a live goal run before it can clear, pause, or resume the goal. It works for at most five rounds, then pauses the goal. Resume it to continue. Qwen Code's `/loop` command and its scheduled prompts are off in LeapMux.",
+        "userNote": "",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/frontend/acp/session.go and status.go. Goal mode adopts the next prompt as its objective. Normal mode clears it. LeapMux explicitly opts into native statusUpdates to receive live goal transitions. Acceptance preserves the objective through busy refusal, cancellation, Clear, and reload.\n\nBrowser acceptance: all 1 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/session-goal-set-and-clear.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -6868,11 +6868,11 @@
         "verified": true
       },
       "reasonix": {
-        "support": "agent-limit",
-        "userNote": "Reasonix 1.38.7 has no pause or resume for a goal over the connection that LeapMux uses ([issue](https://github.com/esengine/DeepSeek-Reasonix/issues/10201)). Reasonix 2.x adds both, and LeapMux does not use them yet.",
-        "detailNote": "Reasonix supports Set in Goal mode and supports Clear. Its native goal API provides no Pause or Resume operation.\n\nClassified as an agent limit for Reasonix 1.38.7: its ACP offers set_mode only. Issue #10201 (filed for the LeapMux maintainers) closed with pull request #10943, merged 2026-09-26 on the studio branch, which adds _reasonix.io/session/goal/pause and _reasonix.io/session/goal/resume; docs/ACP.md at v2.28.0 lists them and v1.39.7 does not. A retest with 2.x would make this a LeapMux limit (checked 2026-10-05).\n\nSources fetched on 2026-10-05:\n- <https://github.com/esengine/DeepSeek-Reasonix/issues/10201> (closed): The issue asks Reasonix to expose an explicit Goal resume operation, and a matching pause operation, over ACP. It closed with pull request #10943.",
+        "support": "supported",
+        "userNote": "Pause prevents further goal rounds. The current round continues until it ends or you interrupt it. Resume continues the retained objective.",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/frontend/acp/session_goal.go. LeapMux discovers schema-version-1 goal/pause and goal/resume methods. Pause preserves the objective and counters and stops future continuation; session/cancel stops the current turn. Resume succeeds natively before LeapMux starts the retained goal continuation without resetting modes or counters. A retained goal after a failed turn is recovered through the Worker API by verifying the native failed snapshot, pausing it, and resuming it before continuation.\n\nBrowser acceptance: all 3 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/session-goal-pause-and-resume.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "testStatus": "passed",
         "verified": true
       },
@@ -7142,7 +7142,7 @@
       "reasonix": {
         "support": "supported",
         "userNote": "",
-        "detailNote": "",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/frontend/acp/dispatch.go. Native todo_write updates become ACP plan entries and drive the shared sidebar through successive lists and reload.\n\nBrowser acceptance: all 1 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/to-do-sidebar.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -7414,7 +7414,7 @@
       "reasonix": {
         "support": "supported",
         "userNote": "",
-        "detailNote": "",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/frontend/acp/dispatch.go and internal/runtime/delegation/task.go. Native task calls create registry rows, and their final results complete those rows and provide the child report. The child matcher now uses the actual 2.x context pack without the removed Task heading.\n\nBrowser acceptance: all 1 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/background-tasks-sidebar.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -7686,7 +7686,7 @@
       "reasonix": {
         "support": "supported",
         "userNote": "",
-        "detailNote": "",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/frontend/acp/dispatch.go and internal/runtime/delegation/task.go. The native read-only task supplies its prompt and final report. Acceptance verifies the child tab, Markdown, exact Copy, and quoted failure text that does not change the actual outcome.\n\nBrowser acceptance: all 2 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/subagent-transcript-tab.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -7957,8 +7957,8 @@
       },
       "reasonix": {
         "support": "agent-limit",
-        "userNote": "Reasonix gives LeapMux a subagent's report only when the subagent ends. LeapMux shows the prompt at the start and the report at the end. A background subagent shows its prompt only.",
-        "detailNote": "Kilo, OpenCode, Pi and Reasonix deliver the subagent's transcript when it completes: the prompt at spawn and the report at the end. A background spawn of Kilo, OpenCode or Reasonix keeps the prompt only.\n\nClassified as an agent limit: Reasonix 1.38.7 has no subagent update in its ACP code, so the child transcript exists only in the tool call and its final result (source searched 2026-10-05). LeapMux could read the child files from the Reasonix session store while the child runs, which would be an emulation that LeapMux does not build.",
+        "userNote": "Reasonix supplies a subagent's report when the subagent ends. The subagent tab shows its prompt while it runs.",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/frontend/acp/dispatch.go. ACP supplies no child-session route for live text or tool updates. The child tab retains its prompt while the child runs and receives only its final report. Actual child tool execution verifies this limit.\n\nBrowser acceptance: all 1 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/subagent-live-transcript.spec.ts",
         "audit": "unsupported",
         "testStatus": "passed",
@@ -8229,8 +8229,8 @@
       },
       "reasonix": {
         "support": "agent-limit",
-        "userNote": "Reasonix runs a subagent as a tool call and has no way to send it a message while it runs. The subagent tab stays read-only.",
-        "detailNote": "Reasonix provides no child-directed composer input route in LeapMux. Its child tab remains read-only while the native task runs.\n\nClassified as an agent limit: no Reasonix 1.38.7 ACP request addresses a child run (source read 2026-10-05).",
+        "userNote": "Reasonix exposes no way to send a message to a running subagent. Its tab stays read-only.",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/frontend/acp/service.go. No ACP or vendor method addresses a running task as a child conversation. A live native child therefore keeps a read-only tab; root session inbox methods do not address that child.\n\nBrowser acceptance: all 1 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/send-to-a-subagent.spec.ts",
         "audit": "unsupported",
         "testStatus": "passed",
@@ -8501,8 +8501,8 @@
       },
       "reasonix": {
         "support": "agent-limit",
-        "userNote": "Reasonix has no request that stops one subagent. Cancel stops the whole turn, so the subagent tab has no Interrupt control.",
-        "detailNote": "Reasonix provides no independent child interruption route in LeapMux. Its child tab has no Interrupt control while the parent retains its own control.\n\nClassified as an agent limit: the only cancel in the Reasonix 1.38.7 ACP code is session/cancel for a whole session (source read 2026-10-05).",
+        "userNote": "Reasonix exposes no request that stops one subagent while its parent continues. The child tab has no Interrupt control.",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/frontend/acp/service.go. session/cancel addresses the whole ACP session. No advertised method cancels one delegated child while preserving its parent. Acceptance checks the missing child Interrupt control during actual child work.\n\nBrowser acceptance: all 1 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/interrupt-a-subagent.spec.ts",
         "audit": "unsupported",
         "testStatus": "passed",
@@ -8773,8 +8773,8 @@
       },
       "reasonix": {
         "support": "supported",
-        "userNote": "Reasonix accepts guidance during a turn. LeapMux uses the steer request of Reasonix when the CLI advertises it, as Reasonix 1.38.7 does ([documentation](https://github.com/esengine/DeepSeek-Reasonix/blob/v1.38.7/docs/ACP.md)).",
-        "detailNote": "Cursor's protocol exposes no steer method. The installed Goose ACP handshake advertises no steer method, so LeapMux offers Preempt. Reasonix steers only when its CLI advertises a steer method. Qwen Code takes a steer at its next tool gap.\n\nTested version: Reasonix 1.38.7.\n\nSources fetched on 2026-10-05:\n- <https://github.com/esengine/DeepSeek-Reasonix/blob/v1.38.7/docs/ACP.md>: Reasonix 1.38.7 advertises the steer method _reasonix.io/session/steer under agentCapabilities._meta['reasonix.io'].sessionSteer.method and tells clients to read it from there.",
+        "userNote": "",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/frontend/acp/handshake.go and session.go. The handshake advertises _reasonix.io/session/steer. Acceptance checks queued guidance, ordering after a completed answer, and the stopped-steer warning as a separate status row.\n\nBrowser acceptance: all 3 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/steer-mid-turn.spec.ts",
         "audit": "source-verified",
         "testStatus": "passed",
@@ -9045,8 +9045,8 @@
       },
       "reasonix": {
         "support": "agent-limit",
-        "userNote": "Reasonix reports each subagent alone, with no workflow group. The Background tasks sidebar cannot show subagents under one workflow heading.",
-        "detailNote": "Reasonix reports native child tasks without workflow group keys on this LeapMux path. The Background tasks sidebar cannot place those children under a workflow heading.\n\nClassified as an agent limit: the Reasonix 1.38.7 task and read_only_task tool calls carry no workflow or group key, and the ACP code has no group concept (source read 2026-10-05).",
+        "userNote": "Reasonix reports each subagent without a workflow group. The sidebar cannot place those subagents under one workflow heading.",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/frontend/acp/dispatch.go. Native task updates carry individual calls and results without workflow group identities. Two real children remain outside workflow groups after reload.\n\nBrowser acceptance: all 1 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/workflow-grouping.spec.ts",
         "audit": "unsupported",
         "testStatus": "passed",
@@ -9300,7 +9300,7 @@
       "reasonix": {
         "support": "supported",
         "userNote": "",
-        "detailNote": "reasonix delivers native assistant text and completion to LeapMux.",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/frontend/acp/session.go and dispatch.go. The native prompt streams assistant text and returns completion; the answer persists after reload.\n\nBrowser acceptance: all 1 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/basic-chat.spec.ts",
         "audit": "source-verified",
         "verified": true,
@@ -9572,7 +9572,7 @@
       "reasonix": {
         "support": "supported",
         "userNote": "",
-        "detailNote": "reasonix retains the current native session conversation.",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/frontend/acp/session.go. Successive prompts retain the current native session conversation.\n\nBrowser acceptance: all 1 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/conversation-context.spec.ts",
         "audit": "source-verified",
         "verified": true,
@@ -9844,7 +9844,7 @@
       "reasonix": {
         "support": "supported",
         "userNote": "",
-        "detailNote": "reasonix executes a native local shell tool.",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/tools/builtin/bash.go and internal/frontend/acp/dispatch.go. Real native commands produce computed output and failure status. LeapMux preserves actual trailing newlines and distinguishes a successful command that prints an error-shaped line from an actual nonzero exit.\n\nBrowser acceptance: all 1 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/shell-tool-execution.spec.ts",
         "audit": "source-verified",
         "verified": true,
@@ -10116,7 +10116,7 @@
       "reasonix": {
         "support": "supported",
         "userNote": "",
-        "detailNote": "reasonix offers native file read and mutation tools.",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/frontend/acp/clientio.go and internal/tools/builtin/writefile.go. Native read and mutation tools operate on actual scratch bytes, with their results retained in the transcript.\n\nBrowser acceptance: all 1 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/file-tool-execution.spec.ts",
         "audit": "source-verified",
         "verified": true,
@@ -10388,7 +10388,7 @@
       "reasonix": {
         "support": "supported",
         "userNote": "",
-        "detailNote": "reasonix routes parent interruption through its native cancellation path.",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/frontend/acp/session.go. session/cancel interrupts the active native turn. Acceptance verifies retained partial content and the interruption marker after reload.\n\nBrowser acceptance: all 4 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/interrupt-a-turn.spec.ts",
         "audit": "source-verified",
         "verified": true,
@@ -10660,7 +10660,7 @@
       "reasonix": {
         "support": "supported",
         "userNote": "",
-        "detailNote": "reasonix uses the shared process owner and Worker close lifecycle.",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/frontend/acp/session.go. The Worker closes the native agent through shared process ownership and verifies that its actual process tree exits.\n\nBrowser acceptance: all 1 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/close-an-agent.spec.ts",
         "audit": "source-verified",
         "verified": true,
@@ -10932,7 +10932,7 @@
       "reasonix": {
         "support": "supported",
         "userNote": "",
-        "detailNote": "The shared /clear path restarts this provider with no prior resume handle. Native ClearContext support does not control this user command.",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/frontend/acp/session.go. The shared /clear operation creates a new native session without a prior resume handle.\n\nBrowser acceptance: all 1 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/session-reset.spec.ts",
         "audit": "source-verified",
         "verified": true,
@@ -11204,7 +11204,7 @@
       "reasonix": {
         "support": "supported",
         "userNote": "",
-        "detailNote": "reasonix exposes native stored sessions and LeapMux can reopen them.",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/frontend/acp/session.go and internal/state/sessionstore/session_events.go. Native persisted sessions remain discoverable and resumable. Acceptance covers the picker plus Worker and Hub/Worker restarts with retained context and transcript.\n\nBrowser acceptance: all 3 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/session-resume.spec.ts",
         "audit": "source-verified",
         "verified": true,
@@ -11476,7 +11476,7 @@
       "reasonix": {
         "support": "supported",
         "userNote": "",
-        "detailNote": "reasonix participates in the shared startup status and queued-input lifecycle.",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/frontend/acp/handshake.go and session.go. The native handshake drives Worker startup state and queued input. Acceptance covers held startup, a real startup failure, and opening another provider agent.\n\nBrowser acceptance: all 3 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/agent-startup.spec.ts",
         "audit": "source-verified",
         "verified": true,
@@ -11748,7 +11748,7 @@
       "reasonix": {
         "support": "supported",
         "userNote": "",
-        "detailNote": "The shared chat completion observer uses this provider's native completion and tool activity.",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/frontend/acp/session.go and dispatch.go. Native tool activity and prompt completion drive the shared sound observer. Tool turns sound once; text-only turns and the None preference remain quiet.\n\nBrowser acceptance: all 3 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/turn-end-sound.spec.ts",
         "audit": "source-verified",
         "verified": true,
@@ -12020,7 +12020,7 @@
       "reasonix": {
         "support": "supported",
         "userNote": "",
-        "detailNote": "reasonix sends native output deltas to the Worker progress tracker.",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/frontend/acp/dispatch.go. Native text and reasoning deltas advance generation counters and remain correct at completion.\n\nBrowser acceptance: all 1 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/generation-progress.spec.ts",
         "audit": "source-verified",
         "verified": true,
@@ -12292,7 +12292,7 @@
       "reasonix": {
         "support": "agent-limit",
         "userNote": "",
-        "detailNote": "reasonix exposes no multiline native editor-request surface to LeapMux. Text answers to questions and MCP fields remain separate.\n\nClassified as an agent limit: the Reasonix 1.38.7 ACP code sends no editor request; its requests to the client are permissions, file system, terminal, and MCP interaction (source read 2026-10-05).",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/frontend/acp/service.go and elicitation.go. ACP provides permissions, questions, filesystem/terminal operations, and MCP forms, but no native multiline editor request with exact text-versus-cancellation semantics.\n\nBrowser acceptance: all 1 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/editor-requests.spec.ts",
         "audit": "unsupported",
         "verified": true,
@@ -12564,7 +12564,7 @@
       "reasonix": {
         "support": "agent-limit",
         "userNote": "",
-        "detailNote": "reasonix has no LeapMux native workspace-trust request that controls loading of project configuration.\n\nClassified as an agent limit: a search of the Reasonix 1.38.7 ACP code and documentation finds no workspace trust request (source searched 2026-10-05).",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/frontend/acp/session.go and dispatch.go. The ACP path has no workspace-trust reverse request that prevents project configuration from loading until approval. Acceptance observes native startup and actual project-file reading without such a request.\n\nBrowser acceptance: all 1 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/workspace-trust.spec.ts",
         "audit": "unsupported",
         "verified": true,
@@ -12836,7 +12836,7 @@
       "reasonix": {
         "support": "agent-limit",
         "userNote": "",
-        "detailNote": "reasonix exposes no separate LeapMux Swarm mode setting on its native integration.\n\nClassified as an agent limit: a search of the Reasonix 1.38.7 source and documentation finds no swarm mode (source searched 2026-10-05).",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/frontend/acp/session_config.go and composition.go. The advertised controls include collaboration mode, model, effort, execution preset, tool approval, and agent composition. None enables a separate native Swarm mode.\n\nBrowser acceptance: all 1 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/swarm-mode.spec.ts",
         "audit": "unsupported",
         "verified": true,
@@ -13108,7 +13108,7 @@
       "reasonix": {
         "support": "supported",
         "userNote": "",
-        "detailNote": "reasonix forwards native model-service errors and can run a later valid turn.",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/frontend/acp/session.go. Both native request attempts receive the scripted 400 response. The model-service error reaches the transcript exactly once, and a subsequent valid turn completes.\n\nBrowser acceptance: all 1 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/model-error.spec.ts",
         "audit": "source-verified",
         "verified": true,
@@ -13380,7 +13380,7 @@
       "reasonix": {
         "support": "supported",
         "userNote": "",
-        "detailNote": "reasonix uses private E2E configuration and the local mock credentials.",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/contract/config/credentials.go. The private native configuration targets the local mock and binds its mock credential. The spec verifies the credential actually received by the mock service.\n\nBrowser acceptance: all 1 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/credential-isolation.spec.ts",
         "audit": "source-verified",
         "verified": true,
@@ -13652,7 +13652,7 @@
       "reasonix": {
         "support": "agent-limit",
         "userNote": "",
-        "detailNote": "reasonix uses its model/effort axis for thinking. It offers no independent thinking-enable setting in LeapMux.\n\nClassified as an agent limit: the Reasonix 1.38.7 session controls are collaboration mode, model, effort, and tool approval, with no independent thinking switch (documentation read 2026-10-05).",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/frontend/acp/session_config.go. Reasonix exposes a model-dependent effort axis, without a separate ACP thinking-enable control independent of model and effort.\n\nBrowser acceptance: all 1 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/extended-thinking.spec.ts",
         "audit": "unsupported",
         "verified": true,
@@ -13924,7 +13924,7 @@
       "reasonix": {
         "support": "agent-limit",
         "userNote": "",
-        "detailNote": "reasonix exposes no separate LeapMux Fast mode setting on its native integration.\n\nClassified as an agent limit: a search of the Reasonix 1.38.7 source and documentation finds no fast mode setting, and the ACP controls hold none (source searched 2026-10-05).",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/frontend/acp/session_config.go. No advertised option enables a fast serving tier. The Light execution preset changes orchestration and verification, not the model service tier.\n\nBrowser acceptance: all 1 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/fast-mode.spec.ts",
         "audit": "unsupported",
         "verified": true,
@@ -14196,7 +14196,7 @@
       "reasonix": {
         "support": "agent-limit",
         "userNote": "",
-        "detailNote": "reasonix exposes no separate LeapMux Output style setting on its native integration.\n\nClassified as an agent limit: the Reasonix 1.38.7 output style is a configuration file value, and ACP offers no way to select it at run time (source read 2026-10-05). LeapMux could write the configuration file, which would be an emulation that LeapMux does not build.",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/frontend/acp/session_config.go. ACP exposes no response-style selector. A configuration-file style setting does not supply a live native option that LeapMux can select.\n\nBrowser acceptance: all 1 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/output-style.spec.ts",
         "audit": "unsupported",
         "verified": true,
@@ -14619,11 +14619,11 @@
         "testStatus": "passed"
       },
       "reasonix": {
-        "support": "agent-limit",
-        "userNote": "Reasonix 1.38.7 has no tool that runs code that the model writes. It has shell, notebook editing, and file tools. Notebook editing does not run cells.",
-        "detailNote": "The source built-in tools offer bash/pwsh and notebook editing, with no standalone interpreter. Notebook editing does not execute cells.\n\nClassified as an agent limit: the Reasonix 1.38.7 built-in tool directory holds no code, script, or REPL executor, and notebookedit edits cells without running them (source read 2026-10-05). The source is the tag v1.38.7, and the installed Reasonix is also 1.38.7 (Homebrew Caskroom path), so the source and the installed version agree.",
+        "support": "supported",
+        "userNote": "Enable `agent.code_mode = true` in Reasonix to use its Starlark executor. Scripts can call agent tools.",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/assembly/boot/build.go and internal/tools/script/script.go. Setting agent.code_mode=true registers run_script. Acceptance verifies the real script schema, computed Starlark output, computed failure text, nested write/read tool calls, actual file bytes, and retained output after reload.\n\nBrowser acceptance: all 1 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/code-execution.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "verified": true,
         "testStatus": "passed"
       },
@@ -14918,11 +14918,11 @@
         "testStatus": "passed"
       },
       "reasonix": {
-        "support": "agent-limit",
-        "userNote": "Reasonix sends no path for saved output. It cuts the output that it sends over the connection that LeapMux uses to 8000 characters.",
-        "detailNote": "Native stored bash tool record supplies complete inline content behind the ACP preview. No filesystem output pointer exists on this selected native route. LeapMux keeps the original preview and reads no output file.\n\nClassified as an agent limit: Reasonix 1.38.7 clips each ACP tool result with a note and never saves long output to a file (source searched 2026-10-05). LeapMux restores the complete output from the Reasonix session store, which holds inline content.",
+        "support": "supported",
+        "userNote": "Large tool results show the path to the native saved output. The result row keeps Reasonix's preview.",
+        "detailNote": "Re-evaluated on 2026-10-29 against the installed Reasonix v2.53.1 binary and matching source tag, revision 74805c102cf483aed637f30c9316928d3048c18c. Source: internal/runtime/agent/tool_output_spill.go. Large native results spill beside the session and report a Full output path plus opening lines. LeapMux validates the native receipt and call-specific filename, exposes the path before the unchanged preview, and preserves exact Copy after reload. The spec verifies the native file bytes and omitted middle/end markers.\n\nBrowser acceptance: all 2 case(s) in the complete spec passed with zero retries in e2e-OFqqN3. The complete Reasonix run passed 87 cases in all 54 files.",
         "spec": "frontend/tests/e2e/reasonix/output-file-paths.spec.ts",
-        "audit": "unsupported",
+        "audit": "source-verified",
         "verified": true,
         "testStatus": "passed"
       },

@@ -208,6 +208,8 @@ func readReasonixToolSupplements(ctx context.Context, path string, pending map[s
 			continue
 		}
 		var original struct {
+			Name    string `json:"name"`
+			Title   string `json:"title"`
 			Status  string `json:"status"`
 			Content []struct {
 				Content struct {
@@ -221,7 +223,19 @@ func readReasonixToolSupplements(ctx context.Context, path string, pending map[s
 		}
 		text := original.Content[0].Content.Text
 		failed := original.Status == "failed"
-		if !reasonixStoredResultMatches(text, record.Content, failed) && (record.RawContent == "" || !reasonixStoredResultMatches(text, record.RawContent, failed)) {
+		var failedReceiptPath string
+		nativeName := original.Name
+		if nativeName == "" {
+			nativeName = original.Title
+		}
+		if failed && (nativeName == "" || nativeName == record.Name) {
+			failedReceiptPath = reasonixAuthenticateFailedOutput(ctx, path, record.Content, record.Name, id, text)
+		}
+		matches := reasonixStoredResultMatches(text, record.Content, failed) ||
+			reasonixStoredResultMatches(text, reasonixContentWithoutProvenance(record.Content), failed) ||
+			(record.RawContent != "" && reasonixStoredResultMatches(text, record.RawContent, failed)) ||
+			failedReceiptPath != ""
+		if !matches {
 			continue
 		}
 		var originalFields map[string]json.RawMessage
@@ -230,7 +244,14 @@ func readReasonixToolSupplements(ctx context.Context, path string, pending map[s
 			continue
 		}
 		supplement := acp.NewToolSupplement(originalFields)
-		if err := supplement.SetRawOutput(map[string]json.RawMessage{contracts.ReasonixToolRecordEnvelope: raw}); err != nil {
+		rawOutput := map[string]any{contracts.ReasonixToolRecordEnvelope: raw}
+		if failedReceiptPath != "" {
+			rawOutput[contracts.ReasonixOutputReceiptEnvelope] = map[string]string{
+				contracts.ReasonixOutputReceiptPathField:          failedReceiptPath,
+				contracts.ReasonixOutputReceiptErrorHeadlineField: text,
+			}
+		}
+		if err := supplement.SetRawOutput(rawOutput); err != nil {
 			readErr = errors.Join(readErr, err)
 			continue
 		}

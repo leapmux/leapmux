@@ -184,6 +184,18 @@ func TestObserveCurrentMode_UpdatesTheAxisOnce(t *testing.T) {
 	assert.Equal(t, 1, sink.SettingsRefreshCount(), "a repeated report changes nothing, and an empty one states nothing")
 }
 
+func TestCurrentNativeModeTracksReportsInsteadOfLocalSelections(t *testing.T) {
+	t.Parallel()
+	b := &Base{sink: agent.NewProviderServices(&agenttest.Sink{})}
+	b.hooks.ModeChannel = ModeChannelPermissionMode
+	b.applyHandshakeMode(&SessionResult{CurrentModeID: "normal"}, "normal")
+	assert.Equal(t, "normal", b.CurrentNativeMode())
+	b.SetPermissionMode("goal")
+	assert.Equal(t, "normal", b.CurrentNativeMode())
+	b.ObserveCurrentMode("plan")
+	assert.Equal(t, "plan", b.CurrentNativeMode())
+}
+
 func TestModeSetterKeepsANativeChangeAfterItsAcknowledgment(t *testing.T) {
 	t.Parallel()
 	b := &Base{}
@@ -198,6 +210,12 @@ func TestModeSetterKeepsANativeChangeAfterItsAcknowledgment(t *testing.T) {
 	}
 	require.NoError(t, b.setSecondary("yolo"))
 	assert.Equal(t, "plan", b.PermissionModeForTest(), "the later native event must survive the return of the setter")
+}
+
+func TestWriteSecondarySettingRejectsAnAbsentWriter(t *testing.T) {
+	t.Parallel()
+	b := &Base{}
+	require.ErrorContains(t, b.WriteSecondarySetting("plan", nil), "mode writer is required")
 }
 
 func TestSetModeAckKeepsTheReportedMode(t *testing.T) {

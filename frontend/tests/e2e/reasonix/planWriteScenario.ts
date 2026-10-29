@@ -39,7 +39,7 @@ export async function exerciseReasonixPlanAndNormalWrites(context: ManagedNative
     await modelScript.waitForSteps(planned + 2)
     await waitForAgentIdle(page)
     expect(existsSync(planFile)).toBe(false)
-    expect(await nativeToolResultAt(modelScript, planned + 1, planCall)).toContain('plan mode forbids workspace mutations')
+    expect(await nativeToolResultAt(modelScript, planned + 1, planCall)).toContain('Cause (declared_writer): "write_file" is not a read-only tool')
     const exitBanner = await waitForControlBanner(page)
     await expect(exitBanner).toContainText('Plan Ready for Review')
     await answerPlanReview(page, 'reject')

@@ -210,7 +210,7 @@ func TestACPHandshakeModelInfos_FlattensGroupedConfigOptions(t *testing.T) {
 
 	// Junie groups custom profiles in the model select. The group itself has no
 	// value; its children hold the model IDs that the picker must show.
-	handshake, err := parseACPSessionResult(json.RawMessage(`{"sessionId":"junie-session","configOptions":[{"type":"select","id":"model","category":"model","currentValue":"v1:6:custom:custom:mock-model","options":[{"group":"custom","name":"Custom","options":[{"value":"v1:6:custom:custom:mock-model","name":"Mock Model","_meta":{"contextLimit":200000}},{"value":"v1:6:custom:custom:mock-responses","name":"Mock Responses"}]},{"value":"account-model","name":"Account Model"}]}]}`))
+	handshake, err := ParseSessionResult(json.RawMessage(`{"sessionId":"junie-session","configOptions":[{"type":"select","id":"model","category":"model","currentValue":"v1:6:custom:custom:mock-model","options":[{"group":"custom","name":"Custom","options":[{"value":"v1:6:custom:custom:mock-model","name":"Mock Model","_meta":{"contextLimit":200000}},{"value":"v1:6:custom:custom:mock-responses","name":"Mock Responses"}]},{"value":"account-model","name":"Account Model"}]}]}`))
 	require.NoError(t, err)
 
 	models, current := acpHandshakeModelInfos(handshake)
@@ -1302,7 +1302,7 @@ func TestModelDecorator_ReadsTheMetadataOfTheInfoThatTheBuildKept(t *testing.T) 
 
 func TestModelInfo_AConfigOptionModelCarriesItsMetadata(t *testing.T) {
 	t.Parallel()
-	session, err := parseACPSessionResult(json.RawMessage(`{"sessionId":"s","configOptions":[{"type":"select","id":"model","name":"Model","category":"model","currentValue":"m","options":[` +
+	session, err := ParseSessionResult(json.RawMessage(`{"sessionId":"s","configOptions":[{"type":"select","id":"model","name":"Model","category":"model","currentValue":"m","options":[` +
 		`{"value":"m","name":"M","_meta":{"vendor":{"rate":1.3}}},{"value":"n","name":"N"}]}]}`))
 	require.NoError(t, err)
 	infos, current := acpHandshakeModelInfos(session)
@@ -1315,7 +1315,7 @@ func TestModelInfo_AConfigOptionModelCarriesItsMetadata(t *testing.T) {
 
 func TestModelInfo_DecodesItsMetadata(t *testing.T) {
 	t.Parallel()
-	session, err := parseACPSessionResult(json.RawMessage(`{"sessionId":"s","models":{"currentModelId":"m","availableModels":[{"modelId":"m","name":"M","_meta":{"contextLimit":200000}}]}}`))
+	session, err := ParseSessionResult(json.RawMessage(`{"sessionId":"s","models":{"currentModelId":"m","availableModels":[{"modelId":"m","name":"M","_meta":{"contextLimit":200000}}]}}`))
 	require.NoError(t, err)
 	require.Len(t, session.Models, 1)
 	assert.JSONEq(t, `{"contextLimit":200000}`, string(session.Models[0].Meta))
@@ -1329,7 +1329,7 @@ func TestModelInfo_DecodesItsMetadata(t *testing.T) {
 // Strings and null keep their old readings.
 func TestParseACPSessionResult_ToleratesNonStringCurrentValue(t *testing.T) {
 	t.Parallel()
-	session, err := parseACPSessionResult(json.RawMessage(`{"sessionId":"s","configOptions":[` +
+	session, err := ParseSessionResult(json.RawMessage(`{"sessionId":"s","configOptions":[` +
 		`{"id":"mode","type":"select","category":"mode","currentValue":"act","options":[{"value":"plan"},{"value":"act"}]},` +
 		`{"id":"auto_approve","type":"boolean","category":"mode","currentValue":false},` +
 		`{"id":"yolo","type":"boolean","category":"mode","currentValue":true},` +

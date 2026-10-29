@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "reasonix_output_receipt_conformance.schema.json",
+  "title": "Reasonix output receipt conformance",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "_readme",
+    "cases"
+  ],
+  "properties": {
+    "_readme": {
+      "type": "string",
+      "minLength": 1
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "text",
+          "normalized",
+          "tool",
+          "callId",
+          "path",
+          "headline",
+          "failedPath"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "text": {
+            "type": "string"
+          },
+          "normalized": {
+            "type": "string"
+          },
+          "tool": {
+            "type": "string"
+          },
+          "callId": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "headline": {
+            "type": "string"
+          },
+          "failedPath": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

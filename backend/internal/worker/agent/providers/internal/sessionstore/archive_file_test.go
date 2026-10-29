@@ -104,6 +104,42 @@ func TestReadRegularFileAcceptsExactLimitAndEmptyFile(t *testing.T) {
 	assert.Empty(t, empty)
 }
 
+func TestReadRegularFileFirstLineKeepsTheReadLimitAndFileChecks(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "output")
+	require.NoError(t, os.WriteFile(path, append([]byte("first\n"), bytes.Repeat([]byte("detail\n"), 10000)...), 0o600))
+	root := openArchiveFileTestRoot(t, dir)
+	line, err := ReadRegularFileFirstLine(root, "output", 6)
+	require.NoError(t, err)
+	assert.Equal(t, "first\n", string(line), "the complete file can exceed the line limit")
+	for _, limit := range []int64{-1, 0, 5, math.MaxInt64} {
+		line, err = ReadRegularFileFirstLine(root, "output", limit)
+		require.Error(t, err)
+		assert.Empty(t, line)
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "last"), []byte("last"), 0o600))
+	line, err = ReadRegularFileFirstLine(root, "last", 4)
+	require.NoError(t, err)
+	assert.Equal(t, "last", string(line))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "empty"), nil, 0o600))
+	line, err = ReadRegularFileFirstLine(root, "empty", 0)
+	require.NoError(t, err)
+	assert.Empty(t, line)
+	changed := archiveFileTestRoot{Root: root, open: func(name string) (*os.File, error) {
+		if err := os.Rename(path, path+".prior"); err != nil {
+			return nil, err
+		}
+		if err := os.WriteFile(path, []byte("first\n"), 0o600); err != nil {
+			return nil, err
+		}
+		return root.Open(name)
+	}}
+	line, err = ReadRegularFileFirstLine(changed, "output", 6)
+	require.ErrorContains(t, err, "changed before it opened")
+	assert.Empty(t, line)
+}
+
 func TestReadRegularFileRejectsInvalidLimitAndFinalType(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

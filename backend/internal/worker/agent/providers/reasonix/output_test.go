@@ -94,4 +94,23 @@ func TestReasonixNoticeRequiresThePrefix(t *testing.T) {
 	assert.True(t, strings.HasPrefix(texts[0], "A model answer"))
 }
 
-// A compaction notice persists its native frame and classifies as a boundary.
+func TestReasonixPlanDraftAmortizesChunkAllocations(t *testing.T) {
+	const chunks = 1000
+	update, err := json.Marshal(map[string]any{"content": map[string]string{"type": "text", "text": strings.Repeat("x", 100)}})
+	require.NoError(t, err)
+	measure := func(resetEach bool) float64 {
+		a := &Agent{}
+		return testing.AllocsPerRun(3, func() {
+			a.resetPlanDraft()
+			for range chunks {
+				if resetEach {
+					a.resetPlanDraft()
+				}
+				a.observeSessionMetadata("agent_message_chunk", nil, update)
+			}
+		})
+	}
+	independent := measure(true)
+	accumulated := measure(false)
+	assert.Less(t, accumulated-independent, float64(chunks/10), "retaining a response must not allocate another complete draft for every chunk")
+}

@@ -1,6 +1,6 @@
-import { exerciseAttachmentRefusal } from '../helpers/attachmentModelProbe'
+import { exerciseImageAttachmentDelivery } from '../helpers/attachmentModelProbe'
 import { reasonixTest } from '../reasonix-fixtures'
 
-reasonixTest('refuses native image input and keeps its actual bytes out of a clean model request', async ({ native }) => {
-  await exerciseAttachmentRefusal(native, { kind: 'image', fileName: 'reasonix-refused.png' })
+reasonixTest('delivers native image bytes with a prompt and with an empty composer', async ({ native }) => {
+  await exerciseImageAttachmentDelivery(native, 'reasonix-image.png')
 })

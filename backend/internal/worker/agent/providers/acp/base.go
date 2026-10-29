@@ -846,10 +846,18 @@ func (b *Base) reapplyModelAndSecondary() {
 	b.reapplyOptions(storedOptions)
 }
 
-// setSecondary confirms the native acknowledgment on the reader.
+func (b *Base) setSecondary(value string) error {
+	return b.WriteSecondarySetting(value, b.effectiveSetMode())
+}
+
+// WriteSecondarySetting confirms the native acknowledgment on the reader.
 // A native mode report during the request remains authoritative, even if it precedes the acknowledgment.
 // The same callback updates the permission-mode and primary-agent axes.
-func (b *Base) setSecondary(value string) error {
+// The writer owns the session lock and invokes the callback before delivering its reply.
+func (b *Base) WriteSecondarySetting(value string, writer func(string, func(string)) error) error {
+	if writer == nil {
+		return errors.New("the native mode writer is required")
+	}
 	sc := b.secondaryChannel()
 	b.Mu.Lock()
 	sessionID, reports := b.sessionID, b.secondaryReports
@@ -871,7 +879,7 @@ func (b *Base) setSecondary(value string) error {
 			confirmed = true
 		}
 	}
-	err := b.effectiveSetMode()(value, acknowledge)
+	err := writer(value, acknowledge)
 	b.Mu.Lock()
 	accepting = false
 	accepted := confirmed
@@ -980,7 +988,7 @@ func (b *Base) applySessionRefresh(resp json.RawMessage) {
 	var modelsFieldInfos []ModelInfo
 	var modes []ModeInfo
 	var configOptions []ConfigOption
-	if session, err := parseACPSessionResult(resp); err == nil {
+	if session, err := ParseSessionResult(resp); err == nil {
 		modelsFieldInfos = session.Models
 		modes = session.Modes
 		configOptions = session.ConfigOptions
@@ -1789,7 +1797,7 @@ func (b *Base) handleUsageUpdate(update json.RawMessage) {
 	info := map[string]interface{}{
 		contracts.SessionInfoKeyContextUsage: contextUsage,
 	}
-	if usage.Cost.Amount > 0 {
+	if usage.Cost.Amount > 0 && usage.Cost.Currency == "USD" {
 		info[contracts.SessionInfoKeyTotalCostUsd] = usage.Cost.Amount
 	}
 	b.sink.BroadcastSessionInfo(info)
@@ -1888,7 +1896,7 @@ func (b *Base) startACPHandshake(
 	}
 
 	// 3. Parse the common session fields.
-	session, err := parseACPSessionResult(sessionResp)
+	session, err := ParseSessionResult(sessionResp)
 	if err != nil {
 		cleanup()
 		return nil, b.FormatStartupError("session parse", err)
@@ -2142,14 +2150,14 @@ func (b *Base) secondaryOptionGroupLocked() *leapmuxv1.AvailableOptionGroup {
 	return secondaryGroup(sc.secondaryAxis, options, *sc.field)
 }
 
-// parseACPSessionResult parses the channels that every ACP session response shares:
+// ParseSessionResult parses the channels that every ACP session response shares:
 //   - Model.
 //   - Mode.
 //   - configOptions.
 //
 // It serves session/new and resume handshakes and the ClearContext response.
 // The caller validates the session ID.
-func parseACPSessionResult(resp json.RawMessage) (*SessionResult, error) {
+func ParseSessionResult(resp json.RawMessage) (*SessionResult, error) {
 	var session struct {
 		SessionID string `json:"sessionId"`
 		Models    struct {

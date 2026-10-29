@@ -13,8 +13,8 @@ import (
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/acp/acptest"
 )
 
-// The fake server follows Reasonix's own rules (internal/acp/service.go and
-// internal/acp/session_config_delta.go of Reasonix):
+// The fake server follows Reasonix's own rules (internal/frontend/acp/service.go and
+// internal/frontend/acp/session_config.go of Reasonix):
 //
 //   - A model write to a different model drops the effort override, so the new model
 //     starts at `auto` (applyTo for the model axis).

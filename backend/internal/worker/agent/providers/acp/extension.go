@@ -385,6 +385,13 @@ func (b *Base) CurrentModel() string {
 	return b.model
 }
 
+// CurrentNativeMode returns the last mode ID from a handshake or native report.
+func (b *Base) CurrentNativeMode() string {
+	b.Mu.Lock()
+	defer b.Mu.Unlock()
+	return b.nativeModeID
+}
+
 // SetCurrentModel records model as the current model, after a provider wrote it
 // to the session itself.
 func (b *Base) SetCurrentModel(model string) {

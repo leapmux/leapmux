@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createMockAgentEnvironment, MOCK_MODELS, MODEL_KEY, REASONIX_ALT_PROVIDER_ID, REASONIX_PLAIN_PROVIDER_ID } from '../helpers/mockAgentEnvironment'
-import { prepareCompactionReasonix, REASONIX_COMPACTION_CONTEXT_WINDOW } from './compactionScenario'
+import { prepareCompactionReasonix, REASONIX_COMPACTION_CONTEXT_WINDOW, reasonixCompactionUserInput } from './compactionScenario'
 
 vi.mock('../helpers/mockAgentEnvironment', async original => ({
   ...await original<typeof import('../helpers/mockAgentEnvironment')>(),
@@ -47,5 +47,24 @@ describe('prepareCompactionReasonix', () => {
   it('propagates failure to prepare the isolated environment', async () => {
     vi.mocked(createMockAgentEnvironment).mockRejectedValue(new Error('private environment failed'))
     await expect(prepareCompactionReasonix(directory, 'http://127.0.0.1:4567')).rejects.toThrow('private environment failed')
+  })
+})
+
+describe('reasonixCompactionUserInput', () => {
+  const workingDir = '/private/native/project'
+  const prefix = `<workspace>\nCurrent workspace: "${workingDir}". Shell commands start there and every tool resolves relative paths from it.\nVersion control: none (not a repository).\n</workspace>\n\n`
+  const suffix = '\n\n<execution-policy preset="balanced" version="3">\nverify=targeted\n</execution-policy>'
+  const request = (input: string) => ({ protocol: 'openai-chat-completions' as const, path: '/v1/chat/completions', body: { messages: [{ role: 'user', content: input }] } })
+
+  it.each(['', ' ', '/compact', 'Quoted command:\n/compact'])('preserves the complete actual user input: %j', (input) => {
+    expect(reasonixCompactionUserInput(request(`${prefix}${input}${suffix}`), workingDir)).toBe(input)
+  })
+
+  it.each(['/compact', `${prefix}/compact`, `/compact${suffix}`, `${prefix}/compact${suffix}`.replace('verify=targeted', 'verify=other')])('rejects missing or changed native wrappers: %j', (input) => {
+    expect(() => reasonixCompactionUserInput(request(input), workingDir)).toThrow('audited host wrappers')
+  })
+
+  it('rejects another native working directory instead of treating quoted text as the command', () => {
+    expect(() => reasonixCompactionUserInput(request(`${prefix}/compact${suffix}`), '/another/project')).toThrow('audited host wrappers')
   })
 })

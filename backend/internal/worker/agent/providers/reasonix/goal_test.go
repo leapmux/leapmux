@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/leapmux/leapmux/generated/contracts"
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/agenttest"
@@ -70,52 +69,50 @@ func TestReasonixGoalKeepsAnObjectiveWithAnUnprojectedStoppedStatus(t *testing.T
 	assert.Zero(t, sink.GoalClears())
 }
 
-// Reasonix reports its whole status on every change, so the same phase and the
-// same totals arrive many times per turn. Only what MOVED says anything.
-func TestReasonixStatusUpdateReportsUsageAndPhaseChanges(t *testing.T) {
+func TestReasonixGoalCapabilitiesRequireTheAdvertisedSchema(t *testing.T) {
 	t.Parallel()
-
-	sink := &agenttest.ControlSink{}
-	a := &Agent{}
-	a.SetSinkForTest(agent.NewProviderServices(sink))
-	a.SetSessionIDForTest("session")
-
-	a.handleReasonixStatusUpdate(json.RawMessage(`{"sessionId":"session","status":{
-		"phase":"implementing",
-		"usage":{"cumulative":{"totalTokens":1500,"promptTokens":1200,"completionTokens":300,
-		"cacheHitTokens":800,"cacheMissTokens":400,"estimatedCost":0.0042}}}}`))
-
-	// The CUMULATIVE half. The turn half restarts, and a gauge that restarted
-	// with it would report a context that shrank.
-	last := sink.LastSessionInfo()
-	usage, ok := last[contracts.SessionInfoKeyContextUsage].(map[string]interface{})
-	require.True(t, ok)
-	assert.Equal(t, int64(1500), usage[contracts.ContextUsageFieldContextTokens])
-	assert.Equal(t, int64(1200), usage[contracts.ContextUsageFieldInputTokens])
-	assert.Equal(t, int64(800), usage[contracts.ContextUsageFieldCacheReadInputTokens])
-	assert.Equal(t, 0.0042, last[contracts.SessionInfoKeyTotalCostUsd])
-	// A working phase says what every other surface already says.
-	assert.Empty(t, sink.Notifications())
-
-	a.handleReasonixStatusUpdate(json.RawMessage(`{"sessionId":"session","status":{"phase":"paused"}}`))
-	a.handleReasonixStatusUpdate(json.RawMessage(`{"sessionId":"session","status":{"phase":"paused"}}`))
-	notifications := sink.Notifications()
-	require.Len(t, notifications, 1, "a restated phase states nothing new")
-	assert.Equal(t, contracts.NotificationTypeAgentStatus, notifications[0]["type"])
-	assert.Equal(t, "Paused", notifications[0]["text"])
+	for _, tc := range []struct {
+		name string
+		meta string
+		want []agent.GoalAction
+	}{
+		{"absent", `{}`, nil},
+		{"pause", `{"_reasonix.io/session/goal/pause":{"schemaVersion":1}}`, []agent.GoalAction{agent.GoalActionPause}},
+		{"resume", `{"_reasonix.io/session/goal/resume":{"schemaVersion":1}}`, []agent.GoalAction{agent.GoalActionResume}},
+		{"unknown schema", `{"_reasonix.io/session/goal/pause":{"schemaVersion":2},"_reasonix.io/session/goal/resume":{"schemaVersion":0}}`, nil},
+		{"invalid schema", `{"_reasonix.io/session/goal/pause":true,"_reasonix.io/session/goal/resume":{"schemaVersion":"1"}}`, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			a := &Agent{}
+			a.SetAvailableModesForTest([]*leapmuxv1.AvailableOption{{Id: "normal"}, {Id: "goal"}})
+			a.observeReasonixCapabilities([]byte(`{"agentCapabilities":{"_meta":` + tc.meta + `}}`))
+			want := append([]agent.GoalAction{agent.GoalActionSet, agent.GoalActionClear}, tc.want...)
+			assert.ElementsMatch(t, want, a.SupportedGoalActions())
+			a.observeReasonixCapabilities([]byte(`{invalid`))
+			assert.ElementsMatch(t, []agent.GoalAction{agent.GoalActionSet, agent.GoalActionClear}, a.SupportedGoalActions())
+		})
+	}
 }
 
-// The permission wait has its own card and waiting_input is the goal card's
-// own state, so neither phase writes a row.
-func TestReasonixPermissionAndInputPhasesStateNothing(t *testing.T) {
+func TestReasonixManualPauseKeepsTheObjectiveAndCounters(t *testing.T) {
 	t.Parallel()
-	sink := &agenttest.ControlSink{}
-	a := &Agent{}
-	a.SetSinkForTest(agent.NewProviderServices(sink))
-	a.SetSessionIDForTest("session")
-
-	a.handleReasonixStatusUpdate(json.RawMessage(`{"sessionId":"session","status":{"phase":"waiting_permission"}}`))
-	a.handleReasonixStatusUpdate(json.RawMessage(`{"sessionId":"session","status":{"phase":"waiting_input"}}`))
-
-	assert.Empty(t, sink.Notifications())
+	for _, status := range []string{"blocked", "cancelled", "failed"} {
+		t.Run(status, func(t *testing.T) {
+			t.Parallel()
+			sink := &agenttest.Sink{}
+			a := &Agent{}
+			a.SetSinkForTest(agent.NewProviderServices(sink))
+			a.handleReasonixStatusUpdate(json.RawMessage(`{"status":{"goal":{"status":"` + status + `","objective":"Retain this objective","runtime":{"turnsUsed":3,"tokensUsed":12345,"stopCause":"manual"}}}}`))
+			goal, present := sink.LastGoal()
+			require.True(t, present)
+			assert.Equal(t, agent.GoalStatusPaused, goal.Status)
+			assert.Equal(t, "Retain this objective", goal.Objective)
+			require.NotNil(t, goal.Iterations)
+			assert.EqualValues(t, 3, *goal.Iterations)
+			require.NotNil(t, goal.TokensUsed)
+			assert.EqualValues(t, 12345, *goal.TokensUsed)
+			assert.Zero(t, sink.GoalClears())
+		})
+	}
 }

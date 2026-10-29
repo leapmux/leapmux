@@ -102,8 +102,6 @@ import {
   piWorkflowToolCall,
   qwenWorkflowToolCall,
   readToolCall,
-  reasonixInspectCapabilityToolCall,
-  reasonixListCapabilitiesToolCall,
   reasonixViewImageToolCall,
   spawnSubagentBatchToolCall,
   spawnSubagentToolCall,
@@ -118,31 +116,6 @@ import {
   zcodeWorkflowSkillToolCall,
 } from './providerToolCalls'
 import { quotePosixShellArgument } from './shellArguments'
-
-describe('reasonix capability discovery', () => {
-  it('requests the complete installed list without an unsupported page cursor', () => {
-    const call = reasonixListCapabilitiesToolCall('catalog')
-    expect(call.name).toBe('use_capability')
-    expect(call.arguments).toEqual({ action: 'list' })
-  })
-
-  it('keeps an exact deferred capability identity during inspect', () => {
-    expect(reasonixInspectCapabilityToolCall('inspect', 'tool:notebook_edit').arguments)
-      .toEqual({ action: 'inspect', capability_id: 'tool:notebook_edit' })
-  })
-
-  it.each(['', ' ', '\n'])('rejects an empty list call ID: %j', (id) => {
-    expect(() => reasonixListCapabilitiesToolCall(id)).toThrow('nonempty call ID')
-  })
-
-  it.each(['', ' ', ' tool:notebook_edit', 'tool:notebook_edit '])('rejects an absent or padded inspect identity: %j', (id) => {
-    expect(() => reasonixInspectCapabilityToolCall('inspect', id)).toThrow('exact nonempty')
-  })
-
-  it('rejects an absent inspect call identity', () => {
-    expect(() => reasonixInspectCapabilityToolCall('', 'tool:grep')).toThrow('exact nonempty')
-  })
-})
 
 describe('native Codex code-mode result metadata', () => {
   it.each([0, 7])('retains the actual computed exit %s and output from the generated shell wrapper', async (exitCode) => {
@@ -456,6 +429,7 @@ describe('codeExecutionToolCall', () => {
     { provider: AgentProvider.QODER, name: 'Workflow', field: 'script' },
     { provider: AgentProvider.AMP, name: 'code_exec', field: 'code' },
     { provider: AgentProvider.DIRAC, name: 'execute_command', field: 'script' },
+    { provider: AgentProvider.REASONIX, name: 'run_script', field: 'script' },
   ])('preserves native source text for $provider', ({ provider, name, field }) => {
     const source = 'const value = "출력";\nreturn value;'
     const call = codeExecutionToolCall(provider, 'native-code', source)

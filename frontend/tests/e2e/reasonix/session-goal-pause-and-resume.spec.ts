@@ -1,13 +1,32 @@
-import { AgentGoalAction } from '../../../src/generated/proto/leapmux/v1/agent_pb'
-import { expectUnsupportedGoalActions } from '../helpers/unsupportedConfiguration'
+import { expect } from '@playwright/test'
+import { withCleanup } from '../helpers/cleanup'
+import { clearGoal, expectGoalObjective, expectGoalStatus, scriptedObjective, submitGoal } from '../helpers/goalsAndTodos'
+import { waitForAgentIdle } from '../helpers/ui'
 import { reasonixTest } from '../reasonix-fixtures'
-import { exerciseReasonixGoalLifecycle } from './goalScenario'
-import { relatedNativeProof } from './scenarios'
+import { exerciseReasonixGoalErrorResume, exerciseReasonixGoalPauseResume } from './goalScenario'
 
-reasonixTest('session-goal-pause-and-resume: sets and clears a native Reasonix goal before and after cancellation', async ({ native }) => {
-  await exerciseReasonixGoalLifecycle(native)
+reasonixTest('pauses and resumes the retained native goal through its advertised requests after reload', async ({ native }) => {
+  await exerciseReasonixGoalPauseResume(native)
 })
 
-reasonixTest('proves the native session-goal-pause-and-resume limit after a real sidebar operation', async ({ native }) => {
-  await expectUnsupportedGoalActions(native, { actions: [AgentGoalAction.PAUSE, AgentGoalAction.RESUME], relatedProof: () => relatedNativeProof(native) })
+reasonixTest('resumes the retained native goal through the Worker API after a model error', async ({ native }) => {
+  await exerciseReasonixGoalErrorResume(native)
+})
+
+reasonixTest('accepts a goal whose native status redacts its objective', async ({ native }) => {
+  const { page, modelScript } = native
+  const objective = scriptedObjective(modelScript, 'Remove the leaked key sk-real-secret-value-123456')
+  const gate = `reasonix-redacted-goal-${crypto.randomUUID()}`
+  const start = await modelScript.queue({ text: 'Hold the accepted goal.', gate })
+  await withCleanup(async () => {
+    await submitGoal(page, objective.input)
+    await modelScript.waitForGate(gate)
+    await expect(page.getByTestId('set-goal-dialog')).toHaveCount(0)
+    await expectGoalObjective(page, { ...objective, text: objective.text.replace('sk-real-secret-value-123456', 'sk-rea*****************3456') })
+    await expectGoalStatus(page, 'active')
+    await clearGoal(page)
+    await modelScript.releaseGateIfHeld(gate)
+    await waitForAgentIdle(page)
+    expect((await modelScript.waitForSteps(start + 1)).unexpectedRequests).toEqual([])
+  }, async () => { await modelScript.releaseGateIfHeld(gate) })
 })

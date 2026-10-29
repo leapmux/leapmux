@@ -110,8 +110,7 @@ export interface ACPProviderOptions {
    */
   classifyToolCallUpdate?: (parent: Record<string, unknown>) => MessageCategory | undefined
   /**
-   * Attachment capabilities. Defaults to full support; pass a restricted set for
-   * providers that can't take every attachment kind (e.g. Reasonix is text-only).
+   * Attachment capabilities. Each provider declares the kinds its native input accepts.
    */
   attachments: AttachmentCapabilities
   /**

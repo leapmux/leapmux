@@ -78,6 +78,33 @@ function withStoredBody(fields: Record<string, unknown>, record: Record<string, 
   })
 }
 
+describe('reasonix stored tool images', () => {
+  it('recovers a stored image beside the native tool text', () => {
+    const image = 'data:image/png;base64,iVBORw0KGgo='
+    const result = withStoredBody({ title: 'view_image', rawInput: { path: '/work/image.png' } }, {
+      content: '[image: /work/image.png, image/png, 8 bytes shown]',
+      images: [image],
+    })
+    expect(result.images).toEqual([{ url: image, filePath: '/work/image.png' }])
+  })
+
+  it('keeps a live image when a stored record also supplies image bytes', () => {
+    const image = 'data:image/png;base64,iVBORw0KGgo='
+    const live = [{ type: 'content', content: { type: 'image', url: image } }]
+    const result = withStoredBody({ title: 'view_image', rawInput: { path: '/work/image.png' }, content: live }, { content: 'native text', images: [image] })
+    expect(result.images).toEqual([{ url: image, filePath: '/work/image.png' }])
+  })
+
+  it('does not recover image bytes from another native tool call', () => {
+    const result = withStoredBody({ title: 'view_image', rawInput: { path: '/work/image.png' } }, {
+      tool_call_id: 'other-call',
+      content: 'another image',
+      images: ['data:image/png;base64,iVBORw0KGgo='],
+    })
+    expect(result.images).toEqual([])
+  })
+})
+
 describe('reasonix shell records', () => {
   // Verbatim shape of a Reasonix 1.38.7 `bash` record: the host's tool result, and
   // `tool_execution` with the code of the command.

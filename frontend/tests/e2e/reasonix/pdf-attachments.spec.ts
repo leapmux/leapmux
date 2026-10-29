@@ -1,6 +1,9 @@
-import { exerciseAttachmentRefusal } from '../helpers/attachmentModelProbe'
+import { exerciseAttachmentDelivery } from '../helpers/attachmentModelProbe'
 import { reasonixTest } from '../reasonix-fixtures'
+import { expectReasonixAttachmentBytes } from './attachmentScenario'
 
-reasonixTest('refuses native pdf input and keeps its actual bytes out of a clean model request', async ({ native }) => {
-  await exerciseAttachmentRefusal(native, { kind: 'pdf', fileName: 'reasonix-refused.pdf' })
+reasonixTest('delivers every PDF byte to the native attachment that the current prompt addresses', async ({ native, authenticatedReasonixWorkspace }) => {
+  await exerciseAttachmentDelivery(native, 'pdf', 'reasonix-document.pdf', {
+    proof: (request, sourcePath) => { expectReasonixAttachmentBytes(request, sourcePath, authenticatedReasonixWorkspace.workingDir) },
+  })
 })

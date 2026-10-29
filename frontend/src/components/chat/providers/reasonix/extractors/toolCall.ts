@@ -18,6 +18,7 @@ import { reasonixAgentResult } from '../extractors/agent'
 import { reasonixEditReceipt } from '../extractors/fileEdit'
 import { reasonixDirectoryOutput } from '../extractors/list'
 import { isReasonixTool, REASONIX_TOOL_KINDS, REASONIX_TOOL_NAME } from '../toolKinds'
+import { reasonixOutputFilePointer } from './outputReceipt'
 
 /**
  * The capability prefix that carries a Model Context Protocol tool.
@@ -104,11 +105,23 @@ export const reasonixToolCallAdapter: ACPToolCallAdapter = (facts, _base) => {
   // pins the worker's tags to the same table.
   const stored = pickObject(acpSupplementRawOutput(facts.extra), REASONIX_TOOL_RECORD.Envelope)
   const saved = stored?.[REASONIX_TOOL_RECORD.RoleField] === REASONIX_TOOL_RECORD.ToolRole && stored[REASONIX_TOOL_RECORD.ToolCallIDField] === tool.toolCallId ? stored : undefined
-  const savedText = pickString(saved, REASONIX_TOOL_RECORD.RawContentField, undefined) || pickString(saved, REASONIX_TOOL_RECORD.ContentField, undefined)
+  const storedText = pickString(saved, REASONIX_TOOL_RECORD.RawContentField, undefined) || pickString(saved, REASONIX_TOOL_RECORD.ContentField, undefined)
+  const nativeName = pickString(tool, 'name') || pickString(tool, 'title')
+  const savedName = pickString(saved, REASONIX_TOOL_RECORD.NameField)
+  const failedSpill = facts.lifecycle.frameStatus === 'failed'
+    && reasonixOutputFilePointer(storedText, savedName || nativeName, pickString(tool, 'toolCallId')) !== undefined
+  const savedText = failedSpill ? undefined : storedText
+  const storedImages = saved?.[REASONIX_TOOL_RECORD.ImagesField]
+  const imageContent = facts.images.length === 0 && Array.isArray(storedImages)
+    ? storedImages.filter((image): image is string => typeof image === 'string' && image !== '').map(url => ({ type: 'image', url }))
+    : []
   const readResult = pickObject(saved, 'read_result')
   const savedPath = pickString(pickObject(readResult, 'source'), 'canonical_path')
-  const resolvedTool = savedText !== undefined
-    ? { ...tool, content: [{ type: 'content', content: { type: 'text', text: savedText } }] }
+  const content = savedText === undefined
+    ? facts.content
+    : [{ type: 'text', text: savedText }, ...facts.content.filter(block => block.type !== 'text')]
+  const resolvedTool = savedText !== undefined || imageContent.length > 0
+    ? { ...tool, content: [...content, ...imageContent] }
     : tool
   const output = savedText ?? facts.text
   let name = pickString(tool, 'title')

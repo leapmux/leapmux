@@ -2,6 +2,10 @@ package reasonix
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"log/slog"
+	"slices"
 
 	"github.com/leapmux/leapmux/generated/contracts"
 	"github.com/leapmux/leapmux/internal/worker/agent"
@@ -45,7 +49,9 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 				// Keep the launch selection until the session reports its current model.
 				InitialModel:         model,
 				ModeChannel:          acp.ModeChannelPermissionMode,
-				ClientCapabilityMeta: map[string]any{"reasonix.io": map[string]any{"mcpInteraction": map[string]any{"supported": true, "schemaVersion": 1}}},
+				ModeSetter:           a.setReasonixMode,
+				InitializeResponse:   a.observeReasonixCapabilities,
+				ClientCapabilityMeta: map[string]any{"reasonix.io": map[string]any{"statusUpdates": map[string]any{"supported": true}}},
 				// Task launches open no span. Final updates close the task registry row.
 				SubagentFromToolCall:       reasonixSubagentFromToolCall,
 				SubagentFromToolCallUpdate: reasonixSubagentFromToolCallUpdate,
@@ -58,7 +64,56 @@ func Start(ctx context.Context, opts agent.Options, sink agent.ProviderServices)
 			}
 		},
 		AfterHandshake: func(a *Agent, handshake *acp.SessionResult, opts agent.Options) error {
-			return a.ApplyPermissionModeStartup(handshake, opts, contracts.ReasonixModeNormal, model)
+			requestedModel := model
+			// The CLI already selects a new session's model. Its reply gives the canonical
+			// selector value, which can differ from the launch alias. A loaded session
+			// still needs the requested model applied after it restores its saved selection.
+			if opts.ResumeSessionID == "" && handshake.CurrentModelID != "" {
+				requestedModel = handshake.CurrentModelID
+			} else if opts.ResumeSessionID != "" && !slices.ContainsFunc(handshake.Models, func(info acp.ModelInfo) bool { return info.ModelID == model }) {
+				var err error
+				handshake, err = a.resumeReasonixModel(handshake, model, opts.WorkingDir)
+				if err != nil {
+					return err
+				}
+				// A peer can start work during restore. Apply the snapshot, then the buffered
+				// native updates, without a second model write that could cancel a queued change.
+				requestedModel = ""
+			}
+			return a.ApplyPermissionModeStartup(handshake, opts, contracts.ReasonixModeNormal, requestedModel)
 		},
 	})
+}
+
+// resumeReasonixModel lets the native resolver interpret a launch alias after restore.
+// The selector catalog omits provider defaults and alias-folding rules.
+func (a *Agent) resumeReasonixModel(handshake *acp.SessionResult, model, workingDir string) (*acp.SessionResult, error) {
+	updated := handshake
+	err := a.WithSessionID(func(sessionID string) error {
+		params, err := json.Marshal(map[string]string{"sessionId": sessionID, "modelId": model})
+		if err != nil {
+			return err
+		}
+		if _, err := a.SendRequest(acp.MethodSessionSetModel, params, a.APITimeout()); err != nil {
+			slog.Warn("requested Reasonix launch model not applied; keeping current model", "requested", model, "error", err)
+			return nil
+		}
+		params, err = json.Marshal(map[string]string{"sessionId": sessionID, "cwd": workingDir})
+		if err != nil {
+			return err
+		}
+		raw, err := a.SendRequest(acp.MethodSessionResume, params, a.APITimeout())
+		if err != nil {
+			return fmt.Errorf("read Reasonix settings after model selection: %w", err)
+		}
+		updated, err = acp.ParseSessionResult(raw)
+		if err != nil {
+			return fmt.Errorf("read Reasonix settings after model selection: %w", err)
+		}
+		if updated.CurrentModelID == "" {
+			return fmt.Errorf("the Reasonix settings snapshot has no current model")
+		}
+		return nil
+	})
+	return updated, err
 }

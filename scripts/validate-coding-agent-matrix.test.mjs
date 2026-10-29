@@ -1080,7 +1080,7 @@ describe('validateCodingAgentMatrix', () => {
       ['opencode', 'supported', 'capabilities.input.audio'],
       ['goose', 'agent-limit', 'convert_acp_prompt_to_message'],
       ['pi', 'agent-limit', 'pi-6wxxro'],
-      ['reasonix', 'agent-limit', 'FlattenPrompt'],
+      ['reasonix', 'agent-limit', 'promptText'],
       ['zcode', 'agent-limit', 'zcode-PbCD0M'],
       ['codewhale', 'agent-limit', 'magic-format'],
       ['kimi-code', 'agent-limit', 'ReadMediaFile'],
@@ -1191,7 +1191,7 @@ describe('validateCodingAgentMatrix', () => {
           counts[cell.support] += 1
       }
       // A deliberate change of a verdict changes these numbers. Update them with the checklist.
-      expect(counts).toEqual({ 'supported': 1180, 'agent-limit': 440, 'leapmux-limit': 0 })
+      expect(counts).toEqual({ 'supported': 1187, 'agent-limit': 433, 'leapmux-limit': 0 })
       expect(checklist.cells['agent-questions']['codebuddy-code']).toMatchObject({
         support: 'supported',
         audit: 'source-verified',
@@ -1280,6 +1280,35 @@ describe('validateCodingAgentMatrix', () => {
       expect(checklist.cells['smart-permissions-shortcut'].codex.support).toBe('supported')
       expect(checklist.cells['extended-thinking']['claude-code']).toMatchObject({ support: 'agent-limit', audit: 'unsupported', testStatus: 'passed' })
       expect(checklist.supportStates).toEqual(SUPPORT_STATES)
+    })
+
+    it('records the complete Reasonix 2.x audit and its native limits', () => {
+      const { checklist } = readCodingAgentMatrix()
+      const cells = Object.entries(checklist.cells).map(([feature, row]) => [feature, row.reasonix])
+      expect(cells).toHaveLength(54)
+      for (const [feature, cell] of cells) {
+        expect(cell).toMatchObject({ verified: true, testStatus: 'passed', spec: `frontend/tests/e2e/reasonix/${feature}.spec.ts` })
+        expect(cell.detailNote).toContain('Reasonix v2.53.1')
+      }
+      for (const feature of ['image-attachments', 'pdf-attachments', 'other-binary-attachments', 'images-in-tool-results', 'session-goal-pause-and-resume', 'code-execution', 'output-file-paths'])
+        expect(checklist.cells[feature].reasonix).toMatchObject({ support: 'supported', audit: 'source-verified' })
+      expect(cells.filter(([, cell]) => cell.support === 'supported')).toHaveLength(41)
+      expect(cells.filter(([, cell]) => cell.support === 'leapmux-limit')).toEqual([])
+      expect(cells.filter(([, cell]) => cell.support === 'agent-limit').map(([feature]) => feature).sort()).toEqual([
+        'audio-attachments',
+        'manual-compaction',
+        'rate-limit-state',
+        'subagent-live-transcript',
+        'send-to-a-subagent',
+        'interrupt-a-subagent',
+        'workflow-grouping',
+        'editor-requests',
+        'workspace-trust',
+        'swarm-mode',
+        'extended-thinking',
+        'fast-mode',
+        'output-style',
+      ].sort())
     })
   })
 

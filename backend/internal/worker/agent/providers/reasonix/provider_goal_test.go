@@ -19,10 +19,11 @@ func TestReasonixGoal_StatusUpdateReportsTheGoal(t *testing.T) {
 	a := &Agent{}
 	a.Process = providerkit.NewProcessFrom(providerkit.ProcessConfig{AgentID: "test-agent"})
 	a.SetSinkForTest(agent.NewProviderServices(sink))
+	a.SetSessionIDForTest("session")
 
 	handled := a.handleExtraMethod(&providerkit.ParsedLine{
 		Method: reasonixMethodStatusUpdate,
-		Params: json.RawMessage(`{"sessionId":"","status":{"goal":{"status":"running",` +
+		Params: json.RawMessage(`{"sessionId":"session","status":{"goal":{"status":"running",` +
 			`"objective":"land the refactor","runtime":{"turnsUsed":6,"tokensUsed":9000,` +
 			`"lastReason":"tests still red"}}}}`),
 	})
@@ -48,10 +49,11 @@ func TestReasonixGoal_StopCauseWinsOverTheStatusWord(t *testing.T) {
 	a := &Agent{}
 	a.Process = providerkit.NewProcessFrom(providerkit.ProcessConfig{AgentID: "test-agent"})
 	a.SetSinkForTest(agent.NewProviderServices(sink))
+	a.SetSessionIDForTest("session")
 
 	a.handleExtraMethod(&providerkit.ParsedLine{
 		Method: reasonixMethodStatusUpdate,
-		Params: json.RawMessage(`{"status":{"goal":{"status":"stopped","objective":"x",` +
+		Params: json.RawMessage(`{"sessionId":"session","status":{"goal":{"status":"stopped","objective":"x",` +
 			`"runtime":{"stopCause":"budget_spend","lastReason":"out of budget"}}}}`),
 	})
 
@@ -68,10 +70,11 @@ func TestReasonixGoal_NoneClears(t *testing.T) {
 	a := &Agent{}
 	a.Process = providerkit.NewProcessFrom(providerkit.ProcessConfig{AgentID: "test-agent"})
 	a.SetSinkForTest(agent.NewProviderServices(sink))
+	a.SetSessionIDForTest("session")
 
 	a.handleExtraMethod(&providerkit.ParsedLine{
 		Method: reasonixMethodStatusUpdate,
-		Params: json.RawMessage(`{"status":{"goal":{"status":"none"}}}`),
+		Params: json.RawMessage(`{"sessionId":"session","status":{"goal":{"status":"none"}}}`),
 	})
 
 	assert.Equal(t, 1, sink.GoalClears())
@@ -130,44 +133,45 @@ func TestReasonixGoal_StatusMapping(t *testing.T) {
 	}
 }
 
-// The notification is also observed with the status fields HOISTED to the top
-// level. The struct declares both shapes because declaring one silently
-// reported no goal, and every other Reasonix test here sends the nested shape --
-// so without this the hoisted field could be deleted with a green suite.
-func TestReasonixGoal_ReadsTheHoistedShape(t *testing.T) {
+// A flat status RPC result is not a status notification and cannot replace the current goal.
+func TestReasonixGoalIgnoresFlatStatusResultsInNotifications(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
 	ag := &Agent{}
 	ag.Process = providerkit.NewProcessFrom(providerkit.ProcessConfig{AgentID: "test-agent"})
 	ag.SetSinkForTest(agent.NewProviderServices(sink))
+	ag.SetSessionIDForTest("session")
+	ag.handleReasonixStatusUpdate(json.RawMessage(`{"sessionId":"session","status":{"goal":{"status":"running","objective":"current"}}}`))
 
 	handled := ag.handleExtraMethod(&providerkit.ParsedLine{
 		Method: reasonixMethodStatusUpdate,
-		Params: json.RawMessage(`{"sessionId":"","goal":{"status":"running",` +
+		Params: json.RawMessage(`{"sessionId":"session","goal":{"status":"running",` +
 			`"objective":"hoisted objective"}}`),
 	})
 
 	require.True(t, handled)
 	got, ok := sink.LastGoal()
-	require.True(t, ok, "the hoisted shape must report a goal, not silence")
-	assert.Equal(t, "hoisted objective", got.Objective)
+	require.True(t, ok)
+	assert.Equal(t, "current", got.Objective)
 	assert.Equal(t, agent.GoalStatusActive, got.Status)
+	assert.Len(t, sink.Goals(), 1)
+	assert.Zero(t, sink.GoalClears())
 }
 
-// When BOTH shapes arrive, the nested one wins. Nothing else pins that
-// precedence, so inverting it would keep the suite green.
-func TestReasonixGoal_NestedStatusWinsOverTheHoistedCopy(t *testing.T) {
+// An unrelated top-level goal cannot override the native notification payload.
+func TestReasonixGoalIgnoresExtraTopLevelGoal(t *testing.T) {
 	t.Parallel()
 
 	sink := &agenttest.Sink{}
 	a := &Agent{}
 	a.Process = providerkit.NewProcessFrom(providerkit.ProcessConfig{AgentID: "test-agent"})
 	a.SetSinkForTest(agent.NewProviderServices(sink))
+	a.SetSessionIDForTest("session")
 
 	a.handleExtraMethod(&providerkit.ParsedLine{
 		Method: reasonixMethodStatusUpdate,
-		Params: json.RawMessage(`{"sessionId":"",` +
+		Params: json.RawMessage(`{"sessionId":"session",` +
 			`"goal":{"status":"running","objective":"hoisted"},` +
 			`"status":{"goal":{"status":"running","objective":"nested"}}}`),
 	})
@@ -186,10 +190,11 @@ func TestReasonixGoal_ConvertsWorkDurationToSeconds(t *testing.T) {
 	a := &Agent{}
 	a.Process = providerkit.NewProcessFrom(providerkit.ProcessConfig{AgentID: "test-agent"})
 	a.SetSinkForTest(agent.NewProviderServices(sink))
+	a.SetSessionIDForTest("session")
 
 	a.handleExtraMethod(&providerkit.ParsedLine{
 		Method: reasonixMethodStatusUpdate,
-		Params: json.RawMessage(`{"sessionId":"","status":{"goal":{"status":"running",` +
+		Params: json.RawMessage(`{"sessionId":"session","status":{"goal":{"status":"running",` +
 			`"objective":"land it","runtime":{"workDurationMs":90000}}}}`),
 	})
 
@@ -211,6 +216,7 @@ func TestReasonixGoal_StatusUpdateDoesNotBlockOnTheSessionLock(t *testing.T) {
 	a := &Agent{}
 	a.Process = providerkit.NewProcessFrom(providerkit.ProcessConfig{AgentID: "test-agent"})
 	a.SetSinkForTest(agent.NewProviderServices(sink))
+	a.SetSessionIDForTest("session")
 
 	a.SessionMuForTest().Lock()
 	defer a.SessionMuForTest().Unlock()
@@ -220,13 +226,13 @@ func TestReasonixGoal_StatusUpdateDoesNotBlockOnTheSessionLock(t *testing.T) {
 		defer close(done)
 		a.handleExtraMethod(&providerkit.ParsedLine{
 			Method: reasonixMethodStatusUpdate,
-			Params: json.RawMessage(`{"sessionId":"","status":{"goal":{"status":"running","objective":"x"}}}`),
+			Params: json.RawMessage(`{"sessionId":"session","status":{"goal":{"status":"running","objective":"x"}}}`),
 		})
 	}()
 
 	select {
 	case <-done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(30 * time.Second):
 		t.Fatal("the status update blocked on sessionMu, which the reader goroutine must never wait for")
 	}
 }

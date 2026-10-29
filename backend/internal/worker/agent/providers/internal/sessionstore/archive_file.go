@@ -1,6 +1,7 @@
 package sessionstore
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -24,6 +25,16 @@ var ErrArchiveFileModeOrSize = errors.New("archive file mode or size is invalid"
 // Callers own native path validation and any rule about ancestor symlinks.
 // The final file must keep its identity and complete bytes through the read.
 func ReadRegularFile(root RegularFileRoot, path string, limit int64) (data []byte, err error) {
+	return readRegularFile(root, path, limit, false)
+}
+
+// ReadRegularFileFirstLine reads at most limit bytes through the first newline.
+// The complete file may be larger. Its identity and metadata must stay unchanged during the read.
+func ReadRegularFileFirstLine(root RegularFileRoot, path string, limit int64) (data []byte, err error) {
+	return readRegularFile(root, path, limit, true)
+}
+
+func readRegularFile(root RegularFileRoot, path string, limit int64, firstLine bool) (data []byte, err error) {
 	if limit < 0 || limit == math.MaxInt64 {
 		return nil, errors.New("the archive file limit is invalid")
 	}
@@ -34,7 +45,7 @@ func ReadRegularFile(root RegularFileRoot, path string, limit int64) (data []byt
 	if checked.Mode()&os.ModeSymlink != 0 {
 		return nil, fmt.Errorf("the archive file is a symlink, not a regular file within %d bytes", limit)
 	}
-	if !checked.Mode().IsRegular() || checked.Size() < 0 || checked.Size() > limit {
+	if !checked.Mode().IsRegular() || checked.Size() < 0 || (!firstLine && checked.Size() > limit) {
 		return nil, fmt.Errorf("the archive file is not a regular file within %d bytes: %w", limit, ErrArchiveFileModeOrSize)
 	}
 	file, err := root.Open(path)
@@ -50,10 +61,20 @@ func ReadRegularFile(root RegularFileRoot, path string, limit int64) (data []byt
 	if err != nil {
 		return nil, err
 	}
-	if !sameRegularFileSnapshot(checked, opened) || opened.Size() > limit {
+	if !sameRegularFileSnapshot(checked, opened) || (!firstLine && opened.Size() > limit) {
 		return nil, errors.New("the archive file changed before it opened")
 	}
-	data, err = readSizedArchiveBytes(file, opened.Size())
+	if firstLine {
+		data, err = bufio.NewReader(io.LimitReader(file, limit+1)).ReadBytes('\n')
+		if errors.Is(err, io.EOF) {
+			err = nil
+		}
+		if int64(len(data)) > limit {
+			return nil, errors.New("the archive line exceeds the size limit")
+		}
+	} else {
+		data, err = readSizedArchiveBytes(file, opened.Size())
+	}
 	if err != nil {
 		return nil, err
 	}
