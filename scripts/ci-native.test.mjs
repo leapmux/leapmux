@@ -33,6 +33,33 @@ function commands(tasks, name, visited = new Set()) {
 }
 
 describe('native CI validation', () => {
+  it('serializes SQL generators that compile the same Go tool on a cold cache', () => {
+    const task = readYaml('Taskfile.yaml').tasks['generate-sqlc']
+    expect(task.deps ?? []).toEqual([])
+    expect(task.cmds).toEqual([{ task: 'generate-sqlc-hub' }, { task: 'generate-sqlc-worker' }])
+  })
+
+  it('keeps cross-platform Go vet in lint instead of repeating it during tests', () => {
+    const tasks = readYaml('Taskfile.yaml').tasks
+    for (const name of ['test-backend', 'test-backend-no-docker-run', 'test-desktop-run']) {
+      const testCommands = commands(tasks, name).filter(cmd => cmd.includes('go tool gotestsum'))
+      expect(testCommands).toHaveLength(1)
+      expect(testCommands[0]).toContain('-- -vet=off -tags integration')
+    }
+    const linux = readYaml('.github/workflows/ci.yaml').jobs.linux
+    for (const arch of ['amd64', 'arm64'])
+      expect(linux.strategy.matrix.include.map(entry => entry.arch)).toContain(arch)
+    expect(linux.steps.find(step => step.run === 'task test-no-docker')?.if).toBe('matrix.arch == \'arm64\'')
+    const armTests = commands(tasks, 'test-no-docker')
+    for (const module of ['backend', 'desktop/go']) {
+      const lint = commands(tasks, module === 'backend' ? 'lint-backend' : 'lint-desktop')
+      for (const os of ['windows', 'linux', 'darwin']) {
+        expect(lint).toContain(`cd ${module} && GOOS=${os} go vet -tags integration ./...`)
+        expect(armTests).toContain(`cd ${module} && GOOS=${os} go vet -tags integration ./...`)
+      }
+    }
+  })
+
   it.each(['', 'frontend-native', 'backend', 'desktop-go', 'rust-test', 'rust-lint'])('propagates failures and stops subsequent native commands: %s', (failure) => {
     const tasks = readYaml('Taskfile.yaml').tasks
     mkdirSync(join(root, '.tmp'), { recursive: true })

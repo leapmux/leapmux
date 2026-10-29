@@ -279,7 +279,11 @@ tasks:
 
   generate-sqlc:
     desc: Generate all type-safe SQL code
-    deps: [generate-sqlc-hub, generate-sqlc-worker]
+    # Both generators invoke the same Go tool. Run them in order so a cold
+    # cache does not compile sqlc twice at once and increase peak memory use.
+    cmds:
+      - task: generate-sqlc-hub
+      - task: generate-sqlc-worker
 
   generate-sqlc-hub:
     desc: Generate type-safe SQL code for Hub
@@ -1099,7 +1103,8 @@ tasks:
     cmds:
       - task: prepare-backend
       - task: lint-backend
-      - cd backend && go tool gotestsum --format pkgname-and-test-fails -- -tags integration {{.CLI_ARGS | default "./..."}}
+      # lint-backend already runs vet for each supported operating system.
+      - cd backend && go tool gotestsum --format pkgname-and-test-fails -- -vet=off -tags integration {{.CLI_ARGS | default "./..."}}
 
   test-backend-race:
     desc: Run backend tests under the race detector (defaults to the CRDT + hub service packages)
@@ -1122,7 +1127,7 @@ tasks:
     internal: true
     deps: [prepare-backend]
     cmds:
-      - cd backend && go tool gotestsum --format pkgname-and-test-fails -- -tags integration $(go list -tags integration ./... | grep -vE 'internal/hub/store/(cockroachdb|mysql|postgres|tidb|yugabytedb)(/|$)')
+      - cd backend && go tool gotestsum --format pkgname-and-test-fails -- -vet=off -tags integration $(go list -tags integration ./... | grep -vE 'internal/hub/store/(cockroachdb|mysql|postgres|tidb|yugabytedb)(/|$)')
 
   test-desktop:
     desc: Run desktop tests
@@ -1136,15 +1141,15 @@ tasks:
     # Tauri validates the sidecar resources even in a test build.
     deps: [prepare-desktop, build-desktop-sidecar]
     cmds:
-      - cd desktop/go && go tool gotestsum --format pkgname-and-test-fails -- -tags integration {{.CLI_ARGS | default "./..."}}
+      - cd desktop/go && go tool gotestsum --format pkgname-and-test-fails -- -vet=off -tags integration {{.CLI_ARGS | default "./..."}}
       - cd desktop/rust && cargo test --locked
 
   test-native:
     desc: Test native modules without portable validation covered by Linux CI
     cmds:
-      # Go tests include host vet checks. Linux CI runs the full Go linter,
-      # cross-platform vet, application frontend tests, repository script tests
-      # and schema validation.
+      # Linux CI owns Go lint and vet for all three operating systems on both
+      # runner architectures. Test commands disable their implicit vet pass.
+      # Linux also covers application frontend tests, scripts and schemas.
       - task: test-frontend-native
       - task: test-backend-no-docker-run
       - task: test-desktop-run
