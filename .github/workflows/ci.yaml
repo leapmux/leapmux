@@ -62,7 +62,8 @@ jobs:
         # when the investigation ends: each job spends about two API requests
         # a minute of the repository's GITHUB_TOKEN limit. It starts after
         # the toolchain setup, which installs Bun.
-        if: vars.CI_RESOURCE_MONITOR == 'true'
+        # TEMPORARY(monitor-trial): run the monitor in this pull request.
+        if: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MONITOR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -139,7 +140,8 @@ jobs:
         run: task test-native-linux
 
       - name: Stop the resource monitor
-        if: always() && vars.CI_RESOURCE_MONITOR == 'true'
+        # TEMPORARY(monitor-trial): run the monitor in this pull request.
+        if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bun scripts/ci-resource-monitor.mjs stop
@@ -169,7 +171,8 @@ jobs:
 
       - name: Start the resource monitor
         # See the linux job.
-        if: vars.CI_RESOURCE_MONITOR == 'true'
+        # TEMPORARY(monitor-trial): run the monitor in this pull request.
+        if: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           MONITOR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
@@ -213,7 +216,8 @@ jobs:
         run: task check-build-cache
 
       - name: Stop the resource monitor
-        if: always() && vars.CI_RESOURCE_MONITOR == 'true'
+        # TEMPORARY(monitor-trial): run the monitor in this pull request.
+        if: always()
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: bun scripts/ci-resource-monitor.mjs stop
@@ -251,7 +255,8 @@ jobs:
 
       - name: Start the resource monitor
         # See the linux job.
-        if: vars.CI_RESOURCE_MONITOR == 'true'
+        # TEMPORARY(monitor-trial): run the monitor in this pull request.
+        if: true
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -298,7 +303,8 @@ jobs:
         run: task check-build-cache
 
       - name: Stop the resource monitor
-        if: always() && vars.CI_RESOURCE_MONITOR == 'true'
+        # TEMPORARY(monitor-trial): run the monitor in this pull request.
+        if: always()
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
