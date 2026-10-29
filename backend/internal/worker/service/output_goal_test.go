@@ -18,6 +18,7 @@ import (
 	leapmuxv1 "github.com/leapmux/leapmux/generated/proto/leapmux/v1"
 	"github.com/leapmux/leapmux/internal/util/msgcodec"
 	"github.com/leapmux/leapmux/internal/util/sqltime"
+	"github.com/leapmux/leapmux/internal/util/testutil"
 	"github.com/leapmux/leapmux/internal/worker/agent"
 	"github.com/leapmux/leapmux/internal/worker/agent/providers/claude/claudetest"
 	db "github.com/leapmux/leapmux/internal/worker/generated/db"
@@ -751,9 +752,11 @@ func TestGoal_DeliveredTextCommandPersistsThroughTheOutputSink(t *testing.T) {
 	startGoalAgentProcess(t, svc, agentID)
 	require.NoError(t, svc.Agents.SendRawInput(agentID, []byte(
 		"{\"type\":\"system\",\"subtype\":\"init\",\"slash_commands\":[\"goal\"]}\n"), agent.StopContext{}))
-	require.Eventually(t, func() bool {
+	// The init line makes a round trip through a real process. On a loaded
+	// Windows runner, that took longer than the one second this wait once had.
+	testutil.RequireEventually(t, func() bool {
 		return len(svc.Agents.SupportedGoalActions(agentID)) > 0
-	}, time.Second, 5*time.Millisecond)
+	}, "the echoed init line advertises the goal command")
 
 	require.NoError(t, svc.Agents.SendInput(agentID, "/goal ship the release", nil))
 	stored, err := svc.Output.LoadGoal(t.Context(), agentID)

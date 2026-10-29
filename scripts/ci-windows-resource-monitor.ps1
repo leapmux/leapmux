@@ -160,10 +160,6 @@ function Stop-Monitor {
             Write-Warning "The resource monitor could not complete its check run: $_"
         }
     }
-    # TEMPORARY(windows-ci-lost-runner)
-    Write-Host '::group::Refused children'
-    Read-RefusalLog | ForEach-Object { Write-Host $_ }
-    Write-Host '::endgroup::'
     Write-Host '::group::Resource monitor log'
     if (Test-Path -LiteralPath $LogPath) {
         Get-Content -LiteralPath $LogPath | ForEach-Object { Write-Host $_ }
@@ -349,24 +345,6 @@ public static class LeapMuxResourceProbe
 }
 '@
 
-# TEMPORARY(windows-ci-lost-runner): Read-RefusalLog returns the lines of the
-# log in which the Go tests record each process that the process-table code
-# before its start-time rule would have killed. Test processes append to it, so
-# the read shares the file with writers.
-function Read-RefusalLog {
-    $Path = $env:LEAPMUX_TEMPORARY_REFUSED_CHILD_LOG
-    if ([string]::IsNullOrEmpty($Path) -or -not (Test-Path -LiteralPath $Path)) { return @() }
-    $Stream = [System.IO.FileStream]::new($Path, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite -bor [System.IO.FileShare]::Delete)
-    try {
-        $Reader = [System.IO.StreamReader]::new($Stream)
-        $Text = $Reader.ReadToEnd()
-    }
-    finally {
-        $Stream.Dispose()
-    }
-    return @($Text -split "`r?`n" | Where-Object { $_.Length -gt 0 })
-}
-
 function Format-Gigabyte([double] $Bytes) { return '{0:N1}G' -f ($Bytes / 1GB) }
 function Format-Megabyte([double] $Bytes) { return '{0:N0}M' -f ($Bytes / 1MB) }
 
@@ -518,8 +496,6 @@ function Get-Sample([int] $Index) {
         "canary=$(Invoke-Canary)"
         "runner=$Runner"
         "tests=$Tests"
-        # TEMPORARY(windows-ci-lost-runner)
-        "refused=$(@(Read-RefusalLog).Count)"
     ) -join ' '
     $Detail = $null
     if ($Index % $DetailEvery -eq 0) {
@@ -587,11 +563,6 @@ function Invoke-Monitor {
             try {
                 $Fence = '```'
                 $Summary = "$Fence`n$Header`n`n$($Lines[$Lines.Count - 1])`n$LastDetail`n$Fence"
-                # TEMPORARY(windows-ci-lost-runner)
-                $Refusals = @(Read-RefusalLog)
-                if ($Refusals.Count -gt 0) {
-                    $Summary += "`n`nRefused children ($($Refusals.Count)):`n$Fence`n$(($Refusals | Select-Object -Last 40) -join "`n")`n$Fence"
-                }
                 $Text = "$Fence`n$($Lines -join "`n")`n$Fence"
                 Publish-Output -CheckRunId $CheckRunId -Title "Sample $Index at $([DateTime]::UtcNow.ToString('HH:mm:ss')) UTC" -Summary $Summary -Text $Text -Complete $Stopping
                 $Publish = "ok($($Watch.ElapsedMilliseconds)ms)"

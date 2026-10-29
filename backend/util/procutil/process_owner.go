@@ -236,8 +236,6 @@ func (o *ProcessOwner) captureLocked(ctx context.Context) error {
 	if table == nil {
 		return snapshotErr
 	}
-	// TEMPORARY(windows-ci-lost-runner): record what the old code would have killed.
-	logRefusedChildren(table, roots)
 	children, err := table.VerifiedForest(ctx, roots)
 	for _, child := range children {
 		o.children[child] = struct{}{}

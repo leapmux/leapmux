@@ -70,8 +70,9 @@ func (p ProcessIdentity) Runs() bool {
 // keeps the parent PID of a process whose parent ended, and it gives that PID
 // to a new process. csrss.exe and winlogon.exe record smss.exe instances that
 // ended at boot, so a process that takes such a PID appears to be their parent.
-// Unix gives an orphan to init or a subreaper instead, so this check changes
-// nothing there.
+// Unix gives an orphan to init or a subreaper instead, so there a recorded
+// parent PID names the live parent, and the check refuses only a process whose
+// start time is unknown.
 func (p ProcessIdentity) couldBeChildOf(parent ProcessIdentity) bool {
 	return p.StartTime > 0 && parent.StartTime > 0 && p.StartTime >= parent.StartTime
 }
